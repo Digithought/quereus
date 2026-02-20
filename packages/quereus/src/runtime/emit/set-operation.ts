@@ -4,11 +4,17 @@ import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
 import { BTree } from 'inheritree';
-import { compareRows } from '../../util/comparison.js';
+import { createCollationRowComparator, resolveCollation, BINARY_COLLATION } from '../../util/comparison.js';
 
 export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): Instruction {
   const leftInst = emitPlanNode(plan.left, ctx);
   const rightInst = emitPlanNode(plan.right, ctx);
+
+  // Pre-resolve collation-based row comparator (safe for mixed-type rows in set operations)
+  const attributes = plan.getAttributes();
+  const typedRowComparator = createCollationRowComparator(
+    attributes.map(attr => attr.type.collationName ? resolveCollation(attr.type.collationName) : BINARY_COLLATION)
+  );
 
   // Helper function to create a properly structured output row
   function createOutputRow(inputRow: Row): Row {
@@ -35,7 +41,7 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
     // Use BTree for proper SQL value comparison instead of JSON.stringify
     const distinctTree = new BTree<Row, Row>(
       (row: Row) => row,
-      compareRows
+      typedRowComparator
     );
 
     for await (const row of leftRows) {
@@ -60,7 +66,7 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
     // Use BTree for proper SQL value comparison
     const leftTree = new BTree<Row, Row>(
       (row: Row) => row,
-      compareRows
+      typedRowComparator
     );
 
     // Build left set
@@ -72,7 +78,7 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
     // Check right rows against left set
     const yielded = new BTree<Row, Row>(
       (row: Row) => row,
-      compareRows
+      typedRowComparator
     );
 
     for await (const row of rightRows) {
@@ -94,7 +100,7 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
     // Use BTree for proper SQL value comparison
     const rightTree = new BTree<Row, Row>(
       (row: Row) => row,
-      compareRows
+      typedRowComparator
     );
     const leftRowsArray: Row[] = [];
 

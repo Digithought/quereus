@@ -4,6 +4,7 @@ import type { LogicalType, CollationFunction } from '../types/logical-type.js';
 import { StatusCode } from '../common/types.js';
 import { QuereusError } from '../common/errors.js';
 
+
 const log = createLogger('util:comparison');
 const warnLog = log.extend('warn');
 
@@ -508,4 +509,54 @@ export function createTypedComparator(
 	// Fallback to default comparison
 	const collationFunc = collation ?? BINARY_COLLATION;
 	return (a: SqlValue, b: SqlValue) => compareSqlValuesFast(a, b, collationFunc);
+}
+
+/**
+ * Create a type-aware row comparator that pre-resolves per-column comparators.
+ * Use only when runtime types are guaranteed to match declared types
+ * (e.g., GROUP BY keys from typed expressions, index keys).
+ *
+ * @param types Logical types for each column position
+ * @param collations Optional collation functions per column
+ * @returns A row comparator function
+ */
+export function createTypedRowComparator(
+	types: readonly LogicalType[],
+	collations?: readonly (CollationFunction | undefined)[]
+): (a: Row, b: Row) => number {
+	const comparators = types.map((type, i) =>
+		createTypedComparator(type, collations?.[i])
+	);
+	const len = comparators.length;
+
+	return (a: Row, b: Row): number => {
+		for (let i = 0; i < len; i++) {
+			const cmp = comparators[i](a[i], b[i]);
+			if (cmp !== 0) return cmp;
+		}
+		return 0;
+	};
+}
+
+/**
+ * Create a row comparator with pre-resolved per-column collation functions.
+ * Safe for mixed-type rows (DISTINCT, SET OPERATIONS) where runtime types may
+ * differ from declared types. Uses compareSqlValuesFast (which handles cross-type
+ * comparison via storage class ordering) but avoids the collation lookup overhead.
+ *
+ * @param collations Pre-resolved collation functions per column
+ * @returns A row comparator function
+ */
+export function createCollationRowComparator(
+	collations: readonly CollationFunction[]
+): (a: Row, b: Row) => number {
+	const len = collations.length;
+
+	return (a: Row, b: Row): number => {
+		for (let i = 0; i < len; i++) {
+			const cmp = compareSqlValuesFast(a[i], b[i], collations[i]);
+			if (cmp !== 0) return cmp;
+		}
+		return 0;
+	};
 }

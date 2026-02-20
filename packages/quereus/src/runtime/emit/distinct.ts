@@ -3,7 +3,7 @@ import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import { emitPlanNode } from '../emitters.js';
 import { type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { compareRows } from '../../util/comparison.js';
+import { createCollationRowComparator, resolveCollation, BINARY_COLLATION } from '../../util/comparison.js';
 import { BTree } from 'inheritree';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { createRowSlot } from '../context-helpers.js';
@@ -12,11 +12,17 @@ export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruct
 	// Create row descriptor for output attributes (same as source since DISTINCT preserves attributes)
 	const outputRowDescriptor = buildRowDescriptor(plan.getAttributes());
 
+	// Pre-resolve collation-based row comparator (safe for mixed-type rows)
+	const attributes = plan.getAttributes();
+	const typedRowComparator = createCollationRowComparator(
+		attributes.map(attr => attr.type.collationName ? resolveCollation(attr.type.collationName) : BINARY_COLLATION)
+	);
+
 	async function* run(rctx: RuntimeContext, source: AsyncIterable<Row>): AsyncIterable<Row> {
-		// Create BTree to efficiently track distinct rows
+		// Create BTree to efficiently track distinct rows using pre-resolved typed comparator
 		const distinctTree = new BTree<Row, Row>(
-			(row: Row) => row, // Identity function - use row as its own key
-			compareRows
+			(row: Row) => row,
+			typedRowComparator
 		);
 
 		const outputSlot = createRowSlot(rctx, outputRowDescriptor);

@@ -8,7 +8,8 @@ import { isAggregateFunctionSchema } from '../../schema/function.js';
 import { AggregateFunctionCallNode } from '../../planner/nodes/aggregate-function.js';
 import type { PlanNode, RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { isRelationalNode } from '../../planner/nodes/plan-node.js';
-import { compareSqlValues } from '../../util/comparison.js';
+import { createTypedComparator, resolveCollation } from '../../util/comparison.js';
+import type { LogicalType } from '../../types/logical-type.js';
 import { BTree } from 'inheritree';
 import { createLogger } from '../../common/logger.js';
 import { logContextPush, logContextPop } from '../utils.js';
@@ -19,39 +20,6 @@ import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { AggValue } from '../../func/registration.js';
 
 export const ctxLog = createLogger('runtime:context');
-
-/**
- * Compare two arrays of SQL values for equality
- */
-function compareGroupKeys(a: SqlValue[], b: SqlValue[]): number {
-	if (a.length !== b.length) {
-		return a.length - b.length;
-	}
-
-	for (let i = 0; i < a.length; i++) {
-		const comparison = compareSqlValues(a[i], b[i]);
-		if (comparison !== 0) {
-			return comparison;
-		}
-	}
-	return 0;
-}
-
-/**
- * Compare SQL values for DISTINCT tracking (single value or array)
- */
-function compareDistinctValues(a: SqlValue | SqlValue[], b: SqlValue | SqlValue[]): number {
-	// Handle arrays (for multi-argument aggregates)
-	if (Array.isArray(a) && Array.isArray(b)) {
-		return compareGroupKeys(a, b);
-	}
-	// Handle single values
-	if (!Array.isArray(a) && !Array.isArray(b)) {
-		return compareSqlValues(a, b);
-	}
-	// Mixed types shouldn't happen, but handle gracefully
-	return Array.isArray(a) ? 1 : -1;
-}
 
 /**
  * Find the source relation node that column references should use as their context key.
@@ -110,6 +78,59 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			combinedRowDescriptor[attr.id] = Object.keys(outputRowDescriptor).length + index;
 		}
 	});
+
+	// Pre-resolve typed comparators for GROUP BY key comparison
+	const groupKeyComparators = plan.groupBy.map(expr => {
+		const exprType = expr.getType();
+		const collationFunc = exprType.collationName ? resolveCollation(exprType.collationName) : undefined;
+		return createTypedComparator(exprType.logicalType as LogicalType, collationFunc);
+	});
+	const groupKeyLen = groupKeyComparators.length;
+
+	function compareGroupKeys(a: SqlValue[], b: SqlValue[]): number {
+		for (let i = 0; i < groupKeyLen; i++) {
+			const cmp = groupKeyComparators[i](a[i], b[i]);
+			if (cmp !== 0) return cmp;
+		}
+		return 0;
+	}
+
+	// Pre-resolve typed comparators for DISTINCT aggregate tracking per aggregate
+	const distinctComparators: ((a: SqlValue | SqlValue[], b: SqlValue | SqlValue[]) => number)[] = [];
+	for (const agg of plan.aggregates) {
+		const funcNode = agg.expression;
+		if (funcNode instanceof AggregateFunctionCallNode) {
+			const args = funcNode.args || [];
+			if (args.length === 1) {
+				// Single-arg: compare as scalar
+				const argType = args[0].getType();
+				const collation = argType.collationName ? resolveCollation(argType.collationName) : undefined;
+				const cmp = createTypedComparator(argType.logicalType as LogicalType, collation);
+				distinctComparators.push((a, b) => cmp(a as SqlValue, b as SqlValue));
+			} else if (args.length > 1) {
+				// Multi-arg: compare element-wise
+				const argComparators = args.map(arg => {
+					const argType = arg.getType();
+					const collation = argType.collationName ? resolveCollation(argType.collationName) : undefined;
+					return createTypedComparator(argType.logicalType as LogicalType, collation);
+				});
+				distinctComparators.push((a, b) => {
+					const arrA = a as SqlValue[];
+					const arrB = b as SqlValue[];
+					for (let i = 0; i < argComparators.length; i++) {
+						const cmp = argComparators[i](arrA[i], arrB[i]);
+						if (cmp !== 0) return cmp;
+					}
+					return 0;
+				});
+			} else {
+				// No args (e.g., COUNT(*)) - identity comparator
+				distinctComparators.push(() => 0);
+			}
+		} else {
+			distinctComparators.push(() => 0);
+		}
+	}
 
 	async function* run(
 		ctx: RuntimeContext,
@@ -180,12 +201,12 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 				}
 			});
 
-			// For DISTINCT aggregates, track unique values using BTree for proper SQL comparison
-			const distinctTrees: BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>[] = aggregateDistinctFlags.map(isDistinct =>
+			// For DISTINCT aggregates, track unique values using BTree with pre-resolved typed comparators
+			const distinctTrees: BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>[] = aggregateDistinctFlags.map((isDistinct, i) =>
 				isDistinct ? new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>(
 					(val: SqlValue | SqlValue[]) => val,
-					compareDistinctValues
-				) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, compareDistinctValues) // Empty tree for non-distinct
+					distinctComparators[i]
+				) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, distinctComparators[i])
 			);
 
 			// Track the last source row for representative row in combined descriptor
@@ -416,11 +437,11 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 								return initialValue;
 							}
 						});
-						currentDistinctTrees = aggregateDistinctFlags.map(isDistinct =>
+						currentDistinctTrees = aggregateDistinctFlags.map((isDistinct, i) =>
 							isDistinct ? new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>(
 								(val: SqlValue | SqlValue[]) => val,
-								compareDistinctValues
-							) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, compareDistinctValues)
+								distinctComparators[i]
+							) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, distinctComparators[i])
 						);
 						// Set representative row for the new group (which is the current row)
 						currentSourceRow = row;
@@ -441,11 +462,11 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 								return initialValue;
 							}
 						});
-						currentDistinctTrees = aggregateDistinctFlags.map(isDistinct =>
+						currentDistinctTrees = aggregateDistinctFlags.map((isDistinct, i) =>
 							isDistinct ? new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>(
 								(val: SqlValue | SqlValue[]) => val,
-								compareDistinctValues
-							) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, compareDistinctValues)
+								distinctComparators[i]
+							) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, distinctComparators[i])
 						);
 						// Set representative row for the first group
 						currentSourceRow = row;

@@ -4,10 +4,10 @@ import { emitCallFromPlan, emitPlanNode } from '../emitters.js';
 import type { Row, OutputValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
-import { compareSqlValues } from '../../util/comparison.js';
+import { compareSqlValuesFast, resolveCollation, BINARY_COLLATION } from '../../util/comparison.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
+import type { SqlValue } from '../../common/types.js';
 import { createRowSlot } from '../context-helpers.js';
-import type { Attribute } from '../../planner/nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 
@@ -24,6 +24,16 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 
 	const rightAttributes = plan.right.getAttributes();
 	const rightRowDescriptor = buildRowDescriptor(rightAttributes);
+
+	// Pre-resolve USING column indices and collation-based comparators at emit time
+	const usingResolved = plan.usingColumns?.map(columnName => {
+		const lowerName = columnName.toLowerCase();
+		const leftIndex = leftAttributes.findIndex(attr => attr.name.toLowerCase() === lowerName);
+		const rightIndex = rightAttributes.findIndex(attr => attr.name.toLowerCase() === lowerName);
+		const leftType = leftAttributes[leftIndex]?.type;
+		const collationFunc = leftType?.collationName ? resolveCollation(leftType.collationName) : BINARY_COLLATION;
+		return { leftIndex, rightIndex, collationFunc };
+	});
 
 	// NOTE: rightSource must be re-startable (optimizer facilitates through cache node)
 	async function* run(rctx: RuntimeContext, leftSource: AsyncIterable<Row>, rightCallback: (ctx: RuntimeContext) => AsyncIterable<Row>, conditionCallback?: (ctx: RuntimeContext) => OutputValue): AsyncIterable<Row> {
@@ -63,9 +73,9 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 						// Evaluate the join condition using the callback provided by scheduler
 						const conditionResult = await conditionCallback(rctx);
 						conditionMet = !!conditionResult; // Convert to boolean
-					} else if (plan.usingColumns) {
-						// Handle USING condition: check equality of specified columns
-						conditionMet = evaluateUsingCondition(leftRow, rightRow, plan.usingColumns, leftAttributes, rightAttributes);
+					} else if (usingResolved) {
+						// Handle USING condition with pre-resolved indices and typed comparators
+						conditionMet = evaluateUsingCondition(leftRow, rightRow, usingResolved);
 					} else if (joinType === 'cross') {
 						// Cross join - always true
 						conditionMet = true;
@@ -112,37 +122,29 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 	};
 }
 
+type ResolvedUsingColumn = {
+	leftIndex: number;
+	rightIndex: number;
+	collationFunc: (a: string, b: string) => number;
+};
+
 /**
- * Evaluates USING condition by comparing specified columns from left and right rows
+ * Evaluates USING condition using pre-resolved column indices and collation functions.
+ * All index lookups and collation resolution are done at emit time.
+ * Uses compareSqlValuesFast for safe cross-type comparison.
  */
 function evaluateUsingCondition(
 	leftRow: Row,
 	rightRow: Row,
-	usingColumns: readonly string[],
-	leftAttributes: readonly Attribute[],
-	rightAttributes: readonly Attribute[]
+	resolved: readonly ResolvedUsingColumn[]
 ): boolean {
-	for (const columnName of usingColumns) {
-		const leftColName = columnName.toLowerCase();
-		const rightColName = columnName.toLowerCase();
-
-		// Find column indices in left and right
-		const leftIndex = leftAttributes.findIndex(attr => attr.name.toLowerCase() === leftColName);
-		const rightIndex = rightAttributes.findIndex(attr => attr.name.toLowerCase() === rightColName);
-
+	for (const { leftIndex, rightIndex, collationFunc } of resolved) {
 		if (leftIndex === -1 || rightIndex === -1) {
-			// Column not found - should not happen if planner is correct
 			return false;
 		}
-
-		const leftValue = leftRow[leftIndex];
-		const rightValue = rightRow[rightIndex];
-
-		// Compare using SQL semantics
-		if (compareSqlValues(leftValue, rightValue) !== 0) {
+		if (compareSqlValuesFast(leftRow[leftIndex], rightRow[rightIndex], collationFunc) !== 0) {
 			return false;
 		}
 	}
-
-	return true; // All USING columns match
+	return true;
 }

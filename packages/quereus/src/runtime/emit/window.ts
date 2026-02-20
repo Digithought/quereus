@@ -6,7 +6,8 @@ import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { resolveWindowFunction, type WindowFunctionSchema } from '../../schema/window-function.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import { compareSqlValues, createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
+import { createTypedComparator, createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
+import type { LogicalType } from '../../types/logical-type.js';
 import { createLogger } from '../../common/logger.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { RowDescriptor } from '../../planner/nodes/plan-node.js';
@@ -43,6 +44,21 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 	// Create row descriptors
 	const sourceRowDescriptor = buildRowDescriptor(plan.source.getAttributes());
 
+	// Pre-resolve ORDER BY comparators using actual expression types (not hardcoded BINARY)
+	const orderByComparators = plan.orderByExpressions.map((exprPlan, i) => {
+		const exprType = exprPlan.getType();
+		const collationName = exprType.collationName || 'BINARY';
+		const collationFunc = resolveCollation(collationName);
+		const orderClause = plan.windowSpec.orderBy[i];
+		return createOrderByComparatorFast(orderClause.direction, orderClause.nulls, collationFunc);
+	});
+
+	// Pre-resolve typed equality comparators for ORDER BY (used in ranking functions)
+	const orderByEqualityComparators = plan.orderByExpressions.map(exprPlan => {
+		const exprType = exprPlan.getType();
+		const collationFunc = exprType.collationName ? resolveCollation(exprType.collationName) : undefined;
+		return createTypedComparator(exprType.logicalType as LogicalType, collationFunc);
+	});
 
 	async function* run(
 		rctx: RuntimeContext,
@@ -76,7 +92,7 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 					allRows, plan, functionSchemas, rctx,
 					sourceRowDescriptor,
 					partitionCallbackList, orderByCallbackList, funcArgCallbackList,
-					sourceSlot
+					sourceSlot, orderByComparators, orderByEqualityComparators
 				);
 			} else {
 				// With partitioning - group by partition keys
@@ -89,7 +105,7 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 						partitionRows, plan, functionSchemas, rctx,
 						sourceRowDescriptor,
 						partitionCallbackList, orderByCallbackList, funcArgCallbackList,
-						sourceSlot
+						sourceSlot, orderByComparators, orderByEqualityComparators
 					);
 				}
 			}
@@ -147,12 +163,14 @@ async function* processPartition(
 	partitionCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	orderByCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	funcArgCallbacks: Array<(ctx: RuntimeContext) => OutputValue | null>,
-	sourceSlot: RowSlot
+	sourceSlot: RowSlot,
+	preResolvedOrderByComparators: Array<(a: SqlValue, b: SqlValue) => number>,
+	preResolvedEqualityComparators: Array<(a: SqlValue, b: SqlValue) => number>
 ): AsyncIterable<Row> {
 	// Sort rows according to ORDER BY specification
 	const sortedRows = await sortRows(
 		partitionRows, plan.windowSpec.orderBy, orderByCallbacks,
-		rctx, sourceSlot
+		rctx, sourceSlot, preResolvedOrderByComparators
 	);
 
 	// Process each row in the sorted partition
@@ -175,7 +193,7 @@ async function* processPartition(
 			if (schema.kind === 'ranking') {
 				value = await computeRankingFunction(
 					func.functionName, sortedRows, currentIndex,
-					orderByCallbacks, rctx, sourceSlot
+					orderByCallbacks, rctx, sourceSlot, preResolvedEqualityComparators
 				);
 			} else if (schema.kind === 'aggregate') {
 				value = await computeAggregateFunction(
@@ -207,23 +225,15 @@ async function sortRows(
 	orderBy: AST.OrderByClause[],
 	orderByCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	rctx: RuntimeContext,
-	sourceSlot: RowSlot
+	sourceSlot: RowSlot,
+	preResolvedComparators: Array<(a: SqlValue, b: SqlValue) => number>
 ): Promise<Row[]> {
 	if (orderBy.length === 0) {
 		return rows; // No sorting needed
 	}
 
-	// Pre-create optimized comparators for all ORDER BY expressions with resolved collations
-	const orderByComparators = orderBy.map(orderClause => {
-		// TODO: Extract actual collation from order clause expression
-		// For now, use BINARY collation (most common case)
-		const collationFunc = resolveCollation('BINARY');
-		return createOrderByComparatorFast(
-			orderClause.direction,
-			orderClause.nulls,
-			collationFunc
-		);
-	});
+	// Use pre-resolved comparators (with correct collations from expression types)
+	const orderByComparators = preResolvedComparators;
 
 	// Pre-evaluate ORDER BY values for all rows to avoid async in sort
 	const rowsWithValues = await Promise.all(rows.map(async (row) => {
@@ -267,7 +277,8 @@ async function computeRankingFunction(
 	currentIndex: number,
 	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
 	rctx: RuntimeContext,
-	sourceSlot: RowSlot
+	sourceSlot: RowSlot,
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>
 ): Promise<number> {
 	switch (functionName.toLowerCase()) {
 		case 'row_number':
@@ -281,7 +292,7 @@ async function computeRankingFunction(
 			for (let i = 0; i < currentIndex; i++) {
 				const prevRow = sortedRows[i];
 				if (!(await areRowsEqualInOrderBy(
-					prevRow, currentRow, orderByCallbacks, rctx, sourceSlot
+					prevRow, currentRow, orderByCallbacks, rctx, sourceSlot, equalityComparators
 				))) {
 					rank = i + 2; // Rank is 1-based and accounts for ties
 				}
@@ -298,7 +309,7 @@ async function computeRankingFunction(
 			for (let i = 0; i < currentIndex; i++) {
 				const prevRow = sortedRows[i];
 				if (!(await areRowsEqualInOrderBy(
-					prevRow, currentRow, orderByCallbacks, rctx, sourceSlot
+					prevRow, currentRow, orderByCallbacks, rctx, sourceSlot, equalityComparators
 				))) {
 					// Create a key for this distinct set of ORDER BY values
 					const key = await getOrderByKey(prevRow, orderByCallbacks, rctx, sourceSlot);
@@ -460,9 +471,11 @@ async function areRowsEqualInOrderBy(
 	rowB: Row,
 	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
 	rctx: RuntimeContext,
-	sourceSlot: RowSlot
+	sourceSlot: RowSlot,
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>
 ): Promise<boolean> {
-	for (const callback of orderByCallbacks) {
+	for (let i = 0; i < orderByCallbacks.length; i++) {
+		const callback = orderByCallbacks[i];
 		// Get value for row A
 		sourceSlot.set(rowA);
 		const valueA = await Promise.resolve(callback(rctx));
@@ -471,8 +484,8 @@ async function areRowsEqualInOrderBy(
 		sourceSlot.set(rowB);
 		const valueB = await Promise.resolve(callback(rctx));
 
-		// If any ORDER BY expression differs, rows are not equal
-		if (compareSqlValues(valueA, valueB) !== 0) {
+		// If any ORDER BY expression differs, rows are not equal (using pre-resolved typed comparator)
+		if (equalityComparators[i](valueA, valueB) !== 0) {
 			return false;
 		}
 	}
