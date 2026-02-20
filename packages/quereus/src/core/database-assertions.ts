@@ -16,6 +16,7 @@ import * as AST from '../parser/ast.js';
 import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
 import type { RuntimeContext } from '../runtime/types.js';
+import { RowContextMap } from '../runtime/context-helpers.js';
 import { BlockNode } from '../planner/nodes/block.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../planner/nodes/plan-node.js';
 import { FilterNode } from '../planner/nodes/filter.js';
@@ -201,7 +202,7 @@ export class AssertionEvaluator {
 				db: this.ctx as unknown as Database,
 				stmt: undefined,
 				params,
-				context: new Map(),
+				context: new RowContextMap(),
 				tableContexts: new Map(),
 				tracer: this.ctx.getInstructionTracer(),
 				enableMetrics: this.ctx.options.getBooleanOption('runtime_stats'),

@@ -1,11 +1,12 @@
 import type { RuntimeValue, SqlParameters, OutputValue, Row } from "../common/types.js";
 import type { Database } from "../core/database.js";
 import type { Statement } from "../core/statement.js";
-import type { RowDescriptor, RowGetter, TableDescriptor, TableGetter } from "../planner/nodes/plan-node.js";
+import type { RowDescriptor, TableDescriptor, TableGetter } from "../planner/nodes/plan-node.js";
 import type { Scheduler } from "./scheduler.js";
 import type { EmissionContext } from "./emission-context.js";
 import type { VirtualTableConnection } from "../vtab/connection.js";
 import type { PlanNode } from '../planner/nodes/plan-node.js';
+import type { RowContextMap } from './context-helpers.js';
 
 // Re-export types from common/types.js for convenience
 export type { OutputValue };
@@ -14,8 +15,8 @@ export type RuntimeContext = {
 	db: Database;
 	stmt: Statement | undefined; // Undefined for transient exec statements
 	params: SqlParameters; // User-provided values for the current execution
-	/** Row contexts by row descriptor */
-	context: Map<RowDescriptor, RowGetter>;
+	/** Row contexts with O(1) attribute index */
+	context: RowContextMap;
 	/** Table contexts by table name, used for recursive CTEs or other temporary table situations */
 	tableContexts: Map<TableDescriptor, TableGetter>;
 	/** Debug tracer for instruction execution, if enabled */

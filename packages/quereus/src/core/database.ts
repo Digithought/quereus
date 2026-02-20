@@ -19,6 +19,7 @@ import { buildBlock } from '../planner/building/block.js';
 import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
 import type { RuntimeContext } from '../runtime/types.js';
+import { RowContextMap } from '../runtime/context-helpers.js';
 import type { RowDescriptor } from '../planner/nodes/plan-node.js';
 import { BlockNode } from '../planner/nodes/block.js';
 import type { PlanningContext } from '../planner/planning-context.js';
@@ -465,7 +466,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 			db: this,
 			stmt: undefined,
 			params: params ?? {},
-			context: new Map(),
+			context: new RowContextMap(),
 			tableContexts: new Map(),
 			tracer: this.instructionTracer,
 			enableMetrics: this.options.getBooleanOption('runtime_stats'),

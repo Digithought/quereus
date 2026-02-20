@@ -13,6 +13,7 @@ import { emitPlanNode } from '../../runtime/emitters.js';
 import { EmissionContext } from '../../runtime/emission-context.js';
 import { Scheduler } from '../../runtime/scheduler.js';
 import type { RuntimeContext } from '../../runtime/types.js';
+import { RowContextMap } from '../../runtime/context-helpers.js';
 import { createLogger } from '../../common/logger.js';
 import { PlanNode } from '../nodes/plan-node.js';
 
@@ -41,7 +42,7 @@ export function createRuntimeExpressionEvaluator(db: Database): (expr: PlanNode)
 				db,
 				stmt: undefined,
 				params: {}, // No parameters needed for constants
-				context: new Map(), // No row context needed
+				context: new RowContextMap(), // No row context needed
 				tableContexts: new Map(), // No table contexts needed for constants
 				enableMetrics: false
 			};

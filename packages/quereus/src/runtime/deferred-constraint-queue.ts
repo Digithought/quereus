@@ -4,7 +4,7 @@ import type { RuntimeContext } from './types.js';
 import type { Database } from '../core/database.js';
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
-import { createRowSlot } from './context-helpers.js';
+import { createRowSlot, RowContextMap } from './context-helpers.js';
 import type { VirtualTableConnection } from '../vtab/connection.js';
 import { composeCombinedDescriptor } from './descriptor-helpers.js';
 
@@ -70,7 +70,7 @@ export class DeferredConstraintQueue {
 			db: this.db,
 			stmt: undefined,
 			params: {},
-			context: new Map(),
+			context: new RowContextMap(),
 			tableContexts: new Map(),
 			tracer: this.db.getInstructionTracer(),
 			enableMetrics: this.db.options.getBooleanOption('runtime_stats'),

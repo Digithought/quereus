@@ -9,6 +9,7 @@ import type { BlockNode } from '../planner/nodes/block.js';
 import { emitPlanNode } from '../runtime/emitters.js';
 import { Scheduler } from '../runtime/scheduler.js';
 import type { InstructionTracer, RuntimeContext } from '../runtime/types.js';
+import { RowContextMap } from '../runtime/context-helpers.js';
 import { Cached } from '../util/cached.js';
 import { isAsyncIterable } from '../runtime/utils.js';
 import { generateInstructionProgram, serializePlanTree } from '../planner/debug.js';
@@ -286,7 +287,7 @@ export class Statement {
 				db: this.db,
 				stmt: this,
 				params: this.boundArgs,
-				context: new Map(),
+				context: new RowContextMap(),
 				tableContexts: new Map(),
 				tracer,
 				enableMetrics,
