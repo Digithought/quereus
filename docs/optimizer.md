@@ -366,7 +366,7 @@ All plan nodes extend the base `PlanNode` class and implement category-specific 
 Rules are organized by optimization family in `src/planner/rules/`:
 
 **Access Path Selection** (`access/`)
-- `ruleSelectAccessPath`: Chooses between sequential scan, index scan, and index seek
+- `ruleSelectAccessPath`: Chooses between sequential scan, index scan, and index seek for both primary and secondary indexes
 
 **Aggregation** (`aggregate/`)
 - `ruleAggregateStreaming`: Converts `AggregateNode` to `StreamAggregateNode` when beneficial
@@ -572,7 +572,7 @@ if (shouldCache(node, context)) {
 **Current Limitations**
 - **Enhanced Predicate Analysis**: The constraint extractor currently handles basic binary predicates but could be extended for OR conditions, IN lists, and complex expressions  
 - **Relational Folding Pending**: Scalar constant folding is implemented; relational constant folding (materializing foldable relational subtrees) is planned
-- **Access Path Selection**: Phase 1.5 implementation exists but may require additional work for full production readiness
+- **Access Path Selection**: Supports primary and secondary index seek/range via module-provided `indexName`/`seekColumnIndexes`. Prefix-equality + trailing-range on composite indexes is not yet supported
 
 ## Future Directions
 
@@ -1112,9 +1112,11 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 
 ### Parameterization hand-off
 
-- For index-style providers, equality constraints that fully cover the primary key (and leading index prefixes) are translated into `IndexSeekNode` with dynamic seek keys:
+- Modules that implement `getBestAccessPlan` can return `indexName` and `seekColumnIndexes` to identify the chosen index and its key columns. When present, `selectPhysicalNodeFromPlan` builds seek keys from the correct constraint columns — not hardcoded to PK.
+- When these fields are absent, the legacy PK-based heuristic path (`selectPhysicalNodeLegacy`) is used for backward compatibility.
+- Equality constraints that fully cover a primary or secondary index prefix are translated into `IndexSeekNode` with dynamic seek keys:
   - Seek keys are stored as scalar expressions (parameters or correlated refs), evaluated at runtime by the emitter and passed to the module via the existing `FilterInfo.args` mechanism.
-  - Range bounds (>=/<=) will similarly pass dynamic lower/upper expressions.
+  - Range bounds (>=/<=) similarly pass dynamic lower/upper expressions.
 
 This establishes a clean “call-like” boundary: `Retrieve.bindings` declares required inputs; physical access nodes evaluate those inputs and deliver them to the module.
 

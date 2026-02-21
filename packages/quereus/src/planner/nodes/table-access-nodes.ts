@@ -246,7 +246,7 @@ export class IndexSeekNode extends TableAccessNode {
 			ordering: this.providesOrdering,
 			estimatedRows: Math.min(this.source.estimatedRows || 1000, 100)
 		} as Partial<PhysicalProperties>;
-		if (!this.isRange) {
+		if (!this.isRange && this.indexName === 'primary') {
 			const pk = this.source.tableSchema.primaryKeyDefinition ?? [];
 			if (pk.length > 0 && this.seekKeys.length >= pk.length) {
 				return { ...base, estimatedRows: 1, uniqueKeys: [[]] } as Partial<PhysicalProperties>;

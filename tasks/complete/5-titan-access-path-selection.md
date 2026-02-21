@@ -24,10 +24,16 @@ There are ~15 `as any` casts in `rule-select-access-path.ts`, mostly at plan nod
 - Sort growth only works when Sort is directly above Retrieve
 
 ### Tests
-- 639 passing, 7 pending, 0 failing (quereus package)
+- 665 passing, 7 pending, 0 failing (quereus package)
 - 7 new tests in `test/optimizer/secondary-index-access.spec.ts` cover equality seek, range scan, both-bound range, ORDER BY + filter, preference over full scan, composite index, and PK seek regression
 - Pre-existing isolation package failures (6) are unrelated (present since isolation review commit)
 
 ### Cleanup applied during review
 - Fixed mixed indentation in `rule-select-access-path.ts` (38 lines of 2-space → tabs)
 - Removed unreachable `default` case in `opToIndexOp` (TypeScript exhaustive checking covers the union type)
+
+### Bug fix applied during review
+- **`IndexSeekNode.computePhysical()`** (`table-access-nodes.ts:249`): The single-row uniqueness optimization (`estimatedRows: 1, uniqueKeys: [[]]`) was applied for any non-range seek whose key count matched PK column count. This incorrectly claimed single-row cardinality for secondary index equality seeks (e.g. `WHERE age = 25` on `idx_age` with 1 seek key, PK has 1 column → `1 >= 1` → claimed 1 row). Fixed by gating on `this.indexName === 'primary'`.
+
+### Documentation updates
+- `docs/optimizer.md`: Updated access path rule description, parameterization hand-off section, and known limitations to reflect secondary index support and the `indexName`/`seekColumnIndexes` protocol.
