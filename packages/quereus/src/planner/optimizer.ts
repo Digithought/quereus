@@ -29,6 +29,7 @@ import { ruleJoinPhysicalSelection } from './rules/join/rule-join-physical-selec
 // Constraint rules removed - now handled in builders for correctness
 import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
+import { ruleInSubqueryCache } from './rules/cache/rule-in-subquery-cache.js';
 // Phase 3 rules
 import { validatePhysicalTree } from './validation/plan-validator.js';
 import { Database } from '../core/database.js';
@@ -174,6 +175,15 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleCteOptimization,
 			priority: 20
+		});
+
+		// IN-subquery caching: wrap uncorrelated IN subquery sources in CacheNode
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'in-subquery-cache',
+			nodeType: PlanNodeType.In,
+			phase: 'rewrite',
+			fn: ruleInSubqueryCache,
+			priority: 25
 		});
 
 		// Register materialization advisory for multiple node types
