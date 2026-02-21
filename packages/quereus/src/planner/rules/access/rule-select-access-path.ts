@@ -101,7 +101,7 @@ function createIndexBasedAccess(retrieveNode: RetrieveNode, context: OptContext)
 	// Check if we have pre-computed access plan from ruleGrowRetrieve
 	const indexCtx = retrieveNode.moduleCtx as any; // IndexStyleContext from grow rule
 	let accessPlan: BestAccessPlanResult;
-  let constraints: PlannerPredicateConstraint[];
+	let constraints: PlannerPredicateConstraint[];
 	let residualPredicate: PlanNode | undefined;
 
 	if (indexCtx?.accessPlan) {
@@ -132,25 +132,25 @@ function createIndexBasedAccess(retrieveNode: RetrieveNode, context: OptContext)
 		accessPlan = vtabModule.getBestAccessPlan!(context.db, tableSchema, request) as BestAccessPlanResult;
 	}
 
-  // Choose physical node based on access plan
-  const physicalLeaf: RelationalPlanNode = selectPhysicalNode(retrieveNode.tableRef, accessPlan, constraints) as unknown as RelationalPlanNode;
+	// Choose physical node based on access plan
+	const physicalLeaf: RelationalPlanNode = selectPhysicalNode(retrieveNode.tableRef, accessPlan, constraints) as unknown as RelationalPlanNode;
 
-  // If the Retrieve source contained a pipeline (e.g., Filter/Sort/Project), rebuild it above the physical leaf
-  let rebuiltPipeline: RelationalPlanNode = physicalLeaf;
-  if (retrieveNode.source !== retrieveNode.tableRef) {
-    log('Rebuilding Retrieve pipeline above physical access node');
-    rebuiltPipeline = rebuildPipelineWithNewLeaf(retrieveNode.source, retrieveNode.tableRef, physicalLeaf);
-  }
+	// If the Retrieve source contained a pipeline (e.g., Filter/Sort/Project), rebuild it above the physical leaf
+	let rebuiltPipeline: RelationalPlanNode = physicalLeaf;
+	if (retrieveNode.source !== retrieveNode.tableRef) {
+		log('Rebuilding Retrieve pipeline above physical access node');
+		rebuiltPipeline = rebuildPipelineWithNewLeaf(retrieveNode.source, retrieveNode.tableRef, physicalLeaf);
+	}
 
-  // Wrap with residual predicate if present (on top of rebuilt pipeline)
-  let finalNode: PlanNode = rebuiltPipeline;
-  if (residualPredicate) {
-    log('Wrapping rebuilt pipeline with residual filter');
-    finalNode = new FilterNode(rebuiltPipeline.scope, rebuiltPipeline as any, residualPredicate as any);
-  }
+	// Wrap with residual predicate if present (on top of rebuilt pipeline)
+	let finalNode: PlanNode = rebuiltPipeline;
+	if (residualPredicate) {
+		log('Wrapping rebuilt pipeline with residual filter');
+		finalNode = new FilterNode(rebuiltPipeline.scope, rebuiltPipeline as any, residualPredicate as any);
+	}
 
-  log('Selected access for table %s (cost: %f, rows: %s)', tableSchema.name, accessPlan.cost, accessPlan.rows);
-  return finalNode;
+	log('Selected access for table %s (cost: %f, rows: %s)', tableSchema.name, accessPlan.cost, accessPlan.rows);
+	return finalNode;
 }
 
 /**
@@ -158,21 +158,21 @@ function createIndexBasedAccess(retrieveNode: RetrieveNode, context: OptContext)
  * Preserves all operators (e.g., Filter, Sort, Project) above the leaf.
  */
 function rebuildPipelineWithNewLeaf(
-  pipelineRoot: RelationalPlanNode,
-  oldLeaf: RelationalPlanNode,
-  newLeaf: RelationalPlanNode
+	pipelineRoot: RelationalPlanNode,
+	oldLeaf: RelationalPlanNode,
+	newLeaf: RelationalPlanNode
 ): RelationalPlanNode {
-  if (pipelineRoot === oldLeaf) {
-    return newLeaf;
-  }
-  const children = pipelineRoot.getChildren();
-  const newChildren: PlanNode[] = children.map(child => {
-    if (isRelationalNode(child)) {
-      return rebuildPipelineWithNewLeaf(child, oldLeaf, newLeaf);
-    }
-    return child; // keep scalar children unchanged
-  });
-  return pipelineRoot.withChildren(newChildren) as RelationalPlanNode;
+	if (pipelineRoot === oldLeaf) {
+		return newLeaf;
+	}
+	const children = pipelineRoot.getChildren();
+	const newChildren: PlanNode[] = children.map(child => {
+		if (isRelationalNode(child)) {
+			return rebuildPipelineWithNewLeaf(child, oldLeaf, newLeaf);
+		}
+		return child; // keep scalar children unchanged
+	});
+	return pipelineRoot.withChildren(newChildren) as RelationalPlanNode;
 }
 
 /**
@@ -553,11 +553,10 @@ function createSeqScan(tableRef: TableReferenceNode, filterInfo?: FilterInfo, co
 }
 
 function opToIndexOp(op: '>' | '>=' | '<' | '<='): number {
-  switch (op) {
-    case '>': return IndexConstraintOp.GT as unknown as number;
-    case '>=': return IndexConstraintOp.GE as unknown as number;
-    case '<': return IndexConstraintOp.LT as unknown as number;
-    case '<=': return IndexConstraintOp.LE as unknown as number;
-    default: return IndexConstraintOp.GE as unknown as number;
-  }
+	switch (op) {
+		case '>': return IndexConstraintOp.GT as unknown as number;
+		case '>=': return IndexConstraintOp.GE as unknown as number;
+		case '<': return IndexConstraintOp.LT as unknown as number;
+		case '<=': return IndexConstraintOp.LE as unknown as number;
+	}
 }
