@@ -132,6 +132,19 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 		}
 	}
 
+	// Pre-compute per-aggregate whether coercion can be skipped.
+	// If all args to a numeric aggregate are already numeric types, skip coerceForAggregate().
+	const aggregateSkipCoercion: boolean[] = plan.aggregates.map(agg => {
+		const funcNode = agg.expression;
+		if (!(funcNode instanceof AggregateFunctionCallNode)) return false;
+		const funcName = (funcNode.functionName || '').toUpperCase();
+		// Non-numeric aggregates (COUNT, GROUP_CONCAT, JSON_*) never need coercion anyway
+		if (funcName === 'COUNT' || funcName === 'GROUP_CONCAT' || funcName.startsWith('JSON_')) return false;
+		// If all args have numeric plan types, no coercion needed
+		const args = funcNode.args || [];
+		return args.length > 0 && args.every(arg => arg.getType().logicalType.isNumeric);
+	});
+
 	async function* run(
 		ctx: RuntimeContext,
 		sourceRows: AsyncIterable<Row>,
@@ -235,11 +248,11 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						const args = funcNode.args || [];
 						const argFunctions = aggregateArgFunctions[i] || []; // Add defensive check
 
+						const skipCoercion = aggregateSkipCoercion[i];
 						for (let j = 0; j < args.length; j++) {
 							if (j < argFunctions.length) {
 								const rawValue = await argFunctions[j](ctx);
-								// Apply coercion based on the function type
-								const coercedValue = coerceForAggregate(rawValue, funcNode.functionName || 'unknown');
+								const coercedValue = skipCoercion ? rawValue : coerceForAggregate(rawValue, funcNode.functionName || 'unknown');
 								argValues.push(coercedValue);
 							} else {
 								argValues.push(null);
@@ -343,12 +356,12 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						const args = funcNode.args || [];
 						const argFunctions = aggregateArgFunctions[i] || [];
 
+						const skipCoercion = aggregateSkipCoercion[i];
 						const argValues: SqlValue[] = [];
 						for (let j = 0; j < args.length; j++) {
 							if (j < argFunctions.length) {
 								const rawValue = await argFunctions[j](ctx);
-								// Apply coercion based on the function type
-								const coercedValue = coerceForAggregate(rawValue, funcNode.functionName || 'unknown');
+								const coercedValue = skipCoercion ? rawValue : coerceForAggregate(rawValue, funcNode.functionName || 'unknown');
 								argValues.push(coercedValue);
 							} else {
 								argValues.push(null);

@@ -11,7 +11,7 @@ import { JSON_TYPE } from '../../types/json-type.js';
  * Usage: integer(value)
  */
 export const INTEGER_FUNC = createScalarFunction(
-	{ name: 'integer', numArgs: 1, deterministic: true },
+	{ name: 'integer', numArgs: 1, deterministic: true, returnType: { typeClass: 'scalar', logicalType: INTEGER_TYPE, nullable: true, isReadOnly: true } },
 	(value: SqlValue): SqlValue => {
 		if (value === null) return null;
 
@@ -31,7 +31,7 @@ export const INTEGER_FUNC = createScalarFunction(
  * Usage: real(value)
  */
 export const REAL_FUNC = createScalarFunction(
-	{ name: 'real', numArgs: 1, deterministic: true },
+	{ name: 'real', numArgs: 1, deterministic: true, returnType: { typeClass: 'scalar', logicalType: REAL_TYPE, nullable: true, isReadOnly: true } },
 	(value: SqlValue): SqlValue => {
 		if (value === null) return null;
 
@@ -51,7 +51,7 @@ export const REAL_FUNC = createScalarFunction(
  * Usage: text(value)
  */
 export const TEXT_FUNC = createScalarFunction(
-	{ name: 'text', numArgs: 1, deterministic: true },
+	{ name: 'text', numArgs: 1, deterministic: true, returnType: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: true, isReadOnly: true } },
 	(value: SqlValue): SqlValue => {
 		if (value === null) return null;
 
@@ -71,7 +71,7 @@ export const TEXT_FUNC = createScalarFunction(
  * Usage: boolean(value)
  */
 export const BOOLEAN_FUNC = createScalarFunction(
-	{ name: 'boolean', numArgs: 1, deterministic: true },
+	{ name: 'boolean', numArgs: 1, deterministic: true, returnType: { typeClass: 'scalar', logicalType: BOOLEAN_TYPE, nullable: true, isReadOnly: true } },
 	(value: SqlValue): SqlValue => {
 		if (value === null) return null;
 
@@ -94,7 +94,7 @@ export const BOOLEAN_FUNC = createScalarFunction(
  * The old date() function will be renamed to date_now() or similar
  */
 export const DATE_FUNC = createScalarFunction(
-	{ name: 'date', numArgs: 1, deterministic: false }, // 'now' is non-deterministic
+	{ name: 'date', numArgs: 1, deterministic: false, returnType: { typeClass: 'scalar', logicalType: DATE_TYPE, nullable: true, isReadOnly: true } },
 	(value: SqlValue): SqlValue => {
 		if (value === null) return null;
 
@@ -125,7 +125,7 @@ export const DATE_FUNC = createScalarFunction(
  * Note: This replaces the existing time() function in datetime.ts
  */
 export const TIME_FUNC = createScalarFunction(
-	{ name: 'time', numArgs: 1, deterministic: false }, // 'now' is non-deterministic
+	{ name: 'time', numArgs: 1, deterministic: false, returnType: { typeClass: 'scalar', logicalType: TIME_TYPE, nullable: true, isReadOnly: true } },
 	(value: SqlValue): SqlValue => {
 		if (value === null) return null;
 
@@ -156,7 +156,7 @@ export const TIME_FUNC = createScalarFunction(
  * Note: This replaces the existing datetime() function in datetime.ts
  */
 export const DATETIME_FUNC = createScalarFunction(
-	{ name: 'datetime', numArgs: 1, deterministic: false }, // 'now' is non-deterministic
+	{ name: 'datetime', numArgs: 1, deterministic: false, returnType: { typeClass: 'scalar', logicalType: DATETIME_TYPE, nullable: true, isReadOnly: true } },
 	(value: SqlValue): SqlValue => {
 		if (value === null) return null;
 
@@ -184,7 +184,7 @@ export const DATETIME_FUNC = createScalarFunction(
  * it normalizes it. Otherwise, it converts the value to JSON representation.
  */
 export const JSON_FUNC = createScalarFunction(
-	{ name: 'json', numArgs: 1, deterministic: true },
+	{ name: 'json', numArgs: 1, deterministic: true, returnType: { typeClass: 'scalar', logicalType: JSON_TYPE, nullable: true, isReadOnly: true } },
 	(value: SqlValue): SqlValue => {
 		if (value === null) return 'null';
 
@@ -209,7 +209,7 @@ export const JSON_FUNC = createScalarFunction(
  * - Numeric values (interpreted as seconds): 3600, 86400
  */
 export const TIMESPAN_FUNC = createScalarFunction(
-	{ name: 'timespan', numArgs: 1, deterministic: true },
+	{ name: 'timespan', numArgs: 1, deterministic: true, returnType: { typeClass: 'scalar', logicalType: TIMESPAN_TYPE, nullable: true, isReadOnly: true } },
 	(value: SqlValue): SqlValue => {
 		if (value === null) return null;
 
