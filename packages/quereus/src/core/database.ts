@@ -1397,5 +1397,10 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	public async runGlobalAssertions(): Promise<void> {
 		await this.assertionEvaluator.runGlobalAssertions();
 	}
+
+	/** @internal Invalidate cached assertion plan (called on DROP ASSERTION) */
+	public invalidateAssertionCache(name: string): void {
+		this.assertionEvaluator.invalidateAssertion(name);
+	}
 }
 

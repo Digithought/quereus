@@ -36,6 +36,9 @@ export function emitDropAssertion(plan: DropAssertionNode, _ctx: EmissionContext
 			);
 		}
 
+		// Invalidate cached plan for this assertion
+		rctx.db.invalidateAssertionCache(plan.name);
+
 		log('Dropped assertion %s', plan.name);
 		return null;
 	}

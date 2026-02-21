@@ -627,7 +627,8 @@ export function computeCoveredKeysForConstraints(
 
 /**
  * Analyze plan to classify each TableReference instance as 'row' (row-specific) or 'global'.
- * Row-specific means equality constraints fully cover at least one unique key at that reference.
+ * Row-specific means equality constraints fully cover at least one unique key at that reference,
+ * AND no identity-breaking node (aggregate without PK grouping, set operation, window) sits above it.
  */
 export function analyzeRowSpecific(
     plan: RelationalPlanNode | PlanNode
@@ -638,7 +639,138 @@ export function analyzeRowSpecific(
         const covered = extractCoveredKeysForTable(plan as RelationalPlanNode, info.relationKey);
         result.set(info.relationKey, covered.length > 0 ? 'row' : 'global');
     }
+
+    // Post-process: demote 'row' to 'global' for table references beneath identity-breaking nodes
+    demoteForIdentityBreakingNodes(plan as unknown as PlanNode, result, infos);
+
     return result;
+}
+
+/**
+ * Walk the plan tree and demote table reference classifications to 'global' when they
+ * appear beneath identity-breaking nodes:
+ * - AggregateNode: unless GROUP BY exactly covers a unique key of the table
+ * - SetOperationNode: always demotes (conservative)
+ * - WindowNode: always demotes (conservative)
+ */
+function demoteForIdentityBreakingNodes(
+    node: PlanNode,
+    classifications: Map<string, 'row' | 'global'>,
+    tableInfos: TableInfo[]
+): void {
+    if (!node) return;
+
+    const nodeType = node.nodeType;
+
+    // SetOperation: demote all table references beneath to 'global'
+    if (nodeType === PlanNodeType.SetOperation) {
+        demoteAllBeneath(node, classifications);
+        return; // No need to recurse further — everything below is already demoted
+    }
+
+    // Window: demote all table references beneath to 'global'
+    if (nodeType === PlanNodeType.Window) {
+        demoteAllBeneath(node, classifications);
+        return;
+    }
+
+    // Aggregate: check if GROUP BY covers a unique key per table reference beneath
+    if (nodeType === PlanNodeType.Aggregate) {
+        demoteForAggregate(node, classifications, tableInfos);
+        return; // Already recurses into source
+    }
+
+    // Recurse into children
+    for (const child of node.getChildren()) {
+        demoteForIdentityBreakingNodes(child as unknown as PlanNode, classifications, tableInfos);
+    }
+}
+
+/** Collect all TableReference relationKeys beneath a node */
+function collectRelationKeysBeneath(node: PlanNode): Set<string> {
+    const keys = new Set<string>();
+    function walk(n: PlanNode): void {
+        if (n instanceof TableReferenceNode) {
+            const schema = n.tableSchema;
+            const baseName = `${schema.schemaName}.${schema.name}`.toLowerCase();
+            keys.add(`${baseName}#${n.id ?? 'unknown'}`);
+        }
+        for (const child of n.getChildren()) {
+            walk(child as unknown as PlanNode);
+        }
+    }
+    walk(node);
+    return keys;
+}
+
+/** Demote all table references beneath a node to 'global' */
+function demoteAllBeneath(node: PlanNode, classifications: Map<string, 'row' | 'global'>): void {
+    const keys = collectRelationKeysBeneath(node);
+    for (const key of keys) {
+        if (classifications.has(key)) {
+            classifications.set(key, 'global');
+        }
+    }
+}
+
+/**
+ * For an AggregateNode, check if GROUP BY columns cover a unique key of each table reference
+ * beneath the aggregate's source. If not, demote that table reference to 'global'.
+ */
+function demoteForAggregate(
+    node: PlanNode,
+    classifications: Map<string, 'row' | 'global'>,
+    tableInfos: TableInfo[]
+): void {
+    const aggNode = node as unknown as { source: RelationalPlanNode; groupBy: readonly ScalarPlanNode[] };
+    if (!aggNode.groupBy || !aggNode.source) return;
+
+    // Collect attribute IDs from GROUP BY expressions (only ColumnReference expressions count)
+    const groupByAttrIds = new Set<number>();
+    for (const expr of aggNode.groupBy) {
+        if (expr.nodeType === PlanNodeType.ColumnReference) {
+            groupByAttrIds.add((expr as unknown as _ColumnRef).attributeId);
+        }
+    }
+
+    // Check each table reference beneath the aggregate's source
+    const keysBelow = collectRelationKeysBeneath(aggNode.source as unknown as PlanNode);
+    for (const relKey of keysBelow) {
+        if (classifications.get(relKey) !== 'row') continue; // Already global
+
+        // Find this table's unique keys
+        const tInfo = tableInfos.find(t => t.relationKey === relKey);
+        if (!tInfo || !tInfo.uniqueKeys || tInfo.uniqueKeys.length === 0) {
+            classifications.set(relKey, 'global');
+            continue;
+        }
+
+        // Check if any unique key is fully covered by GROUP BY attribute IDs
+        const attrIdsByColIndex = new Map<number, number>();
+        for (const attr of tInfo.attributes) {
+            const colIdx = tInfo.columnIndexMap.get(attr.id);
+            if (colIdx !== undefined) {
+                attrIdsByColIndex.set(colIdx, attr.id);
+            }
+        }
+
+        let anyCovered = false;
+        for (const key of tInfo.uniqueKeys) {
+            if (key.length === 0) { anyCovered = true; break; }
+            const allCovered = key.every(colIdx => {
+                const attrId = attrIdsByColIndex.get(colIdx);
+                return attrId !== undefined && groupByAttrIds.has(attrId);
+            });
+            if (allCovered) { anyCovered = true; break; }
+        }
+
+        if (!anyCovered) {
+            classifications.set(relKey, 'global');
+        }
+    }
+
+    // Recurse into the aggregate's source for further nested identity-breaking nodes
+    demoteForIdentityBreakingNodes(aggNode.source as unknown as PlanNode, classifications, tableInfos);
 }
 
 function combineResiduals(predicates: ScalarPlanNode[]): ScalarPlanNode | undefined {

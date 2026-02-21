@@ -8,6 +8,7 @@
 - Don't worry about backwards compatibility yet.
 - Use yarn
 - No half-baked janky parsers; use a full-fledged parser or better, brainstorm with the dev for another way
+- .editorconfig contains formatting (tabs for code)
 
 ## Tasks
 
