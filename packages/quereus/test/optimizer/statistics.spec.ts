@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-unused-expressions */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { describe, it, beforeEach, afterEach } from 'mocha';
 import { expect } from 'chai';
 import { Database } from '../../src/core/database.js';
 import { buildHistogram, selectivityFromHistogram } from '../../src/planner/stats/histogram.js';

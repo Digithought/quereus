@@ -214,8 +214,13 @@ The `StatsProvider` interface allows pluggable statistics sources:
 interface StatsProvider {
   tableRows(table: TableSchema): number | undefined;
   selectivity(table: TableSchema, pred: ScalarPlanNode): number | undefined;
+  joinSelectivity?(left: TableSchema, right: TableSchema, cond: ScalarPlanNode): number | undefined;
+  distinctValues?(table: TableSchema, columnName: string): number | undefined;
+  indexSelectivity?(table: TableSchema, indexName: string, pred: ScalarPlanNode): number | undefined;
 }
 ```
+
+The default provider is `CatalogStatsProvider`, which reads real statistics from `TableSchema.statistics` (populated by `ANALYZE` or `VirtualTable.getStatistics()`) and falls back to `NaiveStatsProvider` heuristics when unavailable. When catalog statistics include equi-height histograms, range and equality selectivity estimates use histogram interpolation rather than uniform assumptions.
 
 ### Physical Properties System
 

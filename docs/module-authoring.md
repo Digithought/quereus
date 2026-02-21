@@ -440,6 +440,28 @@ class IndexedTable extends VirtualTable {
 }
 ```
 
+## Statistics for Cost-Based Optimization
+
+Virtual table modules can optionally provide statistics for the optimizer's cost model. Implement `getStatistics()` on your `VirtualTable` subclass to report row counts, per-column distinct values, min/max, and histograms.
+
+```typescript
+import type { TableStatistics, ColumnStatistics } from '@quereus/quereus';
+
+class MyTable extends VirtualTable {
+  getStatistics(): TableStatistics {
+    return {
+      rowCount: this.data.length,
+      columnStats: new Map([
+        ['id', { distinctCount: this.data.length, nullCount: 0 }],
+        ['name', { distinctCount: this.uniqueNames, nullCount: 0 }],
+      ]),
+    };
+  }
+}
+```
+
+When `getStatistics()` is implemented, the `ANALYZE` command calls it directly. Otherwise, ANALYZE performs a full scan to collect statistics. Statistics are cached on `TableSchema.statistics` and consumed by `CatalogStatsProvider` for selectivity estimation.
+
 ## Mutation Statements
 
 Virtual table modules can opt-in to receive deterministic mutation statements for each row-level operation. This enables replication, audit logging, and change data capture with guaranteed reproducibility.

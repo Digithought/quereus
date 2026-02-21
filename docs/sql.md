@@ -2833,6 +2833,25 @@ pragma journal_mode = 'memory';
 pragma synchronous = 'off';
 ```
 
+### 9.5 ANALYZE
+
+The `ANALYZE` command collects table statistics for cost-based query optimization. Statistics include row counts, per-column distinct value counts, null counts, min/max values, and equi-height histograms for selectivity estimation.
+
+```sql
+-- Analyze all tables in the default schema
+analyze;
+
+-- Analyze a specific table
+analyze products;
+
+-- Analyze a table in a specific schema
+analyze main.products;
+```
+
+`ANALYZE` returns one row per table with columns `table` (text) and `rows` (integer).
+
+If a virtual table module implements `getStatistics()`, those statistics are used directly. Otherwise, a full table scan collects per-column statistics with reservoir-sampled histograms. Collected statistics are cached on the table schema and used by the optimizer's `CatalogStatsProvider` for improved cost estimates.
+
 ## 10. Error Handling
 
 Quereus provides structured error handling through the `QuereusError` class hierarchy. Understanding these errors helps in debugging and creating robust applications.
