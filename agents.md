@@ -11,7 +11,7 @@
 
 ## Tasks
 
-- If the user mentions tasks (e.g. work task...), read tasks/agents.md to know what to do
+- If the user mentions tasks (e.g. work task...), read tasks/AGENTS.md to know what to do
 
 ## Launch process tool (if under PowerShell)
 

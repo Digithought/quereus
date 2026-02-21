@@ -8,6 +8,7 @@ import type * as AST from '../parser/ast.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { createLogger } from '../common/logger.js';
 import { inferType } from '../types/registry.js';
+import type { TableStatistics } from '../planner/stats/catalog-stats.js';
 
 const log = createLogger('schema:table');
 const warnLog = log.extend('warn');
@@ -54,6 +55,8 @@ export interface TableSchema {
 	isReadOnly?: boolean;	// default false
 	/** Mutation context variables for this table */
 	mutationContext?: ReadonlyArray<MutationContextDefinition>;
+	/** Cached table statistics from ANALYZE or VTab reporting */
+	statistics?: TableStatistics;
 	/** Foreign key constraints (parsed but not yet enforced by engine) */
 	// foreignKeys?: ReadonlyArray<ForeignKeyConstraintSchema>;
 	/** Unique constraints (beyond primary key) */

@@ -15,7 +15,8 @@ export interface AstNode {
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
 		| 'subquerySource' | 'mutatingSubquerySource' | 'case' | 'in' | 'exists' | 'values' | 'between'
 		| 'declareSchema' | 'diffSchema' | 'applySchema' | 'explainSchema'
-		| 'declaredTable' | 'declaredIndex' | 'declaredView' | 'declaredSeed' | 'declareIgnored' | 'upsert';
+		| 'declaredTable' | 'declaredIndex' | 'declaredView' | 'declaredSeed' | 'declareIgnored' | 'upsert'
+		| 'analyze';
 	loc?: {
 		start: { line: number, column: number, offset: number };
 		end: { line: number, column: number, offset: number };
@@ -477,6 +478,14 @@ export interface PragmaStmt extends AstNode {
 	value?: LiteralExpr | IdentifierExpr; // Value being assigned (optional for some pragmas)
 }
 
+export interface AnalyzeStmt extends AstNode {
+	type: 'analyze';
+	/** Optional table name. If omitted, all tables in the schema are analyzed. */
+	tableName?: string;
+	/** Optional schema qualifier (e.g., "main") */
+	schemaName?: string;
+}
+
 export interface WithClause extends AstNode {
 	type: 'with';
 	recursive: boolean;
@@ -537,6 +546,7 @@ export type Statement =
 	| SavepointStmt
 	| ReleaseStmt
 	| PragmaStmt
+	| AnalyzeStmt
 	| DeclareSchemaStmt
 	| DiffSchemaStmt
 	| ApplySchemaStmt

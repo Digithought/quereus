@@ -291,6 +291,7 @@ export class Parser {
 			case 'RELEASE': this.advance(); stmt = this.releaseStatement(startToken, withClause); break;
 			// TODO: Replace pragmas with build-in functions
 			case 'PRAGMA': this.advance(); stmt = this.pragmaStatement(startToken, withClause); break;
+			case 'ANALYZE': this.advance(); stmt = this.analyzeStatement(startToken); break;
 			case 'DECLARE': this.advance(); stmt = this.declareSchemaStatement(startToken); break;
 			case 'DIFF': this.advance(); stmt = this.diffSchemaStatement(startToken); break;
 			case 'APPLY': this.advance(); stmt = this.applySchemaStatement(startToken); break;
@@ -2448,6 +2449,24 @@ export class Parser {
 	private pragmaStatement(startToken: Token, _withClause?: AST.WithClause): AST.PragmaStmt {
 		const nameValue = this.nameValueItem("pragma");
 		return { type: 'pragma', ...nameValue, loc: _createLoc(startToken, this.previous()) };
+	}
+
+	/**
+	 * Parse ANALYZE statement: ANALYZE [schema.]table | ANALYZE
+	 */
+	private analyzeStatement(startToken: Token): AST.AnalyzeStmt {
+		// ANALYZE with no arguments → analyze all tables
+		if (this.isAtEnd() || this.check(TokenType.SEMICOLON)) {
+			return { type: 'analyze', loc: _createLoc(startToken, this.previous()) };
+		}
+
+		// Parse optional schema.table or just table
+		const name1 = this.consumeIdentifier([], "Expected table name after ANALYZE.");
+		if (this.match(TokenType.DOT)) {
+			const name2 = this.consumeIdentifier([], "Expected table name after schema qualifier.");
+			return { type: 'analyze', schemaName: name1, tableName: name2, loc: _createLoc(startToken, this.previous()) };
+		}
+		return { type: 'analyze', tableName: name1, loc: _createLoc(startToken, this.previous()) };
 	}
 
 	// === Declarative schema parsing ===

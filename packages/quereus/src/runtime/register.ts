@@ -37,6 +37,7 @@ import { emitCollate } from "./emit/collate.js";
 import { emitTableValuedFunctionCall } from './emit/table-valued-function.js';
 import { emitTransaction } from './emit/transaction.js';
 import { emitPragma } from './emit/pragma.js';
+import { emitAnalyze } from './emit/analyze.js';
 import { emitSort } from './emit/sort.js';
 import { emitWindow } from './emit/window.js';
 import { emitWindowFunctionCall } from './emit/window-function.js';
@@ -131,6 +132,7 @@ export function registerEmitters() {
 	// Transaction control emitters
 	registerEmitter(PlanNodeType.Transaction, emitTransaction as EmitterFunc);
 	registerEmitter(PlanNodeType.Pragma, emitPragma as EmitterFunc);
+	registerEmitter(PlanNodeType.Analyze, emitAnalyze as EmitterFunc);
 
 	// Declarative schema
 	registerEmitter(PlanNodeType.DeclareSchema, emitDeclareSchema as EmitterFunc);

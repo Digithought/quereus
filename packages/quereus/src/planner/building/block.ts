@@ -16,6 +16,7 @@ import { buildDeleteStmt } from './delete.js';
 import { buildAlterTableStmt } from './alter-table.js';
 import { buildBeginStmt, buildCommitStmt, buildRollbackStmt, buildSavepointStmt, buildReleaseStmt } from './transaction.js';
 import { buildPragmaStmt } from './pragma.js';
+import { buildAnalyzeStmt } from './analyze.js';
 import { buildValuesStmt } from './select.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -62,6 +63,8 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildReleaseStmt(ctx, stmt as AST.ReleaseStmt);
 			case 'pragma':
 				return buildPragmaStmt(ctx, stmt as AST.PragmaStmt);
+			case 'analyze':
+				return buildAnalyzeStmt(ctx, stmt as AST.AnalyzeStmt);
 			case 'alterTable':
 				return buildAlterTableStmt(ctx, stmt as AST.AlterTableStmt);
 			case 'values':

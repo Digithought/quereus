@@ -8,7 +8,8 @@ export { DEFAULT_TUNING };
 
 import { applyRules } from './framework/registry.js';
 import { tracePhaseStart, tracePhaseEnd, traceNodeStart, traceNodeEnd } from './framework/trace.js';
-import { defaultStatsProvider, type StatsProvider } from './stats/index.js';
+import { type StatsProvider } from './stats/index.js';
+import { CatalogStatsProvider } from './stats/catalog-stats.js';
 import { createOptContext, type OptContext } from './framework/context.js';
 import type { OptimizerDiagnostics } from './framework/context.js';
 import { PassManager, PassId } from './framework/pass.js';
@@ -48,7 +49,7 @@ export class Optimizer {
 		tuning: OptimizerTuning = DEFAULT_TUNING,
 		stats?: StatsProvider
 	) {
-		this.stats = stats ?? defaultStatsProvider;
+		this.stats = stats ?? new CatalogStatsProvider();
 		this.passManager = new PassManager();
 		this.tuning = tuning;
 

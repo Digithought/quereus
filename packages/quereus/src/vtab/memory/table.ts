@@ -17,6 +17,8 @@ import { MemoryVirtualTableConnection } from './connection.js';
 import type { ConflictResolution } from '../../common/constants.js';
 import type { VTableEventEmitter } from '../events.js';
 import { compareSqlValues } from '../../util/comparison.js';
+import type { TableStatistics, ColumnStatistics } from '../../planner/stats/catalog-stats.js';
+import { buildHistogram } from '../../planner/stats/histogram.js';
 
 const logger = createMemoryTableLoggers('table');
 
@@ -113,6 +115,79 @@ export class MemoryTable extends VirtualTable {
 	 */
 	getEventEmitter(): VTableEventEmitter | undefined {
 		return this.manager.getEventEmitter();
+	}
+
+	/**
+	 * Returns statistics for this memory table.
+	 * Provides exact row count from BTree metadata, column-level distinct counts,
+	 * min/max values, null counts, and optional histograms.
+	 */
+	getStatistics(): TableStatistics {
+		const schema = this.manager.tableSchema;
+		if (!schema) {
+			return { rowCount: 0, columnStats: new Map() };
+		}
+
+		const { rowCount, indexDistinctCounts } = this.manager.getBaseLayerStats();
+		const columnStats = new Map<string, ColumnStatistics>();
+
+		// Build a map from column index to secondary index names for distinct counts
+		const colIndexToSecondaryIndex = new Map<number, string>();
+		for (const idx of schema.indexes ?? []) {
+			if (idx.columns.length === 1) {
+				colIndexToSecondaryIndex.set(idx.columns[0].index, idx.name);
+			}
+		}
+
+		for (let colIdx = 0; colIdx < schema.columns.length; colIdx++) {
+			const col = schema.columns[colIdx];
+			const colName = col.name.toLowerCase();
+
+			// Sample column values for histogram and distinct/null/min/max
+			const values = this.manager.sampleColumnValues(colIdx, 1000);
+
+			// Distinct count: use secondary index if available, else count from sample
+			let distinctCount: number;
+			const secIndexName = colIndexToSecondaryIndex.get(colIdx);
+			if (secIndexName && indexDistinctCounts.has(secIndexName)) {
+				distinctCount = indexDistinctCounts.get(secIndexName)!;
+			} else {
+				const distinctSet = new Set(values.map(v => String(v)));
+				distinctCount = distinctSet.size;
+			}
+
+			// Primary key columns always have distinctCount = rowCount
+			const isPkColumn = schema.primaryKeyDefinition.some(pk => pk.index === colIdx);
+			if (isPkColumn && rowCount > 0) {
+				distinctCount = rowCount;
+			}
+
+			// Null count: difference between rowCount and non-null sample (exact for full scan)
+			const nullCount = rowCount - values.length;
+
+			const stats: ColumnStatistics = {
+				distinctCount,
+				nullCount: Math.max(0, nullCount),
+				minValue: values.length > 0 ? values[0] : undefined,
+				maxValue: values.length > 0 ? values[values.length - 1] : undefined,
+			};
+
+			// Build histogram for non-trivial columns (> 10 distinct values)
+			if (values.length > 10) {
+				const hist = buildHistogram(values, Math.min(100, Math.ceil(values.length / 10)));
+				if (hist) {
+					stats.histogram = hist;
+				}
+			}
+
+			columnStats.set(colName, stats);
+		}
+
+		return {
+			rowCount,
+			columnStats,
+			lastAnalyzed: Date.now(),
+		};
 	}
 
 	// Direct async iteration for query execution

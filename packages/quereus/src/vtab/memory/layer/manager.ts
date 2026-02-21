@@ -104,6 +104,56 @@ export class MemoryTableManager {
 		return this._currentCommittedLayer;
 	}
 
+	/**
+	 * Returns committed layer statistics for cost-based optimization.
+	 * Provides exact row count and per-index distinct counts without scanning.
+	 */
+	getBaseLayerStats(): { rowCount: number; indexDistinctCounts: Map<string, number> } {
+		const tree = this._currentCommittedLayer.getModificationTree('primary');
+		const rowCount = tree?.getCount() ?? 0;
+		const indexDistinctCounts = new Map<string, number>();
+		for (const idx of this.tableSchema?.indexes ?? []) {
+			const idxTree = this._currentCommittedLayer.getSecondaryIndexTree?.(idx.name);
+			if (idxTree) {
+				indexDistinctCounts.set(idx.name, idxTree.getCount());
+			}
+		}
+		return { rowCount, indexDistinctCounts };
+	}
+
+	/**
+	 * Sample column values from the committed layer for histogram construction.
+	 * Returns sorted non-null values for the specified column index.
+	 * For tables with <= maxSample rows returns all values; otherwise systematic samples.
+	 */
+	sampleColumnValues(columnIndex: number, maxSample: number = 1000): SqlValue[] {
+		const tree = this._currentCommittedLayer.getModificationTree('primary');
+		if (!tree) return [];
+		const count = tree.getCount();
+		const values: SqlValue[] = [];
+
+		if (count === 0) return values;
+
+		const step = count <= maxSample ? 1 : Math.floor(count / maxSample);
+		let i = 0;
+		for (const path of tree.ascending(tree.first())) {
+			if (i % step === 0) {
+				const row = tree.at(path);
+				if (row) {
+					const val = row[columnIndex];
+					if (val !== null && val !== undefined) {
+						values.push(val);
+					}
+				}
+			}
+			i++;
+			if (values.length >= maxSample) break;
+		}
+
+		values.sort((a, b) => compareSqlValues(a, b));
+		return values;
+	}
+
 	public connect(): MemoryTableConnection {
 		const connection = new MemoryTableConnection(this, this._currentCommittedLayer);
 		this.connections.set(connection.connectionId, connection);

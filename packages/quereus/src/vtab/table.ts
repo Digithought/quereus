@@ -9,6 +9,7 @@ import type { ConflictResolution } from '../common/constants.js';
 import type { VirtualTableConnection } from './connection.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
 import type { VTableEventEmitter } from './events.js';
+import type { TableStatistics } from '../planner/stats/catalog-stats.js';
 
 /**
  * Arguments passed to VirtualTable.update() method.
@@ -192,6 +193,15 @@ export abstract class VirtualTable {
 	 * @returns Event emitter, or undefined if not supported
 	 */
 	getEventEmitter?(): VTableEventEmitter | undefined;
+
+	/**
+	 * Returns statistics about this table for cost-based optimization.
+	 * Modules that can efficiently compute exact or approximate statistics
+	 * (row counts, distinct values, histograms) should implement this.
+	 * Called by the ANALYZE command or lazily by the optimizer.
+	 * @returns Table statistics, or a promise resolving to them
+	 */
+	getStatistics?(): Promise<TableStatistics> | TableStatistics;
 
 	// --- Isolation Layer Support ---
 
