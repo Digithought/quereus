@@ -233,7 +233,6 @@ function addSupportedPart(expr: ScalarPlanNode, attributeToTableMap: Map<number,
 }
 
 function findTargetRelationKey(expr: ScalarPlanNode, attributeToTableMap: Map<number, TableInfo>): string | undefined {
-  let found: string | undefined;
   const stack: ScalarPlanNode[] = [expr];
   while (stack.length) {
     const n = stack.pop()!;
@@ -247,7 +246,7 @@ function findTargetRelationKey(expr: ScalarPlanNode, attributeToTableMap: Map<nu
       stack.push(c as any);
     }
   }
-  return found;
+  return undefined;
 }
 
 function combineParts(parts: ScalarPlanNode[]): ScalarPlanNode | undefined {

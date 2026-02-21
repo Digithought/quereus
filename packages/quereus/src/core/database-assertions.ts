@@ -115,6 +115,15 @@ export class AssertionEvaluator {
 		this.cache.delete(name.toLowerCase());
 	}
 
+	/** Unsubscribe from schema changes and clear cached plans */
+	dispose(): void {
+		if (this.unsubscribeSchemaChanges) {
+			this.unsubscribeSchemaChanges();
+			this.unsubscribeSchemaChanges = null;
+		}
+		this.cache.clear();
+	}
+
 	/**
 	 * Run all global assertions that are impacted by changes in the current transaction.
 	 * @throws QuereusError with CONSTRAINT status if any assertion is violated

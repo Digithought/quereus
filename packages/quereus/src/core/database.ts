@@ -731,6 +731,9 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		await Promise.allSettled(finalizePromises); // Wait even if some fail
 		this.statements.clear();
 
+		// Clean up assertion evaluator (unsubscribe schema change listener, clear plan cache)
+		this.assertionEvaluator.dispose();
+
 		// Clear schemas, ensuring VTabs are potentially disconnected
 		// This will also call destroy on VTabs via SchemaManager.clearAll -> schema.clearTables -> schemaManager.dropTable
 		this.schemaManager.clearAll();
