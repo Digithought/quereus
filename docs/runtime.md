@@ -456,7 +456,7 @@ interface RuntimeContext {
   db: Database;
   stmt: Statement;
   params: SqlParameters;
-  context: Map<RowDescriptor, RowGetter>;  // Maps row descriptors to row getters
+  context: RowContextMap;  // Row contexts with O(1) attribute index
 }
 ```
 
@@ -1287,8 +1287,8 @@ Quereus provides helper functions in `src/runtime/context-helpers.ts` to simplif
 - Must call `close()` to clean up
 
 **`resolveAttribute(rctx, attributeId, columnName?)`**
-- Looks up an attribute ID in the current context
-- Searches newest → oldest (innermost scope wins)  
+- Looks up an attribute ID in the current context via O(1) attribute index
+- Falls back to linear scan newest → oldest when the indexed slot isn't populated yet
 - Throws descriptive error if not found
 
 **`withRowContext(rctx, descriptor, rowGetter, fn)`**

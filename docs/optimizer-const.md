@@ -74,7 +74,7 @@ const instr   = emitPlanNode(expr, new EmissionContext(db /* temp */));
 const sched   = new Scheduler(instr);
 const rtCtx: RuntimeContext = {
   db, stmt: null, params: {},
-  context: new Map(), tableContexts: new Map(),
+  context: new RowContextMap(), tableContexts: new Map(),
   enableMetrics: false
 };
 const out  = sched.run(rtCtx);
