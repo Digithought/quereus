@@ -91,12 +91,13 @@ SELECT action, user_id FROM audit_log WHERE action = 'user_created';
 → [{ "action": "user_created", "user_id": 5 }]
 
 -- Test 5: JOIN with mutating subquery
+-- TODO: replace this with like operator when that's implemented.
 SELECT u.name, updated.email as new_email
 FROM users u
 JOIN (
     UPDATE users
     SET email = name || '@company.com'
-    WHERE email LIKE '%@example.com'
+    WHERE like('%@example.com', email)
     RETURNING id, email
 ) AS updated ON u.id = updated.id;
 → [{ "name": "Alice", "new_email": "Alice@company.com" }, { "name": "Bob", "new_email": "Bob@company.com" }, { "name": "David", "new_email": "David@company.com" }, { "name": "Eve", "new_email": "Eve@company.com" }]

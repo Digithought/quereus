@@ -232,9 +232,6 @@ async function sortRows(
 		return rows; // No sorting needed
 	}
 
-	// Use pre-resolved comparators (with correct collations from expression types)
-	const orderByComparators = preResolvedComparators;
-
 	// Pre-evaluate ORDER BY values for all rows to avoid async in sort
 	const rowsWithValues = await Promise.all(rows.map(async (row) => {
 		sourceSlot.set(row);
@@ -249,7 +246,7 @@ async function sortRows(
 	rowsWithValues.sort((a, b) => {
 		// Compare each ORDER BY expression in sequence
 		for (let i = 0; i < orderBy.length; i++) {
-			const comparator = orderByComparators[i];
+			const comparator = preResolvedComparators[i];
 			const valueA = a.values[i] as SqlValue;
 			const valueB = b.values[i] as SqlValue;
 

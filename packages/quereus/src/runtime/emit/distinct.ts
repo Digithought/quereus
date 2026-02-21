@@ -14,7 +14,7 @@ export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruct
 
 	// Pre-resolve collation-based row comparator (safe for mixed-type rows)
 	const attributes = plan.getAttributes();
-	const typedRowComparator = createCollationRowComparator(
+	const collationRowComparator = createCollationRowComparator(
 		attributes.map(attr => attr.type.collationName ? resolveCollation(attr.type.collationName) : BINARY_COLLATION)
 	);
 
@@ -22,7 +22,7 @@ export function emitDistinct(plan: DistinctNode, ctx: EmissionContext): Instruct
 		// Create BTree to efficiently track distinct rows using pre-resolved typed comparator
 		const distinctTree = new BTree<Row, Row>(
 			(row: Row) => row,
-			typedRowComparator
+			collationRowComparator
 		);
 
 		const outputSlot = createRowSlot(rctx, outputRowDescriptor);

@@ -12,7 +12,7 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
 
   // Pre-resolve collation-based row comparator (safe for mixed-type rows in set operations)
   const attributes = plan.getAttributes();
-  const typedRowComparator = createCollationRowComparator(
+  const collationRowComparator = createCollationRowComparator(
     attributes.map(attr => attr.type.collationName ? resolveCollation(attr.type.collationName) : BINARY_COLLATION)
   );
 
@@ -41,7 +41,7 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
     // Use BTree for proper SQL value comparison instead of JSON.stringify
     const distinctTree = new BTree<Row, Row>(
       (row: Row) => row,
-      typedRowComparator
+      collationRowComparator
     );
 
     for await (const row of leftRows) {
@@ -66,7 +66,7 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
     // Use BTree for proper SQL value comparison
     const leftTree = new BTree<Row, Row>(
       (row: Row) => row,
-      typedRowComparator
+      collationRowComparator
     );
 
     // Build left set
@@ -78,7 +78,7 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
     // Check right rows against left set
     const yielded = new BTree<Row, Row>(
       (row: Row) => row,
-      typedRowComparator
+      collationRowComparator
     );
 
     for await (const row of rightRows) {
@@ -100,7 +100,7 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
     // Use BTree for proper SQL value comparison
     const rightTree = new BTree<Row, Row>(
       (row: Row) => row,
-      typedRowComparator
+      collationRowComparator
     );
     const leftRowsArray: Row[] = [];
 

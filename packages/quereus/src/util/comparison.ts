@@ -8,7 +8,6 @@ import { QuereusError } from '../common/errors.js';
 const log = createLogger('util:comparison');
 const warnLog = log.extend('warn');
 
-// Re-export CollationFunction for backward compatibility
 export type { CollationFunction };
 
 // Map to store registered collations

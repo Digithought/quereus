@@ -202,11 +202,11 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			});
 
 			// For DISTINCT aggregates, track unique values using BTree with pre-resolved typed comparators
-			const distinctTrees: BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>[] = aggregateDistinctFlags.map((isDistinct, i) =>
+			const distinctTrees: (BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]> | null)[] = aggregateDistinctFlags.map((isDistinct, i) =>
 				isDistinct ? new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>(
 					(val: SqlValue | SqlValue[]) => val,
 					distinctComparators[i]
-				) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, distinctComparators[i])
+				) : null
 			);
 
 			// Track the last source row for representative row in combined descriptor
@@ -249,7 +249,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						// Handle DISTINCT logic using BTree for proper SQL value comparison
 						if (isDistinct) {
 							const distinctValue = argValues.length === 1 ? argValues[0] : argValues;
-							const existingPath = distinctTrees[i].insert(distinctValue);
+							const existingPath = distinctTrees[i]!.insert(distinctValue);
 							if (!existingPath.on) {
 								// Value already exists, skip this occurrence
 								continue;
@@ -311,7 +311,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			let currentGroupValues: SqlValue[] = [];
 			let currentSourceRow: Row | null = null; // Track the current group's representative row
 			let currentAccumulators: AggValue[] = [];
-			let currentDistinctTrees: BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>[] = [];
+			let currentDistinctTrees: (BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]> | null)[] = [];
 			let cleanupPreviousGroupContext: (() => void) | null = null;
 
 			// Process all rows
@@ -441,7 +441,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							isDistinct ? new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>(
 								(val: SqlValue | SqlValue[]) => val,
 								distinctComparators[i]
-							) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, distinctComparators[i])
+							) : null
 						);
 						// Set representative row for the new group (which is the current row)
 						currentSourceRow = row;
@@ -466,7 +466,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							isDistinct ? new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>(
 								(val: SqlValue | SqlValue[]) => val,
 								distinctComparators[i]
-							) : new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>((val: SqlValue | SqlValue[]) => val, distinctComparators[i])
+							) : null
 						);
 						// Set representative row for the first group
 						currentSourceRow = row;
@@ -485,7 +485,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 						// Handle DISTINCT logic using BTree for proper SQL value comparison
 						if (isDistinct) {
 							const distinctValue = argValues.length === 1 ? argValues[0] : argValues;
-							const existingPath = currentDistinctTrees[i].insert(distinctValue);
+							const existingPath = currentDistinctTrees[i]!.insert(distinctValue);
 							if (!existingPath.on) {
 								// Value already exists, skip this occurrence
 								continue;

@@ -1130,35 +1130,36 @@ seen.add(key);
 - `1` and `"1"` have different JSON representations but may be equal in SQL
 - Doesn't respect collation rules
 
-**Correct**:
+**Correct** — pre-resolve comparators at emit time to avoid runtime overhead:
 ```typescript
 import { BTree } from 'inheritree';
+import { createCollationRowComparator, resolveCollation, BINARY_COLLATION } from '../util/comparison.js';
 
-const distinctTree = new BTree<SqlValue, SqlValue>(
-  (val: SqlValue) => val,
-  (a: SqlValue, b: SqlValue) => compareSqlValues(a, b)
+// At emit time: pre-resolve collation-based row comparator
+const collationRowComparator = createCollationRowComparator(
+  attributes.map(attr => attr.type.collationName ? resolveCollation(attr.type.collationName) : BINARY_COLLATION)
 );
 
-// Check for duplicates:
-const existingPath = distinctTree.insert(value);
+// At runtime: use pre-resolved comparator in BTree
+const distinctTree = new BTree<Row, Row>(
+  (row: Row) => row,
+  collationRowComparator
+);
+
+const existingPath = distinctTree.insert(row);
 if (!existingPath.on) {
   continue; // Skip duplicate
 }
 ```
 
-### Multi-Value 
-
-For aggregates with multiple arguments:
+For typed contexts (where runtime types are guaranteed, e.g. GROUP BY keys):
 ```typescript
-function compareDistinctValues(a: SqlValue | SqlValue[], b: SqlValue | SqlValue[]): number {
-  if (Array.isArray(a) && Array.isArray(b)) {
-    return compareGroupKeys(a, b); // Element-wise comparison
-  }
-  if (!Array.isArray(a) && !Array.isArray(b)) {
-    return compareSqlValues(a, b);
-  }
-  return Array.isArray(a) ? 1 : -1; // Mixed types
-}
+import { createTypedComparator, resolveCollation } from '../util/comparison.js';
+
+// At emit time: pre-resolve typed comparator from expression type
+const exprType = expr.getType();
+const collationFunc = exprType.collationName ? resolveCollation(exprType.collationName) : undefined;
+const comparator = createTypedComparator(exprType.logicalType, collationFunc);
 ```
 
 ## Debugging and Common Pitfalls
