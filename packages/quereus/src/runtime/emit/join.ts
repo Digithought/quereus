@@ -38,6 +38,7 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 	// NOTE: rightSource must be re-startable (optimizer facilitates through cache node)
 	async function* run(rctx: RuntimeContext, leftSource: AsyncIterable<Row>, rightCallback: (ctx: RuntimeContext) => AsyncIterable<Row>, conditionCallback?: (ctx: RuntimeContext) => OutputValue): AsyncIterable<Row> {
 		const joinType = plan.joinType;
+		const isSemiOrAnti = joinType === 'semi' || joinType === 'anti';
 
 		log('Starting %s join between %d left attrs and %d right attrs',
 			joinType.toUpperCase(), leftAttributes.length, rightAttributes.length);
@@ -83,13 +84,23 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 
 					if (conditionMet) {
 						leftMatched = true;
+						if (isSemiOrAnti) {
+							// Semi: emit left row on first match and stop scanning right side
+							// Anti: just record the match, don't emit yet
+							break;
+						}
 						yield [...leftRow, ...rightRow] as Row;
 					}
 				}
 
-				// Handle outer join semantics - null padding for unmatched left rows
-				if (!leftMatched && joinType === 'left') {
-					// Create null-padded row for left outer join
+				if (isSemiOrAnti) {
+					// Semi: emit left row only if matched
+					// Anti: emit left row only if NOT matched
+					if ((joinType === 'semi' && leftMatched) || (joinType === 'anti' && !leftMatched)) {
+						yield leftRow;
+					}
+				} else if (!leftMatched && joinType === 'left') {
+					// Handle outer join semantics - null padding for unmatched left rows
 					const nullPadding = new Array(rightAttributes.length).fill(null) as Row;
 					// Update the right slot so downstream resolveAttribute sees
 					// nulls instead of stale data from a previous inner iteration.

@@ -30,6 +30,7 @@ import { ruleJoinPhysicalSelection } from './rules/join/rule-join-physical-selec
 import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
 import { ruleInSubqueryCache } from './rules/cache/rule-in-subquery-cache.js';
+import { ruleSubqueryDecorrelation } from './rules/subquery/rule-subquery-decorrelation.js';
 // Phase 3 rules
 import { validatePhysicalTree } from './validation/plan-validator.js';
 import { Database } from '../core/database.js';
@@ -122,6 +123,16 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: rulePredicatePushdown,
 			priority: 20
+		});
+
+		// Subquery decorrelation: transform correlated EXISTS/IN into semi/anti joins
+		// Runs after predicate pushdown (priority 25 > 20) so inner predicates are already pushed
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'subquery-decorrelation',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleSubqueryDecorrelation,
+			priority: 25
 		});
 
 		// Physical pass rules (bottom-up) - for logical to physical transformations

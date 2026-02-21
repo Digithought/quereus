@@ -107,6 +107,7 @@ export function emitBloomJoin(plan: BloomJoinNode, ctx: EmissionContext): Instru
 		log('Build phase complete: %d buckets, right side materialized', hashMap.size);
 
 		// === Probe phase: stream left side, probe hash map ===
+		const isSemiOrAnti = plan.joinType === 'semi' || plan.joinType === 'anti';
 		const leftSlot = createRowSlot(rctx, leftRowDescriptor);
 		const rightSlot = createRowSlot(rctx, rightRowDescriptor);
 
@@ -130,13 +131,22 @@ export function emitBloomJoin(plan: BloomJoinNode, ctx: EmissionContext): Instru
 							}
 
 							matched = true;
+							if (isSemiOrAnti) {
+								// Semi: first match is enough; Anti: record match and stop
+								break;
+							}
 							yield [...leftRow, ...rightRow] as Row;
 						}
 					}
 				}
 
-				// LEFT JOIN: emit null-padded row for unmatched probe rows
-				if (!matched && plan.joinType === 'left') {
+				if (isSemiOrAnti) {
+					// Semi: emit left row on match; Anti: emit left row on no match
+					if ((plan.joinType === 'semi' && matched) || (plan.joinType === 'anti' && !matched)) {
+						yield leftRow;
+					}
+				} else if (!matched && plan.joinType === 'left') {
+					// LEFT JOIN: emit null-padded row for unmatched probe rows
 					const nullPadding = new Array(rightColCount).fill(null) as Row;
 					rightSlot.set(nullPadding);
 					yield [...leftRow, ...nullPadding] as Row;

@@ -13,7 +13,7 @@ import { combineJoinKeys } from '../util/key-utils.js';
 import { BinaryOpNode } from './scalar.js';
 import { ColumnReferenceNode } from './reference.js';
 
-export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross';
+export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross' | 'semi' | 'anti';
 
 /**
  * Represents a logical JOIN operation between two relations.
@@ -108,7 +108,12 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 		const rightKeyCovered = coversLogicalKey('right') || coversPhysicalKey('right');
 
 		let uniqueKeys: number[][] | undefined = undefined;
-		if (this.joinType === 'inner' || this.joinType === 'cross') {
+		let estimatedRows: number | undefined = undefined;
+
+		if (this.joinType === 'semi' || this.joinType === 'anti') {
+			// Semi/anti joins preserve left-side unique keys unchanged
+			uniqueKeys = leftPhys.uniqueKeys;
+		} else if (this.joinType === 'inner' || this.joinType === 'cross') {
 			const leftKeys = (leftPhys.uniqueKeys || []);
 			const rightKeys = (rightPhys.uniqueKeys || []).map(k => k.map(i => i + leftType.columns.length));
 			const preserved: number[][] = [];
@@ -117,7 +122,6 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 			if (preserved.length > 0) uniqueKeys = preserved;
 		}
 
-		let estimatedRows: number | undefined = undefined;
 		const lRows = this.left.estimatedRows;
 		const rRows = this.right.estimatedRows;
 		if (this.joinType === 'inner') {
@@ -133,6 +137,12 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 
 	private buildAttributes(): Attribute[] {
 		const leftAttrs = this.left.getAttributes();
+
+		// Semi/anti joins produce only left-side attributes
+		if (this.joinType === 'semi' || this.joinType === 'anti') {
+			return leftAttrs.slice() as Attribute[];
+		}
+
 		const rightAttrs = this.right.getAttributes();
 
 		// For JOINs, concatenate left and right attributes
@@ -168,6 +178,19 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 
 	getType(): RelationType {
 		const leftType = this.left.getType();
+
+		// Semi/anti joins produce only left-side columns and preserve left keys
+		if (this.joinType === 'semi' || this.joinType === 'anti') {
+			return {
+				typeClass: 'relation',
+				columns: leftType.columns,
+				isSet: leftType.isSet,
+				isReadOnly: leftType.isReadOnly,
+				keys: leftType.keys,
+				rowConstraints: leftType.rowConstraints
+			};
+		}
+
 		const rightType = this.right.getType();
 
 		// Combine column types from both sides
@@ -278,6 +301,12 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 			case 'full':
 				// Full outer joins can have at most left + right rows
 				return leftRows + rightRows;
+			case 'semi':
+				// Semi joins produce at most left rows (assume 50% match)
+				return Math.max(1, Math.floor(leftRows * 0.5));
+			case 'anti':
+				// Anti joins produce at most left rows (assume 50% don't match)
+				return Math.max(1, Math.floor(leftRows * 0.5));
 			default:
 				return leftRows * rightRows * 0.1;
 		}

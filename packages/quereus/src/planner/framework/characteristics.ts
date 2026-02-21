@@ -187,7 +187,7 @@ export interface ProjectionCapable extends RelationalPlanNode {
  * Interface for join operations
  */
 export interface JoinCapable extends RelationalPlanNode {
-	getJoinType(): 'inner' | 'left' | 'right' | 'full' | 'cross';
+	getJoinType(): 'inner' | 'left' | 'right' | 'full' | 'cross' | 'semi' | 'anti';
 	getJoinCondition(): ScalarPlanNode | undefined;
 	getLeftSource(): RelationalPlanNode;
 	getRightSource(): RelationalPlanNode;

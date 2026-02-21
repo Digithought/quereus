@@ -89,8 +89,8 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 
 	const joinType = node.joinType;
 
-	// Only support INNER and LEFT for now (matching current nested-loop scope)
-	if (joinType !== 'inner' && joinType !== 'left') return null;
+	// Support INNER, LEFT, SEMI, and ANTI joins
+	if (joinType !== 'inner' && joinType !== 'left' && joinType !== 'semi' && joinType !== 'anti') return null;
 
 	// Build attribute ID sets for left and right
 	const leftAttrs = node.left.getAttributes();
@@ -146,6 +146,8 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 	let buildSource = node.right;
 	let equiPairs = extracted.equiPairs;
 
+	// For INNER join, swap sides if left is smaller (becomes build side).
+	// For LEFT/SEMI/ANTI, left must remain probe to preserve semantics.
 	if (joinType === 'inner' && leftRows < rightRows) {
 		// Swap: left becomes build, right becomes probe
 		probeSource = node.right;

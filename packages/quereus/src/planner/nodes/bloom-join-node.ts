@@ -58,8 +58,14 @@ export class BloomJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			return this.preserveAttributeIds.slice() as Attribute[];
 		}
 
-		// Fallback: combine left + right attributes (should rarely happen)
 		const leftAttrs = this.left.getAttributes();
+
+		// Semi/anti joins produce only left-side attributes
+		if (this.joinType === 'semi' || this.joinType === 'anti') {
+			return leftAttrs.slice() as Attribute[];
+		}
+
+		// Fallback: combine left + right attributes (should rarely happen)
 		const rightAttrs = this.right.getAttributes();
 		const attributes: Attribute[] = [];
 
@@ -81,6 +87,19 @@ export class BloomJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 
 	getType(): RelationType {
 		const leftType = this.left.getType();
+
+		// Semi/anti joins produce only left-side columns
+		if (this.joinType === 'semi' || this.joinType === 'anti') {
+			return {
+				typeClass: 'relation',
+				columns: leftType.columns,
+				isSet: leftType.isSet,
+				isReadOnly: leftType.isReadOnly,
+				keys: leftType.keys,
+				rowConstraints: leftType.rowConstraints
+			};
+		}
+
 		const rightType = this.right.getType();
 
 		const combinedColumns = [
@@ -110,6 +129,11 @@ export class BloomJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const leftPhys = childrenPhysical[0];
 		const rightPhys = childrenPhysical[1];
+
+		// Semi/anti joins preserve left-side unique keys
+		if (this.joinType === 'semi' || this.joinType === 'anti') {
+			return { uniqueKeys: leftPhys.uniqueKeys };
+		}
 
 		// Hash join does not preserve ordering
 		// Unique keys: if equi-pairs cover a unique key on one side,
@@ -148,6 +172,9 @@ export class BloomJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 				return Math.max(1, leftRows * rightRows * 0.1);
 			case 'left':
 				return leftRows;
+			case 'semi':
+			case 'anti':
+				return Math.max(1, Math.floor(leftRows * 0.5));
 			default:
 				return leftRows * rightRows * 0.1;
 		}

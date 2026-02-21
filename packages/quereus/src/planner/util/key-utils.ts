@@ -31,7 +31,7 @@ export function projectKeys(sourceKeys: ReadonlyArray<ReadonlyArray<ColRef>>, pr
  * - For inner/cross joins: keys from left and right are preserved; right indices are shifted by left column count.
  * - For outer joins: return [] conservatively (null padding may break uniqueness).
  */
-export function combineJoinKeys(leftKeys: ReadonlyArray<ReadonlyArray<ColRef>>, rightKeys: ReadonlyArray<ReadonlyArray<ColRef>>, joinType: 'inner' | 'left' | 'right' | 'full' | 'cross', leftColumnCount: number): ColRef[][] {
+export function combineJoinKeys(leftKeys: ReadonlyArray<ReadonlyArray<ColRef>>, rightKeys: ReadonlyArray<ReadonlyArray<ColRef>>, joinType: string, leftColumnCount: number): ColRef[][] {
 	if (joinType !== 'inner' && joinType !== 'cross') return [];
 	const result: ColRef[][] = [];
 	for (const key of leftKeys) {
