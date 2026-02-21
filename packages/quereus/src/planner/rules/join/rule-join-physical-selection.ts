@@ -140,11 +140,13 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 
 	// Determine build and probe sides: build=smaller, probe=larger
 	// left=probe, right=build by convention; swap if needed
+	// For LEFT JOIN, the left side MUST remain the probe side to preserve
+	// null-padding semantics (all left rows must appear in output).
 	let probeSource = node.left;
 	let buildSource = node.right;
 	let equiPairs = extracted.equiPairs;
 
-	if (leftRows < rightRows) {
+	if (joinType === 'inner' && leftRows < rightRows) {
 		// Swap: left becomes build, right becomes probe
 		probeSource = node.right;
 		buildSource = node.left;

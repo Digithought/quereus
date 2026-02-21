@@ -589,7 +589,7 @@ The optimizer architecture is designed to support future enhancements:
 - Adaptive query optimization
 
 **Additional Physical Operators**
-- Bloom filter joins and merge joins
+- Merge joins (bloom/hash joins are implemented)
 - Parallel execution nodes
 - Specialized aggregation algorithms
 
@@ -691,7 +691,9 @@ For equi-joins (`left.col = right.col`), the optimizer compares hash join cost a
 - **Complexity**: O(n + m) vs O(n × m) for nested loop
 - **Supports**: INNER JOIN and LEFT JOIN with equi-predicates
 - **Null handling**: Null keys are never inserted into the hash map (SQL null != null semantics)
+- **Collation awareness**: Key serialization normalizes string values according to column collation (e.g., NOCASE → toLowerCase, RTRIM → trimEnd)
 - **Residual conditions**: Non-equi parts of the ON clause are evaluated as a residual filter after hash lookup
+- **Side selection**: For INNER JOINs, the smaller input is the build side; for LEFT JOINs, the left side is always the probe side to preserve null-padding semantics
 
 The selection rule (`ruleJoinPhysicalSelection`) extracts equi-join pairs from AND-of-equalities in the ON condition, compares `hashJoinCost(buildRows, probeRows)` vs `nestedLoopJoinCost(outerRows, innerRows)`, and creates a `BloomJoinNode` (PlanNodeType.HashJoin) when the hash join is cheaper.
 
