@@ -27,6 +27,12 @@ export function ruleMutatingSubqueryCache(node: PlanNode, _context: OptContext):
 		return null;
 	}
 
+	// Skip physical join nodes — they already materialize the build side,
+	// so caching is inherent and we must not replace them with logical JoinNodes.
+	if (!(node instanceof JoinNode)) {
+		return null;
+	}
+
 	log('Checking join operation for side effects on right side');
 
 	// Get join-specific characteristics

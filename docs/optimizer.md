@@ -668,10 +668,33 @@ class QuickPickOptimizer {
 
 ### Integration Points
 
-1. **Multi-pass optimizer framework**: QuickPick requires multiple optimization passes (one per tour)
-2. **Cost model enhancement**: Need efficient join cardinality estimation
-3. **Rule registration**: QuickPick will be a special "join enumeration" rule
-4. **Tuning parameters**: Expose `maxTours` and early-stop thresholds
+1. **Multi-pass optimizer framework**: QuickPick runs in the Physical pass (bottom-up)
+2. **Cost model enhancement**: Uses `estimatedCostFromNode.getTotalCost()` for join ordering decisions
+3. **Rule registration**: Registered as a Physical pass rule with priority 5
+4. **Tuning parameters**: Expose `maxTours` and early-stop thresholds via `tuning.quickpick`
+
+## Physical Join Algorithm Selection
+
+After join ordering (QuickPick), the optimizer selects a physical join algorithm for each join node. This runs in the PostOptimization pass (after QuickPick in the Physical pass) so the full logical join tree is visible to QuickPick before any physical conversion.
+
+### Bloom (Hash) Join
+
+For equi-joins (`left.col = right.col`), the optimizer compares hash join cost against nested-loop cost and selects the cheaper option:
+
+- **Build phase**: Materializes the smaller input into a `Map<string, Row[]>` keyed by serialized equi-join column values
+- **Probe phase**: Streams the larger input, probing the hash map for matches
+- **Complexity**: O(n + m) vs O(n × m) for nested loop
+- **Supports**: INNER JOIN and LEFT JOIN with equi-predicates
+- **Null handling**: Null keys are never inserted into the hash map (SQL null != null semantics)
+- **Residual conditions**: Non-equi parts of the ON clause are evaluated as a residual filter after hash lookup
+
+The selection rule (`ruleJoinPhysicalSelection`) extracts equi-join pairs from AND-of-equalities in the ON condition, compares `hashJoinCost(buildRows, probeRows)` vs `nestedLoopJoinCost(outerRows, innerRows)`, and creates a `BloomJoinNode` (PlanNodeType.HashJoin) when the hash join is cheaper.
+
+**Cost model** (from `src/planner/cost/index.ts`):
+- Hash join: `buildRows × 0.8 + probeRows × 0.4`
+- Nested loop: `outerRows × 1.0 + outerRows × innerRows × 0.1`
+
+For a 50×1000 self-join, hash join cost = 1000×0.8 + 50×0.4 = 820 vs nested loop = 50×1.0 + 50×1000×0.1 = 5050.
 
 ## Visited Tracking Architecture
 

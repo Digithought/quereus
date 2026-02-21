@@ -134,10 +134,9 @@ describe('Performance sentinels', function () {
 			expect(elapsed).to.be.below(200, `order by took ${elapsed.toFixed(1)} ms`);
 		});
 
-		it('self-join under 8 s (nested-loop baseline)', async () => {
-			// NOTE: this is slow due to nested-loop join — bloom join would bring
-			// this down to ~100 ms.  The generous threshold exists to catch
-			// catastrophic regressions; see tasks/plan/4-join-algorithms.md.
+		it('self-join under 500 ms (bloom/hash join)', async () => {
+			// Bloom join: build hash map on right side, probe with left.
+			// Typical: ~30-60 ms. Threshold generous for CI headroom.
 			const elapsed = await timeMs(async () => {
 				const rows = await collect(
 					db.eval(`
@@ -148,7 +147,7 @@ describe('Performance sentinels', function () {
 				);
 				expect(rows.length).to.be.greaterThan(0);
 			});
-			expect(elapsed).to.be.below(8000, `self-join took ${elapsed.toFixed(1)} ms`);
+			expect(elapsed).to.be.below(500, `self-join took ${elapsed.toFixed(1)} ms`);
 		});
 
 		it('correlated subquery under 500 ms', async () => {

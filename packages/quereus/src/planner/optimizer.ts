@@ -25,6 +25,7 @@ import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js'
 // Core optimization rules
 import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streaming.js';
 import { ruleQuickPickJoinEnumeration } from './rules/join/rule-quickpick-enumeration.js';
+import { ruleJoinPhysicalSelection } from './rules/join/rule-join-physical-selection.js';
 // Constraint rules removed - now handled in builders for correctness
 import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
@@ -149,6 +150,16 @@ export class Optimizer {
 		});
 
 		// Post-optimization pass rules (bottom-up) - for cleanup and caching
+		// Physical join selection runs here (after Physical pass) so QuickPick can
+		// see the full logical join tree before any physical conversion happens.
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'join-physical-selection',
+			nodeType: PlanNodeType.Join,
+			phase: 'impl',
+			fn: ruleJoinPhysicalSelection,
+			priority: 5
+		});
+
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
 			id: 'mutating-subquery-cache',
 			nodeType: PlanNodeType.Join,

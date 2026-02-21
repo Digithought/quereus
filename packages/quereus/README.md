@@ -297,7 +297,7 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 
 **Optimizer Status:**
 
-Quereus features a sophisticated rule-based query optimizer that transforms logical plans into efficient physical execution plans. The optimizer uses a single plan node hierarchy with logical-to-physical transformation, generic tree rewriting infrastructure, and comprehensive optimization rules including constant folding, intelligent caching, and streaming aggregation.
+Quereus features a sophisticated rule-based query optimizer that transforms logical plans into efficient physical execution plans. The optimizer uses a single plan node hierarchy with logical-to-physical transformation, generic tree rewriting infrastructure, and comprehensive optimization rules including constant folding, intelligent caching, streaming aggregation, and bloom (hash) join selection for equi-joins.
 
 See the [Optimizer Documentation](../../docs/optimizer.md) for architecture details and [Optimizer Conventions](../../docs/optimizer-conventions.md) for development guidelines.
 [TODO List](../../docs/todo.md) has remaining priorities.
