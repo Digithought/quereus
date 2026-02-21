@@ -17,15 +17,15 @@
  */
 
 import { createLogger } from '../../../common/logger.js';
-import { isRelationalNode, type PlanNode, type RelationalPlanNode } from '../../nodes/plan-node.js';
+import { isRelationalNode, type PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { RetrieveNode } from '../../nodes/retrieve-node.js';
 import { FilterNode } from '../../nodes/filter.js';
 import type { TableReferenceNode } from '../../nodes/reference.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
 import type { SupportAssessment } from '../../../vtab/module.js';
-import type { BestAccessPlanRequest, BestAccessPlanResult, PredicateConstraint } from '../../../vtab/best-access-plan.js';
-import { extractConstraints, createTableInfoFromNode, type TableInfo } from '../../analysis/constraint-extractor.js';
+import type { BestAccessPlanRequest, BestAccessPlanResult } from '../../../vtab/best-access-plan.js';
+import { extractConstraints, createTableInfoFromNode, type TableInfo, type PredicateConstraint } from '../../analysis/constraint-extractor.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { seqScanCost } from '../../cost/index.js';
 import { SortNode } from '../../nodes/sort.js';
@@ -244,6 +244,7 @@ function fallbackIndexSupports(
 
 	// Extract information based on node type
 	let residualPredicate: PlanNode | undefined;
+	let plannerConstraints: PredicateConstraint[] | undefined;
 
 	if (node instanceof FilterNode) {
 		// Extract constraints from filter predicate
@@ -256,9 +257,10 @@ function fallbackIndexSupports(
 			return undefined;
 		}
 
-		request.filters = extraction.allConstraints;
+		plannerConstraints = extraction.allConstraints;
+		request.filters = plannerConstraints;
 		residualPredicate = extraction.residualPredicate;
-		log('Extracted %d constraints from Filter', extraction.allConstraints.length);
+		log('Extracted %d constraints from Filter', plannerConstraints.length);
 
 	} else if (node.nodeType === PlanNodeType.Sort) {
 		// Extract ordering requirements from Sort node
@@ -326,23 +328,23 @@ function fallbackIndexSupports(
 	// Compute full residual: extraction residual + source expressions of unhandled constraints.
 	// The extractor marks constraints it can decompose (e.g., LIKE), but the module may not
 	// handle them.  Those unhandled constraints must be preserved as a residual filter.
-	if (node instanceof FilterNode && request.filters.length > 0) {
-		const unhandledExprs: PlanNode[] = [];
-		for (let i = 0; i < request.filters.length; i++) {
-			if (!accessPlan.handledFilters[i] && request.filters[i].sourceExpression) {
-				unhandledExprs.push(request.filters[i].sourceExpression);
+	if (plannerConstraints && plannerConstraints.length > 0) {
+		const unhandledExprs: ScalarPlanNode[] = [];
+		for (let i = 0; i < plannerConstraints.length; i++) {
+			if (!accessPlan.handledFilters[i] && plannerConstraints[i].sourceExpression) {
+				unhandledExprs.push(plannerConstraints[i].sourceExpression);
 			}
 		}
 		if (unhandledExprs.length > 0) {
-			const parts: PlanNode[] = residualPredicate ? [residualPredicate, ...unhandledExprs] : unhandledExprs;
+			const parts: ScalarPlanNode[] = residualPredicate ? [residualPredicate as ScalarPlanNode, ...unhandledExprs] : unhandledExprs;
 			if (parts.length === 1) {
 				residualPredicate = parts[0];
 			} else {
-				let acc = parts[0];
+				let acc: ScalarPlanNode = parts[0];
 				for (let i = 1; i < parts.length; i++) {
 					const right = parts[i];
-					const ast: AST.BinaryExpr = { type: 'binary', operator: 'AND', left: (acc as any).expression, right: (right as any).expression };
-					acc = new BinaryOpNode((acc as any).scope, ast, acc, right);
+					const ast: AST.BinaryExpr = { type: 'binary', operator: 'AND', left: acc.expression, right: right.expression };
+					acc = new BinaryOpNode(acc.scope, ast, acc, right);
 				}
 				residualPredicate = acc;
 			}
@@ -355,7 +357,7 @@ function fallbackIndexSupports(
 		kind: 'index-style',
 		accessPlan,
 		residualPredicate,
-		originalConstraints: [...request.filters] // Copy to satisfy mutable type
+		originalConstraints: plannerConstraints ? [...plannerConstraints] : []
 	};
 
 	return {

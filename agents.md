@@ -1,4 +1,4 @@
-## General Conventions
+## General
 
 - Use lowercase SQL reserved words for readability (e.g., `select * from Table`)
 - Don't use inline `import()` unless dynamically loading
