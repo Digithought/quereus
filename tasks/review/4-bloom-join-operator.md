@@ -30,6 +30,7 @@ Implemented a bloom (hash) join operator that replaces nested-loop joins for equ
 - Performance sentinel: self-join of 50×1000 rows dropped from ~3500-4200ms to ~41ms (~90x improvement)
 - All existing join correctness tests pass unchanged
 - QuickPick join enumeration test passes (physical selection runs in PostOptimization, after QuickPick in Physical pass)
+- Make sure we have no issues with custom collations - if so, could pull from binary stuff we implemented in the stores?
 
 ### Key Design Decisions
 

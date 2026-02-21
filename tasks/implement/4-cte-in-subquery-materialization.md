@@ -1,6 +1,6 @@
 ---
 description: Materialize IN-subquery results to eliminate per-row re-execution in filter predicates
-dependencies: Instruction emission system, BTree (inheritree), physical characteristics framework
+dependencies: CacheNode infrastructure (planner/nodes/cache-node.ts, runtime/cache/shared-cache.ts), characteristics framework
 ---
 
 ## Problem
@@ -35,74 +35,58 @@ The `ancestor_walk` base case filter `E.id IN (SELECT id FROM entity_tree)` caus
 5. `emitIn` (`runtime/emit/subquery.ts:75`) uses `emitPlanNode(plan.source, ctx)` as a regular param — so the CTE source is a fresh `AsyncIterable` on every call
 6. The streaming `runSubqueryStreaming` iterates through the full CTE result for each evaluation
 
-## Solution: Emit-time set materialization for uncorrelated IN subqueries
+## Solution: Planner-level CacheNode wrapping for uncorrelated IN subqueries
 
-In `emitIn` (subquery path), add **closure-level caching**: materialize the subquery result into a `BTree` on the first evaluation and reuse it for all subsequent evaluations.
+Instead of adding emit-time caching inside `emitIn`, inject a `CacheNode` around the IN-subquery's source during planning. This reuses the existing `CacheNode` + `shared-cache` infrastructure — the source is materialized into `Row[]` on first iteration and replayed from cache on subsequent passes.
+
+### Approach
+
+A new optimizer rule (or extension to `rule-cte-optimization`) inspects `InNode` instances whose `source` is:
+- Uncorrelated (no outer attribute references)
+- Deterministic / functional (`PlanNodeCharacteristics.isFunctional`)
+
+When both hold, wrap `InNode.source` in a `CacheNode`. The existing `emitIn` streaming path then naturally iterates the cached rows on every evaluation instead of re-executing the full subquery.
+
+### Interaction with subquery decorrelation
+
+This task and the decorrelation task (semi/anti joins) cleanly partition the problem space:
+- **This task:** Uncorrelated IN-subquery → `CacheNode` wrapping (source materializes once)
+- **Decorrelation:** Correlated EXISTS/IN → rewrite to semi/anti join (eliminates the subquery entirely)
+
+Correlated subqueries fail the uncorrelated gate and are left alone for the decorrelation rule.
 
 ### Key files
 
 | File | Role |
 |------|------|
-| `packages/quereus/src/runtime/emit/subquery.ts` | Primary change — `emitIn` subquery path |
-| `packages/quereus/src/planner/nodes/subquery.ts` | `InNode` — may need a `deterministic` flag |
-| `packages/quereus/src/planner/framework/characteristics.ts` | `PlanNodeCharacteristics.isDeterministic` |
-| `packages/quereus/test/logic/13.1-cte-multiple-recursive.sqllogic` | Existing correctness tests |
-
-### Implementation
-
-In `emitIn`, when handling `plan.source` (the IN-subquery variant):
-
-1. **Gate on determinism**: Check if `plan.source` is deterministic and read-only (`PlanNodeCharacteristics.isFunctional(plan.source)`). Uncorrelated subqueries over CTEs and base tables qualify.
-
-2. **Add closure-level BTree cache**: Create a `BTree<SqlValue, SqlValue>` in the emitter closure (not inside `run`). On first `run` invocation, populate the BTree from the subquery iterable and record whether NULLs were present. On subsequent invocations, skip the subquery iterable entirely and use BTree `find()`.
-
-3. **Preserve NULL semantics**: SQL `IN` with NULLs requires: if condition is NULL → NULL; if match found → TRUE; if any subquery value was NULL and no match → NULL; otherwise → FALSE. The BTree excludes NULL values; a separate `hasNull` flag handles the NULL case.
-
-Pseudocode for the new path:
-
-```typescript
-// Closure state — shared across all invocations of this instruction
-let cachedTree: BTree<SqlValue, SqlValue> | null = null;
-let cachedHasNull = false;
-
-async function runMaterialized(_rctx: RuntimeContext, input: AsyncIterable<Row>, condition: SqlValue): Promise<SqlValue> {
-    // Materialize on first call
-    if (!cachedTree) {
-        cachedTree = new BTree<SqlValue, SqlValue>(v => v, (a, b) => compareSqlValuesFast(a, b, collation));
-        for await (const row of input) {
-            if (row.length > 0) {
-                if (row[0] === null) { cachedHasNull = true; continue; }
-                cachedTree.insert(row[0]);
-            }
-        }
-    }
-    // Lookup (same NULL semantics as streaming path)
-    if (condition === null) return null;
-    if (cachedTree.find(condition).on) return true;
-    return cachedHasNull ? null : false;
-}
-```
-
-The existing streaming path (`runSubqueryStreaming`) remains as fallback for correlated/non-deterministic subqueries.
+| `src/planner/rules/cache/rule-cte-optimization.ts` | Extend or sibling rule — inject CacheNode on InNode.source |
+| `src/planner/nodes/cache-node.ts` | Existing CacheNode infrastructure |
+| `src/runtime/cache/shared-cache.ts` | Existing shared cache runtime |
+| `src/planner/nodes/subquery.ts` | `InNode` — source to be wrapped |
+| `src/planner/framework/characteristics.ts` | Determinism / functional checks |
+| `src/planner/cache/correlation-detector.ts` | Existing — verify uncorrelated |
+| `test/logic/13.1-cte-multiple-recursive.sqllogic` | Existing correctness tests |
 
 ### Performance impact
 
 | Scenario | Before | After |
 |----------|--------|-------|
-| 60 entities, tree depth 5 | O(60 * 60) = 3,600 CTE row evals | O(60) CTE row evals + O(60 * log 60) lookups |
-| N entities, K tree size | O(N * K) | O(K + N * log K) |
+| 60 entities, tree depth 5 | O(60 * 60) = 3,600 CTE row evals | O(60) CTE row evals + O(60) cached replays |
+| N entities, K tree size | O(N * K) | O(K + N * K_cached) where K_cached is a memory scan |
+
+Note: `CacheNode` materializes into `Row[]` (linear scan per IN evaluation), not a BTree. For large subquery results this is O(K) per outer row instead of O(log K). This is acceptable — the dominant cost was re-executing the CTE, not the lookup. If profiling shows the linear scan matters, a future optimization can add a hash-set variant to `CacheNode`.
 
 ### Testing
 
 - Existing tests in `13.1-cte-multiple-recursive.sqllogic` cover correctness for the exact query pattern
-- Add performance-oriented test with larger dataset (100+ entities) to verify no regression
 - Add test for IN-subquery with NULLs in the subquery result set
-- Add test for correlated IN subquery (must NOT use caching) to verify fallback path
+- Add test for correlated IN subquery (must NOT get CacheNode) to verify gate
+- Verify existing `07.6-subqueries.sqllogic` tests still pass
 
 ## TODO
 
-- Add `isFunctional` (or equivalent) check to `InNode` source during planning, or check at emit time
-- Implement closure-level BTree caching in `emitIn` subquery path, gated on determinism
-- Keep streaming path as fallback for non-deterministic/correlated sources
+- Add optimizer rule to wrap uncorrelated, deterministic `InNode.source` in `CacheNode`
+- Gate on: uncorrelated (no outer refs) AND deterministic/functional
+- Keep streaming path unchanged — CacheNode is transparent to `emitIn`
 - Add sqllogic tests for NULL handling in IN-subquery with materialization
-- Verify existing `13.1-cte-multiple-recursive.sqllogic` tests still pass
+- Verify existing tests pass
