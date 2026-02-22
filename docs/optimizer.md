@@ -89,7 +89,7 @@ The optimizer executes transformations through a series of **optimization passes
 
 #### Pass 3: Post-Optimization (Bottom-up)
 - **Purpose**: Final cleanup, materialization decisions, and caching
-- **Key Rules**: `ruleMaterializationAdvisory`, `ruleCteOptimization`, `ruleMutatingSubqueryCache`
+- **Key Rules**: `ruleMaterializationAdvisory`, `ruleCteOptimization`, `ruleMutatingSubqueryCache`, `ruleInSubqueryCache`
 - **Traversal**: Bottom-up for global analysis and cache injection
 - **Result**: Optimized plan with caching and materialization points
 
@@ -378,6 +378,7 @@ Rules are organized by optimization family in `src/planner/rules/`:
 
 **Caching** (`cache/`)
 - `ruleCteOptimization`: Adds caching to frequently-accessed CTEs
+- `ruleInSubqueryCache`: Wraps uncorrelated, deterministic IN-subquery sources in CacheNode
 - `ruleMaterializationAdvisory`: Global analysis for cache injection
 - `ruleMutatingSubqueryCache`: Ensures mutating subqueries execute once
 
