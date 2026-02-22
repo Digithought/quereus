@@ -51,6 +51,7 @@ Complete implementation following Titan architecture principles:
 - **Proper expression evaluation** - Uses callbacks for all expressions
 - **Frame-aware execution** - Implements correct windowing semantics
 - **SQL-compliant sorting** - Uses `compareSqlValues` for proper NULL handling
+- **Collation-aware partitioning** - PARTITION BY and ranking keys use shared key serialization (`util/key-serializer.ts`) with per-column collation normalizers (e.g., NOCASE → case-insensitive grouping)
 
 **Execution Model:**
 1. **Materialization**: Collects all input rows (required for window functions)
@@ -141,6 +142,9 @@ Window functions are comprehensively tested through SQL Logic Tests (`test/logic
 - Aggregate functions with window frames
 - NULL handling and edge cases
 - Multiple window functions in single query
+- Collation-aware PARTITION BY (NOCASE grouping)
+- Collation-aware ranking (DENSE_RANK / RANK with NOCASE ORDER BY)
+- NULL PARTITION BY grouping (SQL standard: NULLs group together)
 
 ## Extensibility
 
