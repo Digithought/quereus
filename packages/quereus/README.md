@@ -285,7 +285,7 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 
 **Current capabilities include:**
 *   **Modern Type System** - Temporal types (DATE, TIME, DATETIME), JSON with deep equality, plugin-extensible custom types
-*   **Complete JOIN support** - INNER, LEFT, RIGHT, CROSS joins with proper NULL padding
+*   **Complete JOIN support** - INNER, LEFT, RIGHT, CROSS, SEMI, and ANTI joins with proper NULL padding
 *   **Advanced window functions** - Ranking, aggregates, and frame specifications
 *   **Full constraint system** - NOT NULL, CHECK constraints with operation-specific triggers
 *   **Comprehensive subqueries** - Scalar, correlated, EXISTS, and IN subqueries
@@ -297,7 +297,7 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 
 **Optimizer Status:**
 
-Quereus features a sophisticated rule-based query optimizer that transforms logical plans into efficient physical execution plans. The optimizer uses a single plan node hierarchy with logical-to-physical transformation, generic tree rewriting infrastructure, and comprehensive optimization rules including constant folding, intelligent caching, streaming aggregation, and bloom (hash) join selection for equi-joins.
+Quereus features a sophisticated rule-based query optimizer that transforms logical plans into efficient physical execution plans. The optimizer uses a single plan node hierarchy with logical-to-physical transformation, generic tree rewriting infrastructure, and comprehensive optimization rules including constant folding, intelligent caching, streaming aggregation, bloom (hash) join selection for equi-joins, and correlated subquery decorrelation (EXISTS/IN → semi/anti joins).
 
 See the [Optimizer Documentation](../../docs/optimizer.md) for architecture details and [Optimizer Conventions](../../docs/optimizer-conventions.md) for development guidelines.
 [TODO List](../../docs/todo.md) has remaining priorities.

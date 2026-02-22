@@ -382,6 +382,12 @@ Rules are organized by optimization family in `src/planner/rules/`:
 - `ruleMaterializationAdvisory`: Global analysis for cache injection
 - `ruleMutatingSubqueryCache`: Ensures mutating subqueries execute once
 
+**Join** (`join/`)
+- `ruleJoinPhysicalSelection`: Selects hash join over nested loop for equi-joins when cheaper. Supports INNER, LEFT, SEMI, and ANTI join types.
+
+**Subquery** (`subquery/`)
+- `ruleSubqueryDecorrelation`: Transforms correlated EXISTS/IN subqueries in WHERE-clause filters into semi/anti joins, enabling hash join selection and eliminating per-row re-execution. Handles: correlated EXISTS → semi join, NOT EXISTS → anti join, correlated IN → semi join. NOT IN is deferred (NULL semantics complexity). Runs in the Structural pass at priority 25 (after predicate pushdown).
+
 **Constant Folding** (pass)
 - Constant folding pass: Evaluates constant expressions at plan time
 
@@ -595,7 +601,6 @@ The optimizer architecture is designed to support future enhancements:
 - Specialized aggregation algorithms
 
 **Query Rewriting**
-- Subquery decorrelation
 - View expansion optimizations
 - Common subexpression elimination
 - Key driven row-count reduction
@@ -690,11 +695,14 @@ For equi-joins (`left.col = right.col`), the optimizer compares hash join cost a
 - **Build phase**: Materializes the smaller input into a `Map<string, Row[]>` keyed by serialized equi-join column values
 - **Probe phase**: Streams the larger input, probing the hash map for matches
 - **Complexity**: O(n + m) vs O(n × m) for nested loop
-- **Supports**: INNER JOIN and LEFT JOIN with equi-predicates
+- **Supports**: INNER, LEFT, SEMI, and ANTI joins with equi-predicates
 - **Null handling**: Null keys are never inserted into the hash map (SQL null != null semantics)
 - **Collation awareness**: Key serialization normalizes string values according to column collation (e.g., NOCASE → toLowerCase, RTRIM → trimEnd)
 - **Residual conditions**: Non-equi parts of the ON clause are evaluated as a residual filter after hash lookup
-- **Side selection**: For INNER JOINs, the smaller input is the build side; for LEFT JOINs, the left side is always the probe side to preserve null-padding semantics
+- **Side selection**: For INNER JOINs, the smaller input is the build side; for LEFT/SEMI/ANTI JOINs, the left side is always the probe side to preserve semantics
+
+- **Semi join**: Emits left row on first match, producing at most one output per left row (used for EXISTS decorrelation)
+- **Anti join**: Emits left row only when no match is found (used for NOT EXISTS decorrelation)
 
 The selection rule (`ruleJoinPhysicalSelection`) extracts equi-join pairs from AND-of-equalities in the ON condition, compares `hashJoinCost(buildRows, probeRows)` vs `nestedLoopJoinCost(outerRows, innerRows)`, and creates a `BloomJoinNode` (PlanNodeType.HashJoin) when the hash join is cheaper.
 
