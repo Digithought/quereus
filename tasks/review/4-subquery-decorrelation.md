@@ -65,3 +65,6 @@ Implemented transformation of correlated EXISTS and IN subqueries in WHERE claus
 
 - `query_plan()` confirms decorrelated queries produce `HashJoin` nodes with `joinType: "semi"` or `"anti"`
 - Correctness verified against original correlated execution results
+
+
+Update optimizer and any other relevant docs.

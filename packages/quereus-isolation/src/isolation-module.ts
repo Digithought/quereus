@@ -250,6 +250,10 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 	 *
 	 * Note: Indexes on per-connection overlays are created lazily when the
 	 * overlay is created, by copying from the underlying table's schema.
+	 *
+	 * We use the stored table instance's createIndex() rather than the module-level
+	 * method so that the MemoryTable's local tableSchema property stays in sync.
+	 * That property is what ensureOverlay() reads when building the overlay schema.
 	 */
 	async createIndex(
 		db: Database,
@@ -257,8 +261,11 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 		tableName: string,
 		indexSchema: IndexSchema
 	): Promise<void> {
-		// Create on underlying only - overlays copy indexes when created lazily
-		if (this.underlying.createIndex) {
+		const state = this.getUnderlyingState(schemaName, tableName);
+		if (state?.underlyingTable.createIndex) {
+			// Instance-level createIndex keeps MemoryTable.tableSchema fresh
+			await state.underlyingTable.createIndex(indexSchema);
+		} else if (this.underlying.createIndex) {
 			await this.underlying.createIndex(db, schemaName, tableName, indexSchema);
 		}
 	}

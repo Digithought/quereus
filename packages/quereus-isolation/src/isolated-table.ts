@@ -115,15 +115,12 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 		// Create overlay schema with tombstone column
 		const overlaySchema = this.isolationModule.createOverlaySchema(schema);
 
-		// Create the overlay table
+		// Create the overlay table.
+		// overlaySchema already contains indexes (copied from the base schema by
+		// createOverlaySchema), so the overlay's BaseLayer initialises all secondary
+		// indexes from the schema during construction.  No explicit createIndex loop
+		// is needed, and calling it would throw a "duplicate index" error.
 		const overlayTable = await this.isolationModule.overlayModule.create(this.db, overlaySchema);
-
-		// Create indexes on overlay to match underlying
-		if (schema.indexes) {
-			for (const index of schema.indexes) {
-				await overlayTable.createIndex?.(index);
-			}
-		}
 
 		// Store in connection-scoped storage
 		const state: ConnectionOverlayState = {
@@ -231,33 +228,105 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	/**
 	 * Performs merged query combining overlay and underlying data.
 	 *
-	 * Both overlay and underlying are queried with the same FilterInfo (for the overlay,
-	 * adjusted for its schema with tombstone column). Both streams return rows in the
-	 * same order (by PK for primary scans, by index key for secondary index scans).
+	 * For primary key scans: uses position-based merge since both streams share
+	 * the same sort order and overlay entries align with underlying rows by PK.
 	 *
-	 * The merge iterator combines them using the appropriate sort key comparator.
+	 * For secondary index scans: uses PK-exclusion approach because overlay entries
+	 * may have different index key values than the underlying rows they shadow
+	 * (tombstones have null non-PK columns; updates may change the indexed column).
 	 */
 	private async *mergedQuery(filterInfo: FilterInfo): AsyncGenerator<Row> {
 		const overlay = this.overlayTable;
 		if (!overlay) {
-			// No overlay - just yield from underlying
 			yield* this.underlyingTable.query!(filterInfo);
 			return;
 		}
 
-		// Determine which index is being used
 		const indexInfo = this.parseIndexFromFilterInfo(filterInfo);
 
-		// Query overlay with the same constraints (both streams in same order)
+		if (indexInfo.type === 'secondary') {
+			yield* this.mergedSecondaryIndexQuery(overlay, filterInfo, indexInfo);
+			return;
+		}
+
+		// Primary key scan - use standard sort-key merge
 		const overlayFilterInfo = this.adaptFilterInfoForOverlay(filterInfo);
 		const overlayStream = this.queryOverlayAsMergeEntries(overlay, overlayFilterInfo, indexInfo);
-
-		// Query underlying with original filterInfo
 		const underlyingStream = this.underlyingTable.query!(filterInfo);
-
-		// Build merge config with appropriate sort key functions
 		const mergeConfig = this.buildMergeConfig(indexInfo);
 		yield* mergeStreams(overlayStream, underlyingStream, mergeConfig);
+	}
+
+	/**
+	 * Merged query strategy for secondary index scans.
+	 *
+	 * Instead of position-based merging (which fails when overlay entries have
+	 * different index key values than the underlying rows they shadow), this:
+	 * 1. Collects all PKs modified in the overlay (full scan)
+	 * 2. Queries underlying via secondary index, excluding modified PKs
+	 * 3. Queries overlay via secondary index for non-tombstone data rows
+	 * 4. Merges the two disjoint, sorted streams by sort key
+	 */
+	private async *mergedSecondaryIndexQuery(
+		overlay: VirtualTable,
+		filterInfo: FilterInfo,
+		indexInfo: IndexScanInfo & { type: 'secondary' }
+	): AsyncGenerator<Row> {
+		if (!overlay.query) {
+			yield* this.underlyingTable.query!(filterInfo);
+			return;
+		}
+
+		const pkIndices = this.getPrimaryKeyIndices();
+		const tombstoneIndex = this.getTombstoneColumnIndex(overlay);
+
+		// Step 1: Collect all PKs modified in overlay (full scan)
+		const modifiedPKs = new Set<string>();
+		for await (const row of overlay.query(this.createFullScanFilterInfo())) {
+			const pk = pkIndices.map(i => row[i]);
+			modifiedPKs.add(JSON.stringify(pk));
+		}
+
+		// Step 2: Query overlay via secondary index for non-tombstone data rows
+		const overlayFilterInfo = this.adaptFilterInfoForOverlay(filterInfo);
+		const overlayRows: Row[] = [];
+		for await (const row of overlay.query(overlayFilterInfo)) {
+			if (row[tombstoneIndex] !== 1) {
+				overlayRows.push(row.slice(0, tombstoneIndex));
+			}
+		}
+
+		// Step 3: Query underlying via secondary index, filter out modified PKs
+		const mergeConfig = this.buildMergeConfig(indexInfo);
+		const compareSortKey = mergeConfig.compareSortKey ?? mergeConfig.comparePK;
+		const extractSortKey = mergeConfig.extractSortKey ?? mergeConfig.extractPK;
+
+		// Merge two sorted, disjoint streams
+		let oi = 0;
+		for await (const underlyingRow of this.underlyingTable.query!(filterInfo)) {
+			const pk = pkIndices.map(i => underlyingRow[i]);
+			if (modifiedPKs.has(JSON.stringify(pk))) {
+				continue; // Skip rows modified in overlay
+			}
+
+			// Yield any overlay rows that sort before this underlying row
+			while (oi < overlayRows.length) {
+				const oKey = extractSortKey(overlayRows[oi]);
+				const uKey = extractSortKey(underlyingRow);
+				if (compareSortKey(oKey, uKey) <= 0) {
+					yield overlayRows[oi++];
+				} else {
+					break;
+				}
+			}
+
+			yield underlyingRow;
+		}
+
+		// Yield remaining overlay rows
+		while (oi < overlayRows.length) {
+			yield overlayRows[oi++];
+		}
 	}
 
 	/**

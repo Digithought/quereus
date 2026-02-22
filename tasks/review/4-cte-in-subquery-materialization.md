@@ -39,3 +39,6 @@ Covers:
 - All 666 quereus package tests pass (including 55 sqllogic test files)
 - New test file covers NULL handling, correlated gate, and CTE-based patterns
 - Existing `07.6-subqueries.sqllogic` and `13.1-cte-multiple-recursive.sqllogic` continue to pass
+
+
+Update optimizer and any other relevant docs.
