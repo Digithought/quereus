@@ -520,6 +520,7 @@ describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 				let currentSql = '';
 				let expectedResultJson: string | null = null;
 				let expectedErrorSubstring: string | null = null;
+				let currentParams: any[] | null = null;
 				let lineNumber = 0;
 
 				/**
@@ -529,6 +530,7 @@ describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 					currentSql = '';
 					expectedResultJson = null;
 					expectedErrorSubstring = null;
+					currentParams = null;
 				};
 
 				/**
@@ -563,7 +565,7 @@ describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 				/**
 				 * Executes SQL expecting specific results
 				 */
-				const executeExpectingResults = async (sqlBlock: string, expectedJson: string, lineNum: number) => {
+				const executeExpectingResults = async (sqlBlock: string, expectedJson: string, lineNum: number, params?: any[] | null) => {
 					if (TEST_OPTIONS.verbose) {
 						console.log(`Executing block (expect results):\n${sqlBlock}`);
 					}
@@ -592,7 +594,7 @@ describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 
 					let executionResult: { results: Record<string, any>[], traceEvents: any[] };
 					if (lastStatement) {
-						executionResult = await executeWithTracing(db, lastStatement);
+						executionResult = await executeWithTracing(db, lastStatement, params ?? undefined);
 					} else {
 						executionResult = { results: [], traceEvents: [] };
 					}
@@ -676,6 +678,14 @@ describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 								await executeExpectingError(currentSql.trim(), expectedErrorSubstring, lineNumber);
 								resetState();
 							}
+						} else if (trimmedLine.toLowerCase().startsWith('-- params:')) {
+							// Set bind parameters for the next query
+							const paramsJson = trimmedLine.substring(10).trim();
+							try {
+								currentParams = JSON.parse(paramsJson);
+							} catch (jsonError: any) {
+								throw new Error(`[${file}:${lineNumber}] Invalid params JSON: ${jsonError.message} - JSON: ${paramsJson}`);
+							}
 						} else if (trimmedLine.toLowerCase() === '-- run') {
 							// Run accumulated SQL as setup immediately
 							if (currentSql.trim()) {
@@ -692,7 +702,7 @@ describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 
 						// Execute immediately with result expectation
 						if (currentSql.trim()) {
-							await executeExpectingResults(currentSql.trim(), expectedResultJson, lineNumber);
+							await executeExpectingResults(currentSql.trim(), expectedResultJson, lineNumber, currentParams);
 							resetState();
 						}
 						continue; // Don't add to SQL
