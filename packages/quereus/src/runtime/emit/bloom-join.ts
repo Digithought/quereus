@@ -6,48 +6,9 @@ import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { createRowSlot } from '../context-helpers.js';
+import { resolveKeyNormalizer, serializeRowKey } from '../../util/key-serializer.js';
 
 const log = createLogger('runtime:emit:bloom-join');
-
-/** Identity normalizer for BINARY collation (no-op). */
-const IDENTITY_NORMALIZER = (s: string) => s;
-
-/** Map collation names to string normalizers for key serialization. */
-function resolveKeyNormalizer(collationName: string | undefined): (s: string) => string {
-	if (!collationName || collationName === 'BINARY') return IDENTITY_NORMALIZER;
-	switch (collationName.toUpperCase()) {
-		case 'NOCASE': return (s: string) => s.toLowerCase();
-		case 'RTRIM':  return (s: string) => s.trimEnd();
-		default:       return IDENTITY_NORMALIZER;
-	}
-}
-
-/**
- * Serialize a composite key from a row for hash-map lookup.
- * Type-tagged to avoid collisions (e.g., '1' vs 1).
- * Null is handled distinctly — null != null in SQL, so null keys never match.
- * String values are normalized according to per-column collation.
- */
-function serializeKey(row: Row, indices: readonly number[], normalizers: readonly ((s: string) => string)[]): string | null {
-	let key = '';
-	for (let i = 0; i < indices.length; i++) {
-		const val = row[indices[i]];
-		if (val === null || val === undefined) return null; // null never matches
-		if (i > 0) key += '\0';
-		if (typeof val === 'string') {
-			key += 's:' + normalizers[i](val);
-		} else if (typeof val === 'number') {
-			key += 'n:' + val;
-		} else if (typeof val === 'bigint') {
-			key += 'b:' + val;
-		} else if (val instanceof Uint8Array) {
-			key += 'x:' + Array.from(val).join(',');
-		} else {
-			key += 'o:' + String(val);
-		}
-	}
-	return key;
-}
 
 /**
  * Emits a bloom (hash) join instruction.
@@ -94,7 +55,7 @@ export function emitBloomJoin(plan: BloomJoinNode, ctx: EmissionContext): Instru
 		// === Build phase: materialize right side into hash map ===
 		const hashMap = new Map<string, Row[]>();
 		for await (const rightRow of rightSource) {
-			const key = serializeKey(rightRow, rightIndices, keyNormalizers);
+			const key = serializeRowKey(rightRow, rightIndices, keyNormalizers);
 			if (key === null) continue; // null keys can't match
 			const bucket = hashMap.get(key);
 			if (bucket) {
@@ -115,7 +76,7 @@ export function emitBloomJoin(plan: BloomJoinNode, ctx: EmissionContext): Instru
 			for await (const leftRow of leftSource) {
 				leftSlot.set(leftRow);
 
-				const key = serializeKey(leftRow, leftIndices, keyNormalizers);
+				const key = serializeRowKey(leftRow, leftIndices, keyNormalizers);
 				let matched = false;
 
 				if (key !== null) {

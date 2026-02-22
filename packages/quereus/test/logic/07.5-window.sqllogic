@@ -139,3 +139,82 @@ FROM frame_test ORDER BY grp, value;
 → [{"value":10,"grp":1,"running_count":1},{"value":20,"grp":1,"running_count":2},{"value":30,"grp":1,"running_count":3},{"value":15,"grp":2,"running_count":1},{"value":25,"grp":2,"running_count":2},{"value":35,"grp":2,"running_count":3}]
 
 DROP TABLE frame_test;
+
+-- =============================================================================
+-- Window PARTITION BY with collation tests
+-- =============================================================================
+
+-- NOCASE collation: PARTITION BY should group case-insensitively
+CREATE TABLE win_nocase (
+    id INTEGER PRIMARY KEY,
+    category TEXT COLLATE NOCASE,
+    val INTEGER
+);
+
+INSERT INTO win_nocase VALUES
+    (1, 'Alpha', 10),
+    (2, 'ALPHA', 20),
+    (3, 'alpha', 30),
+    (4, 'Beta', 40),
+    (5, 'BETA', 50);
+
+-- All 'alpha' variants should be in the same partition (3 rows), 'beta' variants together (2 rows)
+SELECT id, category, val,
+       ROW_NUMBER() OVER (PARTITION BY category ORDER BY id) as rn,
+       COUNT(*) OVER (PARTITION BY category) as partition_size
+FROM win_nocase ORDER BY id;
+→ [{"id":1,"category":"Alpha","val":10,"rn":1,"partition_size":3},{"id":2,"category":"ALPHA","val":20,"rn":2,"partition_size":3},{"id":3,"category":"alpha","val":30,"rn":3,"partition_size":3},{"id":4,"category":"Beta","val":40,"rn":1,"partition_size":2},{"id":5,"category":"BETA","val":50,"rn":2,"partition_size":2}]
+
+-- SUM within NOCASE partition
+SELECT id, category, val,
+       SUM(val) OVER (PARTITION BY category) as partition_total
+FROM win_nocase ORDER BY id;
+→ [{"id":1,"category":"Alpha","val":10,"partition_total":60},{"id":2,"category":"ALPHA","val":20,"partition_total":60},{"id":3,"category":"alpha","val":30,"partition_total":60},{"id":4,"category":"Beta","val":40,"partition_total":90},{"id":5,"category":"BETA","val":50,"partition_total":90}]
+
+-- DENSE_RANK with NOCASE ORDER BY
+CREATE TABLE win_rank_nocase (
+    id INTEGER PRIMARY KEY,
+    name TEXT COLLATE NOCASE,
+    score INTEGER
+);
+
+INSERT INTO win_rank_nocase VALUES
+    (1, 'Alice', 100),
+    (2, 'ALICE', 100),
+    (3, 'Bob', 90),
+    (4, 'Charlie', 80);
+
+-- 'Alice' and 'ALICE' should be considered equal for ranking under NOCASE
+SELECT id, name, score,
+       DENSE_RANK() OVER (ORDER BY name) as drnk
+FROM win_rank_nocase ORDER BY id;
+→ [{"id":1,"name":"Alice","score":100,"drnk":1},{"id":2,"name":"ALICE","score":100,"drnk":1},{"id":3,"name":"Bob","score":90,"drnk":2},{"id":4,"name":"Charlie","score":80,"drnk":3}]
+
+-- RANK with NOCASE ORDER BY
+SELECT id, name, score,
+       RANK() OVER (ORDER BY name) as rnk
+FROM win_rank_nocase ORDER BY id;
+→ [{"id":1,"name":"Alice","score":100,"rnk":1},{"id":2,"name":"ALICE","score":100,"rnk":1},{"id":3,"name":"Bob","score":90,"rnk":3},{"id":4,"name":"Charlie","score":80,"rnk":4}]
+
+-- NULL in PARTITION BY: NULLs should group together
+CREATE TABLE win_null_part (
+    id INTEGER PRIMARY KEY,
+    grp TEXT NULL,
+    val INTEGER
+);
+
+INSERT INTO win_null_part VALUES
+    (1, NULL, 10),
+    (2, NULL, 20),
+    (3, 'A', 30),
+    (4, 'A', 40);
+
+SELECT id, grp, val,
+       COUNT(*) OVER (PARTITION BY grp) as partition_size,
+       SUM(val) OVER (PARTITION BY grp) as partition_total
+FROM win_null_part ORDER BY id;
+→ [{"id":1,"grp":null,"val":10,"partition_size":2,"partition_total":30},{"id":2,"grp":null,"val":20,"partition_size":2,"partition_total":30},{"id":3,"grp":"A","val":30,"partition_size":2,"partition_total":70},{"id":4,"grp":"A","val":40,"partition_size":2,"partition_total":70}]
+
+DROP TABLE win_nocase;
+DROP TABLE win_rank_nocase;
+DROP TABLE win_null_part;

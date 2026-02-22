@@ -8,6 +8,7 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { createTypedComparator, createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
 import type { LogicalType } from '../../types/logical-type.js';
+import { resolveKeyNormalizer, serializeKeyNullGrouping } from '../../util/key-serializer.js';
 import { createLogger } from '../../common/logger.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { RowDescriptor } from '../../planner/nodes/plan-node.js';
@@ -60,6 +61,16 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 		return createTypedComparator(exprType.logicalType as LogicalType, collationFunc);
 	});
 
+	// Pre-resolve collation normalizers for partition key serialization
+	const partitionKeyNormalizers = plan.partitionExpressions.map(exprPlan =>
+		resolveKeyNormalizer(exprPlan.getType().collationName)
+	);
+
+	// Pre-resolve collation normalizers for ORDER BY key serialization (dense_rank dedup)
+	const orderByKeyNormalizers = plan.orderByExpressions.map(exprPlan =>
+		resolveKeyNormalizer(exprPlan.getType().collationName)
+	);
+
 	async function* run(
 		rctx: RuntimeContext,
 		source: AsyncIterable<Row>,
@@ -92,12 +103,12 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 					allRows, plan, functionSchemas, rctx,
 					sourceRowDescriptor,
 					partitionCallbackList, orderByCallbackList, funcArgCallbackList,
-					sourceSlot, orderByComparators, orderByEqualityComparators
+					sourceSlot, orderByComparators, orderByEqualityComparators, orderByKeyNormalizers
 				);
 			} else {
 				// With partitioning - group by partition keys
 				const partitions = await groupByPartitions(
-					allRows, partitionCallbackList, rctx, sourceSlot
+					allRows, partitionCallbackList, rctx, sourceSlot, partitionKeyNormalizers
 				);
 
 				for (const partitionRows of partitions.values()) {
@@ -105,7 +116,7 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 						partitionRows, plan, functionSchemas, rctx,
 						sourceRowDescriptor,
 						partitionCallbackList, orderByCallbackList, funcArgCallbackList,
-						sourceSlot, orderByComparators, orderByEqualityComparators
+						sourceSlot, orderByComparators, orderByEqualityComparators, orderByKeyNormalizers
 					);
 				}
 			}
@@ -134,7 +145,8 @@ async function groupByPartitions(
 	rows: Row[],
 	partitionCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	rctx: RuntimeContext,
-	sourceSlot: RowSlot
+	sourceSlot: RowSlot,
+	keyNormalizers: readonly ((s: string) => string)[]
 ): Promise<Map<string, Row[]>> {
 	const partitions = new Map<string, Row[]>();
 
@@ -143,7 +155,7 @@ async function groupByPartitions(
 		const partitionValues = await Promise.all(partitionCallbacks.map(callback =>
 			callback(rctx)
 		));
-		const partitionKey = JSON.stringify(partitionValues);
+		const partitionKey = serializeKeyNullGrouping(partitionValues as SqlValue[], keyNormalizers);
 
 		if (!partitions.has(partitionKey)) {
 			partitions.set(partitionKey, []);
@@ -165,7 +177,8 @@ async function* processPartition(
 	funcArgCallbacks: Array<(ctx: RuntimeContext) => OutputValue | null>,
 	sourceSlot: RowSlot,
 	preResolvedOrderByComparators: Array<(a: SqlValue, b: SqlValue) => number>,
-	preResolvedEqualityComparators: Array<(a: SqlValue, b: SqlValue) => number>
+	preResolvedEqualityComparators: Array<(a: SqlValue, b: SqlValue) => number>,
+	orderByKeyNormalizers: readonly ((s: string) => string)[]
 ): AsyncIterable<Row> {
 	// Sort rows according to ORDER BY specification
 	const sortedRows = await sortRows(
@@ -193,7 +206,8 @@ async function* processPartition(
 			if (schema.kind === 'ranking') {
 				value = await computeRankingFunction(
 					func.functionName, sortedRows, currentIndex,
-					orderByCallbacks, rctx, sourceSlot, preResolvedEqualityComparators
+					orderByCallbacks, rctx, sourceSlot, preResolvedEqualityComparators,
+					orderByKeyNormalizers
 				);
 			} else if (schema.kind === 'aggregate') {
 				value = await computeAggregateFunction(
@@ -275,7 +289,8 @@ async function computeRankingFunction(
 	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
 	rctx: RuntimeContext,
 	sourceSlot: RowSlot,
-	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>,
+	orderByKeyNormalizers: readonly ((s: string) => string)[]
 ): Promise<number> {
 	switch (functionName.toLowerCase()) {
 		case 'row_number':
@@ -309,7 +324,7 @@ async function computeRankingFunction(
 					prevRow, currentRow, orderByCallbacks, rctx, sourceSlot, equalityComparators
 				))) {
 					// Create a key for this distinct set of ORDER BY values
-					const key = await getOrderByKey(prevRow, orderByCallbacks, rctx, sourceSlot);
+					const key = await getOrderByKey(prevRow, orderByCallbacks, rctx, sourceSlot, orderByKeyNormalizers);
 					if (!seenValues.has(key)) {
 						seenValues.add(key);
 						denseRank++;
@@ -494,11 +509,12 @@ async function getOrderByKey(
 	row: Row,
 	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
 	rctx: RuntimeContext,
-	sourceSlot: RowSlot
+	sourceSlot: RowSlot,
+	keyNormalizers: readonly ((s: string) => string)[]
 ): Promise<string> {
 	sourceSlot.set(row);
 	const values = await Promise.all(orderByCallbacks.map(callback =>
 		Promise.resolve(callback(rctx))
 	));
-	return values.map(val => val === null ? 'NULL' : String(val)).join('|');
+	return serializeKeyNullGrouping(values as SqlValue[], keyNormalizers);
 }
