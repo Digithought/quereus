@@ -8,6 +8,7 @@ import { quereusError } from '../../common/errors.js';
 import type { JoinCapable, PredicateSourceCapable } from '../framework/characteristics.js';
 import { hashJoinCost } from '../cost/index.js';
 import type { JoinType } from './join-node.js';
+import { analyzeJoinKeyCoverage } from '../util/key-utils.js';
 
 /**
  * An equi-join pair: left attribute = right attribute.
@@ -129,35 +130,26 @@ export class BloomJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const leftPhys = childrenPhysical[0];
 		const rightPhys = childrenPhysical[1];
+		const leftAttrs = this.left.getAttributes();
+		const rightAttrs = this.right.getAttributes();
 
-		// Semi/anti joins preserve left-side unique keys
-		if (this.joinType === 'semi' || this.joinType === 'anti') {
-			return { uniqueKeys: leftPhys.uniqueKeys };
-		}
+		// Map attribute-ID-based equi-pairs to column-index-based pairs
+		const indexPairs = this.equiPairs.map(p => ({
+			left: leftAttrs.findIndex(a => a.id === p.leftAttrId),
+			right: rightAttrs.findIndex(a => a.id === p.rightAttrId),
+		}));
 
-		// Hash join does not preserve ordering
-		// Unique keys: if equi-pairs cover a unique key on one side,
-		// the other side's keys are preserved (same logic as JoinNode)
-		let uniqueKeys: number[][] | undefined = undefined;
-		if (this.joinType === 'inner') {
-			const leftAttrs = this.left.getAttributes();
-			const rightAttrs = this.right.getAttributes();
+		const result = analyzeJoinKeyCoverage(
+			this.joinType, leftPhys, rightPhys,
+			this.left.getType(), this.right.getType(),
+			indexPairs, this.left.estimatedRows, this.right.estimatedRows,
+			leftAttrs.length,
+		);
 
-			const leftEqSet = new Set(this.equiPairs.map(p => leftAttrs.findIndex(a => a.id === p.leftAttrId)));
-			const rightEqSet = new Set(this.equiPairs.map(p => rightAttrs.findIndex(a => a.id === p.rightAttrId)));
-
-			const leftKeyCovered = leftPhys.uniqueKeys?.some(key => key.length > 0 && key.every(idx => leftEqSet.has(idx))) ?? false;
-			const rightKeyCovered = rightPhys.uniqueKeys?.some(key => key.length > 0 && key.every(idx => rightEqSet.has(idx))) ?? false;
-
-			const leftKeys = leftPhys.uniqueKeys || [];
-			const rightKeys = (rightPhys.uniqueKeys || []).map(k => k.map(i => i + leftAttrs.length));
-			const preserved: number[][] = [];
-			if (rightKeyCovered) preserved.push(...leftKeys);
-			if (leftKeyCovered) preserved.push(...rightKeys);
-			if (preserved.length > 0) uniqueKeys = preserved;
-		}
-
-		return { uniqueKeys };
+		return {
+			uniqueKeys: result.uniqueKeys,
+			estimatedRows: result.estimatedRows,
+		};
 	}
 
 	get estimatedRows(): number | undefined {

@@ -57,10 +57,10 @@ export interface TableSchema {
 	mutationContext?: ReadonlyArray<MutationContextDefinition>;
 	/** Cached table statistics from ANALYZE or VTab reporting */
 	statistics?: TableStatistics;
-	/** Foreign key constraints (parsed but not yet enforced by engine) */
-	// foreignKeys?: ReadonlyArray<ForeignKeyConstraintSchema>;
+	/** Foreign key constraints */
+	foreignKeys?: ReadonlyArray<ForeignKeyConstraintSchema>;
 	/** Unique constraints (beyond primary key) */
-	// uniqueConstraints?: ReadonlyArray<ConstraintSchema>;
+	uniqueConstraints?: ReadonlyArray<UniqueConstraintSchema>;
 }
 
 /**
@@ -294,6 +294,38 @@ export interface RowConstraintSchema {
 	deferrable?: boolean;
 	/** Whether the constraint is initially deferred */
 	initiallyDeferred?: boolean;
+}
+
+/**
+ * Represents a FOREIGN KEY constraint linking child columns to a parent table
+ */
+export interface ForeignKeyConstraintSchema {
+	/** Optional constraint name */
+	name?: string;
+	/** Column indices in this (child) table */
+	columns: ReadonlyArray<number>;
+	/** Referenced (parent) table name */
+	referencedTable: string;
+	/** Referenced schema (default: same schema) */
+	referencedSchema?: string;
+	/** Column indices in the parent table */
+	referencedColumns: ReadonlyArray<number>;
+	/** Action on parent DELETE (default: 'noAction') */
+	onDelete: import('../parser/ast.js').ForeignKeyAction;
+	/** Action on parent UPDATE of referenced columns (default: 'noAction') */
+	onUpdate: import('../parser/ast.js').ForeignKeyAction;
+	/** Whether enforcement is deferred to COMMIT */
+	deferred: boolean;
+}
+
+/**
+ * Represents a UNIQUE constraint on one or more columns (beyond the primary key)
+ */
+export interface UniqueConstraintSchema {
+	/** Optional constraint name */
+	name?: string;
+	/** Column indices in this table that form the unique constraint */
+	columns: ReadonlyArray<number>;
 }
 
 export interface PrimaryKeyColumnDefinition {

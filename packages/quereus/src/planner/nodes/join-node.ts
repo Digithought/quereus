@@ -9,11 +9,58 @@ import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
 import { JoinCapable, type PredicateSourceCapable } from '../framework/characteristics.js';
 import { normalizePredicate } from '../analysis/predicate-normalizer.js';
-import { combineJoinKeys } from '../util/key-utils.js';
+import { combineJoinKeys, analyzeJoinKeyCoverage } from '../util/key-utils.js';
 import { BinaryOpNode } from './scalar.js';
 import { ColumnReferenceNode } from './reference.js';
 
 export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross' | 'semi' | 'anti';
+
+/**
+ * Extract equi-join column index pairs from a join condition (AND-of-equalities).
+ * Returns pairs of {left, right} column indices.
+ */
+export function extractEquiPairsFromCondition(
+	condition: ScalarPlanNode | undefined,
+	leftAttrs: readonly Attribute[],
+	rightAttrs: readonly Attribute[],
+): Array<{ left: number; right: number }> {
+	const pairs: Array<{ left: number; right: number }> = [];
+	const cond = condition ? normalizePredicate(condition) : undefined;
+	if (!cond) return pairs;
+
+	const leftIdToIndex = new Map<number, number>();
+	leftAttrs.forEach((a, i) => leftIdToIndex.set(a.id, i));
+	const rightIdToIndex = new Map<number, number>();
+	rightAttrs.forEach((a, i) => rightIdToIndex.set(a.id, i));
+
+	const stack: ScalarPlanNode[] = [cond];
+	while (stack.length) {
+		const n = stack.pop()!;
+		if (n instanceof BinaryOpNode) {
+			const op = n.expression.operator;
+			if (op === 'AND') {
+				stack.push(n.left, n.right);
+				continue;
+			}
+			if (op === '=') {
+				if (n.left instanceof ColumnReferenceNode && n.right instanceof ColumnReferenceNode) {
+					let lIdx = leftIdToIndex.get(n.left.attributeId);
+					let rIdx = rightIdToIndex.get(n.right.attributeId);
+					if (lIdx !== undefined && rIdx !== undefined) {
+						pairs.push({ left: lIdx, right: rIdx });
+					} else {
+						lIdx = leftIdToIndex.get(n.right.attributeId);
+						rIdx = rightIdToIndex.get(n.left.attributeId);
+						if (lIdx !== undefined && rIdx !== undefined) {
+							pairs.push({ left: lIdx, right: rIdx });
+						}
+					}
+				}
+			}
+		}
+	}
+	return pairs;
+}
 
 /**
  * Represents a logical JOIN operation between two relations.
@@ -49,89 +96,21 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 		const rightPhys = childrenPhysical[1];
 		const leftType = this.left.getType();
 		const rightType = this.right.getType();
-		const leftAttrs = this.left.getAttributes();
-		const rightAttrs = this.right.getAttributes();
 
-		const leftIdToIndex = new Map<number, number>();
-		leftAttrs.forEach((a, i) => leftIdToIndex.set(a.id, i));
-		const rightIdToIndex = new Map<number, number>();
-		rightAttrs.forEach((a, i) => rightIdToIndex.set(a.id, i));
+		// Extract equi-join index pairs from condition
+		const pairs = extractEquiPairsFromCondition(
+			this.condition, this.left.getAttributes(), this.right.getAttributes()
+		);
 
-		// Gather equi-join attribute index pairs from simple AND-of-equalities
-		const pairs: Array<{ left: number; right: number }> = [];
-		const cond = this.condition ? normalizePredicate(this.condition) : undefined;
-		const stack: ScalarPlanNode[] = [];
-		if (cond) stack.push(cond);
-		while (stack.length) {
-			const n = stack.pop()!;
-			if (n instanceof BinaryOpNode) {
-				const op = n.expression.operator;
-				if (op === 'AND') {
-					stack.push(n.left, n.right);
-					continue;
-				}
-				if (op === '=') {
-					if (n.left instanceof ColumnReferenceNode && n.right instanceof ColumnReferenceNode) {
-						let lIdx = leftIdToIndex.get(n.left.attributeId);
-						let rIdx = rightIdToIndex.get(n.right.attributeId);
-						if (lIdx !== undefined && rIdx !== undefined) {
-							pairs.push({ left: lIdx, right: rIdx });
-						} else {
-							// Try swapped alignment (right.col = left.col)
-							lIdx = leftIdToIndex.get(n.right.attributeId);
-							rIdx = rightIdToIndex.get(n.left.attributeId);
-							if (lIdx !== undefined && rIdx !== undefined) {
-								pairs.push({ left: lIdx, right: rIdx });
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Check if a logical key (RelationType.keys) is fully covered by equi-join pairs
-		function coversLogicalKey(side: 'left' | 'right'): boolean {
-			const type = side === 'left' ? leftType : rightType;
-			const eqSet = new Set<number>(pairs.map(p => side === 'left' ? p.left : p.right));
-			return type.keys.some(key => key.length > 0 && key.every(ref => eqSet.has(ref.index)));
-		}
-
-		// Check if a physical unique key (childrenPhysical.uniqueKeys) is fully covered by equi-join pairs
-		function coversPhysicalKey(side: 'left' | 'right'): boolean {
-			const phys = side === 'left' ? leftPhys : rightPhys;
-			if (!phys?.uniqueKeys) return false;
-			const eqSet = new Set<number>(pairs.map(p => side === 'left' ? p.left : p.right));
-			return phys.uniqueKeys.some(key => key.length > 0 && key.every(idx => eqSet.has(idx)));
-		}
-
-		const leftKeyCovered = coversLogicalKey('left') || coversPhysicalKey('left');
-		const rightKeyCovered = coversLogicalKey('right') || coversPhysicalKey('right');
-
-		let uniqueKeys: number[][] | undefined = undefined;
-		let estimatedRows: number | undefined = undefined;
-
-		if (this.joinType === 'semi' || this.joinType === 'anti') {
-			// Semi/anti joins preserve left-side unique keys unchanged
-			uniqueKeys = leftPhys.uniqueKeys;
-		} else if (this.joinType === 'inner' || this.joinType === 'cross') {
-			const leftKeys = (leftPhys.uniqueKeys || []);
-			const rightKeys = (rightPhys.uniqueKeys || []).map(k => k.map(i => i + leftType.columns.length));
-			const preserved: number[][] = [];
-			if (rightKeyCovered) preserved.push(...leftKeys);
-			if (leftKeyCovered) preserved.push(...rightKeys);
-			if (preserved.length > 0) uniqueKeys = preserved;
-		}
-
-		const lRows = this.left.estimatedRows;
-		const rRows = this.right.estimatedRows;
-		if (this.joinType === 'inner') {
-			if (rightKeyCovered && typeof lRows === 'number') estimatedRows = lRows;
-			if (leftKeyCovered && typeof rRows === 'number') estimatedRows = (estimatedRows === undefined) ? rRows : Math.min(estimatedRows, rRows);
-		}
+		const result = analyzeJoinKeyCoverage(
+			this.joinType, leftPhys, rightPhys, leftType, rightType,
+			pairs, this.left.estimatedRows, this.right.estimatedRows,
+			leftType.columns.length,
+		);
 
 		return {
-			uniqueKeys,
-			estimatedRows,
+			uniqueKeys: result.uniqueKeys,
+			estimatedRows: result.estimatedRows,
 		};
 	}
 

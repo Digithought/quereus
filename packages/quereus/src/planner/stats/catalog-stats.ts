@@ -105,6 +105,14 @@ export class CatalogStatsProvider implements StatsProvider {
 		// For equi-joins, use 1/max(ndv_left, ndv_right) if we can extract columns
 		const colNames = extractEquiJoinColumns(joinCondition);
 		if (colNames) {
+			// Check FK→PK: if one side has an FK referencing the other's PK,
+			// use 1/ndv_pk for tighter selectivity
+			const fkSel = this.fkPkSelectivity(leftTable, rightTable, colNames.left, colNames.right);
+			if (fkSel !== undefined) {
+				log('Join selectivity %s⋈%s: %f (FK→PK)', leftTable.name, rightTable.name, fkSel);
+				return fkSel;
+			}
+
 			const leftNdv = this.getDistinct(leftTable, colNames.left);
 			const rightNdv = this.getDistinct(rightTable, colNames.right);
 			if (leftNdv !== undefined && rightNdv !== undefined) {
@@ -115,6 +123,43 @@ export class CatalogStatsProvider implements StatsProvider {
 			}
 		}
 		return this.fallback.joinSelectivity?.(leftTable, rightTable, joinCondition);
+	}
+
+	/**
+	 * Check if an equi-join column pair represents a FK→PK relationship.
+	 * If so, return selectivity = 1/ndv_pk (each FK row matches at most one PK row).
+	 */
+	private fkPkSelectivity(
+		leftTable: TableSchema, rightTable: TableSchema,
+		leftColName: string, rightColName: string,
+	): number | undefined {
+		// Check: left FK → right PK
+		if (this.isFkColumn(leftTable, leftColName, rightTable)) {
+			const pkNdv = this.getPkDistinct(rightTable);
+			if (pkNdv !== undefined) return 1 / Math.max(pkNdv, 1);
+		}
+		// Check: right FK → left PK
+		if (this.isFkColumn(rightTable, rightColName, leftTable)) {
+			const pkNdv = this.getPkDistinct(leftTable);
+			if (pkNdv !== undefined) return 1 / Math.max(pkNdv, 1);
+		}
+		return undefined;
+	}
+
+	private isFkColumn(table: TableSchema, colName: string, referencedTable: TableSchema): boolean {
+		if (!table.foreignKeys) return false;
+		const colIdx = table.columnIndexMap.get(colName.toLowerCase());
+		if (colIdx === undefined) return false;
+		return table.foreignKeys.some(fk =>
+			fk.referencedTable.toLowerCase() === referencedTable.name.toLowerCase() &&
+			fk.columns.includes(colIdx)
+		);
+	}
+
+	private getPkDistinct(table: TableSchema): number | undefined {
+		if (table.primaryKeyDefinition.length !== 1) return undefined;
+		const pkCol = table.columns[table.primaryKeyDefinition[0].index];
+		return this.getDistinct(table, pkCol.name);
 	}
 
 	distinctValues(table: TableSchema, columnName: string): number | undefined {

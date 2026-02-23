@@ -9,6 +9,7 @@ import type { JoinCapable, PredicateSourceCapable } from '../framework/character
 import { mergeJoinCost } from '../cost/index.js';
 import type { JoinType } from './join-node.js';
 import type { EquiJoinPair } from './bloom-join-node.js';
+import { analyzeJoinKeyCoverage } from '../util/key-utils.js';
 
 /**
  * Physical plan node implementing a merge join.
@@ -123,41 +124,32 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const leftPhys = childrenPhysical[0];
 		const rightPhys = childrenPhysical[1];
+		const leftAttrs = this.left.getAttributes();
+		const rightAttrs = this.right.getAttributes();
 
-		// Semi/anti joins preserve left-side unique keys
-		if (this.joinType === 'semi' || this.joinType === 'anti') {
-			return {
-				// Merge join preserves left-side ordering
-				ordering: leftPhys.ordering,
-				uniqueKeys: leftPhys.uniqueKeys,
-			};
-		}
+		// Map attribute-ID-based equi-pairs to column-index-based pairs
+		const indexPairs = this.equiPairs.map(p => ({
+			left: leftAttrs.findIndex(a => a.id === p.leftAttrId),
+			right: rightAttrs.findIndex(a => a.id === p.rightAttrId),
+		}));
 
-		// Merge join preserves the left-side ordering (both sides are sorted on
-		// equi-join keys, and the output follows the left side's sort order)
-		let ordering = leftPhys.ordering;
+		const result = analyzeJoinKeyCoverage(
+			this.joinType, leftPhys, rightPhys,
+			this.left.getType(), this.right.getType(),
+			indexPairs, this.left.estimatedRows, this.right.estimatedRows,
+			leftAttrs.length,
+		);
 
-		// Unique keys: same logic as BloomJoinNode
-		let uniqueKeys: number[][] | undefined = undefined;
-		if (this.joinType === 'inner') {
-			const leftAttrs = this.left.getAttributes();
-			const rightAttrs = this.right.getAttributes();
+		// Merge join preserves left-side ordering
+		const ordering = (this.joinType === 'semi' || this.joinType === 'anti' || this.joinType === 'inner' || this.joinType === 'cross')
+			? leftPhys.ordering
+			: undefined;
 
-			const leftEqSet = new Set(this.equiPairs.map(p => leftAttrs.findIndex(a => a.id === p.leftAttrId)));
-			const rightEqSet = new Set(this.equiPairs.map(p => rightAttrs.findIndex(a => a.id === p.rightAttrId)));
-
-			const leftKeyCovered = leftPhys.uniqueKeys?.some(key => key.length > 0 && key.every(idx => leftEqSet.has(idx))) ?? false;
-			const rightKeyCovered = rightPhys.uniqueKeys?.some(key => key.length > 0 && key.every(idx => rightEqSet.has(idx))) ?? false;
-
-			const leftKeys = leftPhys.uniqueKeys || [];
-			const rightKeys = (rightPhys.uniqueKeys || []).map(k => k.map(i => i + leftAttrs.length));
-			const preserved: number[][] = [];
-			if (rightKeyCovered) preserved.push(...leftKeys);
-			if (leftKeyCovered) preserved.push(...rightKeys);
-			if (preserved.length > 0) uniqueKeys = preserved;
-		}
-
-		return { ordering, uniqueKeys };
+		return {
+			ordering,
+			uniqueKeys: result.uniqueKeys,
+			estimatedRows: result.estimatedRows,
+		};
 	}
 
 	get estimatedRows(): number | undefined {

@@ -1,7 +1,7 @@
 import { Schema } from './schema.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
 import type { Database } from '../core/database.js';
-import type { TableSchema, RowConstraintSchema, IndexSchema, IndexColumnSchema, MutationContextDefinition } from './table.js';
+import type { TableSchema, RowConstraintSchema, IndexSchema, IndexColumnSchema, MutationContextDefinition, ForeignKeyConstraintSchema, UniqueConstraintSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { StatusCode, type SqlValue } from '../common/types.js';
@@ -619,6 +619,122 @@ export class SchemaManager {
 	}
 
 	/**
+	 * Extracts FOREIGN KEY constraints from AST column and table constraint definitions.
+	 * Resolves column indices in the child table. Parent table resolution is deferred
+	 * to enforcement time (the parent table may not exist yet during declarative schema setup).
+	 */
+	private extractForeignKeys(
+		astColumns: readonly AST.ColumnDef[],
+		astConstraints: readonly AST.TableConstraint[] | undefined,
+		columnIndexMap: ReadonlyMap<string, number>,
+		tableName: string,
+		schemaName: string,
+	): ForeignKeyConstraintSchema[] {
+		const result: ForeignKeyConstraintSchema[] = [];
+
+		// Column-level foreign keys
+		for (const colDef of astColumns) {
+			for (const con of colDef.constraints ?? []) {
+				if (con.type === 'foreignKey' && con.foreignKey) {
+					const fk = con.foreignKey;
+					const childColIndex = columnIndexMap.get(colDef.name.toLowerCase());
+					if (childColIndex === undefined) {
+						throw new QuereusError(`FK column '${colDef.name}' not found in table '${tableName}'`, StatusCode.ERROR);
+					}
+
+					// Parent column resolution is deferred — store names for now
+					// We need the parent table schema to resolve indices, but it may not exist yet
+					result.push({
+						name: con.name ?? `_fk_${tableName}_${colDef.name}`,
+						columns: Object.freeze([childColIndex]),
+						referencedTable: fk.table,
+						referencedSchema: schemaName,
+						referencedColumns: Object.freeze([]), // resolved at enforcement time
+						onDelete: fk.onDelete ?? 'noAction',
+						onUpdate: fk.onUpdate ?? 'noAction',
+						deferred: fk.initiallyDeferred ?? false,
+						_referencedColumnNames: fk.columns, // internal: for deferred resolution
+					} as ForeignKeyConstraintSchema & { _referencedColumnNames?: string[] });
+				}
+			}
+		}
+
+		// Table-level foreign keys
+		for (const con of astConstraints ?? []) {
+			if (con.type === 'foreignKey' && con.foreignKey && con.columns) {
+				const fk = con.foreignKey;
+				const childColIndices = con.columns.map(col => {
+					const idx = columnIndexMap.get(col.name.toLowerCase());
+					if (idx === undefined) {
+						throw new QuereusError(`FK column '${col.name}' not found in table '${tableName}'`, StatusCode.ERROR);
+					}
+					return idx;
+				});
+
+				result.push({
+					name: con.name ?? `_fk_${tableName}_${con.columns.map(c => c.name).join('_')}`,
+					columns: Object.freeze(childColIndices),
+					referencedTable: fk.table,
+					referencedSchema: schemaName,
+					referencedColumns: Object.freeze([]), // resolved at enforcement time
+					onDelete: fk.onDelete ?? 'noAction',
+					onUpdate: fk.onUpdate ?? 'noAction',
+					deferred: fk.initiallyDeferred ?? false,
+					_referencedColumnNames: fk.columns, // internal: for deferred resolution
+				} as ForeignKeyConstraintSchema & { _referencedColumnNames?: string[] });
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Extracts UNIQUE constraints from AST column and table constraint definitions.
+	 * Resolves column names to indices.
+	 */
+	private extractUniqueConstraints(
+		astColumns: readonly AST.ColumnDef[],
+		astConstraints: readonly AST.TableConstraint[] | undefined,
+		columnIndexMap: ReadonlyMap<string, number>,
+	): UniqueConstraintSchema[] {
+		const result: UniqueConstraintSchema[] = [];
+
+		// Column-level unique constraints
+		for (const colDef of astColumns) {
+			for (const con of colDef.constraints ?? []) {
+				if (con.type === 'unique') {
+					const colIndex = columnIndexMap.get(colDef.name.toLowerCase());
+					if (colIndex !== undefined) {
+						result.push({
+							name: con.name,
+							columns: Object.freeze([colIndex]),
+						});
+					}
+				}
+			}
+		}
+
+		// Table-level unique constraints
+		for (const con of astConstraints ?? []) {
+			if (con.type === 'unique' && con.columns && con.columns.length > 0) {
+				const colIndices = con.columns.map(col => {
+					const idx = columnIndexMap.get(col.name.toLowerCase());
+					if (idx === undefined) {
+						throw new QuereusError(`UNIQUE constraint column '${col.name}' not found`, StatusCode.ERROR);
+					}
+					return idx;
+				});
+				result.push({
+					name: con.name,
+					columns: Object.freeze(colIndices),
+				});
+			}
+		}
+
+		return result;
+	}
+
+	/**
 	 * Builds a base TableSchema from an AST CREATE TABLE statement.
 	 * Shared by both createTable (new storage) and importTable (existing storage).
 	 */
@@ -637,6 +753,9 @@ export class SchemaManager {
 		const astColumns = stmt.columns || [];
 		const { columns, pkDefinition } = this.buildColumnSchemas(astColumns, stmt.constraints, defaultNotNull);
 		const checkConstraints = this.extractCheckConstraints(astColumns, stmt.constraints);
+		const columnIndexMap = buildColumnIndexMap(columns);
+		const foreignKeys = this.extractForeignKeys(astColumns, stmt.constraints, columnIndexMap, tableName, targetSchemaName);
+		const uniqueConstraints = this.extractUniqueConstraints(astColumns, stmt.constraints, columnIndexMap);
 
 		const mutationContextSchemas: MutationContextDefinition[] | undefined = stmt.contextDefinitions
 			? stmt.contextDefinitions.map(varDef => mutationContextVarToSchema(varDef, defaultNotNull))
@@ -646,9 +765,11 @@ export class SchemaManager {
 			name: tableName,
 			schemaName: targetSchemaName,
 			columns: Object.freeze(columns),
-			columnIndexMap: buildColumnIndexMap(columns),
+			columnIndexMap,
 			primaryKeyDefinition: pkDefinition,
 			checkConstraints: Object.freeze(checkConstraints),
+			foreignKeys: foreignKeys.length > 0 ? Object.freeze(foreignKeys) : undefined,
+			uniqueConstraints: uniqueConstraints.length > 0 ? Object.freeze(uniqueConstraints) : undefined,
 			isTemporary: !!stmt.isTemporary,
 			isView: false,
 			vtabModuleName: moduleName,

@@ -846,15 +846,26 @@ The context-scoped design enables sophisticated optimization strategies:
 
 * If a predicate contains **equality** on all columns of a unique key the result cardinality ≤ 1.
 
-TODO
+**Shared join key-coverage analysis** (`analyzeJoinKeyCoverage` in `key-utils.ts`):
+- Extracts equi-join column index pairs from join conditions
+- Checks if equi-pairs cover a logical key (`RelationType.keys`) or physical key (`PhysicalProperties.uniqueKeys`) on either side
+- When a key on side B is covered, preserves side A's unique keys and caps `estimatedRows` at side A's row count
+- Used by all three join node types: `JoinNode`, `BloomJoinNode`, `MergeJoinNode`
 
-1. Extend `ConstraintExtractionResult` to carry `coveredKey` information.  
-2. In `SeqScan/IndexSeek`, if `coveredKey` matches a unique key set `estimatedRows = 1` and, when every key column is constrained, propagate `derivedUniqueKeys = [[]]` (empty array means at most one row).
+**FK→PK inference** (`rule-join-key-inference.ts` + `CatalogStatsProvider`):
+- When equi-join pairs align with a foreign key→primary key relationship, the PK side's key is guaranteed covered (each FK row matches ≤1 PK row)
+- `CatalogStatsProvider.joinSelectivity()` uses FK→PK detection to produce tighter selectivity (`1/ndv_pk`) instead of the general `1/max(ndv_left, ndv_right)`
+- FK constraints stored in `TableSchema.foreignKeys`, extracted from AST during CREATE TABLE
+- Unique constraints stored in `TableSchema.uniqueConstraints`, surfaced as additional `RelationType.keys`
+
+**DISTINCT elimination** (`rule-distinct-elimination.ts`):
+- When a `DistinctNode`'s source already has `uniqueKeys` (from PK, UNIQUE constraint, GROUP BY, etc.), the DISTINCT is redundant and removed
+- Registered in the structural pass at priority 18 (after key inference, before predicate pushdown)
 
 ### Key inference after projections / joins
 
-* Write helper `projectKeys(keys, columnMapping)` to push keys through `ProjectNode` / `ReturningNode`.  
-* Write helper `combineJoinKeys(leftKeys, rightKeys, joinType)` (draft already lives in utils – wire it in).
+* `projectKeys(keys, columnMapping)` pushes keys through `ProjectNode` / `ReturningNode`.
+* `combineJoinKeys(leftKeys, rightKeys, joinType)` combines keys across joins (inner/cross only; outer joins conservatively clear keys).
 
 ## Row‑specific vs Global Classification for Assertions
 

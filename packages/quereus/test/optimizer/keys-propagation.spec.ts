@@ -68,6 +68,40 @@ describe('Key propagation and estimatedRows reduction', () => {
 		const props = String(rows[0].props as unknown as string);
 		expect(props).to.match(/"uniqueKeys":\[\[/);
 	});
+
+	it('Physical hash join node has key-driven estimatedRows', async () => {
+		await setup();
+		await db.exec("CREATE TABLE u2 (uid INTEGER PRIMARY KEY, t_id INTEGER) USING memory");
+		await db.exec("INSERT INTO u2 VALUES (10,1),(11,2),(12,3)");
+		// When joining u2.t_id = t.id, t.id is a PK so right key is covered.
+		// estimatedRows should be driven by left side (u2 rows = 3), not the heuristic product.
+		const rows: Array<Record<string, unknown>> = [];
+		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM u2 INNER JOIN t ON u2.t_id = t.id')")) rows.push(r as Record<string, unknown>);
+		const props = String(rows[0].props as unknown as string);
+		// Should have estimatedRows set (not the default heuristic product)
+		expect(props).to.match(/"estimatedRows"/);
+		expect(props).to.match(/"uniqueKeys"/);
+	});
+
+	it('Unique constraint columns create additional keys in RelationType', async () => {
+		await db.exec("CREATE TABLE uc (id INTEGER PRIMARY KEY, email TEXT UNIQUE, name TEXT) USING memory");
+		await db.exec("INSERT INTO uc VALUES (1,'a@b.c','alice'),(2,'d@e.f','bob')");
+		// Join on unique column should preserve keys
+		await db.exec("CREATE TABLE refs (r_email TEXT) USING memory");
+		await db.exec("INSERT INTO refs VALUES ('a@b.c'),('d@e.f')");
+		const rows: Array<Record<string, unknown>> = [];
+		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM refs INNER JOIN uc ON refs.r_email = uc.email')")) rows.push(r as Record<string, unknown>);
+		const props = String(rows[0].props as unknown as string);
+		expect(props).to.match(/"uniqueKeys"/);
+	});
+
+	it('DISTINCT elimination when source has unique keys', async () => {
+		await setup();
+		// SELECT DISTINCT id FROM t — id is the PK so DISTINCT is redundant
+		const rows: Array<Record<string, unknown>> = [];
+		for await (const r of db.eval("SELECT json_group_array(node_type) AS types FROM query_plan('SELECT DISTINCT id FROM t')")) rows.push(r as Record<string, unknown>);
+		const types = String(rows[0].types as unknown as string);
+		// Distinct node should be eliminated — should NOT appear in plan
+		expect(types).to.not.include('Distinct');
+	});
 });
-
-

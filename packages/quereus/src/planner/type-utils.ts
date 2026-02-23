@@ -25,7 +25,7 @@ export function relationTypeFromTableSchema(tableSchema: TableSchema): RelationT
     };
   });
 
-  // Populate keys from primaryKeyDefinition
+  // Populate keys from primaryKeyDefinition and unique constraints
   const keys: ColRef[][] = [];
   if (tableSchema.primaryKeyDefinition && tableSchema.primaryKeyDefinition.length > 0) {
     const primaryKey: ColRef[] = tableSchema.primaryKeyDefinition.map(pkCol => ({
@@ -33,6 +33,13 @@ export function relationTypeFromTableSchema(tableSchema: TableSchema): RelationT
       desc: pkCol.desc,
     }));
     keys.push(primaryKey);
+  }
+
+  // Add unique constraints as additional keys
+  if (tableSchema.uniqueConstraints) {
+    for (const uc of tableSchema.uniqueConstraints) {
+      keys.push(uc.columns.map(idx => ({ index: idx })));
+    }
   }
 
   return {

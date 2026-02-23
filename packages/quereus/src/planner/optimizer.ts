@@ -31,6 +31,7 @@ import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
 import { ruleInSubqueryCache } from './rules/cache/rule-in-subquery-cache.js';
 import { ruleSubqueryDecorrelation } from './rules/subquery/rule-subquery-decorrelation.js';
+import { ruleDistinctElimination } from './rules/distinct/rule-distinct-elimination.js';
 // Phase 3 rules
 import { validatePhysicalTree } from './validation/plan-validator.js';
 import { Database } from '../core/database.js';
@@ -115,6 +116,15 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleJoinGreedyCommute,
 			priority: 16
+		});
+
+		// DISTINCT elimination: remove redundant DISTINCT when source already has unique keys
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'distinct-elimination',
+			nodeType: PlanNodeType.Distinct,
+			phase: 'rewrite',
+			fn: ruleDistinctElimination,
+			priority: 18
 		});
 
 		this.passManager.addRuleToPass(PassId.Structural, {
