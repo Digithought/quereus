@@ -8,10 +8,15 @@ import { type Projection } from '../nodes/project-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { buildExpression } from './expression.js';
+import { buildFunctionCall } from './function-call.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { CapabilityDetectors } from '../framework/characteristics.js';
 import { Scope } from '../scopes/scope.js';
+import { resolveFunctionSchema } from './schema-resolution.js';
+import { isAggregateFunctionSchema } from '../../schema/function.js';
+import { expressionToString } from '../../emit/ast-stringify.js';
+import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 
 /**
  * Processes GROUP BY, aggregates, and HAVING clauses
@@ -30,8 +35,22 @@ export function buildAggregatePhase(
 	preAggregateSort: boolean;
 	aggregateNode?: RelationalPlanNode;
 	groupByExpressions?: ScalarPlanNode[];
+	hasHavingOnlyAggregates?: boolean;
 } {
 		const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
+
+	// Pre-collect aggregate functions from the HAVING clause that are not already
+	// present in the SELECT list. These need to be added to the AggregateNode so
+	// they are computed during aggregation and available for the HAVING filter.
+	let hasHavingOnlyAggregates = false;
+	if (stmt.having) {
+		const havingAggs = collectHavingAggregates(stmt.having, selectContext, aggregates);
+		if (havingAggs.length > 0) {
+			aggregates.push(...havingAggs);
+			hasAggregates = true;
+			hasHavingOnlyAggregates = true;
+		}
+	}
 
 	// If there is a HAVING clause but the SELECT contains **no aggregate functions**
 	// AND **no GROUP BY**, we can safely treat the HAVING predicate as a regular filter
@@ -89,8 +108,10 @@ export function buildAggregatePhase(
 		currentInput = buildHavingFilter(currentInput, stmt.having, selectContext, aggregateOutputScope, aggregates, groupByExpressions);
 	}
 
-	// Determine if final projection is needed
-	const needsFinalProjection = checkNeedsFinalProjection(projections);
+	// Determine if final projection is needed.
+	// Force a final projection when HAVING-only aggregates were added, to
+	// strip them from the output (they exist only for the HAVING filter).
+	const needsFinalProjection = hasHavingOnlyAggregates || checkNeedsFinalProjection(projections);
 
 	return {
 		output: currentInput,
@@ -98,7 +119,8 @@ export function buildAggregatePhase(
 		needsFinalProjection,
 		preAggregateSort,
 		aggregateNode,
-		groupByExpressions
+		groupByExpressions,
+		hasHavingOnlyAggregates
 	};
 }
 
@@ -263,6 +285,114 @@ function checkNeedsFinalProjection(projections: Projection[]): boolean {
 		// If it's not a simple ColumnReferenceNode, we need final projection
 		return !CapabilityDetectors.isColumnReference(proj.node);
 	});
+}
+
+/**
+ * Walks an AST expression tree and collects FunctionExpr nodes that resolve
+ * to aggregate functions. Does not descend into aggregate arguments (nested
+ * aggregates are invalid SQL).
+ */
+function findAggregateFunctionExprs(
+	expr: AST.Expression,
+	ctx: PlanningContext,
+	results: AST.FunctionExpr[]
+): void {
+	switch (expr.type) {
+		case 'function': {
+			const schema = resolveFunctionSchema(ctx, expr.name, expr.args.length);
+			if (schema && isAggregateFunctionSchema(schema)) {
+				results.push(expr);
+				return; // Don't recurse into aggregate arguments
+			}
+			for (const arg of expr.args) {
+				findAggregateFunctionExprs(arg, ctx, results);
+			}
+			break;
+		}
+		case 'binary':
+			findAggregateFunctionExprs(expr.left, ctx, results);
+			findAggregateFunctionExprs(expr.right, ctx, results);
+			break;
+		case 'unary':
+			findAggregateFunctionExprs(expr.expr, ctx, results);
+			break;
+		case 'cast':
+			findAggregateFunctionExprs(expr.expr, ctx, results);
+			break;
+		case 'collate':
+			findAggregateFunctionExprs(expr.expr, ctx, results);
+			break;
+		case 'between':
+			findAggregateFunctionExprs(expr.expr, ctx, results);
+			findAggregateFunctionExprs(expr.lower, ctx, results);
+			findAggregateFunctionExprs(expr.upper, ctx, results);
+			break;
+		case 'in':
+			findAggregateFunctionExprs(expr.expr, ctx, results);
+			if (expr.values) {
+				for (const val of expr.values) {
+					findAggregateFunctionExprs(val, ctx, results);
+				}
+			}
+			break;
+		case 'case':
+			if (expr.baseExpr) findAggregateFunctionExprs(expr.baseExpr, ctx, results);
+			for (const clause of expr.whenThenClauses) {
+				findAggregateFunctionExprs(clause.when, ctx, results);
+				findAggregateFunctionExprs(clause.then, ctx, results);
+			}
+			if (expr.elseExpr) findAggregateFunctionExprs(expr.elseExpr, ctx, results);
+			break;
+		// Leaf nodes and subqueries – nothing to recurse
+		case 'literal':
+		case 'column':
+		case 'identifier':
+		case 'parameter':
+		case 'subquery':
+		case 'exists':
+		case 'windowFunction':
+			break;
+	}
+}
+
+/**
+ * Collects aggregate functions from a HAVING clause AST that are not already
+ * present in the existing aggregates list. Returns new aggregates to add.
+ */
+function collectHavingAggregates(
+	havingExpr: AST.Expression,
+	selectContext: PlanningContext,
+	existingAggregates: { expression: ScalarPlanNode; alias: string }[]
+): { expression: ScalarPlanNode; alias: string }[] {
+	const funcExprs: AST.FunctionExpr[] = [];
+	findAggregateFunctionExprs(havingExpr, selectContext, funcExprs);
+
+	if (funcExprs.length === 0) return [];
+
+	// Build canonical keys from the AST expression stored in existing aggregate plan nodes
+	const existingKeys = new Set<string>();
+	for (const agg of existingAggregates) {
+		if (CapabilityDetectors.isAggregateFunction(agg.expression)) {
+			const aggNode = agg.expression as AggregateFunctionCallNode;
+			existingKeys.add(expressionToString(aggNode.expression).toLowerCase());
+		}
+	}
+
+	const newAggregates: { expression: ScalarPlanNode; alias: string }[] = [];
+
+	for (const funcExpr of funcExprs) {
+		const key = expressionToString(funcExpr).toLowerCase();
+
+		// Skip if already in SELECT aggregates or already collected
+		if (existingKeys.has(key)) continue;
+		if (newAggregates.some(a => a.alias.toLowerCase() === key)) continue;
+
+		// Build the aggregate plan node in the pre-aggregate scope
+		const aggNode = buildFunctionCall(selectContext, funcExpr, true);
+		newAggregates.push({ expression: aggNode, alias: expressionToString(funcExpr) });
+	}
+
+	return newAggregates;
 }
 
 /**

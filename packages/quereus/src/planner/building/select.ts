@@ -149,7 +149,10 @@ export function buildSelectStmt(
 				aggregates,
 				aggregateResult.groupByExpressions
 			);
-			input = new ProjectNode(selectScope, input, finalProjections, undefined, undefined, preserveInputColumns);
+			// When HAVING-only aggregates were added, don't preserve input columns
+			// so they are stripped from the output (they exist only for the filter).
+			const preserveForAggregate = preserveInputColumns && !aggregateResult.hasHavingOnlyAggregates;
+			input = new ProjectNode(selectScope, input, finalProjections, undefined, undefined, preserveForAggregate);
 		}
 	}
 

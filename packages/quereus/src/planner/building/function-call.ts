@@ -19,9 +19,10 @@ export function buildFunctionCall(ctx: PlanningContext, expr: AST.FunctionExpr, 
 		for (const agg of ctx.aggregates) {
 			if (CapabilityDetectors.isAggregateFunction(agg.expression)) {
 				const aggFuncNode = agg.expression as AggregateFunctionCallNode;
-				// Check if function name matches and argument count matches
+				// Check if function name, argument count, and DISTINCT flag match
 				if (aggFuncNode.functionName.toLowerCase() === expr.name.toLowerCase() &&
-					aggFuncNode.args.length === expr.args.length) {
+					aggFuncNode.args.length === expr.args.length &&
+					(aggFuncNode.isDistinct || false) === (expr.distinct || false)) {
 					// Check if arguments match
 					let argsMatch = true;
 					for (let i = 0; i < expr.args.length; i++) {

@@ -46,6 +46,26 @@ INSERT INTO agg_t VALUES (7, 'c', 50);
 SELECT count(distinct val) FROM agg_t WHERE grp = 'c';
 → [{"count(distinct val)":1}]
 
+-- HAVING with COUNT(DISTINCT) - aggregate only in HAVING, not in SELECT
+SELECT grp FROM agg_t GROUP BY grp HAVING count(distinct val) > 1 ORDER BY grp;
+→ [{"grp":"a"},{"grp":"b"}]
+
+-- HAVING with COUNT(DISTINCT) - aggregate in both SELECT and HAVING
+SELECT grp, count(distinct val) as cd FROM agg_t GROUP BY grp HAVING count(distinct val) > 1 ORDER BY grp;
+→ [{"grp":"a","cd":2},{"grp":"b","cd":2}]
+
+-- HAVING with SUM(DISTINCT)
+SELECT grp FROM agg_t GROUP BY grp HAVING sum(distinct val) > 45 ORDER BY grp;
+→ [{"grp":"b"},{"grp":"c"}]
+
+-- SELECT has COUNT(val), HAVING has COUNT(DISTINCT val) - must be different aggregates
+SELECT grp, count(val) as cv FROM agg_t GROUP BY grp HAVING count(distinct val) = 1 ORDER BY grp;
+→ [{"grp":"c","cv":2}]
+
+-- HAVING expression with multiple DISTINCT aggregates
+SELECT grp FROM agg_t GROUP BY grp HAVING count(distinct val) + count(distinct grp) > 2 ORDER BY grp;
+→ [{"grp":"a"},{"grp":"b"}]
+
 -- Constant literals are allowed in aggregate queries
 SELECT grp, count(*) as cnt, 0 AS constant FROM agg_t GROUP BY grp ORDER BY grp;
 → [{"grp":"a","cnt":3,"constant":0},{"grp":"b","cnt":2,"constant":0},{"grp":"c","cnt":2,"constant":0}]
