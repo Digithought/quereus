@@ -14,6 +14,7 @@ import { hasNativeEventSupport } from '../../util/event-support.js';
 import { sqlValuesEqual } from '../../util/comparison.js';
 import { withAsyncRowContext } from '../context-helpers.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
+import { executeForeignKeyActions } from '../foreign-key-actions.js';
 
 /**
  * Runtime UPSERT clause with pre-resolved evaluator callbacks.
@@ -427,6 +428,9 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 				const newKeyValues: SqlValue[] = tableSchema.primaryKeyDefinition.map(pkColDef => newRow[pkColDef.index]);
 				ctx.db._recordUpdate(`${tableSchema.schemaName}.${tableSchema.name}`, keyValues, newKeyValues);
 
+				// Execute FK cascading actions (CASCADE, SET NULL, SET DEFAULT)
+				await executeForeignKeyActions(ctx.db, tableSchema, 'update', oldRow, newRow);
+
 				// Emit auto event for modules without native event support
 				if (needsAutoEvents) {
 					// Compute changed columns
@@ -505,6 +509,9 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 
 				// Track change (DELETE): record OLD primary key
 				ctx.db._recordDelete(`${tableSchema.schemaName}.${tableSchema.name}`, keyValues);
+
+				// Execute FK cascading actions (CASCADE, SET NULL, SET DEFAULT)
+				await executeForeignKeyActions(ctx.db, tableSchema, 'delete', oldRow);
 
 				// Emit auto event for modules without native event support
 				if (needsAutoEvents) {

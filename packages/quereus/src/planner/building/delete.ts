@@ -16,6 +16,7 @@ import { ReturningNode } from '../nodes/returning-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
 import { buildConstraintChecks } from './constraint-builder.js';
+import { buildParentSideFKChecks } from './foreign-key-builder.js';
 
 export function buildDeleteStmt(
   ctx: PlanningContext,
@@ -121,6 +122,15 @@ export function buildDeleteStmt(
     flatRowDescriptor,
     contextAttributes
   );
+
+  // Build parent-side FK constraint checks if foreign_keys pragma is enabled
+  if (ctx.db.options.getBooleanOption('foreign_keys')) {
+    const parentFKChecks = buildParentSideFKChecks(
+      ctx, tableReference.tableSchema, RowOpFlag.DELETE,
+      oldAttributes, newAttributes, contextAttributes
+    );
+    constraintChecks.push(...parentFKChecks);
+  }
 
   // Always inject ConstraintCheckNode for DELETE operations
   const constraintCheckNode = new ConstraintCheckNode(

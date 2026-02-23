@@ -22,6 +22,7 @@ import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { DmlExecutorNode, type UpsertClausePlan } from '../nodes/dml-executor-node.js';
 import { buildConstraintChecks } from './constraint-builder.js';
+import { buildChildSideFKChecks, buildParentSideFKChecks } from './foreign-key-builder.js';
 import { validateDeterministicDefault } from '../validation/determinism-validator.js';
 
 /**
@@ -472,6 +473,15 @@ export function buildInsertStmt(
 		flatRowDescriptor,
 		contextAttributes
 	);
+
+	// Build FK constraint checks if foreign_keys pragma is enabled
+	if (ctx.db.options.getBooleanOption('foreign_keys')) {
+		const fkChecks = buildChildSideFKChecks(
+			ctx, tableReference.tableSchema, RowOpFlag.INSERT,
+			oldAttributes, newAttributes, contextAttributes
+		);
+		constraintChecks.push(...fkChecks);
+	}
 
 	const insertNode = new InsertNode(
 		ctx.scope,

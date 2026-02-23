@@ -16,6 +16,7 @@ import { RowOpFlag } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { buildConstraintChecks } from './constraint-builder.js';
+import { buildChildSideFKChecks, buildParentSideFKChecks } from './foreign-key-builder.js';
 
 export function buildUpdateStmt(
   ctx: PlanningContext,
@@ -134,6 +135,21 @@ export function buildUpdateStmt(
     flatRowDescriptor,
     contextAttributes
   );
+
+  // Build FK constraint checks if foreign_keys pragma is enabled
+  if (ctx.db.options.getBooleanOption('foreign_keys')) {
+    // Child-side: check new FK values reference valid parent rows
+    const childFKChecks = buildChildSideFKChecks(
+      ctx, tableReference.tableSchema, RowOpFlag.UPDATE,
+      oldAttributes, newAttributes, contextAttributes
+    );
+    // Parent-side: check no children reference old values being changed
+    const parentFKChecks = buildParentSideFKChecks(
+      ctx, tableReference.tableSchema, RowOpFlag.UPDATE,
+      oldAttributes, newAttributes, contextAttributes
+    );
+    constraintChecks.push(...childFKChecks, ...parentFKChecks);
+  }
 
   if (stmt.returning && stmt.returning.length > 0) {
     // For RETURNING, create coordinated attribute IDs like we do for INSERT
