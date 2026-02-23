@@ -11,7 +11,10 @@ import type { ModuleCapabilities } from './capabilities.js';
  * Base interface for module-specific configuration passed to create/connect.
  * Modules should define their own interface extending this if they need options.
  */
-export interface BaseModuleConfig {}
+export interface BaseModuleConfig {
+	/** When true, the module should provide read-only access to the committed (pre-transaction) state */
+	_readCommitted?: boolean;
+}
 
 /**
  * Assessment result from a module's supports() method indicating

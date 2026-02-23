@@ -20,4 +20,5 @@ export interface MemoryIndexEntry {
  */
 export interface MemoryTableConfig {
 	readOnly?: boolean;
+	_readCommitted?: boolean;
 }

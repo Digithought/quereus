@@ -24,6 +24,7 @@ import { DmlExecutorNode, type UpsertClausePlan } from '../nodes/dml-executor-no
 import { buildConstraintChecks } from './constraint-builder.js';
 import { buildChildSideFKChecks, buildParentSideFKChecks } from './foreign-key-builder.js';
 import { validateDeterministicDefault } from '../validation/determinism-validator.js';
+import { isCommittedSchemaRef } from './schema-resolution.js';
 
 /**
  * Creates a uniform row expansion projection that maps any relational source
@@ -327,6 +328,11 @@ export function buildInsertStmt(
 	const contextWithSchemaPath = stmt.schemaPath
 		? { ...ctx, schemaPath: stmt.schemaPath }
 		: ctx;
+
+	// Block DML on committed pseudo-schema
+	if (isCommittedSchemaRef(stmt.table.schema)) {
+		throw new QuereusError(`Cannot modify committed-state table 'committed.${stmt.table.name}'`, StatusCode.ERROR);
+	}
 
 	const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, contextWithSchemaPath);
 	const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode

@@ -9,6 +9,14 @@ import { createLogger } from '../../common/logger.js';
 
 const log = createLogger('planner:schema-resolution');
 
+/** The pseudo-schema name used to access pre-transaction (committed) state */
+export const COMMITTED_SCHEMA = 'committed';
+
+/** Check if a schema name refers to the committed pseudo-schema */
+export function isCommittedSchemaRef(schemaName?: string): boolean {
+	return schemaName?.toLowerCase() === COMMITTED_SCHEMA;
+}
+
 /**
  * Resolves a table schema at build time and records the dependency.
  */
@@ -17,6 +25,11 @@ export function resolveTableSchema(
 	tableName: string,
 	schemaName?: string
 ): TableSchema {
+	// Intercept 'committed' pseudo-schema: resolve the real table from default search path
+	if (isCommittedSchemaRef(schemaName)) {
+		return resolveTableSchema(ctx, tableName, undefined);
+	}
+
 	// If schema is explicitly provided, search only that schema
 	if (schemaName) {
 		const resolvedSchemaName = schemaName;

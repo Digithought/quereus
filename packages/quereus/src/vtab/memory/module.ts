@@ -93,7 +93,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	/**
 	 * Connects to an existing memory table definition
 	 */
-	async connect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, _options: MemoryTableConfig, _tableSchema?: TableSchema): Promise<MemoryTable> {
+	async connect(db: Database, pAux: unknown, moduleName: string, schemaName: string, tableName: string, options: MemoryTableConfig, _tableSchema?: TableSchema): Promise<MemoryTable> {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		const existingManager = this.tables.get(tableKey);
 
@@ -104,7 +104,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		logger.operation('Connect Table', tableName, { schema: schemaName });
 
 		// Create a new MemoryTable instance connected to the existing manager
-		return new MemoryTable(db, this, existingManager);
+		return new MemoryTable(db, this, existingManager, options._readCommitted);
 	}
 
 	/**

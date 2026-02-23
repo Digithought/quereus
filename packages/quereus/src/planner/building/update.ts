@@ -17,11 +17,17 @@ import { ReturningNode } from '../nodes/returning-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { buildConstraintChecks } from './constraint-builder.js';
 import { buildChildSideFKChecks, buildParentSideFKChecks } from './foreign-key-builder.js';
+import { isCommittedSchemaRef } from './schema-resolution.js';
 
 export function buildUpdateStmt(
   ctx: PlanningContext,
   stmt: AST.UpdateStmt,
 ): PlanNode {
+  // Block DML on committed pseudo-schema
+  if (isCommittedSchemaRef(stmt.table.schema)) {
+    throw new QuereusError(`Cannot modify committed-state table 'committed.${stmt.table.name}'`, StatusCode.ERROR);
+  }
+
   // Apply schema path from statement if present
   const contextWithSchemaPath = stmt.schemaPath
     ? { ...ctx, schemaPath: stmt.schemaPath }

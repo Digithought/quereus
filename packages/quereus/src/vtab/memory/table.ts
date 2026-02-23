@@ -34,6 +34,8 @@ export class MemoryTable extends VirtualTable {
 	private connection: MemoryTableConnection | null = null;
 	/** @internal Cached VirtualTableConnection wrapper to avoid re-creation */
 	private cachedVtabConnection: MemoryVirtualTableConnection | null = null;
+	/** @internal When true, reads from committed (pre-transaction) state only */
+	private readonly readCommitted: boolean;
 
 	/**
 	 * @internal - Use MemoryTableModule.connect or create
@@ -42,11 +44,13 @@ export class MemoryTable extends VirtualTable {
 	constructor(
 		db: Database,
 		module: AnyVirtualTableModule,
-		manager: MemoryTableManager // Pass the shared manager instance
+		manager: MemoryTableManager,
+		readCommitted?: boolean
 	) {
 		// Use manager's schema and name for the base class constructor
 		super(db, module, manager.schemaName, manager.tableName);
 		this.manager = manager;
+		this.readCommitted = readCommitted ?? false;
 		// Set the tableSchema directly from the manager's current canonical schema
 		// This ensures the VirtualTable base class has the correct schema reference.
 		this.tableSchema = manager.tableSchema;
@@ -67,21 +71,29 @@ export class MemoryTable extends VirtualTable {
 	/** Ensures the connection to the manager is established */
 	private async ensureConnection(): Promise<MemoryTableConnection> {
 		if (!this.connection) {
-			// Check if there's already an active connection for this table in the database
-			const existingConnections = this.db.getConnectionsForTable(this.tableName);
-			if (existingConnections.length > 0 && existingConnections[0] instanceof MemoryVirtualTableConnection) {
-				const memoryVirtualConnection = existingConnections[0] as MemoryVirtualTableConnection;
-				this.connection = memoryVirtualConnection.getMemoryConnection();
-				logger.debugLog(`ensureConnection: Reused existing connection ${this.connection.connectionId} for table ${this.tableName}`);
-			} else {
-				// Establish connection state with the manager upon first use
+			if (this.readCommitted) {
+				// Committed-snapshot mode: create a fresh connection but do NOT register
+				// it with the database. This connection will always read from the committed
+				// layer (currentCommittedLayer) since begin() is never called on it.
 				this.connection = this.manager.connect();
+				logger.debugLog(`ensureConnection: Created unregistered committed-snapshot connection ${this.connection.connectionId} for table ${this.tableName}`);
+			} else {
+				// Check if there's already an active connection for this table in the database
+				const existingConnections = this.db.getConnectionsForTable(this.tableName);
+				if (existingConnections.length > 0 && existingConnections[0] instanceof MemoryVirtualTableConnection) {
+					const memoryVirtualConnection = existingConnections[0] as MemoryVirtualTableConnection;
+					this.connection = memoryVirtualConnection.getMemoryConnection();
+					logger.debugLog(`ensureConnection: Reused existing connection ${this.connection.connectionId} for table ${this.tableName}`);
+				} else {
+					// Establish connection state with the manager upon first use
+					this.connection = this.manager.connect();
 
-				// Create a VirtualTableConnection wrapper and register it with the database
-				const vtabConnection = new MemoryVirtualTableConnection(this.tableName, this.connection);
-				await this.db.registerConnection(vtabConnection);
+					// Create a VirtualTableConnection wrapper and register it with the database
+					const vtabConnection = new MemoryVirtualTableConnection(this.tableName, this.connection);
+					await this.db.registerConnection(vtabConnection);
 
-				logger.debugLog(`ensureConnection: Created and registered new connection ${this.connection.connectionId} for table ${this.tableName}`);
+					logger.debugLog(`ensureConnection: Created and registered new connection ${this.connection.connectionId} for table ${this.tableName}`);
+				}
 			}
 		}
 		return this.connection;
@@ -202,7 +214,9 @@ export class MemoryTable extends VirtualTable {
 		const plan = buildScanPlanFromFilterInfo(filterInfo, currentSchema);
 		logger.debugLog(`query invoked for ${this.tableName} with plan: ${safeJsonStringify(plan)}`);
 
-		const startLayer = conn.pendingTransactionLayer ?? conn.readLayer;
+		// In committed-snapshot mode, always read from the committed layer (readLayer),
+		// ignoring any pending transaction layer
+		const startLayer = this.readCommitted ? conn.readLayer : (conn.pendingTransactionLayer ?? conn.readLayer);
 		logger.debugLog(`query reading from layer ${startLayer.getLayerId()}`);
 
 		// Delegate scanning to the manager, which handles layer recursion
@@ -213,6 +227,9 @@ export class MemoryTable extends VirtualTable {
 
 	/** Performs mutation through the connection's transaction layer */
 	async update(args: import('../table.js').UpdateArgs): Promise<UpdateResult> {
+		if (this.readCommitted) {
+			throw new QuereusError("Cannot modify committed-state snapshot", StatusCode.ERROR);
+		}
 		const conn = await this.ensureConnection();
 		// Delegate mutation to the manager.
 		// Note: mutationStatement is ignored by memory table (could be logged if needed)
@@ -317,6 +334,11 @@ export class MemoryTable extends VirtualTable {
 			this.connection = null;
 			this.cachedVtabConnection = null;
 		}
+	}
+
+	/** Returns true if this table is in committed-snapshot (read-only) mode */
+	isCommittedSnapshot(): boolean {
+		return this.readCommitted;
 	}
 
 	// --- Index DDL methods delegate to the manager ---

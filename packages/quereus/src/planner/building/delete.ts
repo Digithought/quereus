@@ -17,11 +17,17 @@ import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
 import { buildConstraintChecks } from './constraint-builder.js';
 import { buildParentSideFKChecks } from './foreign-key-builder.js';
+import { isCommittedSchemaRef } from './schema-resolution.js';
 
 export function buildDeleteStmt(
   ctx: PlanningContext,
   stmt: AST.DeleteStmt,
 ): PlanNode {
+  // Block DML on committed pseudo-schema
+  if (isCommittedSchemaRef(stmt.table.schema)) {
+    throw new QuereusError(`Cannot modify committed-state table 'committed.${stmt.table.name}'`, StatusCode.ERROR);
+  }
+
   // Apply schema path from statement if present
   const contextWithSchemaPath = stmt.schemaPath
     ? { ...ctx, schemaPath: stmt.schemaPath }

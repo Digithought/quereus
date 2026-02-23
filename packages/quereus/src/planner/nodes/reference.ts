@@ -27,7 +27,8 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 		public readonly tableSchema: TableSchema,
 		public readonly vtabModule: AnyVirtualTableModule,
 		public readonly vtabAuxData?: unknown,
-		estimatedCostOverride?: number
+		estimatedCostOverride?: number,
+		public readonly readCommitted: boolean = false
 	) {
 		super(scope, estimatedCostOverride ?? 1);
 		this.typeCache = new Cached(() => relationTypeFromTableSchema(tableSchema));
@@ -77,7 +78,8 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 	}
 
 	override toString(): string {
-		return `${this.tableSchema.schemaName}.${this.tableSchema.name}`;
+		const prefix = this.readCommitted ? 'committed.' : '';
+		return `${prefix}${this.tableSchema.schemaName}.${this.tableSchema.name}`;
 	}
 
 	getAccessMethod(): 'sequential' | 'index-scan' | 'index-seek' | 'virtual' {
@@ -105,6 +107,7 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 			schema: this.tableSchema.schemaName,
 			table: this.tableSchema.name,
 			columns: this.tableSchema.columns.map(col => col.name),
+			...(this.readCommitted ? { readCommitted: true } : {}),
 			estimates: {
 				rows: this.tableSchema.estimatedRows
 			}

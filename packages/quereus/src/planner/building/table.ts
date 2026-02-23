@@ -4,7 +4,7 @@ import type * as AST from '../../parser/ast.js';
 import { TableReferenceNode } from '../nodes/reference.js';
 import { RetrieveNode } from '../nodes/retrieve-node.js';
 import type { PlanningContext } from '../planning-context.js';
-import { resolveTableSchema, resolveVtabModule } from './schema-resolution.js';
+import { resolveTableSchema, resolveVtabModule, isCommittedSchemaRef } from './schema-resolution.js';
 
 /**
  * Plans a table reference operation based on a FROM clause item.
@@ -21,7 +21,10 @@ export function buildTableReference(fromClause: AST.FromClause, context: Plannin
 		throw new QuereusError('buildTableReference currently only supports simple table references.', StatusCode.INTERNAL);
 	}
 
-	// Resolve table schema at build time
+	// Detect committed pseudo-schema before resolving
+	const readCommitted = isCommittedSchemaRef(fromClause.table.schema);
+
+	// Resolve table schema at build time (committed schema is intercepted in resolveTableSchema)
 	const tableSchema = resolveTableSchema(context, fromClause.table.name, fromClause.table.schema);
 
 	// Resolve vtab module at build time
@@ -31,7 +34,9 @@ export function buildTableReference(fromClause: AST.FromClause, context: Plannin
 		context.scope,
 		tableSchema,
 		vtabModuleInfo.module,
-		vtabModuleInfo.auxData
+		vtabModuleInfo.auxData,
+		undefined,
+		readCommitted
 	);
 
 	// Wrap in RetrieveNode to establish vtab/Quereus boundary
