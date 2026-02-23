@@ -588,22 +588,7 @@ if (shouldCache(node, context)) {
 
 ## Future Directions
 
-The optimizer architecture is designed to support future enhancements:
-
-**Advanced Statistics**
-- Histogram-based selectivity estimation
-- Multi-column statistics
-- Adaptive query optimization
-
-**Additional Physical Operators**
-- ~~Merge joins~~ (implemented alongside bloom/hash joins)
-- Parallel execution nodes
-- Specialized aggregation algorithms
-
-**Query Rewriting**
-- View expansion optimizations
-- Common subexpression elimination
-- Key driven row-count reduction
+See tasks/ for future optimizer work.
 
 The modular rule-based design ensures these enhancements can be added incrementally without disrupting existing functionality. 
 

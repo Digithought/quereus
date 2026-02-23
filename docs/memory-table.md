@@ -158,32 +158,10 @@ await db.exec("alter table users rename column created_at to registration_date")
 
 ## **Current Limitations:**
 
-*   **Constraint Enforcement:** Only primary key `UNIQUE` constraints are fully enforced. Other constraints (`NOT NULL`, `CHECK`) are parsed but not enforced during DML operations within the memory table
-*   **Default Values:** `DEFAULT` clauses in column definitions are not automatically applied during `INSERT` operations
-*   **Advanced Query Planning:** Cost estimation is heuristic; range scans only consider the first column of composite indexes. Multi-value `IN` supports single-column index seeks; composite index `IN` is not yet implemented
-*   **IS NULL Optimization:** `IS NULL` / `IS NOT NULL` are handled as residual filters; index-level nullability-aware planning is not yet wired up
-*   **Index Features:** Expression-based indexes and advanced collation support are not implemented
-
-## **Future Enhancements:**
-
-### **Near-Term Improvements:**
-*   **Enhanced Constraint Enforcement:** Full support for `NOT NULL`, `CHECK`, and `DEFAULT` constraints within memory table operations
-*   **Improved Query Planning:** Multi-column range scan support and IS NULL/IS NOT NULL constraint extraction for index-level optimization
-*   **Composite IN:** Multi-value `IN` on composite indexes (currently single-column only)
-*   **Expression Indexes:** Support for indexes on computed expressions
-*   **Advanced Collations:** Enhanced collation support beyond basic `BINARY`, `NOCASE`, and `RTRIM`
-
-### **Medium-Term Features:**
-*   **Compression:** Page-level compression for reduced memory usage in inherited BTrees
-*   **Statistics Collection:** Automatic table/index statistics for improved cost estimation in `xBestIndex`
-*   **Index Optimization:** Support for covering indexes and index-only scans
-*   **Memory Monitoring:** Better tracking and reporting of memory usage across layers
-
-### **Long-Term Possibilities:**
-*   **Persistent Storage Integration:** Optional backing store for memory table durability
-*   **Advanced MVCC Features:** Read-committed isolation levels within memory table transactions
-*   **Partitioning:** Horizontal table partitioning for very large memory tables
-*   **Custom Index Types:** Support for specialized index types (hash, bitmap, etc.)
+*   **Constraint Enforcement:** Only primary key `UNIQUE` constraints are fully enforced. `NOT NULL`, `CHECK`, and `DEFAULT` are parsed but not enforced/applied during DML operations — see `tasks/plan/2-memory-table-constraint-enforcement.md`
+*   **Advanced Query Planning:** Range scans only consider the first column of composite indexes; composite index `IN` is not yet implemented — see `tasks/plan/2-composite-index-advanced-seeks.md`
+*   **IS NULL Optimization:** `IS NULL` / `IS NOT NULL` are handled as residual filters; index-level nullability-aware planning is not yet wired up — see `tasks/plan/2-is-null-index-optimization.md`
+*   **Expression Indexes:** Expression-based indexes are not implemented — see `tasks/plan/2-expression-indexes.md`
 
 ## **Performance Characteristics:**
 
