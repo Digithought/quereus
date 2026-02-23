@@ -7,7 +7,8 @@ This document describes the architecture and implementation of SQL window functi
 Window functions perform calculations across a set of table rows related to the current row without collapsing them into a single result (unlike aggregate functions in GROUP BY). Quereus provides comprehensive window function support with a modern, extensible architecture that follows the Titan principles of immutable PlanNodes and instruction-based runtime execution.
 
 **Supported window functions:**
-- **Ranking Functions**: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `NTILE()`
+- **Ranking Functions**: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()`, `NTILE()`, `PERCENT_RANK()`, `CUME_DIST()`
+- **Navigation Functions**: `LAG()`, `LEAD()`, `FIRST_VALUE()`, `LAST_VALUE()`
 - **Aggregate Functions**: `COUNT()`, `SUM()`, `AVG()`, `MIN()`, `MAX()` with OVER clause
 
 ## Architecture Components
@@ -107,6 +108,39 @@ SELECT date, value,
 FROM measurements;
 ```
 
+### Navigation Functions
+
+```sql
+-- Access previous/next row values
+SELECT date, amount,
+       LAG(amount) OVER (ORDER BY date) as prev_amount,
+       LEAD(amount) OVER (ORDER BY date) as next_amount
+FROM transactions;
+
+-- With offset and default value
+SELECT date, amount,
+       LAG(amount, 2, 0) OVER (ORDER BY date) as two_back
+FROM transactions;
+
+-- First and last values in frame
+SELECT date, amount,
+       FIRST_VALUE(amount) OVER (PARTITION BY month ORDER BY date) as first_in_month,
+       LAST_VALUE(amount) OVER (PARTITION BY month ORDER BY date
+           ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_in_month
+FROM transactions;
+```
+
+### Statistical Ranking
+
+```sql
+-- Percentile ranking and cumulative distribution
+SELECT name, score,
+       PERCENT_RANK() OVER (ORDER BY score) as pct_rank,
+       CUME_DIST() OVER (ORDER BY score) as cume_dist,
+       NTILE(4) OVER (ORDER BY score) as quartile
+FROM test_results;
+```
+
 ### NULL Handling
 
 ```sql
@@ -145,6 +179,9 @@ Window functions are comprehensively tested through SQL Logic Tests (`test/logic
 - Collation-aware PARTITION BY (NOCASE grouping)
 - Collation-aware ranking (DENSE_RANK / RANK with NOCASE ORDER BY)
 - NULL PARTITION BY grouping (SQL standard: NULLs group together)
+- Navigation functions (LAG, LEAD with offset/default, FIRST_VALUE, LAST_VALUE)
+- Statistical ranking (PERCENT_RANK, CUME_DIST with ties)
+- NTILE bucket distribution
 
 ## Extensibility
 
@@ -161,15 +198,9 @@ registerWindowFunction('NEW_FUNC', {
 
 ## Future Enhancements
 
-**Navigation Functions (Planned):**
-- `LAG(expr, offset, default)` - Access previous row values
-- `LEAD(expr, offset, default)` - Access following row values
-- `FIRST_VALUE(expr)` - First value in frame  
-- `LAST_VALUE(expr)` - Last value in frame
-
 **Advanced Features:**
 - Named window specifications (WINDOW clause)
 - Custom frame exclusion options
-- Range frames with value-based bounds
+- Range frames with value-based bounds (RANGE BETWEEN with numeric offsets)
 
 The window function implementation provides a solid foundation for advanced SQL analytics while maintaining the architectural principles of the Titan runtime system. 

@@ -37,10 +37,12 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 		emitCallFromPlan(exprPlan, ctx)
 	);
 
-	// Emit callbacks for window function arguments
-	const functionArgCallbacks = plan.functionArguments.map(argPlan =>
-		argPlan ? emitCallFromPlan(argPlan, ctx) : null
+	// Emit callbacks for window function arguments (2D: per-function arrays)
+	const functionArgCallbacks = plan.functionArguments.map(argPlans =>
+		argPlans.map(argPlan => emitCallFromPlan(argPlan, ctx))
 	);
+	// Track per-function arg counts for callback reconstruction in run()
+	const functionArgCounts = plan.functionArguments.map(args => args.length);
 
 	// Create row descriptors
 	const sourceRowDescriptor = buildRowDescriptor(plan.source.getAttributes());
@@ -84,9 +86,13 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 			partitionCallbacks.length,
 			partitionCallbacks.length + orderByCallbacks.length
 		);
-		const funcArgCallbackList = callbacks.slice(
-			partitionCallbacks.length + orderByCallbacks.length
-		);
+		// Reconstruct per-function arg callback arrays from flattened list
+		const funcArgCallbackGroups: Array<(ctx: RuntimeContext) => OutputValue>[] = [];
+		let argOffset = partitionCallbacks.length + orderByCallbacks.length;
+		for (const count of functionArgCounts) {
+			funcArgCallbackGroups.push(callbacks.slice(argOffset, argOffset + count));
+			argOffset += count;
+		}
 
 		// Collect all rows (window functions require materialization for frame evaluation)
 		const allRows: Row[] = [];
@@ -102,7 +108,7 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 				yield* processPartition(
 					allRows, plan, functionSchemas, rctx,
 					sourceRowDescriptor,
-					partitionCallbackList, orderByCallbackList, funcArgCallbackList,
+					partitionCallbackList, orderByCallbackList, funcArgCallbackGroups,
 					sourceSlot, orderByComparators, orderByEqualityComparators, orderByKeyNormalizers
 				);
 			} else {
@@ -115,7 +121,7 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 					yield* processPartition(
 						partitionRows, plan, functionSchemas, rctx,
 						sourceRowDescriptor,
-						partitionCallbackList, orderByCallbackList, funcArgCallbackList,
+						partitionCallbackList, orderByCallbackList, funcArgCallbackGroups,
 						sourceSlot, orderByComparators, orderByEqualityComparators, orderByKeyNormalizers
 					);
 				}
@@ -125,11 +131,11 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 		}
 	}
 
-	// Collect all callbacks
+	// Collect all callbacks (flatten per-function arg arrays)
 	const allCallbacks = [
 		...partitionCallbacks,
 		...orderByCallbacks,
-		...functionArgCallbacks.filter(cb => cb !== null)
+		...functionArgCallbacks.flat()
 	];
 
 	const sourceInstruction = emitPlanNode(plan.source, ctx);
@@ -174,17 +180,21 @@ async function* processPartition(
 	sourceRowDescriptor: RowDescriptor,
 	partitionCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	orderByCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
-	funcArgCallbacks: Array<(ctx: RuntimeContext) => OutputValue | null>,
+	funcArgCallbackGroups: Array<Array<(ctx: RuntimeContext) => OutputValue>>,
 	sourceSlot: RowSlot,
 	preResolvedOrderByComparators: Array<(a: SqlValue, b: SqlValue) => number>,
 	preResolvedEqualityComparators: Array<(a: SqlValue, b: SqlValue) => number>,
 	orderByKeyNormalizers: readonly ((s: string) => string)[]
 ): AsyncIterable<Row> {
 	// Sort rows according to ORDER BY specification
-	const sortedRows = await sortRows(
+	const sorted = await sortRows(
 		partitionRows, plan.windowSpec.orderBy, orderByCallbacks,
 		rctx, sourceSlot, preResolvedOrderByComparators
 	);
+	const sortedRows = sorted.rows;
+	const orderByValues = sorted.orderByValues;
+
+	const partitionSize = sortedRows.length;
 
 	// Process each row in the sorted partition
 	for (let currentIndex = 0; currentIndex < sortedRows.length; currentIndex++) {
@@ -199,20 +209,34 @@ async function* processPartition(
 		for (let funcIndex = 0; funcIndex < plan.functions.length; funcIndex++) {
 			const func = plan.functions[funcIndex];
 			const schema = functionSchemas[funcIndex];
-			const argCallback = funcArgCallbacks[funcIndex];
+			const argCallbacks = funcArgCallbackGroups[funcIndex];
 
 			let value: SqlValue;
 
 			if (schema.kind === 'ranking') {
 				value = await computeRankingFunction(
-					func.functionName, sortedRows, currentIndex,
-					orderByCallbacks, rctx, sourceSlot, preResolvedEqualityComparators,
-					orderByKeyNormalizers
+					func.functionName, sortedRows, currentIndex, partitionSize,
+					argCallbacks, orderByCallbacks, rctx, sourceSlot,
+					preResolvedEqualityComparators, orderByKeyNormalizers
 				);
 			} else if (schema.kind === 'aggregate') {
 				value = await computeAggregateFunction(
-					schema, argCallback, sortedRows, currentIndex,
+					schema, argCallbacks[0] ?? null, sortedRows, currentIndex,
 					plan.windowSpec.frame, plan.windowSpec.orderBy.length > 0,
+					orderByValues, preResolvedEqualityComparators,
+					rctx, sourceSlot
+				);
+			} else if (schema.kind === 'navigation') {
+				value = await computeNavigationFunction(
+					func.functionName, sortedRows, currentIndex,
+					argCallbacks, rctx, sourceSlot
+				);
+			} else if (schema.kind === 'value') {
+				value = await computeValueFunction(
+					func.functionName, sortedRows, currentIndex,
+					argCallbacks, plan.windowSpec.frame,
+					plan.windowSpec.orderBy.length > 0,
+					orderByValues, preResolvedEqualityComparators,
 					rctx, sourceSlot
 				);
 			} else {
@@ -234,6 +258,13 @@ async function* processPartition(
 	}
 }
 
+/** Result of sorting rows, including pre-evaluated ORDER BY values */
+interface SortedPartition {
+	rows: Row[];
+	/** ORDER BY values for each row (one array of values per row). Empty if no ORDER BY. */
+	orderByValues: SqlValue[][];
+}
+
 async function sortRows(
 	rows: Row[],
 	orderBy: AST.OrderByClause[],
@@ -241,9 +272,9 @@ async function sortRows(
 	rctx: RuntimeContext,
 	sourceSlot: RowSlot,
 	preResolvedComparators: Array<(a: SqlValue, b: SqlValue) => number>
-): Promise<Row[]> {
+): Promise<SortedPartition> {
 	if (orderBy.length === 0) {
-		return rows; // No sorting needed
+		return { rows, orderByValues: rows.map(() => []) };
 	}
 
 	// Pre-evaluate ORDER BY values for all rows to avoid async in sort
@@ -278,14 +309,18 @@ async function sortRows(
 		return 0; // All ORDER BY expressions are equal
 	});
 
-	// Extract just the rows in sorted order
-	return rowsWithValues.map(item => item.row);
+	return {
+		rows: rowsWithValues.map(item => item.row),
+		orderByValues: rowsWithValues.map(item => item.values as SqlValue[])
+	};
 }
 
 async function computeRankingFunction(
 	functionName: string,
 	sortedRows: Row[],
 	currentIndex: number,
+	partitionSize: number,
+	argCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
 	rctx: RuntimeContext,
 	sourceSlot: RowSlot,
@@ -297,19 +332,7 @@ async function computeRankingFunction(
 			return currentIndex + 1;
 
 		case 'rank': {
-			// Find rank by counting how many rows come before this one in sort order
-			let rank = 1;
-			const currentRow = sortedRows[currentIndex];
-
-			for (let i = 0; i < currentIndex; i++) {
-				const prevRow = sortedRows[i];
-				if (!(await areRowsEqualInOrderBy(
-					prevRow, currentRow, orderByCallbacks, rctx, sourceSlot, equalityComparators
-				))) {
-					rank = i + 2; // Rank is 1-based and accounts for ties
-				}
-			}
-			return rank;
+			return computeRank(sortedRows, currentIndex, orderByCallbacks, rctx, sourceSlot, equalityComparators);
 		}
 
 		case 'dense_rank': {
@@ -334,12 +357,153 @@ async function computeRankingFunction(
 			return denseRank;
 		}
 
+		case 'ntile': {
+			// Evaluate the bucket count argument
+			const nValue = argCallbacks.length > 0
+				? await Promise.resolve(argCallbacks[0](rctx)) as SqlValue
+				: 1;
+			const n = Number(nValue) || 1;
+			if (n <= 0) return 1;
+
+			// Divide partition into n roughly equal groups
+			const q = Math.floor(partitionSize / n);
+			const r = partitionSize % n;
+			// First r groups have (q+1) rows, remaining have q rows
+			if (currentIndex < r * (q + 1)) {
+				return Math.floor(currentIndex / (q + 1)) + 1;
+			} else {
+				return r + Math.floor((currentIndex - r * (q + 1)) / q) + 1;
+			}
+		}
+
+		case 'percent_rank': {
+			if (partitionSize <= 1) return 0;
+			const rank = await computeRank(sortedRows, currentIndex, orderByCallbacks, rctx, sourceSlot, equalityComparators);
+			return (rank - 1) / (partitionSize - 1);
+		}
+
+		case 'cume_dist': {
+			// CUME_DIST = (number of rows <= current row) / partitionSize
+			// = (index of last peer + 1) / partitionSize
+			const currentRow = sortedRows[currentIndex];
+			let lastPeerIndex = currentIndex;
+			for (let i = currentIndex + 1; i < partitionSize; i++) {
+				if (await areRowsEqualInOrderBy(
+					sortedRows[i], currentRow, orderByCallbacks, rctx, sourceSlot, equalityComparators
+				)) {
+					lastPeerIndex = i;
+				} else {
+					break;
+				}
+			}
+			return (lastPeerIndex + 1) / partitionSize;
+		}
+
 		default:
 			throw new QuereusError(
 				`Ranking function ${functionName} not implemented`,
 				StatusCode.UNSUPPORTED
 			);
 	}
+}
+
+/** Compute RANK() value — extracted for reuse by PERCENT_RANK */
+async function computeRank(
+	sortedRows: Row[],
+	currentIndex: number,
+	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
+	rctx: RuntimeContext,
+	sourceSlot: RowSlot,
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>
+): Promise<number> {
+	let rank = 1;
+	const currentRow = sortedRows[currentIndex];
+	for (let i = 0; i < currentIndex; i++) {
+		const prevRow = sortedRows[i];
+		if (!(await areRowsEqualInOrderBy(
+			prevRow, currentRow, orderByCallbacks, rctx, sourceSlot, equalityComparators
+		))) {
+			rank = i + 2; // Rank is 1-based and accounts for ties
+		}
+	}
+	return rank;
+}
+
+async function computeNavigationFunction(
+	functionName: string,
+	sortedRows: Row[],
+	currentIndex: number,
+	argCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
+	rctx: RuntimeContext,
+	sourceSlot: RowSlot
+): Promise<SqlValue> {
+	const exprCallback = argCallbacks[0];
+	if (!exprCallback) {
+		throw new QuereusError(`${functionName} requires at least one argument`, StatusCode.ERROR);
+	}
+
+	// Evaluate offset (2nd arg, default 1)
+	let offset = 1;
+	if (argCallbacks.length >= 2) {
+		const offsetValue = await Promise.resolve(argCallbacks[1](rctx));
+		offset = Number(offsetValue) || 0;
+	}
+
+	// Evaluate default value (3rd arg, default null)
+	let defaultValue: SqlValue = null;
+	if (argCallbacks.length >= 3) {
+		defaultValue = await Promise.resolve(argCallbacks[2](rctx)) as SqlValue;
+	}
+
+	const name = functionName.toLowerCase();
+	const targetIndex = name === 'lag'
+		? currentIndex - offset
+		: currentIndex + offset; // 'lead'
+
+	if (targetIndex < 0 || targetIndex >= sortedRows.length) {
+		return defaultValue;
+	}
+
+	// Evaluate expression on the target row
+	sourceSlot.set(sortedRows[targetIndex]);
+	return await Promise.resolve(exprCallback(rctx)) as SqlValue;
+}
+
+async function computeValueFunction(
+	functionName: string,
+	sortedRows: Row[],
+	currentIndex: number,
+	argCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
+	frame: import('../../parser/ast.js').WindowFrame | undefined,
+	hasOrderBy: boolean,
+	orderByValues: SqlValue[][],
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>,
+	rctx: RuntimeContext,
+	sourceSlot: RowSlot
+): Promise<SqlValue> {
+	const exprCallback = argCallbacks[0];
+	if (!exprCallback) {
+		throw new QuereusError(`${functionName} requires one argument`, StatusCode.ERROR);
+	}
+
+	const frameBounds = getFrameBounds(frame, sortedRows.length, currentIndex, hasOrderBy, orderByValues, equalityComparators);
+	const name = functionName.toLowerCase();
+
+	let targetIndex: number;
+	if (name === 'first_value') {
+		targetIndex = frameBounds.start;
+	} else {
+		// last_value
+		targetIndex = frameBounds.end;
+	}
+
+	// Handle empty frame
+	if (targetIndex < 0 || targetIndex >= sortedRows.length || frameBounds.start > frameBounds.end) {
+		return null;
+	}
+
+	sourceSlot.set(sortedRows[targetIndex]);
+	return await Promise.resolve(exprCallback(rctx)) as SqlValue;
 }
 
 async function computeAggregateFunction(
@@ -349,10 +513,12 @@ async function computeAggregateFunction(
 	currentIndex: number,
 	frame: AST.WindowFrame | undefined,
 	hasOrderBy: boolean,
+	orderByValues: SqlValue[][],
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>,
 	rctx: RuntimeContext,
 	sourceSlot: RowSlot
 ): Promise<SqlValue> {
-	const frameBounds = getFrameBounds(frame, sortedRows.length, currentIndex, hasOrderBy);
+	const frameBounds = getFrameBounds(frame, sortedRows.length, currentIndex, hasOrderBy, orderByValues, equalityComparators);
 
 	let accumulator: SqlValue = null;
 	let rowCount = 0;
@@ -384,7 +550,9 @@ function getFrameBounds(
 	frame: AST.WindowFrame | undefined,
 	totalRows: number,
 	currentIndex: number,
-	hasOrderBy: boolean = true
+	hasOrderBy: boolean = true,
+	orderByValues: SqlValue[][] = [],
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number> = []
 ): { start: number; end: number } {
 	if (!frame) {
 		if (!hasOrderBy) {
@@ -392,9 +560,13 @@ function getFrameBounds(
 			return { start: 0, end: totalRows - 1 };
 		} else {
 			// With ORDER BY: default frame is RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-			return { start: 0, end: currentIndex };
+			// In RANGE mode, CURRENT ROW means all peer rows (same ORDER BY values)
+			const lastPeer = findLastPeer(currentIndex, totalRows, orderByValues, equalityComparators);
+			return { start: 0, end: lastPeer };
 		}
 	}
+
+	const isRange = frame.type === 'range';
 
 	let start: number;
 	let end: number;
@@ -403,13 +575,23 @@ function getFrameBounds(
 	if (frame.start.type === 'unboundedPreceding') {
 		start = 0;
 	} else if (frame.start.type === 'currentRow') {
-		start = currentIndex;
+		start = isRange
+			? findFirstPeer(currentIndex, totalRows, orderByValues, equalityComparators)
+			: currentIndex;
 	} else if (frame.start.type === 'preceding') {
 		const offset = getFrameOffset(frame.start.value);
-		start = Math.max(0, currentIndex - offset);
+		if (isRange) {
+			start = findRangeOffsetStart(currentIndex, totalRows, orderByValues, -offset);
+		} else {
+			start = Math.max(0, currentIndex - offset);
+		}
 	} else if (frame.start.type === 'following') {
 		const offset = getFrameOffset(frame.start.value);
-		start = Math.min(totalRows - 1, currentIndex + offset);
+		if (isRange) {
+			start = findRangeOffsetStart(currentIndex, totalRows, orderByValues, offset);
+		} else {
+			start = Math.min(totalRows - 1, currentIndex + offset);
+		}
 	} else {
 		start = 0;
 	}
@@ -417,17 +599,29 @@ function getFrameBounds(
 	// Calculate end bound
 	if (frame.end === null) {
 		// Single bound frame - end is current row
-		end = currentIndex;
+		end = isRange
+			? findLastPeer(currentIndex, totalRows, orderByValues, equalityComparators)
+			: currentIndex;
 	} else if (frame.end.type === 'unboundedFollowing') {
 		end = totalRows - 1;
 	} else if (frame.end.type === 'currentRow') {
-		end = currentIndex;
+		end = isRange
+			? findLastPeer(currentIndex, totalRows, orderByValues, equalityComparators)
+			: currentIndex;
 	} else if (frame.end.type === 'preceding') {
 		const offset = getFrameOffset(frame.end.value);
-		end = Math.max(0, currentIndex - offset);
+		if (isRange) {
+			end = findRangeOffsetEnd(currentIndex, totalRows, orderByValues, -offset);
+		} else {
+			end = Math.max(0, currentIndex - offset);
+		}
 	} else if (frame.end.type === 'following') {
 		const offset = getFrameOffset(frame.end.value);
-		end = Math.min(totalRows - 1, currentIndex + offset);
+		if (isRange) {
+			end = findRangeOffsetEnd(currentIndex, totalRows, orderByValues, offset);
+		} else {
+			end = Math.min(totalRows - 1, currentIndex + offset);
+		}
 	} else {
 		end = currentIndex;
 	}
@@ -438,6 +632,97 @@ function getFrameBounds(
 	}
 
 	return { start, end };
+}
+
+/** Find the first row in the peer group (rows with same ORDER BY values) */
+function findFirstPeer(
+	currentIndex: number,
+	_totalRows: number,
+	orderByValues: SqlValue[][],
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>
+): number {
+	const currentVals = orderByValues[currentIndex];
+	let first = currentIndex;
+	while (first > 0 && arePeerRows(orderByValues[first - 1], currentVals, equalityComparators)) {
+		first--;
+	}
+	return first;
+}
+
+/** Find the last row in the peer group */
+function findLastPeer(
+	currentIndex: number,
+	totalRows: number,
+	orderByValues: SqlValue[][],
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>
+): number {
+	const currentVals = orderByValues[currentIndex];
+	let last = currentIndex;
+	while (last < totalRows - 1 && arePeerRows(orderByValues[last + 1], currentVals, equalityComparators)) {
+		last++;
+	}
+	return last;
+}
+
+/** Check if two rows have equal ORDER BY values */
+function arePeerRows(
+	valsA: SqlValue[],
+	valsB: SqlValue[],
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>
+): boolean {
+	for (let i = 0; i < equalityComparators.length; i++) {
+		if (equalityComparators[i](valsA[i], valsB[i]) !== 0) return false;
+	}
+	return true;
+}
+
+/**
+ * For RANGE N PRECEDING/FOLLOWING: find the first row whose ORDER BY value
+ * is >= (currentValue + offset). Uses the first ORDER BY expression only
+ * (SQL standard requires single ORDER BY for numeric RANGE offsets).
+ */
+function findRangeOffsetStart(
+	currentIndex: number,
+	totalRows: number,
+	orderByValues: SqlValue[][],
+	offset: number // negative for PRECEDING, positive for FOLLOWING
+): number {
+	const currentVal = Number(orderByValues[currentIndex][0]);
+	if (!Number.isFinite(currentVal)) return currentIndex;
+	const targetVal = currentVal + offset;
+
+	// Scan from beginning to find first row >= targetVal
+	for (let i = 0; i < totalRows; i++) {
+		const rowVal = Number(orderByValues[i][0]);
+		if (Number.isFinite(rowVal) && rowVal >= targetVal) {
+			return i;
+		}
+	}
+	return totalRows; // No matching row (empty frame start)
+}
+
+/**
+ * For RANGE N PRECEDING/FOLLOWING: find the last row whose ORDER BY value
+ * is <= (currentValue + offset).
+ */
+function findRangeOffsetEnd(
+	currentIndex: number,
+	totalRows: number,
+	orderByValues: SqlValue[][],
+	offset: number
+): number {
+	const currentVal = Number(orderByValues[currentIndex][0]);
+	if (!Number.isFinite(currentVal)) return currentIndex;
+	const targetVal = currentVal + offset;
+
+	// Scan from end to find last row <= targetVal
+	for (let i = totalRows - 1; i >= 0; i--) {
+		const rowVal = Number(orderByValues[i][0]);
+		if (Number.isFinite(rowVal) && rowVal <= targetVal) {
+			return i;
+		}
+	}
+	return -1; // No matching row (empty frame end)
 }
 
 function getFrameOffset(expr: AST.Expression): number {

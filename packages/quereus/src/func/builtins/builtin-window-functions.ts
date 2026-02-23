@@ -57,6 +57,87 @@ export function registerBuiltinWindowFunctions(): void {
 		kind: 'ranking'
 	});
 
+	// Navigation functions
+	registerWindowFunction({
+		name: 'LAG',
+		argCount: 'variadic',
+		returnType: {
+			typeClass: 'scalar',
+			logicalType: REAL_TYPE,
+			nullable: true,
+			isReadOnly: true
+		},
+		requiresOrderBy: true,
+		kind: 'navigation'
+	});
+
+	registerWindowFunction({
+		name: 'LEAD',
+		argCount: 'variadic',
+		returnType: {
+			typeClass: 'scalar',
+			logicalType: REAL_TYPE,
+			nullable: true,
+			isReadOnly: true
+		},
+		requiresOrderBy: true,
+		kind: 'navigation'
+	});
+
+	// Value functions (frame-dependent)
+	registerWindowFunction({
+		name: 'FIRST_VALUE',
+		argCount: 1,
+		returnType: {
+			typeClass: 'scalar',
+			logicalType: REAL_TYPE,
+			nullable: true,
+			isReadOnly: true
+		},
+		requiresOrderBy: false,
+		kind: 'value'
+	});
+
+	registerWindowFunction({
+		name: 'LAST_VALUE',
+		argCount: 1,
+		returnType: {
+			typeClass: 'scalar',
+			logicalType: REAL_TYPE,
+			nullable: true,
+			isReadOnly: true
+		},
+		requiresOrderBy: false,
+		kind: 'value'
+	});
+
+	// Statistical ranking functions
+	registerWindowFunction({
+		name: 'PERCENT_RANK',
+		argCount: 0,
+		returnType: {
+			typeClass: 'scalar',
+			logicalType: REAL_TYPE,
+			nullable: false,
+			isReadOnly: true
+		},
+		requiresOrderBy: true,
+		kind: 'ranking'
+	});
+
+	registerWindowFunction({
+		name: 'CUME_DIST',
+		argCount: 0,
+		returnType: {
+			typeClass: 'scalar',
+			logicalType: REAL_TYPE,
+			nullable: false,
+			isReadOnly: true
+		},
+		requiresOrderBy: true,
+		kind: 'ranking'
+	});
+
 	// Aggregate functions as window functions
 	registerWindowFunction({
 		name: 'COUNT',

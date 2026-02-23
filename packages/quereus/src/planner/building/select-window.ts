@@ -130,24 +130,25 @@ function shouldUseSequencingNode(
 }
 
 /**
- * Builds function argument expressions for window functions
+ * Builds function argument expressions for window functions.
+ * Returns a 2D array: one array of ScalarPlanNodes per function.
  */
 function buildWindowFunctionArguments(
 	windowFuncsWithAlias: WindowFunctionCallNode[],
 	selectContext: PlanningContext
-): (ScalarPlanNode | null)[] {
+): ScalarPlanNode[][] {
 	return windowFuncsWithAlias.map(func => {
-		if (func.expression.function.args && func.expression.function.args.length > 0) {
-			const argExpr = func.expression.function.args[0];
-			return buildExpression(selectContext, argExpr, false);
+		const args = func.expression.function.args;
+		if (args && args.length > 0) {
+			// Build all arguments (supports multi-arg functions like LAG/LEAD)
+			return args.map(argExpr => buildExpression(selectContext, argExpr, false));
 		}
 		// Special case for COUNT(*) - it has no args but still needs a placeholder
-		if (func.functionName.toLowerCase() === 'count' &&
-			func.expression.function.args.length === 0) {
+		if (func.functionName.toLowerCase() === 'count' && args.length === 0) {
 			// Create a literal 1 as the argument for COUNT(*) - it counts rows, not specific values
-			return new LiteralNode(selectContext.scope, { type: 'literal', value: 1 });
+			return [new LiteralNode(selectContext.scope, { type: 'literal', value: 1 })];
 		}
-		return null;
+		return [];
 	});
 }
 

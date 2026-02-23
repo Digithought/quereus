@@ -218,3 +218,186 @@ FROM win_null_part ORDER BY id;
 DROP TABLE win_nocase;
 DROP TABLE win_rank_nocase;
 DROP TABLE win_null_part;
+
+-- =============================================================================
+-- LAG / LEAD tests
+-- =============================================================================
+
+CREATE TABLE nav_test (id INTEGER PRIMARY KEY, val INTEGER, grp TEXT);
+INSERT INTO nav_test VALUES
+(1, 10, 'A'), (2, 20, 'A'), (3, 30, 'A'),
+(4, 100, 'B'), (5, 200, 'B');
+
+-- Basic LAG (default offset = 1)
+SELECT id, val, LAG(val) OVER (ORDER BY id) as prev_val
+FROM nav_test ORDER BY id;
+→ [{"id":1,"val":10,"prev_val":null},{"id":2,"val":20,"prev_val":10},{"id":3,"val":30,"prev_val":20},{"id":4,"val":100,"prev_val":30},{"id":5,"val":200,"prev_val":100}]
+
+-- Basic LEAD (default offset = 1)
+SELECT id, val, LEAD(val) OVER (ORDER BY id) as next_val
+FROM nav_test ORDER BY id;
+→ [{"id":1,"val":10,"next_val":20},{"id":2,"val":20,"next_val":30},{"id":3,"val":30,"next_val":100},{"id":4,"val":100,"next_val":200},{"id":5,"val":200,"next_val":null}]
+
+-- LAG with explicit offset
+SELECT id, val, LAG(val, 2) OVER (ORDER BY id) as prev2_val
+FROM nav_test ORDER BY id;
+→ [{"id":1,"val":10,"prev2_val":null},{"id":2,"val":20,"prev2_val":null},{"id":3,"val":30,"prev2_val":10},{"id":4,"val":100,"prev2_val":20},{"id":5,"val":200,"prev2_val":30}]
+
+-- LEAD with explicit offset and default
+SELECT id, val, LEAD(val, 1, -1) OVER (ORDER BY id) as next_val
+FROM nav_test ORDER BY id;
+→ [{"id":1,"val":10,"next_val":20},{"id":2,"val":20,"next_val":30},{"id":3,"val":30,"next_val":100},{"id":4,"val":100,"next_val":200},{"id":5,"val":200,"next_val":-1}]
+
+-- LAG with default value
+SELECT id, val, LAG(val, 1, 0) OVER (ORDER BY id) as prev_val
+FROM nav_test ORDER BY id;
+→ [{"id":1,"val":10,"prev_val":0},{"id":2,"val":20,"prev_val":10},{"id":3,"val":30,"prev_val":20},{"id":4,"val":100,"prev_val":30},{"id":5,"val":200,"prev_val":100}]
+
+-- LAG/LEAD with PARTITION BY (should not cross partition boundaries)
+SELECT id, val, grp,
+       LAG(val) OVER (PARTITION BY grp ORDER BY id) as prev_val,
+       LEAD(val) OVER (PARTITION BY grp ORDER BY id) as next_val
+FROM nav_test ORDER BY id;
+→ [{"id":1,"val":10,"grp":"A","prev_val":null,"next_val":20},{"id":2,"val":20,"grp":"A","prev_val":10,"next_val":30},{"id":3,"val":30,"grp":"A","prev_val":20,"next_val":null},{"id":4,"val":100,"grp":"B","prev_val":null,"next_val":200},{"id":5,"val":200,"grp":"B","prev_val":100,"next_val":null}]
+
+DROP TABLE nav_test;
+
+-- =============================================================================
+-- FIRST_VALUE / LAST_VALUE tests
+-- =============================================================================
+
+CREATE TABLE fv_test (id INTEGER PRIMARY KEY, val INTEGER, grp TEXT);
+INSERT INTO fv_test VALUES
+(1, 10, 'A'), (2, 20, 'A'), (3, 30, 'A'),
+(4, 100, 'B'), (5, 200, 'B');
+
+-- FIRST_VALUE over entire partition
+SELECT id, val, grp,
+       FIRST_VALUE(val) OVER (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as first_val
+FROM fv_test ORDER BY id;
+→ [{"id":1,"val":10,"grp":"A","first_val":10},{"id":2,"val":20,"grp":"A","first_val":10},{"id":3,"val":30,"grp":"A","first_val":10},{"id":4,"val":100,"grp":"B","first_val":100},{"id":5,"val":200,"grp":"B","first_val":100}]
+
+-- LAST_VALUE over entire partition (must use explicit frame)
+SELECT id, val, grp,
+       LAST_VALUE(val) OVER (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val
+FROM fv_test ORDER BY id;
+→ [{"id":1,"val":10,"grp":"A","last_val":30},{"id":2,"val":20,"grp":"A","last_val":30},{"id":3,"val":30,"grp":"A","last_val":30},{"id":4,"val":100,"grp":"B","last_val":200},{"id":5,"val":200,"grp":"B","last_val":200}]
+
+-- LAST_VALUE with default frame (ORDER BY present, no explicit frame = up to current row)
+SELECT id, val,
+       LAST_VALUE(val) OVER (ORDER BY id) as last_val
+FROM fv_test ORDER BY id;
+→ [{"id":1,"val":10,"last_val":10},{"id":2,"val":20,"last_val":20},{"id":3,"val":30,"last_val":30},{"id":4,"val":100,"last_val":100},{"id":5,"val":200,"last_val":200}]
+
+-- FIRST_VALUE without ORDER BY (entire partition)
+SELECT id, val, grp,
+       FIRST_VALUE(val) OVER (PARTITION BY grp) as first_val
+FROM fv_test ORDER BY id;
+→ [{"id":1,"val":10,"grp":"A","first_val":10},{"id":2,"val":20,"grp":"A","first_val":10},{"id":3,"val":30,"grp":"A","first_val":10},{"id":4,"val":100,"grp":"B","first_val":100},{"id":5,"val":200,"grp":"B","first_val":100}]
+
+DROP TABLE fv_test;
+
+-- =============================================================================
+-- PERCENT_RANK / CUME_DIST tests
+-- =============================================================================
+
+CREATE TABLE stat_test (id INTEGER PRIMARY KEY, val INTEGER);
+INSERT INTO stat_test VALUES (1, 10), (2, 20), (3, 20), (4, 30), (5, 40);
+
+-- PERCENT_RANK: (rank - 1) / (rows - 1)
+SELECT id, val, PERCENT_RANK() OVER (ORDER BY val) as pct_rank
+FROM stat_test ORDER BY id;
+→ [{"id":1,"val":10,"pct_rank":0},{"id":2,"val":20,"pct_rank":0.25},{"id":3,"val":20,"pct_rank":0.25},{"id":4,"val":30,"pct_rank":0.75},{"id":5,"val":40,"pct_rank":1}]
+
+-- CUME_DIST: (count of rows <= current) / total
+SELECT id, val, CUME_DIST() OVER (ORDER BY val) as cume
+FROM stat_test ORDER BY id;
+→ [{"id":1,"val":10,"cume":0.2},{"id":2,"val":20,"cume":0.6},{"id":3,"val":20,"cume":0.6},{"id":4,"val":30,"cume":0.8},{"id":5,"val":40,"cume":1}]
+
+-- Single-row partition: PERCENT_RANK = 0, CUME_DIST = 1
+SELECT val, PERCENT_RANK() OVER (PARTITION BY val ORDER BY val) as pct_rank,
+       CUME_DIST() OVER (PARTITION BY val ORDER BY val) as cume
+FROM stat_test WHERE val = 10;
+→ [{"val":10,"pct_rank":0,"cume":1}]
+
+DROP TABLE stat_test;
+
+-- =============================================================================
+-- NTILE tests
+-- =============================================================================
+
+CREATE TABLE ntile_test (id INTEGER PRIMARY KEY, val INTEGER);
+INSERT INTO ntile_test VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50);
+
+-- NTILE(2): 3 rows in bucket 1, 2 rows in bucket 2
+SELECT id, val, NTILE(2) OVER (ORDER BY id) as bucket
+FROM ntile_test ORDER BY id;
+→ [{"id":1,"val":10,"bucket":1},{"id":2,"val":20,"bucket":1},{"id":3,"val":30,"bucket":1},{"id":4,"val":40,"bucket":2},{"id":5,"val":50,"bucket":2}]
+
+-- NTILE(3): 2 rows in bucket 1, 2 in bucket 2, 1 in bucket 3
+SELECT id, val, NTILE(3) OVER (ORDER BY id) as bucket
+FROM ntile_test ORDER BY id;
+→ [{"id":1,"val":10,"bucket":1},{"id":2,"val":20,"bucket":1},{"id":3,"val":30,"bucket":2},{"id":4,"val":40,"bucket":2},{"id":5,"val":50,"bucket":3}]
+
+-- NTILE(5): 1 row per bucket
+SELECT id, val, NTILE(5) OVER (ORDER BY id) as bucket
+FROM ntile_test ORDER BY id;
+→ [{"id":1,"val":10,"bucket":1},{"id":2,"val":20,"bucket":2},{"id":3,"val":30,"bucket":3},{"id":4,"val":40,"bucket":4},{"id":5,"val":50,"bucket":5}]
+
+DROP TABLE ntile_test;
+
+-- =============================================================================
+-- RANGE BETWEEN tests (value-based window frames)
+-- =============================================================================
+
+CREATE TABLE range_test (id INTEGER PRIMARY KEY, val INTEGER, grp TEXT);
+INSERT INTO range_test VALUES
+(1, 10, 'A'), (2, 20, 'A'), (3, 20, 'A'), (4, 30, 'A'), (5, 50, 'A');
+
+-- RANGE CURRENT ROW: includes all peer rows (same ORDER BY value)
+SELECT id, val,
+       COUNT(*) OVER (ORDER BY val RANGE CURRENT ROW) as peer_count
+FROM range_test ORDER BY id;
+→ [{"id":1,"val":10,"peer_count":1},{"id":2,"val":20,"peer_count":2},{"id":3,"val":20,"peer_count":2},{"id":4,"val":30,"peer_count":1},{"id":5,"val":50,"peer_count":1}]
+
+-- RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW (default frame with ORDER BY)
+-- Should include all peers at current value
+SELECT id, val,
+       SUM(val) OVER (ORDER BY val RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as running_sum
+FROM range_test ORDER BY id;
+→ [{"id":1,"val":10,"running_sum":10},{"id":2,"val":20,"running_sum":50},{"id":3,"val":20,"running_sum":50},{"id":4,"val":30,"running_sum":80},{"id":5,"val":50,"running_sum":130}]
+
+-- Default frame (ORDER BY present) should be RANGE UNBOUNDED PRECEDING AND CURRENT ROW
+-- including peers
+SELECT id, val,
+       SUM(val) OVER (ORDER BY val) as running_sum
+FROM range_test ORDER BY id;
+→ [{"id":1,"val":10,"running_sum":10},{"id":2,"val":20,"running_sum":50},{"id":3,"val":20,"running_sum":50},{"id":4,"val":30,"running_sum":80},{"id":5,"val":50,"running_sum":130}]
+
+-- RANGE N PRECEDING: value-based offset
+SELECT id, val,
+       SUM(val) OVER (ORDER BY val RANGE BETWEEN 10 PRECEDING AND CURRENT ROW) as range_sum
+FROM range_test ORDER BY id;
+→ [{"id":1,"val":10,"range_sum":10},{"id":2,"val":20,"range_sum":50},{"id":3,"val":20,"range_sum":50},{"id":4,"val":30,"range_sum":70},{"id":5,"val":50,"range_sum":50}]
+
+-- RANGE BETWEEN N PRECEDING AND N FOLLOWING
+-- val=10: [5,15] → 10; val=20: [15,25] → 20+20=40; val=30: [25,35] → 30; val=50: [45,55] → 50
+SELECT id, val,
+       SUM(val) OVER (ORDER BY val RANGE BETWEEN 5 PRECEDING AND 5 FOLLOWING) as range_sum
+FROM range_test ORDER BY id;
+→ [{"id":1,"val":10,"range_sum":10},{"id":2,"val":20,"range_sum":40},{"id":3,"val":20,"range_sum":40},{"id":4,"val":30,"range_sum":30},{"id":5,"val":50,"range_sum":50}]
+
+-- RANGE UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING (same as ROWS)
+SELECT id, val,
+       SUM(val) OVER (ORDER BY val RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as total
+FROM range_test ORDER BY id;
+→ [{"id":1,"val":10,"total":130},{"id":2,"val":20,"total":130},{"id":3,"val":20,"total":130},{"id":4,"val":30,"total":130},{"id":5,"val":50,"total":130}]
+
+-- FIRST_VALUE/LAST_VALUE with RANGE CURRENT ROW
+SELECT id, val,
+       FIRST_VALUE(id) OVER (ORDER BY val RANGE CURRENT ROW) as first_peer_id,
+       LAST_VALUE(id) OVER (ORDER BY val RANGE CURRENT ROW) as last_peer_id
+FROM range_test ORDER BY id;
+→ [{"id":1,"val":10,"first_peer_id":1,"last_peer_id":1},{"id":2,"val":20,"first_peer_id":2,"last_peer_id":3},{"id":3,"val":20,"first_peer_id":2,"last_peer_id":3},{"id":4,"val":30,"first_peer_id":4,"last_peer_id":4},{"id":5,"val":50,"first_peer_id":5,"last_peer_id":5}]
+
+DROP TABLE range_test;

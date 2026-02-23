@@ -29,7 +29,7 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 		public readonly functions: WindowFunctionCallNode[],
 		public readonly partitionExpressions: ScalarPlanNode[],
 		public readonly orderByExpressions: ScalarPlanNode[],
-		public readonly functionArguments: (ScalarPlanNode | null)[],
+		public readonly functionArguments: ScalarPlanNode[][],
 		estimatedCostOverride?: number,
 		/** Optional predefined attributes for preserving IDs during optimization */
 		public readonly predefinedAttributes?: Attribute[]
@@ -91,18 +91,19 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 			this.source,
 
 			// Scalar expressions: partition expressions, order-by expressions, and
-			// any non-null function arguments
+			// all function arguments (flattened from per-function arrays)
 			...this.partitionExpressions,
 			...this.orderByExpressions,
-			...this.functionArguments.filter(arg => arg !== null) as ScalarPlanNode[]
+			...this.functionArguments.flat()
 		];
 	}
 
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		const totalFuncArgs = this.functionArguments.reduce((sum, args) => sum + args.length, 0);
 		const expectedLength = 1 + // relational source
 			this.partitionExpressions.length +
 			this.orderByExpressions.length +
-			this.functionArguments.filter(arg => arg !== null).length;
+			totalFuncArgs;
 
 		if (newChildren.length !== expectedLength) {
 			throw new Error(`WindowNode expects ${expectedLength} children, got ${newChildren.length}`);
@@ -119,24 +120,20 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 		const newOrderByExpressions = newChildren.slice(childIndex, childIndex + this.orderByExpressions.length) as ScalarPlanNode[];
 		childIndex += this.orderByExpressions.length;
 
-		const newNonNullFunctionArgs = newChildren.slice(childIndex) as ScalarPlanNode[];
-
-		// Rebuild function arguments array preserving null positions
-		const newFunctionArguments: (ScalarPlanNode | null)[] = [];
-		let nonNullIndex = 0;
-		for (const arg of this.functionArguments) {
-			if (arg === null) {
-				newFunctionArguments.push(null);
-			} else {
-				newFunctionArguments.push(newNonNullFunctionArgs[nonNullIndex++]);
-			}
+		// Rebuild per-function argument arrays using original arg counts
+		const newFunctionArguments: ScalarPlanNode[][] = [];
+		for (const args of this.functionArguments) {
+			newFunctionArguments.push(newChildren.slice(childIndex, childIndex + args.length) as ScalarPlanNode[]);
+			childIndex += args.length;
 		}
 
 		// Detect changes
 		const sourceChanged = newSource !== this.source;
 		const partitionChanged = newPartitionExpressions.some((expr, i) => expr !== this.partitionExpressions[i]);
 		const orderByChanged = newOrderByExpressions.some((expr, i) => expr !== this.orderByExpressions[i]);
-		const functionArgsChanged = newFunctionArguments.some((arg, i) => arg !== this.functionArguments[i]);
+		const functionArgsChanged = newFunctionArguments.some((funcArgs, fi) =>
+			funcArgs.some((arg, ai) => arg !== this.functionArguments[fi][ai])
+		);
 
 		if (!sourceChanged && !partitionChanged && !orderByChanged && !functionArgsChanged) {
 			return this;
