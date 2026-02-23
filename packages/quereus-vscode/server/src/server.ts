@@ -10,7 +10,6 @@ import {
 	SemanticTokensBuilder,
 	CompletionItem,
 	CompletionItemKind,
-	Hover,
 	InitializeResult,
 	TextDocumentSyncKind
 } from 'vscode-languageserver/node';
@@ -53,23 +52,22 @@ function applySchemaSnapshot(snapshot: SchemaSnapshot): void {
 	externalSchema = snapshot;
 }
 
-	connection.onInitialize(async (_params: InitializeParams): Promise<InitializeResult> => {
-		const mod = await loadQuereus();
-		db = new mod.Database();
-		registerCommands(connection as unknown as any, db, applySchemaSnapshot);
-		return {
+connection.onInitialize(async (_params: InitializeParams): Promise<InitializeResult> => {
+	const mod = await loadQuereus();
+	db = new mod.Database();
+	registerCommands(connection as unknown as any, db, applySchemaSnapshot);
+	return {
 		capabilities: {
 			textDocumentSync: TextDocumentSyncKind.Incremental,
 			completionProvider: { triggerCharacters: [' ', '.', '(', ','] },
-			hoverProvider: true,
 			semanticTokensProvider: {
 				legend: { tokenTypes: [...tokenTypes], tokenModifiers: [] },
 				range: false,
 				full: true
 			}
 		}
-		};
-	});
+	};
+});
 
 function toRange(loc: { start: { line: number, column: number }, end: { line: number, column: number } }) {
 	return {
@@ -141,75 +139,88 @@ connection.onCompletion((): CompletionItem[] => {
 	return items;
 });
 
-connection.onHover((_params: unknown): Hover | null => {
-	return null;
-});
+interface Span { start: number; end: number }
+
+function sortAndMergeSpans(spans: Span[]): Span[] {
+	if (spans.length <= 1) return spans;
+	spans.sort((a, b) => a.start - b.start);
+	const merged: Span[] = [{ ...spans[0] }];
+	for (let i = 1; i < spans.length; i++) {
+		const last = merged[merged.length - 1];
+		if (spans[i].start <= last.end) {
+			last.end = Math.max(last.end, spans[i].end);
+		} else {
+			merged.push({ ...spans[i] });
+		}
+	}
+	return merged;
+}
+
+function isInsideSortedSpans(offset: number, spans: Span[]): boolean {
+	let lo = 0, hi = spans.length - 1;
+	while (lo <= hi) {
+		const mid = (lo + hi) >> 1;
+		if (offset < spans[mid].start) hi = mid - 1;
+		else if (offset >= spans[mid].end) lo = mid + 1;
+		else return true;
+	}
+	return false;
+}
 
 connection.languages.semanticTokens.on((_params: SemanticTokensParams): SemanticTokens => {
 	const doc = documents.get(_params.textDocument.uri);
 	if (!doc) return { data: [] };
 	const text = doc.getText();
+	const lines = text.split('\n');
 	const builder = new SemanticTokensBuilder();
 
-	// Heuristic semantic tokens with proper comment/string handling
 	const reWord = /\b([A-Za-z_][A-Za-z0-9_]*)\b/g;
-	const reFuncName = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g; // capture identifier before '('
+	const reFuncName = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
 	const reNumber = /\b\d+(?:\.\d+)?\b/g;
-	// Do not allow strings to span newlines; support doubled quotes inside
 	const reString = /'(?:''|[^'\r\n])*'|"(?:""|[^"\r\n])*"/g;
 	const reLineComment = /--[^\n\r]*/g;
 	const reBlockComment = /\/\*[\s\S]*?\*\//g;
 	const reOperator = /==|!=|<>|<=|>=|\|\||[=<>+\-*\/%]/g;
 
-	interface Span { start: number; end: number }
 	interface Token { start: number; end: number; type: TokenTypeLabel }
-	const stringSpans: Span[] = [];
-	const commentSpans: Span[] = [];
+	const commentSpansRaw: Span[] = [];
 	const tokens: Token[] = [];
 
-	// 1) Capture comments first
+	// 1) Capture comments
 	for (const m of text.matchAll(reLineComment)) {
 		const start = m.index ?? 0; const end = start + m[0].length;
-		commentSpans.push({ start, end });
+		commentSpansRaw.push({ start, end });
 		tokens.push({ start, end, type: 'comment' });
 	}
 	for (const m of text.matchAll(reBlockComment)) {
 		const start = m.index ?? 0; const end = start + m[0].length;
-		commentSpans.push({ start, end });
+		commentSpansRaw.push({ start, end });
 		tokens.push({ start, end, type: 'comment' });
 	}
+	const commentSpans = sortAndMergeSpans(commentSpansRaw);
 
-	function isInsideComment(offset: number): boolean {
-		for (const s of commentSpans) if (offset >= s.start && offset < s.end) return true;
-		return false;
-	}
-
-	// 2) Capture strings, but skip any starting inside comments
+	// 2) Capture strings, skip any starting inside comments
+	const stringSpansRaw: Span[] = [];
 	for (const m of text.matchAll(reString)) {
 		const start = m.index ?? 0; const end = start + m[0].length;
-		if (isInsideComment(start)) continue;
-		stringSpans.push({ start, end });
+		if (isInsideSortedSpans(start, commentSpans)) continue;
+		stringSpansRaw.push({ start, end });
 		tokens.push({ start, end, type: 'string' });
 	}
+	const excludeSpans = sortAndMergeSpans([...commentSpans, ...stringSpansRaw]);
 
-	function isInsideSpans(offset: number): boolean {
-		for (const s of stringSpans) if (offset >= s.start && offset < s.end) return true;
-		for (const s of commentSpans) if (offset >= s.start && offset < s.end) return true;
-		return false;
-	}
-
+	// 3) Keywords, functions, numbers, operators — skip tokens inside comments/strings
 	for (const m of text.matchAll(reWord)) {
 		const idx = m.index ?? 0;
-		if (isInsideSpans(idx)) continue;
+		if (isInsideSortedSpans(idx, excludeSpans)) continue;
 		const word = m[1];
 		if (DEFAULT_KEYWORDS.includes(word.toLowerCase())) {
 			tokens.push({ start: idx, end: idx + word.length, type: 'keyword' });
 		}
 	}
-	// Function identifiers (simple heuristic): identifier followed by '('
 	for (const m of text.matchAll(reFuncName)) {
 		const idx = m.index ?? 0;
-		if (isInsideSpans(idx)) continue;
+		if (isInsideSortedSpans(idx, excludeSpans)) continue;
 		const name = m[1];
 		if (!DEFAULT_KEYWORDS.includes(name.toLowerCase())) {
 			tokens.push({ start: idx, end: idx + name.length, type: 'function' });
@@ -217,70 +228,52 @@ connection.languages.semanticTokens.on((_params: SemanticTokensParams): Semantic
 	}
 	for (const m of text.matchAll(reNumber)) {
 		const idx = m.index ?? 0;
-		if (isInsideSpans(idx)) continue;
+		if (isInsideSortedSpans(idx, excludeSpans)) continue;
 		tokens.push({ start: idx, end: idx + m[0].length, type: 'number' });
 	}
 	for (const m of text.matchAll(reOperator)) {
 		const idx = m.index ?? 0;
-		if (isInsideSpans(idx)) continue;
+		if (isInsideSortedSpans(idx, excludeSpans)) continue;
 		tokens.push({ start: idx, end: idx + m[0].length, type: 'operator' });
 	}
 
-	// Sort tokens and drop overlaps to avoid out-of-order or duplicate ranges
+	// Sort tokens and drop overlaps
 	tokens.sort((a, b) => a.start - b.start || a.end - b.end);
 	const emitted: Span[] = [];
 	for (const t of tokens) {
 		const last = emitted[emitted.length - 1];
-		if (last && t.start < last.end) continue; // skip overlaps, prefer earlier token
+		if (last && t.start < last.end) continue;
 		emitted.push({ start: t.start, end: t.end });
-		pushRange(builder, doc, t.start, t.end - t.start, t.type);
+		pushRange(builder, doc, t.start, t.end - t.start, t.type, lines);
 	}
 
 	return builder.build();
 });
 
-function pushRange(builder: SemanticTokensBuilder, doc: TextDocument, offset: number, length: number, type: TokenTypeLabel): void {
-	const start = positionAt(doc, offset);
-	const end = positionAt(doc, offset + length);
-	const line = start.line;
-	const char = start.character;
+function pushRange(builder: SemanticTokensBuilder, doc: TextDocument, offset: number, length: number, type: TokenTypeLabel, lines: string[]): void {
+	const start = doc.positionAt(offset);
+	const end = doc.positionAt(offset + length);
 	if (end.line !== start.line) {
-		// Split into per-line tokens when spanning multiple lines
-		pushMultiline(builder, doc, offset, offset + length, type);
+		pushMultiline(builder, doc, offset, offset + length, type, lines);
 		return;
 	}
-	const len = end.character - start.character;
-	builder.push(line, char, len, tokenTypeToIndex[type], 0);
+	builder.push(start.line, start.character, end.character - start.character, tokenTypeToIndex[type], 0);
 }
 
-function positionAt(doc: TextDocument, offset: number) {
-	const text = doc.getText();
-	let line = 0; let character = 0; let i = 0;
-	while (i < offset && i < text.length) {
-		const ch = text.charCodeAt(i++);
-		if (ch === 10 /*\n*/) { line++; character = 0; } else { character++; }
-	}
-	return { line, character };
-}
-
-// removed: sanitizeForParsing - parser handles comments correctly and reports accurate locations
-
-function pushMultiline(builder: SemanticTokensBuilder, doc: TextDocument, startOffset: number, endOffset: number, type: TokenTypeLabel): void {
-	let start = positionAt(doc, startOffset);
-	let end = positionAt(doc, endOffset);
+function pushMultiline(builder: SemanticTokensBuilder, doc: TextDocument, startOffset: number, endOffset: number, type: TokenTypeLabel, lines: string[]): void {
+	const start = doc.positionAt(startOffset);
+	const end = doc.positionAt(endOffset);
 	if (start.line === end.line) {
-		const len = end.character - start.character;
-		builder.push(start.line, start.character, len, tokenTypeToIndex[type], 0);
+		builder.push(start.line, start.character, end.character - start.character, tokenTypeToIndex[type], 0);
 		return;
 	}
 	// First line
-	const firstLineText = doc.getText().split('\n')[start.line] ?? '';
-	const firstLen = firstLineText.length - start.character;
+	const firstLen = (lines[start.line] ?? '').length - start.character;
 	builder.push(start.line, start.character, Math.max(0, firstLen), tokenTypeToIndex[type], 0);
 	// Middle full lines
 	for (let line = start.line + 1; line < end.line; line++) {
-		const lineText = doc.getText().split('\n')[line] ?? '';
-		if (lineText.length > 0) builder.push(line, 0, lineText.length, tokenTypeToIndex[type], 0);
+		const lineLen = (lines[line] ?? '').length;
+		if (lineLen > 0) builder.push(line, 0, lineLen, tokenTypeToIndex[type], 0);
 	}
 	// Last line
 	if (end.character > 0) builder.push(end.line, 0, end.character, tokenTypeToIndex[type], 0);

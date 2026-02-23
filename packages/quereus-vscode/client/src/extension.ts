@@ -17,7 +17,7 @@ export function activate(context: ExtensionContext): void {
 			{ language: 'sql' }
 		],
 		synchronize: {
-			fileEvents: workspace.createFileSystemWatcher('**/*')
+			fileEvents: workspace.createFileSystemWatcher('**/*.{sql,qsql}')
 		}
 	};
 
@@ -30,7 +30,7 @@ export function activate(context: ExtensionContext): void {
 		await client!.start();
 		const empty: SchemaSnapshot = { tables: [], functions: [] };
 		await pushSchemaSnapshot(client!, empty);
-	})();
+	})().catch(err => console.error('Quereus extension activation failed:', err));
 }
 
 export function deactivate(): Thenable<void> | undefined {
