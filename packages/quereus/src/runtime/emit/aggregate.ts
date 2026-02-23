@@ -21,6 +21,19 @@ import { AggValue } from '../../func/registration.js';
 
 export const ctxLog = createLogger('runtime:context');
 
+/** Clone an aggregate initial value so each group gets an independent accumulator. */
+function cloneInitialValue(initialValue: unknown): AggValue {
+	if (typeof initialValue === 'function') {
+		return initialValue();
+	} else if (Array.isArray(initialValue)) {
+		return [...initialValue] as AggValue;
+	} else if (initialValue && typeof initialValue === 'object') {
+		return { ...initialValue } as AggValue;
+	} else {
+		return initialValue as AggValue;
+	}
+}
+
 /**
  * Find the source relation node that column references should use as their context key.
  * This traverses up the tree to find the original table scan or similar node.
@@ -201,17 +214,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 		if (plan.groupBy.length === 0) {
 			// Initialize accumulators for each aggregate
 			const accumulators: SqlValue[] = aggregateSchemas.map(schema => {
-				// Get fresh initial value - if it's a function, call it; if it's an object/array, copy it
-				const initialValue = isAggregateFunctionSchema(schema) ? schema.initialValue : undefined;
-				if (typeof initialValue === 'function') {
-					return initialValue();
-				} else if (Array.isArray(initialValue)) {
-					return [...initialValue];
-				} else if (initialValue && typeof initialValue === 'object') {
-					return { ...initialValue };
-				} else {
-					return initialValue;
-				}
+				return cloneInitialValue(isAggregateFunctionSchema(schema) ? schema.initialValue : undefined);
 			});
 
 			// For DISTINCT aggregates, track unique values using BTree with pre-resolved typed comparators
@@ -246,17 +249,13 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							quereusError(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`, StatusCode.INTERNAL);
 						}
 						const args = funcNode.args || [];
-						const argFunctions = aggregateArgFunctions[i] || []; // Add defensive check
+						const argFunctions = aggregateArgFunctions[i];
 
 						const skipCoercion = aggregateSkipCoercion[i];
 						for (let j = 0; j < args.length; j++) {
-							if (j < argFunctions.length) {
-								const rawValue = await argFunctions[j](ctx);
-								const coercedValue = skipCoercion ? rawValue : coerceForAggregate(rawValue, funcNode.functionName || 'unknown');
-								argValues.push(coercedValue);
-							} else {
-								argValues.push(null);
-							}
+							const rawValue = await argFunctions[j](ctx);
+							const coercedValue = skipCoercion ? rawValue : coerceForAggregate(rawValue, funcNode.functionName || 'unknown');
+							argValues.push(coercedValue);
 						}
 
 						// Handle DISTINCT logic using BTree for proper SQL value comparison
@@ -354,18 +353,14 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 							quereusError(`Expected AggregateFunctionCallNode but got ${funcNode.constructor.name}`, StatusCode.INTERNAL);
 						}
 						const args = funcNode.args || [];
-						const argFunctions = aggregateArgFunctions[i] || [];
+						const argFunctions = aggregateArgFunctions[i];
 
 						const skipCoercion = aggregateSkipCoercion[i];
 						const argValues: SqlValue[] = [];
 						for (let j = 0; j < args.length; j++) {
-							if (j < argFunctions.length) {
-								const rawValue = await argFunctions[j](ctx);
-								const coercedValue = skipCoercion ? rawValue : coerceForAggregate(rawValue, funcNode.functionName || 'unknown');
-								argValues.push(coercedValue);
-							} else {
-								argValues.push(null);
-							}
+							const rawValue = await argFunctions[j](ctx);
+							const coercedValue = skipCoercion ? rawValue : coerceForAggregate(rawValue, funcNode.functionName || 'unknown');
+							argValues.push(coercedValue);
 						}
 						currentRowArgValues.push(argValues);
 					}
@@ -438,17 +433,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 
 						// Reset for new group
 						currentAccumulators = aggregateSchemas.map(schema => {
-							// Get fresh initial value - if it's a function, call it; if it's an object/array, copy it
-							const initialValue = isAggregateFunctionSchema(schema) ? schema.initialValue : undefined;
-							if (typeof initialValue === 'function') {
-								return initialValue();
-							} else if (Array.isArray(initialValue)) {
-								return [...initialValue];
-							} else if (initialValue && typeof initialValue === 'object') {
-								return { ...initialValue };
-							} else {
-								return initialValue;
-							}
+							return cloneInitialValue(isAggregateFunctionSchema(schema) ? schema.initialValue : undefined);
 						});
 						currentDistinctTrees = aggregateDistinctFlags.map((isDistinct, i) =>
 							isDistinct ? new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>(
@@ -463,17 +448,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 					// Initialize if first group
 					if (currentGroupKey === null) {
 						currentAccumulators = aggregateSchemas.map(schema => {
-							// Get fresh initial value - if it's a function, call it; if it's an object/array, copy it
-							const initialValue = isAggregateFunctionSchema(schema) ? schema.initialValue : undefined;
-							if (typeof initialValue === 'function') {
-								return initialValue();
-							} else if (Array.isArray(initialValue)) {
-								return [...initialValue];
-							} else if (initialValue && typeof initialValue === 'object') {
-								return { ...initialValue };
-							} else {
-								return initialValue;
-							}
+							return cloneInitialValue(isAggregateFunctionSchema(schema) ? schema.initialValue : undefined);
 						});
 						currentDistinctTrees = aggregateDistinctFlags.map((isDistinct, i) =>
 							isDistinct ? new BTree<SqlValue | SqlValue[], SqlValue | SqlValue[]>(

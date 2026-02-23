@@ -246,6 +246,13 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 			defaultValue: false,
 			description: 'Enable plan stack tracing',
 		});
+
+		this.options.registerOption('foreign_keys', {
+			type: 'boolean',
+			defaultValue: false,
+			aliases: ['fk_enforcement'],
+			description: 'Enable foreign key constraint enforcement (default off for backwards compatibility)',
+		});
 	}
 
 	/** @internal Registers default built-in SQL functions */
@@ -464,10 +471,18 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		const rootInstruction = emitPlanNode(optimizedPlan, emissionContext);
 		const scheduler = new Scheduler(rootInstruction);
 
+		// Normalize array params to a record keyed by 1-based index, matching Statement.bindAll
+		let boundArgs: Record<number | string, SqlValue> = {};
+		if (Array.isArray(params)) {
+			params.forEach((value, index) => { boundArgs[index + 1] = value; });
+		} else if (params) {
+			boundArgs = { ...params };
+		}
+
 		const runtimeCtx: RuntimeContext = {
 			db: this,
 			stmt: undefined,
-			params: params ?? {},
+			params: boundArgs,
 			context: new RowContextMap(),
 			tableContexts: new Map(),
 			tracer: this.instructionTracer,

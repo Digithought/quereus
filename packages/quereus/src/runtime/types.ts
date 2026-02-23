@@ -1,4 +1,4 @@
-import type { RuntimeValue, SqlParameters, OutputValue, Row } from "../common/types.js";
+import type { RuntimeValue, SqlValue, OutputValue, Row } from "../common/types.js";
 import type { Database } from "../core/database.js";
 import type { Statement } from "../core/statement.js";
 import type { RowDescriptor, TableDescriptor, TableGetter } from "../planner/nodes/plan-node.js";
@@ -14,7 +14,7 @@ export type { OutputValue };
 export type RuntimeContext = {
 	db: Database;
 	stmt: Statement | undefined; // Undefined for transient exec statements
-	params: SqlParameters; // User-provided values for the current execution
+	params: Record<number | string, SqlValue>; // Bound args — always a plain object at runtime
 	/** Row contexts with O(1) attribute index */
 	context: RowContextMap;
 	/** Table contexts by table name, used for recursive CTEs or other temporary table situations */
