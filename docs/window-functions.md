@@ -79,6 +79,10 @@ The implementation correctly handles all SQL standard frame types:
 - **No ORDER BY**: Frame includes entire partition
 - **With ORDER BY**: Frame is `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`
 
+**RANGE vs ROWS:**
+- **ROWS**: Frame bounds are physical row offsets from the current row
+- **RANGE**: Frame bounds are value-based offsets on the first ORDER BY expression. `CURRENT ROW` includes all peer rows (rows with the same ORDER BY values)
+
 ## Usage Examples
 
 ### Basic Window Functions
@@ -106,6 +110,11 @@ FROM transactions;
 SELECT date, value,
        AVG(value) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) as moving_avg
 FROM measurements;
+
+-- RANGE frame: value-based window (include all rows within 10 of current value)
+SELECT date, price,
+       SUM(price) OVER (ORDER BY price RANGE BETWEEN 10 PRECEDING AND 10 FOLLOWING) as nearby_sum
+FROM products;
 ```
 
 ### Navigation Functions
@@ -182,6 +191,7 @@ Window functions are comprehensively tested through SQL Logic Tests (`test/logic
 - Navigation functions (LAG, LEAD with offset/default, FIRST_VALUE, LAST_VALUE)
 - Statistical ranking (PERCENT_RANK, CUME_DIST with ties)
 - NTILE bucket distribution
+- RANGE BETWEEN value-based frames (CURRENT ROW peers, N PRECEDING/FOLLOWING)
 
 ## Extensibility
 
@@ -201,6 +211,5 @@ registerWindowFunction('NEW_FUNC', {
 **Advanced Features:**
 - Named window specifications (WINDOW clause)
 - Custom frame exclusion options
-- Range frames with value-based bounds (RANGE BETWEEN with numeric offsets)
 
 The window function implementation provides a solid foundation for advanced SQL analytics while maintaining the architectural principles of the Titan runtime system. 
