@@ -3,24 +3,27 @@
  *
  * Required Characteristics:
  * - Node must be a logical JoinNode (not already a physical join)
- * - Node must have an equi-join predicate for hash join consideration
+ * - Node must have an equi-join predicate for hash/merge join consideration
  *
  * Applied When:
- * - Logical JoinNode with equi-join predicates where hash join is cheaper than nested loop
+ * - Logical JoinNode with equi-join predicates where hash or merge join is cheaper than nested loop
  *
- * Benefits: Replaces O(n*m) nested loop with O(n+m) hash join for equi-joins
+ * Benefits: Replaces O(n*m) nested loop with O(n+m) hash/merge join for equi-joins
  */
 
 import { createLogger } from '../../../common/logger.js';
-import type { PlanNode, ScalarPlanNode, Attribute } from '../../nodes/plan-node.js';
+import type { PlanNode, ScalarPlanNode, RelationalPlanNode, Attribute } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { JoinNode } from '../../nodes/join-node.js';
 import { BloomJoinNode, type EquiJoinPair } from '../../nodes/bloom-join-node.js';
+import { MergeJoinNode } from '../../nodes/merge-join-node.js';
+import { SortNode } from '../../nodes/sort.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
 import { BinaryOpNode } from '../../nodes/scalar.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
-import { nestedLoopJoinCost, hashJoinCost } from '../../cost/index.js';
+import { nestedLoopJoinCost, hashJoinCost, mergeJoinCost } from '../../cost/index.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:join-physical-selection');
 
@@ -83,6 +86,67 @@ function extractEquiPairs(
 	return { equiPairs, residual };
 }
 
+/**
+ * Check if a source's ordering covers the given equi-pair columns.
+ * Returns true if the source is already sorted on (at least a prefix including) those columns.
+ */
+function isOrderedOnEquiPairs(
+	source: RelationalPlanNode,
+	equiPairs: readonly EquiJoinPair[],
+	side: 'left' | 'right'
+): boolean {
+	const ordering = PlanNodeCharacteristics.getOrdering(source);
+	if (!ordering || ordering.length === 0) return false;
+
+	const attrs = source.getAttributes();
+
+	// Build the set of column indices corresponding to equi-pair columns for this side
+	const requiredIndices: number[] = [];
+	for (const pair of equiPairs) {
+		const attrId = side === 'left' ? pair.leftAttrId : pair.rightAttrId;
+		const idx = attrs.findIndex(a => a.id === attrId);
+		if (idx === -1) return false;
+		requiredIndices.push(idx);
+	}
+
+	// Check if the ordering prefix covers all required columns (in any order)
+	if (requiredIndices.length > ordering.length) return false;
+
+	const orderColumns = new Set(ordering.slice(0, requiredIndices.length).map(o => o.column));
+	return requiredIndices.every(idx => orderColumns.has(idx));
+}
+
+/**
+ * Create a SortNode that sorts a source on the equi-pair columns for this side.
+ */
+function createSortForEquiPairs(
+	source: RelationalPlanNode,
+	equiPairs: readonly EquiJoinPair[],
+	side: 'left' | 'right',
+	scope: import('../../scopes/scope.js').Scope
+): RelationalPlanNode {
+	const attrs = source.getAttributes();
+	const sortKeys = equiPairs.map(pair => {
+		const attrId = side === 'left' ? pair.leftAttrId : pair.rightAttrId;
+		const idx = attrs.findIndex(a => a.id === attrId);
+		const attr = attrs[idx];
+		// Create a ColumnReferenceNode for this attribute
+		const colRef = new ColumnReferenceNode(
+			scope,
+			{ type: 'column', table: '', column: attr.name, schema: '' } as any,
+			attr.type,
+			attr.id,
+			idx
+		);
+		return {
+			expression: colRef as ScalarPlanNode,
+			direction: 'asc' as const,
+			nulls: undefined
+		};
+	});
+	return new SortNode(scope, source, sortKeys);
+}
+
 export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext): PlanNode | null {
 	// Guard: only apply to logical JoinNode, not already-physical nodes
 	if (!(node instanceof JoinNode)) return null;
@@ -121,25 +185,75 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 
 	if (!extracted || extracted.equiPairs.length === 0) return null;
 
-	// Cost comparison: hash join vs nested loop
+	// Cost comparison: nested loop vs hash join vs merge join
 	const leftRows = node.left.estimatedRows ?? 100;
 	const rightRows = node.right.estimatedRows ?? 100;
 
-	// For hash join, build side is the smaller input
-	const buildRows = Math.min(leftRows, rightRows);
-	const probeRows = Math.max(leftRows, rightRows);
-	const hashCost = hashJoinCost(buildRows, probeRows);
 	const nlCost = nestedLoopJoinCost(leftRows, rightRows);
 
-	if (hashCost >= nlCost) {
-		log('Hash join not cheaper (hash=%.2f, nl=%.2f) for %d x %d rows', hashCost, nlCost, leftRows, rightRows);
+	// Hash join cost: build side is the smaller input
+	const buildRows = Math.min(leftRows, rightRows);
+	const probeRows = Math.max(leftRows, rightRows);
+	const hashCostValue = hashJoinCost(buildRows, probeRows);
+
+	// Merge join cost: depends on whether inputs are already sorted
+	const leftOrdered = isOrderedOnEquiPairs(node.left, extracted.equiPairs, 'left');
+	const rightOrdered = isOrderedOnEquiPairs(node.right, extracted.equiPairs, 'right');
+	const mergeCostValue = mergeJoinCost(leftRows, rightRows, !leftOrdered, !rightOrdered);
+
+	// Pick the cheapest physical join algorithm
+	type JoinAlgo = 'nested-loop' | 'hash' | 'merge';
+	let bestAlgo: JoinAlgo = 'nested-loop';
+	let bestCost = nlCost;
+
+	if (hashCostValue < bestCost) {
+		bestAlgo = 'hash';
+		bestCost = hashCostValue;
+	}
+	if (mergeCostValue < bestCost) {
+		bestAlgo = 'merge';
+		bestCost = mergeCostValue;
+	}
+
+	if (bestAlgo === 'nested-loop') {
+		log('Nested loop cheapest (nl=%.2f, hash=%.2f, merge=%.2f) for %d x %d rows',
+			nlCost, hashCostValue, mergeCostValue, leftRows, rightRows);
 		return null;
 	}
 
-	log('Selecting hash join (hash=%.2f, nl=%.2f) for %d x %d rows', hashCost, nlCost, leftRows, rightRows);
+	log('Selecting %s join (nl=%.2f, hash=%.2f, merge=%.2f) for %d x %d rows',
+		bestAlgo, nlCost, hashCostValue, mergeCostValue, leftRows, rightRows);
 
+	// Preserve attribute IDs from the logical JoinNode
+	const preserveAttrs = node.getAttributes().slice() as Attribute[];
+
+	if (bestAlgo === 'merge') {
+		// Build merge join, inserting SortNodes if needed
+		let leftSource: RelationalPlanNode = node.left;
+		let rightSource: RelationalPlanNode = node.right;
+
+		if (!leftOrdered) {
+			leftSource = createSortForEquiPairs(node.left, extracted.equiPairs, 'left', node.scope);
+			log('Inserted left sort for merge join');
+		}
+		if (!rightOrdered) {
+			rightSource = createSortForEquiPairs(node.right, extracted.equiPairs, 'right', node.scope);
+			log('Inserted right sort for merge join');
+		}
+
+		return new MergeJoinNode(
+			node.scope,
+			leftSource,
+			rightSource,
+			joinType,
+			extracted.equiPairs,
+			extracted.residual,
+			preserveAttrs
+		);
+	}
+
+	// Hash join path
 	// Determine build and probe sides: build=smaller, probe=larger
-	// left=probe, right=build by convention; swap if needed
 	// For LEFT JOIN, the left side MUST remain the probe side to preserve
 	// null-padding semantics (all left rows must appear in output).
 	let probeSource = node.left;
@@ -159,10 +273,7 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 		}));
 	}
 
-	// Preserve attribute IDs from the logical JoinNode
-	const preserveAttrs = node.getAttributes().slice() as Attribute[];
-
-	const bloomJoin = new BloomJoinNode(
+	return new BloomJoinNode(
 		node.scope,
 		probeSource,
 		buildSource,
@@ -171,6 +282,4 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 		extracted.residual,
 		preserveAttrs
 	);
-
-	return bloomJoin;
 }

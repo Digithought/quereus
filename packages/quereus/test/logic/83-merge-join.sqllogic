@@ -1,0 +1,110 @@
+-- merge-join.sqllogic - Merge join algorithm correctness tests
+
+-- Setup tables
+CREATE TABLE mj_left (id INTEGER PRIMARY KEY, val INTEGER, label TEXT);
+CREATE TABLE mj_right (id INTEGER PRIMARY KEY, val INTEGER, tag TEXT);
+
+INSERT INTO mj_left VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (4, 40, 'd'), (5, 10, 'e');
+INSERT INTO mj_right VALUES (100, 10, 'x'), (200, 20, 'y'), (300, 50, 'z'), (400, 10, 'w');
+
+-- Basic equi-join
+SELECT l.id, r.id FROM mj_left l JOIN mj_right r ON l.val = r.val ORDER BY l.id, r.id;
+→ [{"id":1,"id:1":100},{"id":1,"id:1":400},{"id":2,"id:1":200},{"id":5,"id:1":100},{"id":5,"id:1":400}]
+
+-- LEFT JOIN with merge join
+SELECT l.id, l.val, r.tag FROM mj_left l LEFT JOIN mj_right r ON l.val = r.val ORDER BY l.id, r.tag;
+→ [{"id":1,"val":10,"tag":"w"},{"id":1,"val":10,"tag":"x"},{"id":2,"val":20,"tag":"y"},{"id":3,"val":30,"tag":null},{"id":4,"val":40,"tag":null},{"id":5,"val":10,"tag":"w"},{"id":5,"val":10,"tag":"x"}]
+
+-- Multi-column equi-join
+CREATE TABLE mj_mc1 (a INTEGER, b INTEGER, v TEXT, PRIMARY KEY (a, b));
+CREATE TABLE mj_mc2 (x INTEGER, y INTEGER, w TEXT, PRIMARY KEY (x, y));
+
+INSERT INTO mj_mc1 VALUES (1, 10, 'alpha'), (2, 20, 'beta'), (3, 30, 'gamma');
+INSERT INTO mj_mc2 VALUES (1, 10, 'one'), (2, 20, 'two'), (9, 99, 'nine');
+
+SELECT m1.v, m2.w FROM mj_mc1 m1 JOIN mj_mc2 m2 ON m1.a = m2.x AND m1.b = m2.y ORDER BY m1.a;
+→ [{"v":"alpha","w":"one"},{"v":"beta","w":"two"}]
+
+-- NULL handling: NULLs should not match
+CREATE TABLE mj_nulls (id INTEGER PRIMARY KEY, val INTEGER NULL);
+INSERT INTO mj_nulls VALUES (1, null), (2, 10), (3, null), (4, 10);
+
+SELECT a.id, b.id FROM mj_nulls a JOIN mj_nulls b ON a.val = b.val ORDER BY a.id, b.id;
+→ [{"id":2,"id:1":2},{"id":2,"id:1":4},{"id":4,"id:1":2},{"id":4,"id:1":4}]
+
+-- NULL LEFT JOIN: null keys produce unmatched rows
+SELECT a.id, b.id FROM mj_nulls a LEFT JOIN mj_nulls b ON a.val = b.val ORDER BY a.id, b.id;
+→ [{"id":1,"id:1":null},{"id":2,"id:1":2},{"id":2,"id:1":4},{"id":3,"id:1":null},{"id":4,"id:1":2},{"id":4,"id:1":4}]
+
+-- Empty right side
+CREATE TABLE mj_empty (id INTEGER PRIMARY KEY, val INTEGER);
+
+SELECT l.id FROM mj_left l JOIN mj_empty e ON l.val = e.val;
+→ []
+
+SELECT l.id, e.id FROM mj_left l LEFT JOIN mj_empty e ON l.val = e.val ORDER BY l.id;
+→ [{"id":1,"id:1":null},{"id":2,"id:1":null},{"id":3,"id:1":null},{"id":4,"id:1":null},{"id":5,"id:1":null}]
+
+-- Empty left side
+SELECT e.id FROM mj_empty e JOIN mj_right r ON e.val = r.val;
+→ []
+
+-- Text column join
+CREATE TABLE mj_text_l (id INTEGER PRIMARY KEY, key TEXT);
+CREATE TABLE mj_text_r (id INTEGER PRIMARY KEY, key TEXT);
+INSERT INTO mj_text_l VALUES (1, 'foo'), (2, 'bar'), (3, 'baz');
+INSERT INTO mj_text_r VALUES (10, 'bar'), (20, 'baz'), (30, 'qux');
+
+SELECT l.id, r.id FROM mj_text_l l JOIN mj_text_r r ON l.key = r.key ORDER BY l.id;
+→ [{"id":2,"id:1":10},{"id":3,"id:1":20}]
+
+-- USING clause
+SELECT l.id, r.id FROM mj_text_l l JOIN mj_text_r r USING (key) ORDER BY l.id;
+→ [{"id":2,"id:1":10},{"id":3,"id:1":20}]
+
+-- Duplicate key runs: multiple matches on both sides
+CREATE TABLE mj_dup_l (id INTEGER PRIMARY KEY, val INTEGER);
+CREATE TABLE mj_dup_r (id INTEGER PRIMARY KEY, val INTEGER);
+INSERT INTO mj_dup_l VALUES (1, 5), (2, 5), (3, 5);
+INSERT INTO mj_dup_r VALUES (10, 5), (20, 5);
+
+SELECT count(*) AS cnt FROM mj_dup_l l JOIN mj_dup_r r ON l.val = r.val;
+→ [{"cnt":6}]
+
+-- LEFT JOIN with small left, large right
+CREATE TABLE mj_small (id INTEGER PRIMARY KEY, val INTEGER);
+CREATE TABLE mj_large (id INTEGER PRIMARY KEY, val INTEGER);
+INSERT INTO mj_small VALUES (1, 100), (2, 200);
+INSERT INTO mj_large VALUES (10, 100), (20, 100), (30, 300), (40, 400), (50, 500), (60, 600), (70, 700);
+
+SELECT s.id, s.val, l.id AS lid FROM mj_small s LEFT JOIN mj_large l ON s.val = l.val ORDER BY s.id, l.id;
+→ [{"id":1,"val":100,"lid":10},{"id":1,"val":100,"lid":20},{"id":2,"val":200,"lid":null}]
+
+-- NOCASE collation: merge join must handle case-insensitive matching
+CREATE TABLE mj_nocase_l (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE);
+CREATE TABLE mj_nocase_r (id INTEGER PRIMARY KEY, name TEXT COLLATE NOCASE);
+INSERT INTO mj_nocase_l VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie');
+INSERT INTO mj_nocase_r VALUES (10, 'alice'), (20, 'BOB'), (30, 'Dave');
+
+SELECT l.id, r.id FROM mj_nocase_l l JOIN mj_nocase_r r ON l.name = r.name ORDER BY l.id;
+→ [{"id":1,"id:1":10},{"id":2,"id:1":20}]
+
+-- NOCASE LEFT JOIN
+SELECT l.id, l.name, r.id AS rid FROM mj_nocase_l l LEFT JOIN mj_nocase_r r ON l.name = r.name ORDER BY l.id;
+→ [{"id":1,"name":"Alice","rid":10},{"id":2,"name":"Bob","rid":20},{"id":3,"name":"Charlie","rid":null}]
+
+-- Cleanup
+DROP TABLE mj_left;
+DROP TABLE mj_right;
+DROP TABLE mj_mc1;
+DROP TABLE mj_mc2;
+DROP TABLE mj_nulls;
+DROP TABLE mj_empty;
+DROP TABLE mj_text_l;
+DROP TABLE mj_text_r;
+DROP TABLE mj_dup_l;
+DROP TABLE mj_dup_r;
+DROP TABLE mj_small;
+DROP TABLE mj_large;
+DROP TABLE mj_nocase_l;
+DROP TABLE mj_nocase_r;

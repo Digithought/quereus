@@ -51,6 +51,9 @@ export const COST_CONSTANTS = {
 	/** Cost per row for bloom/hash join probe phase */
 	HASH_JOIN_PROBE_PER_ROW: 0.4,
 
+	/** Cost per row for merge join comparison */
+	MERGE_JOIN_PER_ROW: 0.3,
+
 	/** Cost per row for distinct operation */
 	DISTINCT_PER_ROW: 1.2,
 
@@ -121,6 +124,17 @@ export function aggregateCost(inputRows: number, outputRows: number): number {
 export function nestedLoopJoinCost(outerRows: number, innerRows: number): number {
 	return (outerRows * COST_CONSTANTS.NL_JOIN_PER_OUTER_ROW) +
 		   (outerRows * innerRows * COST_CONSTANTS.NL_JOIN_PER_INNER_ROW);
+}
+
+/**
+ * Calculate cost for merge join
+ * Includes optional sort costs for each side
+ */
+export function mergeJoinCost(leftRows: number, rightRows: number, needsSortLeft: boolean, needsSortRight: boolean): number {
+	let cost = (leftRows + rightRows) * COST_CONSTANTS.MERGE_JOIN_PER_ROW;
+	if (needsSortLeft) cost += sortCost(leftRows);
+	if (needsSortRight) cost += sortCost(rightRows);
+	return cost;
 }
 
 /**
