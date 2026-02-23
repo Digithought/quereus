@@ -178,4 +178,23 @@ export function isConstraintViolation(result: UpdateResult): result is { status:
 	return result.status === 'constraint';
 }
 
+/**
+ * Checks whether a value is a valid SqlValue at runtime.
+ */
+export function isSqlValue(value: unknown): value is SqlValue {
+	if (value === null) return true;
+	const t = typeof value;
+	if (t === 'string' || t === 'number' || t === 'bigint' || t === 'boolean') return true;
+	if (value instanceof Uint8Array) return true;
+	return false;
+}
+
+/**
+ * Describes a non-SqlValue for error messages.
+ */
+export function describeSqlValueViolation(value: unknown): string {
+	const t = typeof value;
+	return t === 'object' ? ((value as object).constructor?.name ?? 'object') : t;
+}
+
 export type { JSONValue } from './json-types.js';

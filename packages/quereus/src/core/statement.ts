@@ -1,5 +1,5 @@
 import { createLogger } from '../common/logger.js';
-import { type SqlValue, StatusCode, type Row, type SqlParameters, type DeepReadonly } from '../common/types.js';
+import { type SqlValue, StatusCode, type Row, type SqlParameters, type DeepReadonly, isSqlValue, describeSqlValueViolation } from '../common/types.js';
 import { MisuseError, QuereusError } from '../common/errors.js';
 import type { Database } from './database.js';
 import { isRelationType, type ColumnDef, type ScalarType } from '../common/datatype.js';
@@ -213,6 +213,9 @@ export class Statement {
 	bind(key: number | string, value: SqlValue): this {
 		this.validateStatement("bind argument for");
 		if (this.busy) throw new MisuseError("Statement busy, reset first");
+		if (!isSqlValue(value)) {
+			throw new MisuseError(`bind: invalid value for key '${key}': expected SqlValue, got ${describeSqlValueViolation(value)}`);
+		}
 		if (typeof key === 'number') {
 			if (key < 1) throw new RangeError(`Argument index ${key} out of range (must be >= 1)`);
 			this.boundArgs[key] = value;
@@ -234,9 +237,17 @@ export class Statement {
 		if (Array.isArray(args)) {
 			// Convert array to object with 1-based numeric keys to match bind() and constructor
 			args.forEach((value, index) => {
+				if (!isSqlValue(value)) {
+					throw new MisuseError(`bindAll: invalid value at index ${index}: expected SqlValue, got ${describeSqlValueViolation(value)}`);
+				}
 				this.boundArgs[index + 1] = value;
 			});
 		} else if (typeof args === 'object' && args !== null) {
+			for (const [key, value] of Object.entries(args)) {
+				if (!isSqlValue(value)) {
+					throw new MisuseError(`bindAll: invalid value for key '${key}': expected SqlValue, got ${describeSqlValueViolation(value)}`);
+				}
+			}
 			Object.assign(this.boundArgs, args);
 		} else {
 			throw new MisuseError("Invalid parameters type for bindAll. Use array or object.");

@@ -570,6 +570,21 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 */
 	registerModule(name: string, module: AnyVirtualTableModule, auxData?: unknown): void {
 		this.checkOpen();
+		if (typeof name !== 'string' || !name) {
+			throw new MisuseError('registerModule: name must be a non-empty string');
+		}
+		if (!module || typeof module !== 'object') {
+			throw new MisuseError('registerModule: module must be an object');
+		}
+		if (typeof module.create !== 'function') {
+			throw new MisuseError('registerModule: module.create must be a function');
+		}
+		if (typeof module.connect !== 'function') {
+			throw new MisuseError('registerModule: module.connect must be a function');
+		}
+		if (typeof module.destroy !== 'function') {
+			throw new MisuseError('registerModule: module.destroy must be a function');
+		}
 		this.schemaManager.registerModule(name, module, auxData);
 
 		// Check if the module has a getEventEmitter method and hook it up
@@ -865,6 +880,30 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 */
 	registerFunction(schema: FunctionSchema): void {
 		this.checkOpen();
+		if (!schema || typeof schema !== 'object') {
+			throw new MisuseError('registerFunction: schema must be an object');
+		}
+		if (typeof schema.name !== 'string' || !schema.name) {
+			throw new MisuseError('registerFunction: schema.name must be a non-empty string');
+		}
+		if (!Number.isInteger(schema.numArgs) || schema.numArgs < -1) {
+			throw new MisuseError('registerFunction: schema.numArgs must be an integer >= -1');
+		}
+		// Validate that appropriate implementation functions exist
+		if ('stepFunction' in schema) {
+			if (typeof schema.stepFunction !== 'function') {
+				throw new MisuseError('registerFunction: aggregate schema.stepFunction must be a function');
+			}
+			if (typeof (schema as any).finalizeFunction !== 'function') {
+				throw new MisuseError('registerFunction: aggregate schema.finalizeFunction must be a function');
+			}
+		} else if ('implementation' in schema) {
+			if (typeof schema.implementation !== 'function') {
+				throw new MisuseError('registerFunction: schema.implementation must be a function');
+			}
+		} else {
+			throw new MisuseError('registerFunction: schema must have implementation (scalar/TVF) or stepFunction+finalizeFunction (aggregate)');
+		}
 		this.registerFunctionWithErrorHandling('user', schema.name, schema.numArgs, () => {
 			this.schemaManager.getMainSchema().addFunction(schema);
 		});
@@ -975,6 +1014,12 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 */
 	registerCollation(name: string, func: CollationFunction): void {
 		this.checkOpen();
+		if (typeof name !== 'string' || !name) {
+			throw new MisuseError('registerCollation: name must be a non-empty string');
+		}
+		if (typeof func !== 'function') {
+			throw new MisuseError('registerCollation: func must be a function');
+		}
 		const upperName = name.toUpperCase();
 		if (this.collations.has(upperName)) {
 			log('Overwriting existing collation: %s', upperName);
@@ -1001,6 +1046,19 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 */
 	registerType(name: string, definition: LogicalType): void {
 		this.checkOpen();
+		if (typeof name !== 'string' || !name) {
+			throw new MisuseError('registerType: name must be a non-empty string');
+		}
+		if (!definition || typeof definition !== 'object') {
+			throw new MisuseError('registerType: definition must be an object');
+		}
+		if (typeof definition.name !== 'string' || !definition.name) {
+			throw new MisuseError('registerType: definition.name must be a non-empty string');
+		}
+		// Validate physicalType is a valid enum value (0-5)
+		if (typeof definition.physicalType !== 'number' || !Number.isInteger(definition.physicalType) || definition.physicalType < 0 || definition.physicalType > 5) {
+			throw new MisuseError('registerType: definition.physicalType must be a valid PhysicalType enum value (0-5)');
+		}
 		if (definition.name.toLowerCase() !== name.toLowerCase()) {
 			throw new QuereusError(
 				`Type name mismatch: registerType('${name}', ...) does not match definition.name '${definition.name}'`,
