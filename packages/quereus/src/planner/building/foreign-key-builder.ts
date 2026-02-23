@@ -404,7 +404,7 @@ export function buildParentSideFKChecks(
 						expression,
 						deferrable: !isRestrict,
 						initiallyDeferred: !isRestrict,
-						containsSubquery: true,
+						containsSubquery: !isRestrict, // RESTRICT must be immediate, not deferred
 					});
 				} finally {
 					if (needsSchemaSwitch) ctx.schemaManager.setCurrentSchema(originalCurrentSchema);

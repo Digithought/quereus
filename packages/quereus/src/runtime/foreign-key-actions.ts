@@ -4,6 +4,7 @@ import type { Row, SqlValue } from '../common/types.js';
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
+import { expressionToString } from '../emit/ast-stringify.js';
 
 const log = createLogger('runtime:fk-actions');
 
@@ -113,7 +114,7 @@ async function executeSingleFKAction(
 ): Promise<void> {
 	const childColNames = fk.columns.map(idx => childTable.columns[idx].name);
 	const whereClause = childColNames
-		.map((name, i) => `"${name}" = ?${i + 1}`)
+		.map(name => `"${name}" = ?`)
 		.join(' AND ');
 
 	switch (action) {
@@ -122,18 +123,20 @@ async function executeSingleFKAction(
 				// CASCADE DELETE: delete matching child rows
 				const sql = `DELETE FROM "${childTable.name}" WHERE ${whereClause}`;
 				log('CASCADE DELETE: %s with params %o', sql, oldParentValues);
-				await db.exec(sql, oldParentValues);
+				await db._execWithinTransaction(sql, oldParentValues);
 			} else {
 				// CASCADE UPDATE: update child FK columns to new parent values
 				const newParentValues = parentColIndices.map(idx => newRow[idx]);
 				const setClauses = childColNames
-					.map((name, i) => `"${name}" = ?${i + 1}`)
+					.map(name => `"${name}" = ?`)
 					.join(', ');
-				const whereParams = oldParentValues.map((v, i) => `"${childColNames[i]}" = ?${childColNames.length + i + 1}`).join(' AND ');
-				const sql = `UPDATE "${childTable.name}" SET ${setClauses} WHERE ${whereParams}`;
+				const whereParamsClause = childColNames
+					.map(name => `"${name}" = ?`)
+					.join(' AND ');
+				const sql = `UPDATE "${childTable.name}" SET ${setClauses} WHERE ${whereParamsClause}`;
 				const params = [...newParentValues, ...oldParentValues];
 				log('CASCADE UPDATE: %s with params %o', sql, params);
-				await db.exec(sql, params);
+				await db._execWithinTransaction(sql, params);
 			}
 			break;
 		}
@@ -141,7 +144,7 @@ async function executeSingleFKAction(
 			const setClauses = childColNames.map(name => `"${name}" = NULL`).join(', ');
 			const sql = `UPDATE "${childTable.name}" SET ${setClauses} WHERE ${whereClause}`;
 			log('SET NULL: %s with params %o', sql, oldParentValues);
-			await db.exec(sql, oldParentValues);
+			await db._execWithinTransaction(sql, oldParentValues);
 			break;
 		}
 		case 'setDefault': {
@@ -151,18 +154,12 @@ async function executeSingleFKAction(
 				if (defaultVal === null || defaultVal === undefined) {
 					return `"${name}" = NULL`;
 				}
-				// For literal defaults, inline the value
-				if (typeof defaultVal !== 'object') {
-					return typeof defaultVal === 'string'
-						? `"${name}" = '${defaultVal}'`
-						: `"${name}" = ${defaultVal}`;
-				}
-				// For expression defaults, use NULL as fallback
-				return `"${name}" = NULL`;
+				// defaultValue is always an AST Expression — stringify it
+				return `"${name}" = (${expressionToString(defaultVal)})`;
 			}).join(', ');
 			const sql = `UPDATE "${childTable.name}" SET ${setClauses} WHERE ${whereClause}`;
 			log('SET DEFAULT: %s with params %o', sql, oldParentValues);
-			await db.exec(sql, oldParentValues);
+			await db._execWithinTransaction(sql, oldParentValues);
 			break;
 		}
 	}

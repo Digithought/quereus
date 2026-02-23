@@ -2473,7 +2473,12 @@ create table audit_records (
 
 The foreign key constraint links tables together and ensures referential integrity.
 
-**Note:** In Quereus, foreign key constraints are parsed but not enforced. This is a known limitation.
+Foreign key enforcement is controlled by the `foreign_keys` pragma (default: off for backwards compatibility):
+
+```sql
+pragma foreign_keys = on;   -- enable FK enforcement
+pragma foreign_keys = off;  -- parse but don't enforce (default)
+```
 
 **Syntax - Column Constraint:**
 ```sql
@@ -2491,14 +2496,29 @@ foreign key (column[, ...]) references foreign_table [(column[, ...])] [ref_acti
 ```
 
 Where `action` can be:
-- `set null`
-- `set default`
-- `cascade`
-- `restrict`
-- `no action`
+- `set null` — set child FK columns to NULL when parent row is deleted/updated
+- `set default` — set child FK columns to their default values
+- `cascade` — delete/update child rows when parent row is deleted/updated
+- `restrict` — immediately reject delete/update if child rows exist
+- `no action` (default) — same as RESTRICT but deferred to commit time
+
+**Enforcement Semantics:**
+
+When `pragma foreign_keys = on`:
+
+- **Child-side (INSERT/UPDATE):** Validates that referenced parent rows exist. These checks are deferred to commit time (they use cross-table subqueries).
+- **Parent-side DELETE/UPDATE with RESTRICT:** Immediately rejects the operation if child rows reference the parent row being modified.
+- **Parent-side DELETE/UPDATE with NO ACTION:** Same check as RESTRICT, but deferred to commit time. Within a transaction, you can delete the parent first and fix the children before committing.
+- **Parent-side DELETE/UPDATE with CASCADE:** Automatically deletes or updates matching child rows.
+- **Parent-side DELETE/UPDATE with SET NULL:** Sets child FK columns to NULL.
+- **Parent-side DELETE/UPDATE with SET DEFAULT:** Sets child FK columns to their default values.
+
+Cascade cycle detection prevents infinite recursion when cascading actions chain across multiple tables.
 
 **Examples:**
 ```sql
+pragma foreign_keys = on;
+
 -- Column-level foreign key
 create table posts (
   id integer primary key,

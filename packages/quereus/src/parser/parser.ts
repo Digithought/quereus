@@ -3291,9 +3291,12 @@ export class Parser {
 		throw this.error(this.peek(), "Expected table constraint type (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY).");
 	}
 
-	/** @internal Parses a foreign key clause */
+	/** @internal Parses a foreign key clause (REFERENCES may already be consumed by caller) */
 	private foreignKeyClause(): AST.ForeignKeyClause {
-		this.consume(TokenType.REFERENCES, "Expected REFERENCES for foreign key.");
+		// Consume REFERENCES if not already consumed by caller (column-level FK)
+		if (this.check(TokenType.REFERENCES)) {
+			this.advance();
+		}
 		const table = this.consumeIdentifier("Expected foreign table name.");
 		let columns: string[] | undefined;
 		if (this.match(TokenType.LPAREN)) {
