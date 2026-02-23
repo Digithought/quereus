@@ -10,7 +10,7 @@ This list reflects the current and upcoming work for Quereus. Completed items an
 ### Upcoming Optimizer Work
 - 📋 **Subquery Optimization**: Transform correlated subqueries to joins
 - 📋 **Advanced Statistics**: VTab-supplied or ANALYZE-based statistics
-- 📋 **Join Algorithms**: Bloom joins and merge joins
+- ✅ **Join Algorithms**: Bloom joins and merge joins
 - 📋 **Aggregate Pushdown**: Push aggregations below joins when semantically valid
 - 📋 **Key-driven row-count reduction**: With better key inference, cardinality can be better estimated and efficiencies gained
   - 📋 FK→PK join inference: derive keys when ON aligns a PK with an inferred unique set on the other side (e.g., via DISTINCT/GROUP BY)

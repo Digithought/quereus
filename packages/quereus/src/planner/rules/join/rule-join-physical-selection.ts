@@ -88,7 +88,11 @@ function extractEquiPairs(
 
 /**
  * Check if a source's ordering covers the given equi-pair columns.
- * Returns true if the source is already sorted on (at least a prefix including) those columns.
+ * Returns true if the source is already sorted ascending on the equi-pair
+ * columns in the exact order the equi-pairs specify.  Positional matching
+ * is required because the merge-join emitter compares keys in equi-pair
+ * order; a mismatch (e.g. source sorted (b, a) vs equi-pairs (a, b))
+ * would break the linear-scan invariant.
  */
 function isOrderedOnEquiPairs(
 	source: RelationalPlanNode,
@@ -97,23 +101,21 @@ function isOrderedOnEquiPairs(
 ): boolean {
 	const ordering = PlanNodeCharacteristics.getOrdering(source);
 	if (!ordering || ordering.length === 0) return false;
+	if (equiPairs.length > ordering.length) return false;
 
 	const attrs = source.getAttributes();
 
-	// Build the set of column indices corresponding to equi-pair columns for this side
-	const requiredIndices: number[] = [];
-	for (const pair of equiPairs) {
-		const attrId = side === 'left' ? pair.leftAttrId : pair.rightAttrId;
+	for (let i = 0; i < equiPairs.length; i++) {
+		const attrId = side === 'left' ? equiPairs[i].leftAttrId : equiPairs[i].rightAttrId;
 		const idx = attrs.findIndex(a => a.id === attrId);
 		if (idx === -1) return false;
-		requiredIndices.push(idx);
+
+		// Ordering entry at position i must match this equi-pair column and
+		// must be ascending (merge join's compareKeys assumes ASC order).
+		if (ordering[i].column !== idx || ordering[i].desc) return false;
 	}
 
-	// Check if the ordering prefix covers all required columns (in any order)
-	if (requiredIndices.length > ordering.length) return false;
-
-	const orderColumns = new Set(ordering.slice(0, requiredIndices.length).map(o => o.column));
-	return requiredIndices.every(idx => orderColumns.has(idx));
+	return true;
 }
 
 /**

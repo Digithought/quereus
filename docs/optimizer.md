@@ -383,7 +383,7 @@ Rules are organized by optimization family in `src/planner/rules/`:
 - `ruleMutatingSubqueryCache`: Ensures mutating subqueries execute once
 
 **Join** (`join/`)
-- `ruleJoinPhysicalSelection`: Selects hash join over nested loop for equi-joins when cheaper. Supports INNER, LEFT, SEMI, and ANTI join types.
+- `ruleJoinPhysicalSelection`: Selects hash join or merge join over nested loop for equi-joins when cheaper. Three-way cost comparison (nested-loop vs hash vs merge). Supports INNER, LEFT, SEMI, and ANTI join types.
 
 **Subquery** (`subquery/`)
 - `ruleSubqueryDecorrelation`: Transforms correlated EXISTS/IN subqueries in WHERE-clause filters into semi/anti joins, enabling hash join selection and eliminating per-row re-execution. Handles: correlated EXISTS → semi join, NOT EXISTS → anti join, correlated IN → semi join. NOT IN is deferred (NULL semantics complexity). Runs in the Structural pass at priority 25 (after predicate pushdown).
@@ -596,7 +596,7 @@ The optimizer architecture is designed to support future enhancements:
 - Adaptive query optimization
 
 **Additional Physical Operators**
-- Merge joins (bloom/hash joins are implemented)
+- ~~Merge joins~~ (implemented alongside bloom/hash joins)
 - Parallel execution nodes
 - Specialized aggregation algorithms
 
@@ -688,9 +688,9 @@ class QuickPickOptimizer {
 
 After join ordering (QuickPick), the optimizer selects a physical join algorithm for each join node. This runs in the PostOptimization pass (after QuickPick in the Physical pass) so the full logical join tree is visible to QuickPick before any physical conversion.
 
-### Bloom (Hash) Join
+The selection rule (`ruleJoinPhysicalSelection`) extracts equi-join pairs from AND-of-equalities in the ON condition (or USING columns), performs a three-way cost comparison (nested-loop vs hash vs merge), and selects the cheapest physical algorithm.
 
-For equi-joins (`left.col = right.col`), the optimizer compares hash join cost against nested-loop cost and selects the cheaper option:
+### Bloom (Hash) Join
 
 - **Build phase**: Materializes the smaller input into a `Map<string, Row[]>` keyed by serialized equi-join column values
 - **Probe phase**: Streams the larger input, probing the hash map for matches
@@ -700,13 +700,24 @@ For equi-joins (`left.col = right.col`), the optimizer compares hash join cost a
 - **Collation awareness**: Key serialization normalizes string values according to column collation (e.g., NOCASE → toLowerCase, RTRIM → trimEnd)
 - **Residual conditions**: Non-equi parts of the ON clause are evaluated as a residual filter after hash lookup
 - **Side selection**: For INNER JOINs, the smaller input is the build side; for LEFT/SEMI/ANTI JOINs, the left side is always the probe side to preserve semantics
-
 - **Semi join**: Emits left row on first match, producing at most one output per left row (used for EXISTS decorrelation)
 - **Anti join**: Emits left row only when no match is found (used for NOT EXISTS decorrelation)
 
-The selection rule (`ruleJoinPhysicalSelection`) extracts equi-join pairs from AND-of-equalities in the ON condition, compares `hashJoinCost(buildRows, probeRows)` vs `nestedLoopJoinCost(outerRows, innerRows)`, and creates a `BloomJoinNode` (PlanNodeType.HashJoin) when the hash join is cheaper.
+### Merge Join
+
+Selected when both inputs are already sorted on the equi-join columns (or when sorting + merge is still cheaper than hash join):
+
+- **Algorithm**: Single linear pass over both sorted inputs. Materializes the right side into an array for run detection; streams the left side with a pointer into the right array.
+- **Complexity**: O(n + m) when pre-sorted; O(n log n + m log m) when sort is needed
+- **Supports**: INNER, LEFT, SEMI, and ANTI joins with equi-predicates
+- **Ordering preservation**: Preserves left-side ordering in output (unlike hash join which destroys ordering)
+- **Sort insertion**: The optimizer detects existing ascending ordering via `PlanNodeCharacteristics.getOrdering()` and inserts `SortNode`s only when inputs aren't already sorted on the equi-pair columns
+- **Duplicate key runs**: Correctly produces cross-product of matching runs when both sides have duplicate key values
+- **Null handling**: NULL keys never match (consistent with SQL null != null semantics)
+- **Collation awareness**: Uses per-column collation functions for key comparisons
 
 **Cost model** (from `src/planner/cost/index.ts`):
+- Merge join: `(leftRows + rightRows) × 0.3` + sort costs if needed
 - Hash join: `buildRows × 0.8 + probeRows × 0.4`
 - Nested loop: `outerRows × 1.0 + outerRows × innerRows × 0.1`
 
