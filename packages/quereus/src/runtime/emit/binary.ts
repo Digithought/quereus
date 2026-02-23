@@ -4,7 +4,8 @@ import type { SqlValue } from "../../common/types.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
-import { compareSqlValuesFast, resolveCollation } from "../../util/comparison.js";
+import { compareSqlValuesFast } from "../../util/comparison.js";
+import type { CollationFunction } from "../../util/comparison.js";
 import { coerceForComparison, coerceToNumberForArithmetic } from "../../util/coercion.js";
 import { simpleLike } from "../../util/patterns.js";
 import type { EmissionContext } from "../emission-context.js";
@@ -189,7 +190,7 @@ export function emitComparisonOp(plan: BinaryOpNode, ctx: EmissionContext): Inst
 	}
 
 	// Pre-resolve collation function for optimal performance
-	const collationFunc = resolveCollation(collationName);
+	const collationFunc = ctx.resolveCollation(collationName);
 
 	const operator = plan.expression.operator;
 
@@ -255,7 +256,7 @@ function buildCmpToResult(operator: string, plan: BinaryOpNode): (cmp: number) =
 function buildGenericComparisonRun(
 	operator: string,
 	plan: BinaryOpNode,
-	collationFunc: ReturnType<typeof resolveCollation>
+	collationFunc: CollationFunction
 ): (ctx: RuntimeContext, v1: SqlValue, v2: SqlValue) => SqlValue {
 	const cmpToResult = buildCmpToResult(operator, plan);
 	return function runGenericComparison(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {

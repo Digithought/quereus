@@ -4,7 +4,7 @@ import { emitCallFromPlan, emitPlanNode } from '../emitters.js';
 import type { Row, OutputValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
-import { compareSqlValuesFast, resolveCollation, BINARY_COLLATION } from '../../util/comparison.js';
+import { compareSqlValuesFast, BINARY_COLLATION } from '../../util/comparison.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import type { SqlValue } from '../../common/types.js';
 import { createRowSlot } from '../context-helpers.js';
@@ -31,7 +31,7 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 		const leftIndex = leftAttributes.findIndex(attr => attr.name.toLowerCase() === lowerName);
 		const rightIndex = rightAttributes.findIndex(attr => attr.name.toLowerCase() === lowerName);
 		const leftType = leftAttributes[leftIndex]?.type;
-		const collationFunc = leftType?.collationName ? resolveCollation(leftType.collationName) : BINARY_COLLATION;
+		const collationFunc = leftType?.collationName ? ctx.resolveCollation(leftType.collationName) : BINARY_COLLATION;
 		return { leftIndex, rightIndex, collationFunc };
 	});
 

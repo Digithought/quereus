@@ -4,7 +4,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { emitPlanNode } from '../emitters.js';
 import type { Row } from '../../common/types.js';
 import { BTree } from 'inheritree';
-import { createCollationRowComparator, resolveCollation, BINARY_COLLATION } from '../../util/comparison.js';
+import { createCollationRowComparator, BINARY_COLLATION } from '../../util/comparison.js';
 
 export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): Instruction {
   const leftInst = emitPlanNode(plan.left, ctx);
@@ -13,7 +13,7 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
   // Pre-resolve collation-based row comparator (safe for mixed-type rows in set operations)
   const attributes = plan.getAttributes();
   const collationRowComparator = createCollationRowComparator(
-    attributes.map(attr => attr.type.collationName ? resolveCollation(attr.type.collationName) : BINARY_COLLATION)
+    attributes.map(attr => attr.type.collationName ? ctx.resolveCollation(attr.type.collationName) : BINARY_COLLATION)
   );
 
   // Helper function to create a properly structured output row

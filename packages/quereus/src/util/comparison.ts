@@ -58,7 +58,9 @@ collations.set('NOCASE', NOCASE_COLLATION);
 collations.set('RTRIM', RTRIM_COLLATION);
 
 /**
- * Registers a collation function with the given name.
+ * Registers a collation function in the global registry.
+ * @deprecated Use `db.registerCollation(name, func)` for per-database collation registration.
+ * This global registry is retained for standalone utility use and built-in collation fallback.
  * @param name The name of the collation (case-insensitive)
  * @param func The collation function to register
  */
@@ -71,7 +73,8 @@ export function registerCollation(name: string, func: CollationFunction): void {
 }
 
 /**
- * Gets a registered collation function by name.
+ * Gets a collation function from the global registry.
+ * @deprecated Use `db._getCollation(name)` or `EmissionContext.getCollation()` for per-database lookup.
  * @param name The collation name (case-insensitive)
  * @returns The collation function, or undefined if not found
  */
@@ -80,7 +83,9 @@ export function getCollation(name: string): CollationFunction | undefined {
 }
 
 /**
- * Resolves a collation name to its function. Optimized for hot path usage.
+ * Resolves a collation name to its function from the global registry.
+ * @deprecated Use `EmissionContext.resolveCollation()` for per-database resolution during emission.
+ * This global version is retained for standalone comparison utilities and vtab internals.
  * @param collationName The collation name
  * @returns The collation function (defaults to BINARY if not found)
  */

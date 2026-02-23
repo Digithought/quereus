@@ -3,7 +3,7 @@ import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { type SqlValue, type Row, type MaybePromise } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
-import { createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
+import { createOrderByComparatorFast } from '../../util/comparison.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { withAsyncRowContext } from '../context-helpers.js';
 
@@ -18,7 +18,7 @@ export function emitSort(plan: SortNode, ctx: EmissionContext): Instruction {
 	const sortKeyComparators = plan.sortKeys.map(key => {
 		const keyType = key.expression.getType();
 		const collationName = keyType.collationName || 'BINARY';
-		const collationFunc = resolveCollation(collationName);
+		const collationFunc = ctx.resolveCollation(collationName);
 		return createOrderByComparatorFast(key.direction, key.nulls, collationFunc);
 	});
 

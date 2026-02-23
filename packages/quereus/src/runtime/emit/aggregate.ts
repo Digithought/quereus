@@ -8,7 +8,7 @@ import { isAggregateFunctionSchema } from '../../schema/function.js';
 import { AggregateFunctionCallNode } from '../../planner/nodes/aggregate-function.js';
 import type { PlanNode, RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { isRelationalNode } from '../../planner/nodes/plan-node.js';
-import { createTypedComparator, resolveCollation } from '../../util/comparison.js';
+import { createTypedComparator } from '../../util/comparison.js';
 import type { LogicalType } from '../../types/logical-type.js';
 import { BTree } from 'inheritree';
 import { createLogger } from '../../common/logger.js';
@@ -82,7 +82,7 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 	// Pre-resolve typed comparators for GROUP BY key comparison
 	const groupKeyComparators = plan.groupBy.map(expr => {
 		const exprType = expr.getType();
-		const collationFunc = exprType.collationName ? resolveCollation(exprType.collationName) : undefined;
+		const collationFunc = exprType.collationName ? ctx.resolveCollation(exprType.collationName) : undefined;
 		return createTypedComparator(exprType.logicalType as LogicalType, collationFunc);
 	});
 	const groupKeyLen = groupKeyComparators.length;
@@ -104,14 +104,14 @@ export function emitStreamAggregate(plan: StreamAggregateNode, ctx: EmissionCont
 			if (args.length === 1) {
 				// Single-arg: compare as scalar
 				const argType = args[0].getType();
-				const collation = argType.collationName ? resolveCollation(argType.collationName) : undefined;
+				const collation = argType.collationName ? ctx.resolveCollation(argType.collationName) : undefined;
 				const cmp = createTypedComparator(argType.logicalType as LogicalType, collation);
 				distinctComparators.push((a, b) => cmp(a as SqlValue, b as SqlValue));
 			} else if (args.length > 1) {
 				// Multi-arg: compare element-wise
 				const argComparators = args.map(arg => {
 					const argType = arg.getType();
-					const collation = argType.collationName ? resolveCollation(argType.collationName) : undefined;
+					const collation = argType.collationName ? ctx.resolveCollation(argType.collationName) : undefined;
 					return createTypedComparator(argType.logicalType as LogicalType, collation);
 				});
 				distinctComparators.push((a, b) => {

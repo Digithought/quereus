@@ -2,13 +2,13 @@ import type { SqlValue } from "../../common/types.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { BetweenNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
-import { compareSqlValuesFast, resolveCollation } from "../../util/comparison.js";
+import { compareSqlValuesFast } from "../../util/comparison.js";
 import { coerceForComparison } from "../../util/coercion.js";
 import type { EmissionContext } from "../emission-context.js";
 
 export function emitBetween(plan: BetweenNode, ctx: EmissionContext): Instruction {
 	// Pre-resolve collation function for optimal performance (using BINARY as default for BETWEEN)
-	const collationFunc = resolveCollation('BINARY');
+	const collationFunc = ctx.resolveCollation('BINARY');
 
 	function run(ctx: RuntimeContext, value: SqlValue, lowerBound: SqlValue, upperBound: SqlValue): SqlValue {
 		// SQL BETWEEN logic: value BETWEEN lower AND upper

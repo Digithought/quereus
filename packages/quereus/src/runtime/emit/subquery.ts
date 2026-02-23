@@ -6,7 +6,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { BTree } from 'inheritree';
-import { compareSqlValuesFast, resolveCollation } from '../../util/comparison.js';
+import { compareSqlValuesFast } from '../../util/comparison.js';
 import { ConstantNode } from '../../planner/nodes/plan-node.js';
 
 export function emitScalarSubquery(plan: ScalarSubqueryNode, ctx: EmissionContext): Instruction {
@@ -42,7 +42,7 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 	// Extract collation from the condition expression
 	const conditionType = plan.condition.getType();
 	const collationName = conditionType.collationName || 'BINARY';
-	const collation = resolveCollation(collationName);
+	const collation = ctx.resolveCollation(collationName);
 
 	if (plan.source) {
 		// IN subquery: expr IN (SELECT ...)

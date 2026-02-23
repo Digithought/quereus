@@ -12,7 +12,7 @@ import { createScalarFunction, createAggregateFunction } from '../func/registrat
 import { FunctionFlags } from '../common/constants.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { VirtualTableConnection } from '../vtab/connection.js';
-import { BINARY_COLLATION, getCollation, NOCASE_COLLATION, registerCollation, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
+import { BINARY_COLLATION, NOCASE_COLLATION, RTRIM_COLLATION, type CollationFunction } from '../util/comparison.js';
 import { Parser } from '../parser/parser.js';
 import * as AST from '../parser/ast.js';
 import { buildBlock } from '../planner/building/block.js';
@@ -108,6 +108,8 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	private readonly transactionManager: TransactionManager;
 	/** Assertion evaluation */
 	private readonly assertionEvaluator: AssertionEvaluator;
+	/** Per-database collation registry */
+	private readonly collations = new Map<string, CollationFunction>();
 
 	constructor() {
 		this.schemaManager = new SchemaManager(this);
@@ -261,10 +263,10 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 
 	/** @internal Registers default collation sequences */
 	private registerDefaultCollations(): void {
-		// Register the built-in collations
-		registerCollation('BINARY', BINARY_COLLATION);
-		registerCollation('NOCASE', NOCASE_COLLATION);
-		registerCollation('RTRIM', RTRIM_COLLATION);
+		// Register the built-in collations into per-instance registry
+		this.collations.set('BINARY', BINARY_COLLATION);
+		this.collations.set('NOCASE', NOCASE_COLLATION);
+		this.collations.set('RTRIM', RTRIM_COLLATION);
 		log("Default collations registered (BINARY, NOCASE, RTRIM)");
 	}
 
@@ -973,18 +975,12 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 */
 	registerCollation(name: string, func: CollationFunction): void {
 		this.checkOpen();
-		try {
-			registerCollation(name, func);
-		} catch (e) {
-			errorLog('Failed to register collation %s: %O', name, e);
-			if (e instanceof QuereusError) throw e;
-			throw new QuereusError(
-				`Failed to register collation '${name}': ${e instanceof Error ? e.message : String(e)}`,
-				StatusCode.ERROR,
-				e instanceof Error ? e : undefined
-			);
+		const upperName = name.toUpperCase();
+		if (this.collations.has(upperName)) {
+			log('Overwriting existing collation: %s', upperName);
 		}
-		log('Registered collation: %s', name);
+		this.collations.set(upperName, func);
+		log('Registered collation: %s', upperName);
 	}
 
 	/**
@@ -1045,7 +1041,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 
 	/** @internal Gets a registered collation function */
 	_getCollation(name: string): CollationFunction | undefined {
-		return getCollation(name);
+		return this.collations.get(name.toUpperCase());
 	}
 
 	public _queueDeferredConstraintRow(baseTable: string, constraintName: string, row: Row, descriptor: RowDescriptor, evaluator: (ctx: RuntimeContext) => OutputValue, connectionId?: string, contextRow?: Row, contextDescriptor?: RowDescriptor): void {

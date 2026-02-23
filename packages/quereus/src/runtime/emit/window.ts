@@ -6,7 +6,7 @@ import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { resolveWindowFunction, type WindowFunctionSchema } from '../../schema/window-function.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import { createTypedComparator, createOrderByComparatorFast, resolveCollation } from '../../util/comparison.js';
+import { createTypedComparator, createOrderByComparatorFast } from '../../util/comparison.js';
 import type { LogicalType } from '../../types/logical-type.js';
 import { resolveKeyNormalizer, serializeKeyNullGrouping } from '../../util/key-serializer.js';
 import { createLogger } from '../../common/logger.js';
@@ -49,7 +49,7 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 	const orderByComparators = plan.orderByExpressions.map((exprPlan, i) => {
 		const exprType = exprPlan.getType();
 		const collationName = exprType.collationName || 'BINARY';
-		const collationFunc = resolveCollation(collationName);
+		const collationFunc = ctx.resolveCollation(collationName);
 		const orderClause = plan.windowSpec.orderBy[i];
 		return createOrderByComparatorFast(orderClause.direction, orderClause.nulls, collationFunc);
 	});
@@ -57,7 +57,7 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 	// Pre-resolve typed equality comparators for ORDER BY (used in ranking functions)
 	const orderByEqualityComparators = plan.orderByExpressions.map(exprPlan => {
 		const exprType = exprPlan.getType();
-		const collationFunc = exprType.collationName ? resolveCollation(exprType.collationName) : undefined;
+		const collationFunc = exprType.collationName ? ctx.resolveCollation(exprType.collationName) : undefined;
 		return createTypedComparator(exprType.logicalType as LogicalType, collationFunc);
 	});
 

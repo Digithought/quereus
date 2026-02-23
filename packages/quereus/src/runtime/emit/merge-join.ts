@@ -6,7 +6,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { createRowSlot } from '../context-helpers.js';
-import { compareSqlValuesFast, resolveCollation, BINARY_COLLATION } from '../../util/comparison.js';
+import { compareSqlValuesFast, BINARY_COLLATION } from '../../util/comparison.js';
 import type { CollationFunction } from '../../util/comparison.js';
 
 const log = createLogger('runtime:emit:merge-join');
@@ -62,7 +62,7 @@ export function emitMergeJoin(plan: MergeJoinNode, ctx: EmissionContext): Instru
 		leftIndices.push(li);
 		rightIndices.push(ri);
 		const collationName = leftAttributes[li].type.collationName || rightAttributes[ri].type.collationName;
-		collations.push(collationName ? resolveCollation(collationName) : BINARY_COLLATION);
+		collations.push(collationName ? ctx.resolveCollation(collationName) : BINARY_COLLATION);
 	}
 
 	const rightColCount = rightAttributes.length;

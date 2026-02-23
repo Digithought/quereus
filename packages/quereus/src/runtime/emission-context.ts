@@ -6,7 +6,7 @@ import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { createLogger } from '../common/logger.js';
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
-import type { CollationFunction } from '../util/comparison.js';
+import { BINARY_COLLATION, type CollationFunction } from '../util/comparison.js';
 
 const log = createLogger('runtime:emission-context');
 
@@ -184,6 +184,21 @@ export class EmissionContext {
 			log('Recorded collation dependency: %s', collationName);
 		}
 		return collation;
+	}
+
+	/**
+	 * Resolves a collation name to its function, with BINARY fallback.
+	 * Records the dependency for plan invalidation.
+	 * Use this in emitters instead of the global resolveCollation().
+	 */
+	resolveCollation(collationName: string): CollationFunction {
+		if (collationName === 'BINARY') return BINARY_COLLATION; // Fast path
+		const func = this.getCollation(collationName);
+		if (!func) {
+			log('Unknown collation requested: %s. Falling back to BINARY.', collationName);
+			return BINARY_COLLATION;
+		}
+		return func;
 	}
 
 	/**
