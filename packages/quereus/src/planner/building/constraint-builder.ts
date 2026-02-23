@@ -8,6 +8,8 @@ import { buildExpression } from './expression.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import type { ScalarPlanNode } from '../nodes/plan-node.js';
+import { PlanNode } from '../nodes/plan-node.js';
+import { TableReferenceNode } from '../nodes/reference.js';
 import * as AST from '../../parser/ast.js';
 import { validateDeterministicConstraint } from '../validation/determinism-validator.js';
 
@@ -148,8 +150,10 @@ export function buildConstraintChecks(
       validateDeterministicConstraint(expression, constraintName, tableSchema.name);
 
       // Heuristic: auto-defer if the expression contains a subquery
-      // or references a different relation via attribute bindings (NEW/OLD already localized).
-      const needsDeferred = containsSubquery(expression);
+      // or references committed.* state (which necessarily implies a subquery, but
+      // this defensive check ensures committed-ref constraints are always deferred
+      // even if subquery detection logic changes).
+      const needsDeferred = containsSubquery(expression) || containsCommittedRef(expression);
 
       return {
         constraint,
@@ -177,6 +181,26 @@ function containsSubquery(expr: ScalarPlanNode): boolean {
     for (const c of n.getChildren()) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       stack.push(c as any);
+    }
+  }
+  return false;
+}
+
+/**
+ * Walks the full expression tree (descending into subquery plan children)
+ * to find any TableReferenceNode with readCommitted === true.
+ * This is a defensive check: committed.* refs necessarily contain subqueries,
+ * but this ensures they are always deferred even if subquery detection changes.
+ */
+function containsCommittedRef(expr: ScalarPlanNode): boolean {
+  const stack: PlanNode[] = [expr];
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (n instanceof TableReferenceNode && n.readCommitted) {
+      return true;
+    }
+    for (const c of n.getChildren()) {
+      stack.push(c);
     }
   }
   return false;
