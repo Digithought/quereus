@@ -251,13 +251,13 @@ function selectPhysicalNodeFromPlan(
 		if (accessPlan.handledFilters[i] === true) handledByCol.add(c.columnIndex);
 	});
 
-	// Check if all seek columns have equality constraints (= or single-value IN)
+	// Check if all seek columns have equality constraints (=, single-value IN, or multi-value IN)
 	const eqBySeekCol = new Map<number, PlannerPredicateConstraint>();
 	let allEquality = true;
 	for (const colIdx of seekCols) {
 		const colConstraints = constraintsByCol.get(colIdx) ?? [];
 		const eqConstraint = colConstraints.find(c =>
-			(c.op === '=' || (c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length === 1)) &&
+			(c.op === '=' || (c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length > 0)) &&
 			handledByCol.has(c.columnIndex)
 		);
 		if (eqConstraint) {
@@ -269,7 +269,46 @@ function selectPhysicalNodeFromPlan(
 	}
 
 	if (allEquality && eqBySeekCol.size === seekCols.length) {
-		// Equality seek on all seek columns
+		// Check for multi-value IN on a single-column seek (simple case)
+		const hasMultiValueIn = [...eqBySeekCol.values()].some(c =>
+			c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length > 1
+		);
+
+		if (hasMultiValueIn && seekCols.length === 1) {
+			// Multi-seek: IN on single-column index
+			const colIdx = seekCols[0];
+			const inConstraint = eqBySeekCol.get(colIdx)!;
+			const inValues = inConstraint.value as unknown as unknown[];
+
+			const seekKeys: ScalarPlanNode[] = inValues.map(v => {
+				const lit: AST.LiteralExpr = { type: 'literal', value: v } as unknown as AST.LiteralExpr;
+				return new LiteralNode(tableRef.scope, lit);
+			});
+
+			const inConstraints = inValues.map((_v, i) => ({
+				constraint: { iColumn: colIdx, op: IndexConstraintOp.EQ, usable: true },
+				argvIndex: i + 1,
+			}));
+			const fi: FilterInfo = {
+				...filterInfo,
+				constraints: inConstraints as any,
+				idxStr: `idx=${idxStrName}(0);plan=5;inCount=${inValues.length}`,
+			};
+
+			log('Using index multi-seek on %s (IN with %d values)', physicalIndexName, inValues.length);
+			return new IndexSeekNode(
+				tableRef.scope,
+				tableRef,
+				fi,
+				physicalIndexName,
+				seekKeys,
+				false,
+				providesOrdering,
+				accessPlan.cost
+			);
+		}
+
+		// Standard equality seek on all seek columns
 		const seekKeys: ScalarPlanNode[] = seekCols.map(colIdx => {
 			const c = eqBySeekCol.get(colIdx)!;
 			if (c.valueExpr && !Array.isArray(c.valueExpr)) return c.valueExpr as unknown as ScalarPlanNode;

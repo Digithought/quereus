@@ -11,6 +11,15 @@ export async function* scanBaseLayer(
 	layer: BaseLayer,
 	plan: ScanPlan
 ): AsyncIterable<Row> {
+	// Multi-seek: iterate over multiple equality keys
+	if (plan.equalityKeys && plan.equalityKeys.length > 0) {
+		for (const key of plan.equalityKeys) {
+			const singlePlan: ScanPlan = { ...plan, equalityKey: key, equalityKeys: undefined };
+			yield* scanBaseLayer(layer, singlePlan);
+		}
+		return;
+	}
+
 	const { primaryKeyExtractorFromRow: keyFromEntry, primaryKeyComparator } = layer.getPkExtractorsAndComparators(layer.getSchema());
 	const isEqPlan = plan.equalityKey !== undefined;
 

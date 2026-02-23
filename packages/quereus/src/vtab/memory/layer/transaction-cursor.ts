@@ -12,6 +12,15 @@ export async function* scanTransactionLayer(
 	plan: ScanPlan,
 	_parentIterable: AsyncIterable<Row>
 ): AsyncIterable<Row> {
+	// Multi-seek: iterate over multiple equality keys
+	if (plan.equalityKeys && plan.equalityKeys.length > 0) {
+		for (const key of plan.equalityKeys) {
+			const singlePlan: ScanPlan = { ...plan, equalityKey: key, equalityKeys: undefined };
+			yield* scanTransactionLayer(layer, singlePlan, _parentIterable);
+		}
+		return;
+	}
+
 	const tableSchema = layer.getSchema();
 
 	// General plan application check

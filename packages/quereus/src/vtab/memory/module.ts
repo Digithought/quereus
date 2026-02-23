@@ -141,6 +141,12 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		request: BestAccessPlanRequest,
 		estimatedTableSize: number
 	): BestAccessPlanResult {
+		// Pre-pass: handle IS NULL / IS NOT NULL constraints based on column nullability
+		const nullResult = this.handleNullConstraints(request, tableInfo, estimatedTableSize);
+		if (nullResult.emptyResult) {
+			return nullResult.plan!;
+		}
+
 		const availableIndexes = this.gatherAvailableIndexes(tableInfo);
 		let bestPlan: BestAccessPlanResult | undefined;
 
@@ -160,6 +166,14 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 				.build();
 		}
 
+		// Merge in any null-constraint handling from the pre-pass
+		if (nullResult.handledFilters.some(Boolean)) {
+			const mergedFilters = bestPlan.handledFilters.map(
+				(handled, i) => handled || nullResult.handledFilters[i]
+			);
+			bestPlan = { ...bestPlan, handledFilters: mergedFilters };
+		}
+
 		// Check if we can satisfy ordering requirements
 		if (request.requiredOrdering && request.requiredOrdering.length > 0) {
 			bestPlan = this.adjustPlanForOrdering(bestPlan, request, availableIndexes);
@@ -172,6 +186,56 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		}
 
 		return bestPlan;
+	}
+
+	/**
+	 * Pre-pass: handle IS NULL / IS NOT NULL constraints using column nullability metadata.
+	 * - IS NULL on a NOT NULL column → impossible, return empty result
+	 * - IS NOT NULL on a NOT NULL column → trivially true, mark handled
+	 */
+	private handleNullConstraints(
+		request: BestAccessPlanRequest,
+		tableInfo: TableSchema,
+		estimatedTableSize: number
+	): { handledFilters: boolean[]; emptyResult: boolean; plan?: BestAccessPlanResult } {
+		const handledFilters = new Array(request.filters.length).fill(false) as boolean[];
+		let emptyResult = false;
+
+		for (let i = 0; i < request.filters.length; i++) {
+			const filter = request.filters[i];
+			if (!filter.usable) continue;
+
+			const column = tableInfo.columns[filter.columnIndex];
+			if (!column) continue;
+
+			const columnIsNotNull = column.notNull || column.primaryKey;
+
+			if (filter.op === 'IS NULL' && columnIsNotNull) {
+				// IS NULL on NOT NULL column → impossible, result set is empty
+				emptyResult = true;
+				handledFilters[i] = true;
+			} else if (filter.op === 'IS NOT NULL' && columnIsNotNull) {
+				// IS NOT NULL on NOT NULL column → trivially true
+				handledFilters[i] = true;
+			}
+		}
+
+		if (emptyResult) {
+			// All filters are "handled" in an empty result
+			const allHandled = new Array(request.filters.length).fill(true) as boolean[];
+			return {
+				handledFilters: allHandled,
+				emptyResult: true,
+				plan: AccessPlanBuilder
+					.eqMatch(0, 0) // zero cost, zero rows
+					.setHandledFilters(allHandled)
+					.setRows(0)
+					.setExplanation('Empty result (IS NULL on NOT NULL column)')
+					.build(),
+			};
+		}
+
+		return { handledFilters, emptyResult: false };
 	}
 
 	/**
@@ -192,15 +256,17 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		// Check for equality constraints on index columns (prefix matching)
 		const equalityMatches = this.findEqualityMatches(indexCols, request.filters);
 		if (equalityMatches.matchCount === indexCols.length) {
-			// Perfect equality match on all index columns - index seek
+			// Perfect equality match on all index columns - index seek (or multi-seek for IN)
 			const seekCols = indexCols.slice(0, equalityMatches.matchCount).map(c => c.index);
+			const { inCardinality } = equalityMatches;
+			const isMultiSeek = inCardinality > 1;
 			return AccessPlanBuilder
-				.eqMatch(1)
+				.eqMatch(inCardinality)
 				.setHandledFilters(equalityMatches.handledFilters)
-				.setIsSet(true)
+				.setIsSet(!isMultiSeek)
 				.setIndexName(index.name)
 				.setSeekColumns(seekCols)
-				.setExplanation(`Index seek on ${index.name}`)
+				.setExplanation(`Index ${isMultiSeek ? `multi-seek(${inCardinality})` : 'seek'} on ${index.name}`)
 				.build();
 		}
 
@@ -232,14 +298,16 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 	/**
 	 * Find equality matches for index columns (prefix matching).
-	 * Handles both `=` and single-value `IN` as equality constraints.
+	 * Handles `=`, single-value `IN`, and multi-value `IN` as equality constraints.
+	 * Returns the total cardinality (product of IN list sizes) for cost estimation.
 	 */
 	private findEqualityMatches(
 		indexCols: ReadonlyArray<IndexColumnSchema>,
 		filters: readonly PredicateConstraint[]
-	): { matchCount: number; handledFilters: boolean[] } {
+	): { matchCount: number; handledFilters: boolean[]; inCardinality: number } {
 		const handledFilters = new Array(filters.length).fill(false);
 		let matchCount = 0;
+		let inCardinality = 1;
 
 		for (const indexCol of indexCols) {
 			let foundMatch = false;
@@ -256,11 +324,12 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 					break;
 				}
 
-				// Single-value IN treated as equality
-				if (filter.op === 'IN' && Array.isArray(filter.value) && (filter.value as unknown[]).length === 1) {
+				// IN constraint — treat as equality for prefix matching
+				if (filter.op === 'IN' && Array.isArray(filter.value) && (filter.value as unknown[]).length > 0) {
 					handledFilters[i] = true;
 					foundMatch = true;
 					matchCount++;
+					inCardinality *= (filter.value as unknown[]).length;
 					break;
 				}
 			}
@@ -269,7 +338,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			}
 		}
 
-		return { matchCount, handledFilters };
+		return { matchCount, handledFilters, inCardinality };
 	}
 
 	/**

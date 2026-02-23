@@ -30,6 +30,8 @@ export interface ScanPlan {
 	descending: boolean;
 	/** Specific key for an equality scan (used if planType is EQ) */
 	equalityKey?: BTreeKey;
+	/** Multiple keys for IN-list multi-seek (used instead of equalityKey) */
+	equalityKeys?: BTreeKey[];
 	/** Lower bound for a range scan (used if planType is RANGE_*) */
 	lowerBound?: ScanPlanRangeBound;
 	/** Upper bound for a range scan (used if planType is RANGE_*) */
@@ -240,21 +242,29 @@ export function buildScanPlanFromFilterInfo(filterInfo: FilterInfo, tableSchema:
 	const indexSchema = resolveIndexSchema(indexName, tableSchema);
 
 	let equalityKey: BTreeKey | undefined;
+	let equalityKeys: BTreeKey[] | undefined;
 	let lowerBound: ScanPlanRangeBound | undefined;
 	let upperBound: ScanPlanRangeBound | undefined;
 
 	const isEqPlan = planType === 2;
+	const isMultiSeekPlan = planType === 5;
 	const isRangePlan = planType === 3 || planType === 4;
 
 	if (isEqPlan && indexSchema) {
 		equalityKey = buildEqualityKey(
 			indexName, indexSchema, argvMap, args, constraints, indexInfoOutput, tableSchema,
 		);
+	} else if (isMultiSeekPlan && indexSchema) {
+		// Multi-seek: all args are individual lookup keys
+		const inCount = parseInt(params.get('inCount') ?? '0', 10);
+		if (inCount > 0 && args.length >= inCount) {
+			equalityKeys = args.slice(0, inCount) as BTreeKey[];
+		}
 	} else if (isRangePlan && indexSchema) {
 		({ lowerBound, upperBound } = extractRangeBounds(
 			indexSchema, argvMap, args, constraints, indexInfoOutput,
 		));
 	}
 
-	return { indexName, descending, equalityKey, lowerBound, upperBound, idxNum, idxStr };
+	return { indexName, descending, equalityKey, equalityKeys, lowerBound, upperBound, idxNum, idxStr };
 }
