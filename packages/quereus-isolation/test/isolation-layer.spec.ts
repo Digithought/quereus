@@ -662,7 +662,7 @@ describe('IsolationModule', () => {
 			expect(committed[0].id).to.equal(1);
 		});
 
-		it.skip('nested savepoints rollback independently (BUG: overlay rollbackTo does not restore prior state)', async () => {
+		it('nested savepoints rollback independently', async () => {
 			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, value INTEGER) USING isolated`);
 			await db.exec('BEGIN');
 			await db.exec('INSERT INTO test VALUES (1, 100)');
@@ -712,7 +712,7 @@ describe('IsolationModule', () => {
 			expect(committed.length).to.equal(2);
 		});
 
-		it.skip('savepoint with update and delete operations (BUG: overlay rollbackTo does not restore deleted/updated rows)', async () => {
+		it('savepoint with update and delete operations', async () => {
 			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
 			await db.exec(`INSERT INTO test VALUES (1, 'Alice')`);
 			await db.exec(`INSERT INTO test VALUES (2, 'Bob')`);
@@ -902,7 +902,7 @@ describe('IsolationModule', () => {
 			expect(count?.c).to.equal(1);
 		});
 
-		it.skip('delete-all then re-insert works (BUG: insert does not check for existing tombstone, causes PK conflict)', async () => {
+		it('delete-all then re-insert works', async () => {
 			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
 			await db.exec(`INSERT INTO test VALUES (1, 'Alice')`);
 			await db.exec(`INSERT INTO test VALUES (2, 'Bob')`);

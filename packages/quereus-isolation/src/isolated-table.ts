@@ -33,6 +33,13 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 
 	private registeredConnection: IsolatedConnection | null = null;
 
+	/**
+	 * Tracks savepoint depths that were created before the overlay existed.
+	 * When rolling back to one of these savepoints, the overlay is cleared
+	 * entirely (restoring the "no uncommitted changes" state).
+	 */
+	private savepointsBeforeOverlay: Set<number> = new Set();
+
 	constructor(
 		db: Database,
 		module: IsolationModule,
@@ -574,7 +581,32 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 
 		switch (operation) {
 			case 'insert': {
-				// Insert into overlay with tombstone = 0
+				// Check if there's an existing tombstone in the overlay for this PK.
+				// This happens when a row is deleted then re-inserted with the same PK.
+				// In that case, convert the tombstone to a regular row (update) instead
+				// of inserting, which would fail with a UNIQUE constraint violation.
+				const pkIndices = this.getPrimaryKeyIndices();
+				const pk = values ? pkIndices.map(i => values[i]) : undefined;
+
+				if (pk) {
+					const existingRow = await this.getOverlayRow(overlay, pk);
+					if (existingRow && existingRow[tombstoneIndex] === 1) {
+						// Convert tombstone to regular row
+						const overlayRow = [...(values ?? []), 0];
+						const result = await overlay.update({
+							operation: 'update',
+							values: overlayRow,
+							oldKeyValues: pk,
+							onConflict: args.onConflict,
+						});
+						if (isUpdateOk(result) && result.row) {
+							return { status: 'ok', row: result.row.slice(0, tombstoneIndex) };
+						}
+						return result;
+					}
+				}
+
+				// Normal insert into overlay with tombstone = 0
 				const overlayRow = [...(values ?? []), 0]; // Append tombstone = 0
 				const result = await overlay.update({
 					...args,
@@ -986,6 +1018,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 			await this.flushOverlayToUnderlying(overlay);
 		}
 		await this.clearOverlay();
+		this.savepointsBeforeOverlay.clear();
 	}
 
 	/**
@@ -994,26 +1027,54 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	 */
 	async onConnectionRollback(): Promise<void> {
 		await this.clearOverlay();
+		this.savepointsBeforeOverlay.clear();
 	}
 
 	/**
 	 * Called by IsolatedConnection when a savepoint is created.
+	 *
+	 * When the overlay exists, its own registered MemoryVirtualTableConnection
+	 * receives createSavepoint from the database's connection iteration.
+	 * Calling overlayTable.savepoint() here too would double-push onto the
+	 * same savepointStack, corrupting the depth-to-index mapping.
+	 *
+	 * When the overlay does NOT exist (savepoint before first write), we
+	 * record the depth so that a later rollbackToSavepoint can clear the
+	 * overlay if one was created after the savepoint.
 	 */
 	async onConnectionSavepoint(index: number): Promise<void> {
-		await this.overlayTable?.savepoint?.(index);
+		if (!this.overlayTable) {
+			this.savepointsBeforeOverlay.add(index);
+		}
+		// If overlay exists, its registered connection handles it
 	}
 
 	/**
 	 * Called by IsolatedConnection when a savepoint is released.
 	 */
 	async onConnectionReleaseSavepoint(index: number): Promise<void> {
-		await this.overlayTable?.release?.(index);
+		this.savepointsBeforeOverlay.delete(index);
+		// If overlay exists, its registered connection handles it
 	}
 
 	/**
 	 * Called by IsolatedConnection when rolling back to a savepoint.
+	 *
+	 * If the target savepoint was created before the overlay existed,
+	 * the overlay's registered connection has no snapshot to restore —
+	 * so we clear the overlay entirely, restoring "no uncommitted changes".
 	 */
 	async onConnectionRollbackToSavepoint(index: number): Promise<void> {
-		await this.overlayTable?.rollbackTo?.(index);
+		if (this.savepointsBeforeOverlay.has(index)) {
+			// Rolling back to before the overlay existed — discard all overlay changes
+			await this.clearOverlay();
+			// Remove savepoints above the target (they're implicitly gone)
+			for (const depth of [...this.savepointsBeforeOverlay]) {
+				if (depth > index) {
+					this.savepointsBeforeOverlay.delete(depth);
+				}
+			}
+		}
+		// If overlay's registered connection has this savepoint, it handles rollback
 	}
 }
