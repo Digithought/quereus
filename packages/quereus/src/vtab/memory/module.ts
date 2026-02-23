@@ -141,11 +141,13 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		request: BestAccessPlanRequest,
 		estimatedTableSize: number
 	): BestAccessPlanResult {
-		// Pre-pass: handle IS NULL / IS NOT NULL constraints based on column nullability
-		const nullResult = this.handleNullConstraints(request, tableInfo, estimatedTableSize);
-		if (nullResult.emptyResult) {
-			return nullResult.plan!;
-		}
+		// NOTE: IS NULL / IS NOT NULL optimization is not yet wired up.
+		// The constraint extractor produces these as unary expressions which
+		// are not currently extracted as PredicateConstraints. When that support
+		// is added, a handleNullConstraints pre-pass should be re-introduced
+		// here — but it must also produce a proper empty-result physical node
+		// (not just rows=0 on a plan lacking indexName/seekColumnIndexes, which
+		// would fall through to SeqScan and return all rows).
 
 		const availableIndexes = this.gatherAvailableIndexes(tableInfo);
 		let bestPlan: BestAccessPlanResult | undefined;
@@ -166,14 +168,6 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 				.build();
 		}
 
-		// Merge in any null-constraint handling from the pre-pass
-		if (nullResult.handledFilters.some(Boolean)) {
-			const mergedFilters = bestPlan.handledFilters.map(
-				(handled, i) => handled || nullResult.handledFilters[i]
-			);
-			bestPlan = { ...bestPlan, handledFilters: mergedFilters };
-		}
-
 		// Check if we can satisfy ordering requirements
 		if (request.requiredOrdering && request.requiredOrdering.length > 0) {
 			bestPlan = this.adjustPlanForOrdering(bestPlan, request, availableIndexes);
@@ -186,56 +180,6 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		}
 
 		return bestPlan;
-	}
-
-	/**
-	 * Pre-pass: handle IS NULL / IS NOT NULL constraints using column nullability metadata.
-	 * - IS NULL on a NOT NULL column → impossible, return empty result
-	 * - IS NOT NULL on a NOT NULL column → trivially true, mark handled
-	 */
-	private handleNullConstraints(
-		request: BestAccessPlanRequest,
-		tableInfo: TableSchema,
-		estimatedTableSize: number
-	): { handledFilters: boolean[]; emptyResult: boolean; plan?: BestAccessPlanResult } {
-		const handledFilters = new Array(request.filters.length).fill(false) as boolean[];
-		let emptyResult = false;
-
-		for (let i = 0; i < request.filters.length; i++) {
-			const filter = request.filters[i];
-			if (!filter.usable) continue;
-
-			const column = tableInfo.columns[filter.columnIndex];
-			if (!column) continue;
-
-			const columnIsNotNull = column.notNull || column.primaryKey;
-
-			if (filter.op === 'IS NULL' && columnIsNotNull) {
-				// IS NULL on NOT NULL column → impossible, result set is empty
-				emptyResult = true;
-				handledFilters[i] = true;
-			} else if (filter.op === 'IS NOT NULL' && columnIsNotNull) {
-				// IS NOT NULL on NOT NULL column → trivially true
-				handledFilters[i] = true;
-			}
-		}
-
-		if (emptyResult) {
-			// All filters are "handled" in an empty result
-			const allHandled = new Array(request.filters.length).fill(true) as boolean[];
-			return {
-				handledFilters: allHandled,
-				emptyResult: true,
-				plan: AccessPlanBuilder
-					.eqMatch(0, 0) // zero cost, zero rows
-					.setHandledFilters(allHandled)
-					.setRows(0)
-					.setExplanation('Empty result (IS NULL on NOT NULL column)')
-					.build(),
-			};
-		}
-
-		return { handledFilters, emptyResult: false };
 	}
 
 	/**

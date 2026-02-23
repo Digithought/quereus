@@ -160,14 +160,16 @@ await db.exec("alter table users rename column created_at to registration_date")
 
 *   **Constraint Enforcement:** Only primary key `UNIQUE` constraints are fully enforced. Other constraints (`NOT NULL`, `CHECK`) are parsed but not enforced during DML operations within the memory table
 *   **Default Values:** `DEFAULT` clauses in column definitions are not automatically applied during `INSERT` operations
-*   **Advanced Query Planning:** Cost estimation is heuristic; range scans only consider the first column of composite indexes
+*   **Advanced Query Planning:** Cost estimation is heuristic; range scans only consider the first column of composite indexes. Multi-value `IN` supports single-column index seeks; composite index `IN` is not yet implemented
+*   **IS NULL Optimization:** `IS NULL` / `IS NOT NULL` are handled as residual filters; index-level nullability-aware planning is not yet wired up
 *   **Index Features:** Expression-based indexes and advanced collation support are not implemented
 
 ## **Future Enhancements:**
 
 ### **Near-Term Improvements:**
 *   **Enhanced Constraint Enforcement:** Full support for `NOT NULL`, `CHECK`, and `DEFAULT` constraints within memory table operations
-*   **Improved Query Planning:** Better cost estimation and multi-column range scan support in `xBestIndex`
+*   **Improved Query Planning:** Multi-column range scan support and IS NULL/IS NOT NULL constraint extraction for index-level optimization
+*   **Composite IN:** Multi-value `IN` on composite indexes (currently single-column only)
 *   **Expression Indexes:** Support for indexes on computed expressions
 *   **Advanced Collations:** Enhanced collation support beyond basic `BINARY`, `NOCASE`, and `RTRIM`
 

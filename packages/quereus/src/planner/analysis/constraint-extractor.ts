@@ -452,10 +452,10 @@ function mapOperatorToConstraint(operator: string, rightValue?: SqlValue): Const
     case 'MATCH': return 'MATCH';
     case 'IN': return 'IN';
     case 'NOT IN': return 'NOT IN';
-    case 'IS':
-      return rightValue === null ? 'IS NULL' : null;
-    case 'IS NOT':
-      return rightValue === null ? 'IS NOT NULL' : null;
+    // NOTE: IS NULL / IS NOT NULL are parsed as unary expressions, not binary
+    // 'IS' / 'IS NOT'. To support constraint extraction for these, add unary
+    // expression handling in extractConstraints alongside a proper
+    // empty-result physical node for the IS NULL on NOT NULL optimization.
     default: return null;
   }
 }

@@ -582,7 +582,7 @@ if (shouldCache(node, context)) {
 ## Known Issues
 
 **Current Limitations**
-- **Enhanced Predicate Analysis**: The constraint extractor currently handles basic binary predicates but could be extended for OR conditions, IN lists, and complex expressions  
+- **Enhanced Predicate Analysis**: The constraint extractor handles binary predicates and IN lists (multi-value IN → index multi-seek). IS NULL/IS NOT NULL are parsed as unary expressions and handled as residual filters; index-level nullability optimization requires unary constraint extraction. OR conditions and complex expressions are not yet supported
 - **Relational Folding Pending**: Scalar constant folding is implemented; relational constant folding (materializing foldable relational subtrees) is planned
 - **Access Path Selection**: Supports primary and secondary index seek/range via module-provided `indexName`/`seekColumnIndexes`. Prefix-equality + trailing-range on composite indexes is not yet supported
 
