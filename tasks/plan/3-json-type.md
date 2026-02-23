@@ -8,7 +8,7 @@ dependencies: Type system, storage layer
 
 *Details to be filled out during planning phase.*
 
-JSON_TYPE with PhysicalType.OBJECT:
+JSON type with PhysicalType.OBJECT:
 - Validation, parsing, serialization
 - JSON path queries (json_extract, json_set, etc.)
 - Indexing JSON properties

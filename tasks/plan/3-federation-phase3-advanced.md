@@ -19,20 +19,3 @@ Advanced push-down optimization:
 
 **Principles:** SPP, DRY, modular architecture. Cost-based strategy selection.
 
-## TODO
-
-### Phase 1: Planning
-- [ ] Design each optimization
-- [ ] Plan cost integration
-
-### Phase 2: Implementation
-- [ ] Implement predicate optimizations
-- [ ] Add projection pushdown
-- [ ] Add aggregation pushdown
-- [ ] Implement range seeks
-- [ ] Add IN-list strategy
-
-### Phase 3: Review & Test
-- [ ] Review correctness
-- [ ] Benchmark improvements
-
