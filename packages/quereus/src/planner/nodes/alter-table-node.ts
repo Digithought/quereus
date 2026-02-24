@@ -1,0 +1,77 @@
+import type { Scope } from '../scopes/scope.js';
+import { PhysicalProperties, PlanNode, type VoidNode } from './plan-node.js';
+import { PlanNodeType } from './plan-node-type.js';
+import type { TableReferenceNode } from './reference.js';
+import type { VoidType } from '../../common/datatype.js';
+import type * as AST from '../../parser/ast.js';
+
+/**
+ * Discriminated union of ALTER TABLE actions handled by AlterTableNode.
+ * addConstraint is handled separately by AddConstraintNode.
+ */
+export type AlterTableAction =
+	| { type: 'renameTable'; newName: string }
+	| { type: 'renameColumn'; oldName: string; newName: string }
+	| { type: 'addColumn'; column: AST.ColumnDef }
+	| { type: 'dropColumn'; name: string };
+
+/**
+ * Plan node for ALTER TABLE operations (rename table/column, add/drop column).
+ * Constraint additions are handled by the separate AddConstraintNode.
+ */
+export class AlterTableNode extends PlanNode implements VoidNode {
+	override readonly nodeType = PlanNodeType.AlterTable;
+
+	constructor(
+		scope: Scope,
+		public readonly table: TableReferenceNode,
+		public readonly action: AlterTableAction,
+	) {
+		super(scope);
+	}
+
+	getType(): VoidType {
+		return { typeClass: 'void' };
+	}
+
+	getRelations(): readonly [TableReferenceNode] {
+		return [this.table];
+	}
+
+	getChildren(): readonly PlanNode[] {
+		return [];
+	}
+
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`AlterTableNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this;
+	}
+
+	override toString(): string {
+		switch (this.action.type) {
+			case 'renameTable':
+				return `ALTER TABLE RENAME TO ${this.action.newName}`;
+			case 'renameColumn':
+				return `ALTER TABLE RENAME COLUMN ${this.action.oldName} TO ${this.action.newName}`;
+			case 'addColumn':
+				return `ALTER TABLE ADD COLUMN ${this.action.column.name}`;
+			case 'dropColumn':
+				return `ALTER TABLE DROP COLUMN ${this.action.name}`;
+		}
+	}
+
+	override getLogicalAttributes(): Record<string, unknown> {
+		return {
+			table: this.table.tableSchema.name,
+			schema: this.table.tableSchema.schemaName,
+			actionType: this.action.type,
+			...this.action,
+		};
+	}
+
+	override computePhysical(_children: readonly PhysicalProperties[]): Partial<PhysicalProperties> {
+		return { readonly: false };
+	}
+}

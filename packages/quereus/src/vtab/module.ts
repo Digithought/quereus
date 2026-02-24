@@ -160,6 +160,23 @@ export interface VirtualTableModule<
 	 * Used for runtime capability discovery.
 	 */
 	getCapabilities?(): ModuleCapabilities;
+
+	/**
+	 * Alter an existing table's structure. Called by ALTER TABLE for
+	 * data-affecting changes (ADD COLUMN, DROP COLUMN, RENAME COLUMN).
+	 * RENAME TABLE is schema-only and does not call this method.
+	 *
+	 * Returns the updated TableSchema after the operation. The engine
+	 * registers this in the schema catalog.
+	 *
+	 * If not implemented, the engine rejects data-affecting ALTER operations.
+	 */
+	alterTable?(
+		db: Database,
+		schemaName: string,
+		tableName: string,
+		change: SchemaChangeInfo,
+	): Promise<TableSchema>;
 }
 
 /**

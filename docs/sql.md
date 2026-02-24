@@ -992,6 +992,48 @@ where user_id = 42;  -- Passes: requester_id matches
 - Combine with user-defined functions for custom verification logic
 - Context is required when defaults or constraints reference context variables
 
+### 2.7 ALTER TABLE Statement
+
+Modifies an existing table's structure or name.
+
+**RENAME TABLE**
+
+```sql
+ALTER TABLE old_name RENAME TO new_name;
+```
+
+Renames a table. The old name becomes invalid immediately. Fails if the new name already exists.
+
+**RENAME COLUMN**
+
+```sql
+ALTER TABLE table_name RENAME COLUMN old_col TO new_col;
+```
+
+Renames a column. Data is preserved. Fails if the new name conflicts with an existing column or the old name doesn't exist.
+
+**ADD COLUMN**
+
+```sql
+ALTER TABLE table_name ADD COLUMN col_name type [constraints];
+```
+
+Adds a new column to the table. Existing rows are backfilled with the column's DEFAULT value (or NULL if no default). Restrictions:
+
+- Cannot add a PRIMARY KEY column.
+- Cannot add a NOT NULL column without a DEFAULT if the table has existing rows.
+
+**DROP COLUMN**
+
+```sql
+ALTER TABLE table_name DROP COLUMN col_name;
+```
+
+Removes a column from the table and all its data. Restrictions:
+
+- Cannot drop a PRIMARY KEY column.
+- Cannot drop the last remaining column.
+
 ## 3. Clauses and Subclauses
 
 ### 3.1 FROM Clause

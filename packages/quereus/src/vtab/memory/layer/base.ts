@@ -186,7 +186,7 @@ export class BaseLayer implements Layer {
 
 		const oldPrimaryTree = this.primaryTree;
 
-		// First, reinitialize primary key functions with the updated schema (which already includes the new column)
+		// Reinitialize primary key functions with the updated schema (which already includes the new column)
 		this.initializePrimaryKeyFunctions();
 
 		// Create new primary tree with the updated schema and migrate data

@@ -314,6 +314,7 @@ function isDDLNode(nodeType: PlanNodeType): boolean {
 		PlanNodeType.Transaction,
 		PlanNodeType.Pragma,
 		PlanNodeType.AddConstraint,
+		PlanNodeType.AlterTable,
 	]);
 
 	return ddlTypes.has(nodeType);

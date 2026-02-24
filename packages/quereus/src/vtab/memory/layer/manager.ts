@@ -672,7 +672,9 @@ export class MemoryTableManager {
 				}
 			}
 			// Check for NOT NULL constraint (could be explicit or from default behavior)
-			if (newColumnSchema.notNull && defaultValue === null && !(defaultConstraint?.expr?.type ==='literal')) {
+			// Allow NOT NULL without DEFAULT if table is empty (SQLite-compatible)
+			const tableHasRows = this.baseLayer.primaryTree.at(this.baseLayer.primaryTree.first()) !== undefined;
+			if (newColumnSchema.notNull && defaultValue === null && !(defaultConstraint?.expr?.type ==='literal') && tableHasRows) {
 				throw new QuereusError(`Cannot add NOT NULL col '${newColumnSchema.name}' without DEFAULT.`, StatusCode.CONSTRAINT);
 			}
 			const updatedColumnsSchema: ReadonlyArray<ColumnSchema> = Object.freeze([...this.tableSchema.columns, newColumnSchema]);
@@ -1032,12 +1034,33 @@ export class MemoryTableManager {
 		const primaryTree = transactionLayer.getModificationTree('primary');
 		if (!primaryTree) return;
 
-		// Iterate through all entries in the transaction layer's primary tree
+		// Collect all rows first to avoid modifying the base tree while iterating
+		// the inherited BTree (whose parent IS the base tree).
+		const allRows: Row[] = [];
 		for (const path of primaryTree.ascending(primaryTree.first())) {
-			const row = primaryTree.at(path)!;
-			// Insert the row into the base layer
+			allRows.push(primaryTree.at(path)!);
+		}
+
+		logger.debugLog(`[Consolidate] Collected ${allRows.length} rows from transaction layer. Row widths: ${allRows.map(r => r.length).join(',')}`);
+
+		// Count base layer rows before
+		let baseCount = 0;
+		for (const _path of this.baseLayer.primaryTree.ascending(this.baseLayer.primaryTree.first())) {
+			baseCount++;
+		}
+		logger.debugLog(`[Consolidate] Base layer had ${baseCount} rows before copy`);
+
+		// Now insert collected rows into the base layer
+		for (const row of allRows) {
 			this.baseLayer.primaryTree.insert(row);
 		}
+
+		// Count base layer rows after
+		let baseCountAfter = 0;
+		for (const _path of this.baseLayer.primaryTree.ascending(this.baseLayer.primaryTree.first())) {
+			baseCountAfter++;
+		}
+		logger.debugLog(`[Consolidate] Base layer has ${baseCountAfter} rows after copy`);
 
 		// Also need to rebuild secondary indexes in the base layer
 		await this.baseLayer.rebuildAllSecondaryIndexes();

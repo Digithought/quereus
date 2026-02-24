@@ -1,6 +1,7 @@
 import type * as AST from '../../parser/ast.js';
 import type { PlanningContext } from '../planning-context.js';
 import { AddConstraintNode } from '../nodes/add-constraint-node.js';
+import { AlterTableNode } from '../nodes/alter-table-node.js';
 import { buildTableReference } from './table.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -31,13 +32,29 @@ export function buildAlterTableStmt(
 		}
 
     case 'renameTable':
+      return new AlterTableNode(ctx.scope, tableReference, {
+        type: 'renameTable',
+        newName: stmt.action.newName,
+      });
+
     case 'renameColumn':
+      return new AlterTableNode(ctx.scope, tableReference, {
+        type: 'renameColumn',
+        oldName: stmt.action.oldName,
+        newName: stmt.action.newName,
+      });
+
     case 'addColumn':
+      return new AlterTableNode(ctx.scope, tableReference, {
+        type: 'addColumn',
+        column: stmt.action.column,
+      });
+
     case 'dropColumn':
-      throw new QuereusError(
-        `ALTER TABLE ${stmt.action.type} is not yet implemented`,
-        StatusCode.UNSUPPORTED
-      );
+      return new AlterTableNode(ctx.scope, tableReference, {
+        type: 'dropColumn',
+        name: stmt.action.name,
+      });
 
     default:
       throw new QuereusError(

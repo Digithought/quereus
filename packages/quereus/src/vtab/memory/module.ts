@@ -3,7 +3,7 @@ import { StatusCode } from '../../common/types.js';
 import type { Database } from '../../core/database.js';
 import { type TableSchema, type IndexSchema, IndexColumnSchema } from '../../schema/table.js';
 import { MemoryTable } from './table.js';
-import type { VirtualTableModule } from '../module.js';
+import type { VirtualTableModule, SchemaChangeInfo } from '../module.js';
 import { MemoryTableManager } from './layer/manager.js';
 import type { MemoryTableConfig } from './types.js';
 import { createMemoryTableLoggers } from './utils/logging.js';
@@ -402,6 +402,50 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 			logger.operation('Destroy Table', tableName, { schema: schemaName });
 		}
+	}
+
+	/**
+	 * Renames a memory table's internal registration key.
+	 * Called by the ALTER TABLE RENAME TO emitter after schema update.
+	 */
+	renameTable(schemaName: string, oldName: string, newName: string): void {
+		const oldKey = `${schemaName}.${oldName}`.toLowerCase();
+		const newKey = `${schemaName}.${newName}`.toLowerCase();
+		const manager = this.tables.get(oldKey);
+		if (manager) {
+			manager.renameTable(newName);
+			this.tables.delete(oldKey);
+			this.tables.set(newKey, manager);
+		}
+	}
+
+	/**
+	 * Alters an existing memory table's structure (ADD/DROP/RENAME COLUMN).
+	 */
+	async alterTable(db: Database, schemaName: string, tableName: string, change: SchemaChangeInfo): Promise<TableSchema> {
+		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
+		const manager = this.tables.get(tableKey);
+
+		if (!manager) {
+			throw new QuereusError(`Memory table '${tableName}' not found in schema '${schemaName}'. Cannot alter.`, StatusCode.ERROR);
+		}
+
+		switch (change.type) {
+			case 'addColumn':
+				await manager.addColumn(change.columnDef);
+				break;
+			case 'dropColumn':
+				await manager.dropColumn(change.columnName);
+				break;
+			case 'renameColumn':
+				if (!change.newColumnDefAst) {
+					throw new QuereusError('RENAME COLUMN requires a new column definition AST', StatusCode.INTERNAL);
+				}
+				await manager.renameColumn(change.oldName, change.newColumnDefAst);
+				break;
+		}
+
+		return manager.tableSchema;
 	}
 
 	/**

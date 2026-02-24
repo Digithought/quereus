@@ -888,6 +888,14 @@ function foreignKeyActionToString(action: AST.ForeignKeyAction): string {
 	}
 }
 
+export function columnDefToString(col: AST.ColumnDef): string {
+	let colDef = quoteIdentifierIfNeeded(col.name);
+	if (col.dataType) colDef += ` ${col.dataType}`;
+	const constraints = columnConstraintsToString(col.constraints);
+	if (constraints) colDef += ` ${constraints}`;
+	return colDef;
+}
+
 export function createTableToString(stmt: AST.CreateTableStmt): string {
 	const parts: string[] = ['create'];
 	if (stmt.isTemporary) parts.push('temp');

@@ -185,8 +185,7 @@ describe('VTable Event Hooks', () => {
 			assert.equal(schemaEvents[0].objectName, 'users');
 		});
 
-		it.skip('should emit ADD COLUMN event', async () => {
-			// Note: ALTER TABLE ADD COLUMN is not yet implemented in the planner
+		it('should emit ADD COLUMN event', async () => {
 			await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY)');
 			schemaEvents = [];
 
@@ -199,8 +198,7 @@ describe('VTable Event Hooks', () => {
 			assert.equal(schemaEvents[0].columnName, 'name');
 		});
 
-		it.skip('should emit DROP COLUMN event', async () => {
-			// Note: ALTER TABLE DROP COLUMN is not yet implemented in the planner
+		it('should emit DROP COLUMN event', async () => {
 			await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
 			schemaEvents = [];
 
@@ -213,8 +211,7 @@ describe('VTable Event Hooks', () => {
 			assert.equal(schemaEvents[0].columnName, 'name');
 		});
 
-		it.skip('should emit RENAME COLUMN event', async () => {
-			// Note: ALTER TABLE RENAME COLUMN is not yet implemented in the planner
+		it('should emit RENAME COLUMN event', async () => {
 			await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
 			schemaEvents = [];
 
@@ -228,8 +225,7 @@ describe('VTable Event Hooks', () => {
 			assert.equal(schemaEvents[0].oldColumnName, 'name');
 		});
 
-		it.skip('should emit RENAME TABLE event', async () => {
-			// Note: ALTER TABLE RENAME TO is not yet implemented in the planner
+		it('should emit RENAME TABLE event', async () => {
 			await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY)');
 			schemaEvents = [];
 

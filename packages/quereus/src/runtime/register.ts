@@ -46,6 +46,7 @@ import { emitRecursiveCTE } from './emit/recursive-cte.js';
 import { emitSetOperation } from './emit/set-operation.js';
 import { emitConstraintCheck } from './emit/constraint-check.js';
 import { emitAddConstraint } from './emit/add-constraint.js';
+import { emitAlterTable } from './emit/alter-table.js';
 import { emitLoopJoin } from './emit/join.js';
 import { emitBloomJoin } from './emit/bloom-join.js';
 import { emitMergeJoin } from './emit/merge-join.js';
@@ -129,6 +130,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.Delete, emitDelete as EmitterFunc);
 	registerEmitter(PlanNodeType.ConstraintCheck, emitConstraintCheck as EmitterFunc);
 	registerEmitter(PlanNodeType.AddConstraint, emitAddConstraint as EmitterFunc);
+	registerEmitter(PlanNodeType.AlterTable, emitAlterTable as EmitterFunc);
 	registerEmitter(PlanNodeType.Returning, emitReturning as EmitterFunc);
 
 	// Transaction control emitters

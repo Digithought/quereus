@@ -1,7 +1,7 @@
 import type { SchemaCatalog } from './catalog.js';
 import type * as AST from '../parser/ast.js';
 import type { SqlValue } from '../common/types.js';
-import { createTableToString, createViewToString, createIndexToString } from '../emit/ast-stringify.js';
+import { createTableToString, createViewToString, createIndexToString, columnDefToString } from '../emit/ast-stringify.js';
 
 /**
  * Represents the difference between a declared schema and actual database state
@@ -218,10 +218,10 @@ function computeTableAlterDiff(
 		actualTable.columns.map(c => c.name.toLowerCase())
 	);
 
-	// Find columns to add
+	// Find columns to add (store full column definition for DDL generation)
 	for (const col of declaredTable.tableStmt.columns) {
 		if (!actualColumns.has(col.name.toLowerCase())) {
-			diff.columnsToAdd.push(col.name);
+			diff.columnsToAdd.push(columnDefToString(col));
 		}
 	}
 

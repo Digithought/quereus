@@ -9,7 +9,7 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { FilterInfo } from '../filter-info.js';
 import { buildScanPlanFromFilterInfo } from './layer/scan-plan.js';
-import type { ColumnDef as ASTColumnDef } from '../../parser/ast.js'; // Assuming this will be updated for renameColumn
+import type { ColumnDef as ASTColumnDef } from '../../parser/ast.js';
 import { createMemoryTableLoggers } from './utils/logging.js';
 import { safeJsonStringify } from '../../util/serialization.js';
 import type { VirtualTableConnection } from '../connection.js';
@@ -80,9 +80,21 @@ export class MemoryTable extends VirtualTable {
 			} else {
 				// Check if there's already an active connection for this table in the database
 				const existingConnections = this.db.getConnectionsForTable(this.tableName);
-				if (existingConnections.length > 0 && existingConnections[0] instanceof MemoryVirtualTableConnection) {
-					const memoryVirtualConnection = existingConnections[0] as MemoryVirtualTableConnection;
-					this.connection = memoryVirtualConnection.getMemoryConnection();
+				const existingMemConn = existingConnections.length > 0 && existingConnections[0] instanceof MemoryVirtualTableConnection
+					? (existingConnections[0] as MemoryVirtualTableConnection).getMemoryConnection()
+					: null;
+				if (existingMemConn) {
+					this.connection = existingMemConn;
+					// Sync readLayer with the manager's current committed state.
+					// The connection may have been disconnected from the manager
+					// (removed from its connections map by a previous scan's finally
+					// block) while remaining in the DB's connection registry.  After
+					// schema changes like ALTER TABLE ADD COLUMN,
+					// ensureSchemaChangeSafety only updates connections still in the
+					// manager's map, so this connection may point to an outdated layer.
+					if (this.connection.tableManager === this.manager) {
+						this.connection.readLayer = this.manager.currentCommittedLayer;
+					}
 					logger.debugLog(`ensureConnection: Reused existing connection ${this.connection.connectionId} for table ${this.tableName}`);
 				} else {
 					// Establish connection state with the manager upon first use
@@ -220,7 +232,9 @@ export class MemoryTable extends VirtualTable {
 		logger.debugLog(`query reading from layer ${startLayer.getLayerId()}`);
 
 		// Delegate scanning to the manager, which handles layer recursion
-		yield* this.manager.scanLayer(startLayer, plan);
+		for await (const row of this.manager.scanLayer(startLayer, plan)) {
+			yield row;
+		}
 	}
 
 	// Note: getBestAccessPlan is handled by the MemoryTableModule, not the table instance.
