@@ -23,13 +23,17 @@ import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { DmlExecutorNode, type UpsertClausePlan } from '../nodes/dml-executor-node.js';
 import { buildConstraintChecks } from './constraint-builder.js';
 import { buildChildSideFKChecks, buildParentSideFKChecks } from './foreign-key-builder.js';
-import { validateDeterministicDefault } from '../validation/determinism-validator.js';
+import { validateDeterministicDefault, validateDeterministicGenerated } from '../validation/determinism-validator.js';
 import { isCommittedSchemaRef } from './schema-resolution.js';
 
 /**
  * Creates a uniform row expansion projection that maps any relational source
  * to the target table's column structure, filling in defaults for omitted columns.
  * This ensures INSERT works orthogonally with any relational source.
+ *
+ * Generated columns are handled in two stages:
+ * 1. First projection expands source to table structure with NULLs for generated columns
+ * 2. Second projection computes generated column values using the expanded row
  */
 function createRowExpansionProjection(
 	ctx: PlanningContext,
@@ -39,9 +43,10 @@ function createRowExpansionProjection(
 	contextScope?: RegisteredScope
 ): RelationalPlanNode {
 	const tableSchema = tableReference.tableSchema;
+	const hasGeneratedColumns = tableSchema.columns.some(col => col.generated);
 
-	// If we're inserting into all columns in table order, no expansion needed
-	if (targetColumns.length === tableSchema.columns.length) {
+	// If we're inserting into all columns in table order with no generated columns, no expansion needed
+	if (!hasGeneratedColumns && targetColumns.length === tableSchema.columns.length) {
 		const allColumnsMatch = targetColumns.every((tc, i) =>
 			tc.name.toLowerCase() === tableSchema.columns[i].name.toLowerCase()
 		);
@@ -74,7 +79,20 @@ function createRowExpansionProjection(
 			tc.name.toLowerCase() === tableColumn.name.toLowerCase()
 		);
 
-		if (targetColIndex >= 0) {
+		if (tableColumn.generated) {
+			// Generated columns cannot be explicitly provided in INSERT
+			if (targetColIndex >= 0) {
+				throw new QuereusError(
+					`Cannot INSERT into generated column '${tableColumn.name}'`,
+					StatusCode.ERROR
+				);
+			}
+			// Placeholder NULL — will be replaced in the second projection pass
+			projections.push({
+				node: buildExpression(ctx, { type: 'literal', value: null }) as ScalarPlanNode,
+				alias: tableColumn.name
+			});
+		} else if (targetColIndex >= 0) {
 			// This column is provided by the source - reference the source column
 			if (targetColIndex < sourceAttributes.length) {
 				const sourceAttr = sourceAttributes[targetColIndex];
@@ -124,8 +142,68 @@ function createRowExpansionProjection(
 		}
 	});
 
-	// Create projection node that expands source to table structure
-	return new ProjectNode(ctx.scope, sourceNode, projections);
+	// Create first projection node that expands source to table structure
+	let resultNode: RelationalPlanNode = new ProjectNode(ctx.scope, sourceNode, projections);
+
+	// Second pass: compute generated column values using the expanded row
+	if (hasGeneratedColumns) {
+		resultNode = createGeneratedColumnProjection(ctx, resultNode, tableSchema);
+	}
+
+	return resultNode;
+}
+
+/**
+ * Creates a projection that computes generated column values from an expanded row.
+ * Non-generated columns pass through; generated columns are computed from their expressions.
+ */
+function createGeneratedColumnProjection(
+	ctx: PlanningContext,
+	sourceNode: RelationalPlanNode,
+	tableSchema: TableSchema
+): RelationalPlanNode {
+	const sourceAttributes = sourceNode.getAttributes();
+	const genProjections: Projection[] = [];
+
+	// Create a scope where column names resolve to the source (expanded) row attributes
+	const genScope = new RegisteredScope(ctx.scope);
+	tableSchema.columns.forEach((col, colIndex) => {
+		if (col.generated) return; // Generated columns can't be referenced by other generated columns
+		const attr = sourceAttributes[colIndex];
+		genScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
+			new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, colIndex)
+		);
+	});
+
+	const genCtx = { ...ctx, scope: genScope };
+
+	tableSchema.columns.forEach((tableColumn, colIndex) => {
+		if (tableColumn.generated && tableColumn.generatedExpr) {
+			// Build the generated expression in the scope with access to non-generated columns
+			const genNode = buildExpression(genCtx, tableColumn.generatedExpr) as ScalarPlanNode;
+			validateDeterministicGenerated(genNode, tableColumn.name, tableSchema.name);
+
+			genProjections.push({
+				node: genNode,
+				alias: tableColumn.name
+			});
+		} else {
+			// Pass through non-generated column from source
+			const attr = sourceAttributes[colIndex];
+			genProjections.push({
+				node: new ColumnReferenceNode(
+					ctx.scope,
+					{ type: 'column', name: attr.name } satisfies AST.ColumnExpr,
+					attr.type,
+					attr.id,
+					colIndex
+				),
+				alias: tableColumn.name
+			});
+		}
+	});
+
+	return new ProjectNode(ctx.scope, sourceNode, genProjections);
 }
 
 /**
@@ -385,11 +463,29 @@ export function buildInsertStmt(
 
 	let targetColumns: ColumnDef[] = [];
 	if (stmt.columns && stmt.columns.length > 0) {
-		// Explicit columns specified
-		targetColumns = stmt.columns.map((colName, index) => columnSchemaToDef(colName, tableReference.tableSchema.columns[index]));
+		// Explicit columns specified — validate none are generated
+		targetColumns = stmt.columns.map((colName) => {
+			const colIndex = tableReference.tableSchema.columnIndexMap.get(colName.toLowerCase());
+			if (colIndex === undefined) {
+				throw new QuereusError(
+					`Column '${colName}' not found in table '${tableReference.tableSchema.name}'`,
+					StatusCode.ERROR
+				);
+			}
+			const colSchema = tableReference.tableSchema.columns[colIndex];
+			if (colSchema.generated) {
+				throw new QuereusError(
+					`Cannot INSERT into generated column '${colName}'`,
+					StatusCode.ERROR
+				);
+			}
+			return columnSchemaToDef(colName, colSchema);
+		});
 	} else {
-		// No explicit columns - default to all table columns in order
-		targetColumns = tableReference.tableSchema.columns.map(col => columnSchemaToDef(col.name, col));
+		// No explicit columns - default to all non-generated table columns in order
+		targetColumns = tableReference.tableSchema.columns
+			.filter(col => !col.generated)
+			.map(col => columnSchemaToDef(col.name, col));
 	}
 
 	let sourceNode: RelationalPlanNode;

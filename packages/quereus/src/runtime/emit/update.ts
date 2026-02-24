@@ -5,7 +5,7 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { buildRowDescriptor, composeOldNewRow } from '../../util/row-descriptor.js';
-import { createRowSlot } from '../context-helpers.js';
+import { createRowSlot, withRowContext } from '../context-helpers.js';
 
 export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
@@ -13,6 +13,16 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 	// Create row descriptor for the source rows (needed for assignment expression evaluation)
 	const sourceRowDescriptor = buildRowDescriptor(plan.source.getAttributes());
 
+	// Split assignments into regular and generated
+	const regularIndices: number[] = [];
+	const generatedIndices: number[] = [];
+	plan.assignments.forEach((assign, i) => {
+		if (assign.isGenerated) {
+			generatedIndices.push(i);
+		} else {
+			regularIndices.push(i);
+		}
+	});
 	// Pre-calculate assignment column indices
 	const assignmentTargetIndices = plan.assignments.map(assign => {
 		const colNameLower = assign.targetColumn.name.toLowerCase();
@@ -34,20 +44,23 @@ export function emitUpdate(plan: UpdateNode, ctx: EmissionContext): Instruction 
 			for await (const sourceRow of sourceRowsIterable) {
 				slot.set(sourceRow);
 
-				// Evaluate assignment expressions in the context of this row
-				const assignmentValues: SqlValue[] = [];
-				for (const evaluator of assignmentEvaluators) {
-					const value = evaluator(rctx) as SqlValue;
-					assignmentValues.push(value);
+				// Phase 1: Evaluate regular (non-generated) assignment expressions
+				const updatedRow = [...sourceRow]; // Copy the original row
+				for (const i of regularIndices) {
+					const value = assignmentEvaluators[i](rctx) as SqlValue;
+					updatedRow[assignmentTargetIndices[i]] = value;
 				}
 
-				// Create a new row with updated values
-				const updatedRow = [...sourceRow]; // Copy the original row
-
-				// Apply assignment values to the row
-				for (let i = 0; i < assignmentValues.length; i++) {
-					const targetColIdx = assignmentTargetIndices[i];
-					updatedRow[targetColIdx] = assignmentValues[i];
+				// Phase 2: Evaluate generated column expressions against the updated row
+				// Use withRowContext to temporarily override the row context so generated
+				// expressions see post-SET values (the scan's slot may shadow our slot)
+				if (generatedIndices.length > 0) {
+					withRowContext(rctx, sourceRowDescriptor, () => updatedRow as Row, () => {
+						for (const i of generatedIndices) {
+							const value = assignmentEvaluators[i](rctx) as SqlValue;
+							updatedRow[assignmentTargetIndices[i]] = value;
+						}
+					});
 				}
 
 				// Create flat row with OLD (source) and NEW (updated) values for constraint checking

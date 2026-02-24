@@ -18,6 +18,7 @@ import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { buildConstraintChecks } from './constraint-builder.js';
 import { buildChildSideFKChecks, buildParentSideFKChecks } from './foreign-key-builder.js';
 import { isCommittedSchemaRef } from './schema-resolution.js';
+import { validateDeterministicGenerated } from '../validation/determinism-validator.js';
 
 export function buildUpdateStmt(
   ctx: PlanningContext,
@@ -82,13 +83,31 @@ export function buildUpdateStmt(
   // SQL: UPDATE t SET col = ?1 WHERE id = ?2
   // The SET clause parameters must be resolved before WHERE clause parameters.
   const assignments: UpdateAssignment[] = stmt.assignments.map(assign => {
-    // TODO: Validate assign.column against tableReference.tableSchema
+    // Reject SET on generated columns
+    const colIndex = tableReference.tableSchema.columnIndexMap.get(assign.column.toLowerCase());
+    if (colIndex !== undefined && tableReference.tableSchema.columns[colIndex].generated) {
+      throw new QuereusError(
+        `Cannot UPDATE generated column '${assign.column}'`,
+        StatusCode.ERROR
+      );
+    }
     const targetColumn: AST.ColumnExpr = { type: 'column', name: assign.column, table: stmt.table.name, schema: stmt.table.schema };
     return {
       targetColumn, // Keep as AST for now, emitter can resolve index
       value: buildExpression(updateCtx, assign.value),
     };
   });
+
+  // Add implicit assignments for generated STORED columns (recompute after user assignments)
+  for (const col of tableReference.tableSchema.columns) {
+    if (col.generated && col.generatedExpr) {
+      // Build generated expression in the table scope so it can reference columns
+      const genNode = buildExpression(updateCtx, col.generatedExpr) as ScalarPlanNode;
+      validateDeterministicGenerated(genNode, col.name, tableReference.tableSchema.name);
+      const targetColumn: AST.ColumnExpr = { type: 'column', name: col.name, table: stmt.table.name, schema: stmt.table.schema };
+      assignments.push({ targetColumn, value: genNode, isGenerated: true });
+    }
+  }
 
   // Now build the WHERE filter (parameters here get indices after SET clause parameters)
   if (stmt.where) {

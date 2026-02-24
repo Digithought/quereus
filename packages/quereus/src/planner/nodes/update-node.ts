@@ -13,6 +13,8 @@ import type { PhysicalProperties } from './plan-node.js';
 export interface UpdateAssignment {
   targetColumn: AST.ColumnExpr; // Could be resolved ColumnReferenceNode or just index
   value: ScalarPlanNode;
+  /** True for auto-generated column recomputation assignments (evaluated after regular assignments) */
+  isGenerated?: boolean;
 }
 
 /**
@@ -86,7 +88,8 @@ export class UpdateNode extends PlanNode implements RelationalPlanNode {
     // Create new assignments with updated values
     const newAssignments = this.assignments.map((assignment, i) => ({
       targetColumn: assignment.targetColumn,
-      value: newAssignmentValues[i] as ScalarPlanNode
+      value: newAssignmentValues[i] as ScalarPlanNode,
+      isGenerated: assignment.isGenerated
     }));
 
     // Create new instance

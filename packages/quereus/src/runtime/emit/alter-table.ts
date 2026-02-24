@@ -269,7 +269,10 @@ function buildConstraintsFromColumn(col: import('../../schema/column.js').Column
 		constraints.push({ type: 'collate', collation: col.collation });
 	}
 	if (col.generated) {
-		constraints.push({ type: 'generated' });
+		constraints.push({
+			type: 'generated',
+			generated: col.generatedExpr ? { expr: col.generatedExpr, stored: col.generatedStored ?? false } : undefined
+		});
 	}
 	return constraints;
 }

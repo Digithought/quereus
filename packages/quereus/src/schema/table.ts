@@ -139,8 +139,19 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 			}
 			case 'generated':
 				schema.generated = true;
+				if (constraint.generated) {
+					schema.generatedExpr = constraint.generated.expr;
+					schema.generatedStored = constraint.generated.stored;
+				}
 				break;
 		}
+	}
+
+	if (schema.generated && schema.defaultValue !== null) {
+		throw new QuereusError(
+			`Column '${def.name}' cannot have both DEFAULT and GENERATED ALWAYS AS`,
+			StatusCode.ERROR
+		);
 	}
 
 	if (schema.primaryKey) {

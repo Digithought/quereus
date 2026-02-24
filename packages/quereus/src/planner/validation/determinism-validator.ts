@@ -85,6 +85,25 @@ export function validateDeterministicConstraint(
 }
 
 /**
+ * Validates that a GENERATED ALWAYS AS expression is deterministic.
+ *
+ * @param expr The generated column expression plan node
+ * @param columnName The name of the column (for error messages)
+ * @param tableName The name of the table (for error messages)
+ * @throws QuereusError if the expression is non-deterministic
+ */
+export function validateDeterministicGenerated(
+	expr: ScalarPlanNode,
+	columnName: string,
+	tableName: string
+): void {
+	validateDeterministicExpression(
+		expr,
+		`GENERATED ALWAYS AS for column '${columnName}' in table '${tableName}'`
+	);
+}
+
+/**
  * Validates that a DEFAULT expression is deterministic.
  *
  * @param expr The default value expression plan node

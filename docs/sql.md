@@ -843,7 +843,27 @@ create table cache (
   value blob,
   expires_at integer
 ) using memory;
+
+-- Table with generated (computed) columns
+create table products (
+  id integer primary key,
+  base_price integer not null,
+  tax_rate real not null default 0.1,
+  total_price real generated always as (base_price * (1 + tax_rate)) stored,
+  label text generated always as ('Product #' || id) virtual
+);
 ```
+
+**Generated Columns:**
+
+Generated columns are computed from an expression over other columns in the same row:
+
+- `STORED`: The value is computed at INSERT/UPDATE time and persisted. Reads return the stored value directly.
+- `VIRTUAL`: Semantically computed on read (currently stored identically to STORED; storage optimization is planned).
+- If neither `STORED` nor `VIRTUAL` is specified, `VIRTUAL` is the default.
+- Generated column expressions must be deterministic and may only reference non-generated columns of the same table.
+- Cannot have both `DEFAULT` and `GENERATED ALWAYS AS` on the same column.
+- Cannot INSERT into or UPDATE a generated column directly.
 
 ### 2.6.1 CREATE/DROP ASSERTION (Global Integrity Constraints)
 

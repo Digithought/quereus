@@ -20,8 +20,12 @@ export interface ColumnSchema {
 	defaultValue: Expression | null;
 	/** Declared collation sequence name (e.g., "BINARY", "NOCASE", "RTRIM") */
 	collation: string;
-	/** Is the column generated? */
+	/** Whether the column is generated (GENERATED ALWAYS AS) */
 	generated: boolean;
+	/** AST expression for generated columns */
+	generatedExpr?: Expression;
+	/** Whether the generated value is stored (true) or virtual/computed on read (false) */
+	generatedStored?: boolean;
 	/** Sort direction for primary key ('asc' | 'desc') */
 	pkDirection?: 'asc' | 'desc';
 }

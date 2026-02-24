@@ -226,6 +226,7 @@ export const KEYWORDS: Record<string, TokenType> = {
 	'default': TokenType.DEFAULT,
 	'check': TokenType.CHECK,
 	'collate': TokenType.COLLATE,
+	'generated': TokenType.GENERATED,
 	'foreign': TokenType.FOREIGN,
 	'references': TokenType.REFERENCES,
 	'on': TokenType.ON,
