@@ -650,11 +650,11 @@ export class SchemaManager {
 						referencedTable: fk.table,
 						referencedSchema: schemaName,
 						referencedColumns: Object.freeze([]), // resolved at enforcement time
+						referencedColumnNames: fk.columns, // deferred resolution via resolveReferencedColumns
 						onDelete: fk.onDelete ?? 'noAction',
 						onUpdate: fk.onUpdate ?? 'noAction',
 						deferred: fk.initiallyDeferred ?? false,
-						_referencedColumnNames: fk.columns, // internal: for deferred resolution
-					} as ForeignKeyConstraintSchema & { _referencedColumnNames?: string[] });
+					});
 				}
 			}
 		}
@@ -677,11 +677,11 @@ export class SchemaManager {
 					referencedTable: fk.table,
 					referencedSchema: schemaName,
 					referencedColumns: Object.freeze([]), // resolved at enforcement time
+					referencedColumnNames: fk.columns, // deferred resolution via resolveReferencedColumns
 					onDelete: fk.onDelete ?? 'noAction',
 					onUpdate: fk.onUpdate ?? 'noAction',
 					deferred: fk.initiallyDeferred ?? false,
-					_referencedColumnNames: fk.columns, // internal: for deferred resolution
-				} as ForeignKeyConstraintSchema & { _referencedColumnNames?: string[] });
+				});
 			}
 		}
 

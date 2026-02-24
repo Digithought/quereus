@@ -310,12 +310,46 @@ export interface ForeignKeyConstraintSchema {
 	referencedSchema?: string;
 	/** Column indices in the parent table */
 	referencedColumns: ReadonlyArray<number>;
+	/**
+	 * Referenced column names for deferred resolution.
+	 * Parent column indices can't be resolved at schema creation time because
+	 * the parent table may not exist yet. These names are resolved to indices
+	 * at enforcement time via {@link resolveReferencedColumns}.
+	 */
+	referencedColumnNames?: ReadonlyArray<string>;
 	/** Action on parent DELETE (default: 'noAction') */
 	onDelete: import('../parser/ast.js').ForeignKeyAction;
 	/** Action on parent UPDATE of referenced columns (default: 'noAction') */
 	onUpdate: import('../parser/ast.js').ForeignKeyAction;
 	/** Whether enforcement is deferred to COMMIT */
 	deferred: boolean;
+}
+
+/**
+ * Resolves referenced column indices in the parent table from a FK schema.
+ * Uses stored column names or falls back to the parent's primary key.
+ */
+export function resolveReferencedColumns(
+	fk: ForeignKeyConstraintSchema,
+	parentSchema: TableSchema,
+): number[] {
+	const refColNames = fk.referencedColumnNames;
+
+	if (refColNames && refColNames.length > 0) {
+		return refColNames.map(name => {
+			const idx = parentSchema.columnIndexMap.get(name.toLowerCase());
+			if (idx === undefined) {
+				throw new QuereusError(
+					`Referenced column '${name}' not found in table '${parentSchema.name}'`,
+					StatusCode.ERROR
+				);
+			}
+			return idx;
+		});
+	}
+
+	// Default to primary key columns
+	return parentSchema.primaryKeyDefinition.map(pk => pk.index);
 }
 
 /**

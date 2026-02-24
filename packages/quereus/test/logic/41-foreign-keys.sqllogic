@@ -281,6 +281,122 @@ SELECT id, parent_id FROM sd_child ORDER BY id;
 DROP TABLE sd_child;
 DROP TABLE sd_parent;
 
+-- --- SET NULL on UPDATE ---
+
+CREATE TABLE snu_parent (
+    id INTEGER PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE snu_child (
+    id INTEGER PRIMARY KEY,
+    parent_id INTEGER NULL,
+    FOREIGN KEY (parent_id) REFERENCES snu_parent(id) ON UPDATE SET NULL
+);
+
+INSERT INTO snu_parent VALUES (1, 'X'), (2, 'Y');
+INSERT INTO snu_child VALUES (1, 1), (2, 1), (3, 2);
+
+-- Update parent PK - child FK columns should become NULL
+UPDATE snu_parent SET id = 10 WHERE id = 1;
+
+SELECT id, parent_id FROM snu_child ORDER BY id;
+→ [{"id":1,"parent_id":null},{"id":2,"parent_id":null},{"id":3,"parent_id":2}]
+
+DROP TABLE snu_child;
+DROP TABLE snu_parent;
+
+-- --- SET DEFAULT on UPDATE ---
+
+CREATE TABLE sdu_parent (
+    id INTEGER PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE sdu_child (
+    id INTEGER PRIMARY KEY,
+    parent_id INTEGER DEFAULT 0,
+    FOREIGN KEY (parent_id) REFERENCES sdu_parent(id) ON UPDATE SET DEFAULT
+);
+
+INSERT INTO sdu_parent VALUES (0, 'Default'), (1, 'One'), (2, 'Two');
+INSERT INTO sdu_child VALUES (1, 1), (2, 1), (3, 2);
+
+-- Update parent PK - child FK columns should become default (0)
+UPDATE sdu_parent SET id = 10 WHERE id = 1;
+
+SELECT id, parent_id FROM sdu_child ORDER BY id;
+→ [{"id":1,"parent_id":0},{"id":2,"parent_id":0},{"id":3,"parent_id":2}]
+
+DROP TABLE sdu_child;
+DROP TABLE sdu_parent;
+
+-- ===================================================================
+-- NULL FK values (NULLs don't participate in FK matching)
+-- ===================================================================
+
+CREATE TABLE null_parent (
+    id INTEGER PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE null_child (
+    id INTEGER PRIMARY KEY,
+    parent_id INTEGER NULL,
+    FOREIGN KEY (parent_id) REFERENCES null_parent(id)
+);
+
+INSERT INTO null_parent VALUES (1, 'A');
+
+-- Inserting NULL FK value should succeed (NULLs bypass FK checks)
+INSERT INTO null_child VALUES (1, NULL);
+SELECT * FROM null_child;
+→ [{"id":1,"parent_id":null}]
+
+DROP TABLE null_child;
+DROP TABLE null_parent;
+
+-- ===================================================================
+-- Multi-column FK
+-- ===================================================================
+
+CREATE TABLE mc_parent (
+    a INTEGER,
+    b INTEGER,
+    data TEXT,
+    PRIMARY KEY (a, b)
+);
+
+CREATE TABLE mc_child (
+    id INTEGER PRIMARY KEY,
+    ref_a INTEGER,
+    ref_b INTEGER,
+    FOREIGN KEY (ref_a, ref_b) REFERENCES mc_parent(a, b) ON DELETE CASCADE
+);
+
+INSERT INTO mc_parent VALUES (1, 10, 'P1'), (2, 20, 'P2');
+INSERT INTO mc_child VALUES (1, 1, 10), (2, 2, 20);
+
+-- Valid composite FK insert
+SELECT count(*) FROM mc_child;
+→ [{"count(*)":2}]
+
+-- Invalid composite FK insert (no matching parent)
+INSERT INTO mc_child VALUES (3, 1, 99);
+-- error: CHECK constraint failed: _fk_mc_child_ref_a_ref_b
+
+-- CASCADE DELETE with composite FK
+DELETE FROM mc_parent WHERE a = 1 AND b = 10;
+SELECT count(*) FROM mc_child WHERE ref_a = 1;
+→ [{"count(*)":0}]
+
+-- Other child rows intact
+SELECT count(*) FROM mc_child WHERE ref_a = 2;
+→ [{"count(*)":1}]
+
+DROP TABLE mc_child;
+DROP TABLE mc_parent;
+
 -- ===================================================================
 -- Pragma on/off behavior
 -- ===================================================================

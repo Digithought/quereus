@@ -1,6 +1,6 @@
 import type { PlanningContext } from '../planning-context.js';
 import type { TableSchema, ForeignKeyConstraintSchema, RowConstraintSchema } from '../../schema/table.js';
-import { RowOpFlag, type RowOpMask } from '../../schema/table.js';
+import { RowOpFlag, type RowOpMask, resolveReferencedColumns } from '../../schema/table.js';
 import type { Attribute, ScalarPlanNode } from '../nodes/plan-node.js';
 import type { ConstraintCheck } from '../nodes/constraint-check-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
@@ -12,28 +12,38 @@ import { createLogger } from '../../common/logger.js';
 const log = createLogger('planner:fk-builder');
 
 /**
- * Resolves referenced column names to indices in the parent table.
- * If no column names are specified, uses the parent's primary key columns.
+ * Builds a SELECT 1 FROM <table> WHERE <col pairs joined by AND> subquery AST.
+ * Shared by both EXISTS and NOT EXISTS FK checks.
  */
-function resolveReferencedColumns(
-	fk: ForeignKeyConstraintSchema,
-	parentSchema: TableSchema,
-): number[] {
-	const fkWithNames = fk as ForeignKeyConstraintSchema & { _referencedColumnNames?: string[] };
-	const refColNames = fkWithNames._referencedColumnNames;
+function synthesizeFKSubquery(
+	fromTableName: string,
+	columnPairs: Array<{ leftTable: string; leftCol: string; rightTable: string; rightCol: string }>,
+): AST.SelectStmt {
+	const conditions: AST.Expression[] = columnPairs.map(({ leftTable, leftCol, rightTable, rightCol }) => ({
+		type: 'binary',
+		operator: '=',
+		left: { type: 'column', name: leftCol, table: leftTable } as AST.ColumnExpr,
+		right: { type: 'column', name: rightCol, table: rightTable } as AST.ColumnExpr,
+	} as AST.BinaryExpr));
 
-	if (refColNames && refColNames.length > 0) {
-		return refColNames.map(name => {
-			const idx = parentSchema.columnIndexMap.get(name.toLowerCase());
-			if (idx === undefined) {
-				throw new Error(`Referenced column '${name}' not found in table '${parentSchema.name}'`);
-			}
-			return idx;
-		});
-	}
+	const whereExpr = conditions.length === 1
+		? conditions[0]
+		: conditions.reduce((acc, cond) => ({
+			type: 'binary',
+			operator: 'AND',
+			left: acc,
+			right: cond,
+		} as AST.BinaryExpr));
 
-	// Default to primary key columns
-	return parentSchema.primaryKeyDefinition.map(pk => pk.index);
+	return {
+		type: 'select',
+		columns: [{ type: 'column', expr: { type: 'literal', value: 1 } as AST.LiteralExpr }],
+		from: [{
+			type: 'table',
+			table: { type: 'identifier', name: fromTableName },
+		} as AST.TableSource],
+		where: whereExpr,
+	};
 }
 
 /**
@@ -49,53 +59,16 @@ function synthesizeExistsCheck(
 	parentColIndices: number[],
 	qualifier: 'new' | 'old',
 ): AST.ExistsExpr {
-	// Build WHERE clause: parent.col1 = NEW.fk_col1 AND parent.col2 = NEW.fk_col2
-	const conditions: AST.Expression[] = fk.columns.map((childColIdx, i) => {
-		const childCol = childTable.columns[childColIdx];
-		const parentCol = parentTable.columns[parentColIndices[i]];
-
-		const parentRef: AST.ColumnExpr = {
-			type: 'column',
-			name: parentCol.name,
-			table: parentTable.name,
-		};
-
-		const childRef: AST.ColumnExpr = {
-			type: 'column',
-			name: childCol.name,
-			table: qualifier.toUpperCase(),
-		};
-
-		return {
-			type: 'binary',
-			operator: '=',
-			left: parentRef,
-			right: childRef,
-		} as AST.BinaryExpr;
-	});
-
-	const whereExpr = conditions.length === 1
-		? conditions[0]
-		: conditions.reduce((acc, cond) => ({
-			type: 'binary',
-			operator: 'AND',
-			left: acc,
-			right: cond,
-		} as AST.BinaryExpr));
-
-	const selectStmt: AST.SelectStmt = {
-		type: 'select',
-		columns: [{ type: 'column', expr: { type: 'literal', value: 1 } as AST.LiteralExpr }],
-		from: [{
-			type: 'table',
-			table: { type: 'identifier', name: parentTable.name },
-		} as AST.TableSource],
-		where: whereExpr,
-	};
+	const pairs = fk.columns.map((childColIdx, i) => ({
+		leftTable: parentTable.name,
+		leftCol: parentTable.columns[parentColIndices[i]].name,
+		rightTable: qualifier.toUpperCase(),
+		rightCol: childTable.columns[childColIdx].name,
+	}));
 
 	return {
 		type: 'exists',
-		subquery: selectStmt,
+		subquery: synthesizeFKSubquery(parentTable.name, pairs),
 	};
 }
 
@@ -111,56 +84,19 @@ function synthesizeNotExistsCheck(
 	parentTable: TableSchema,
 	parentColIndices: number[],
 ): AST.UnaryExpr {
-	// Build WHERE clause: child.fk_col1 = OLD.pk_col1 AND child.fk_col2 = OLD.pk_col2
-	const conditions: AST.Expression[] = fk.columns.map((childColIdx, i) => {
-		const childCol = childTable.columns[childColIdx];
-		const parentCol = parentTable.columns[parentColIndices[i]];
-
-		const childRef: AST.ColumnExpr = {
-			type: 'column',
-			name: childCol.name,
-			table: childTable.name,
-		};
-
-		const parentRef: AST.ColumnExpr = {
-			type: 'column',
-			name: parentCol.name,
-			table: 'OLD',
-		};
-
-		return {
-			type: 'binary',
-			operator: '=',
-			left: childRef,
-			right: parentRef,
-		} as AST.BinaryExpr;
-	});
-
-	const whereExpr = conditions.length === 1
-		? conditions[0]
-		: conditions.reduce((acc, cond) => ({
-			type: 'binary',
-			operator: 'AND',
-			left: acc,
-			right: cond,
-		} as AST.BinaryExpr));
-
-	const selectStmt: AST.SelectStmt = {
-		type: 'select',
-		columns: [{ type: 'column', expr: { type: 'literal', value: 1 } as AST.LiteralExpr }],
-		from: [{
-			type: 'table',
-			table: { type: 'identifier', name: childTable.name },
-		} as AST.TableSource],
-		where: whereExpr,
-	};
+	const pairs = fk.columns.map((childColIdx, i) => ({
+		leftTable: childTable.name,
+		leftCol: childTable.columns[childColIdx].name,
+		rightTable: 'OLD',
+		rightCol: parentTable.columns[parentColIndices[i]].name,
+	}));
 
 	return {
 		type: 'unary',
 		operator: 'NOT',
 		expr: {
 			type: 'exists',
-			subquery: selectStmt,
+			subquery: synthesizeFKSubquery(childTable.name, pairs),
 		} as AST.ExistsExpr,
 	};
 }

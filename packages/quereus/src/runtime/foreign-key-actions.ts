@@ -1,5 +1,6 @@
 import type { Database } from '../core/database.js';
 import type { TableSchema, ForeignKeyConstraintSchema } from '../schema/table.js';
+import { resolveReferencedColumns } from '../schema/table.js';
 import type { Row, SqlValue } from '../common/types.js';
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
@@ -7,32 +8,6 @@ import { createLogger } from '../common/logger.js';
 import { expressionToString } from '../emit/ast-stringify.js';
 
 const log = createLogger('runtime:fk-actions');
-
-/**
- * Resolves referenced column indices in the parent table from a FK schema.
- * Uses stored column names or falls back to the parent's primary key.
- */
-function resolveParentColumnIndices(
-	fk: ForeignKeyConstraintSchema,
-	parentSchema: TableSchema,
-): number[] {
-	const fkWithNames = fk as ForeignKeyConstraintSchema & { _referencedColumnNames?: string[] };
-	const refColNames = fkWithNames._referencedColumnNames;
-
-	if (refColNames && refColNames.length > 0) {
-		return refColNames.map(name => {
-			const idx = parentSchema.columnIndexMap.get(name.toLowerCase());
-			if (idx === undefined) {
-				throw new QuereusError(
-					`Referenced column '${name}' not found in table '${parentSchema.name}'`,
-					StatusCode.ERROR
-				);
-			}
-			return idx;
-		});
-	}
-	return parentSchema.primaryKeyDefinition.map(pk => pk.index);
-}
 
 /**
  * Executes cascading foreign key actions when a parent row is deleted or updated.
@@ -79,7 +54,7 @@ export async function executeForeignKeyActions(
 					// RESTRICT and NO ACTION are handled by constraint checks, not actions
 					if (action === 'restrict' || action === 'noAction') continue;
 
-					const parentColIndices = resolveParentColumnIndices(fk, parentTable);
+					const parentColIndices = resolveReferencedColumns(fk, parentTable);
 					if (parentColIndices.length !== fk.columns.length) continue;
 
 					// Get old parent values for the referenced columns
