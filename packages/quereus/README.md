@@ -257,10 +257,13 @@ While Quereus supports standard SQL syntax, it has several distinctive design ch
 *   **Async API**: Core execution is asynchronous with async/await patterns throughout.
 *   **No Triggers or Built-in Persistence**: Persistent storage can be implemented as a VTab module.
 
-### Row-Level Constraints
+### Constraints
 
 - Row-level CHECKs that reference only the current row are enforced immediately.
 - Row-level CHECKs that reference other tables (e.g., via subqueries) are automatically deferred and enforced at COMMIT using the same optimized engine as global assertions. No `DEFERRABLE` or `SET CONSTRAINTS` management is required by the user.
+- `CREATE ASSERTION name CHECK (...)` defines database-wide invariants evaluated at COMMIT.
+- `FOREIGN KEY ... REFERENCES` with `ON DELETE CASCADE/SET NULL/RESTRICT` and `ON UPDATE CASCADE/SET NULL/RESTRICT`.
+- **`committed.tablename` pseudo-schema**: Provides read-only access to the pre-transaction (committed) state of any table. Enables transition constraints that compare current and committed state (e.g., `CREATE ASSERTION no_decrease CHECK (NOT EXISTS (SELECT 1 FROM t JOIN committed.t ct ON t.id = ct.id WHERE t.val < ct.val))`). The committed view is pinned to the transaction-start snapshot and is unaffected by savepoints.
 - **Determinism Enforcement**: CHECK constraints and DEFAULT values must use only deterministic expressions. Non-deterministic values (like `datetime('now')` or `random()`) must be passed via mutation context to ensure captured statements are replayable. See [Runtime Documentation](../../docs/runtime.md#determinism-validation).
 
 ### Sequential ID Generation
@@ -287,7 +290,7 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 *   **Modern Type System** - Temporal types (DATE, TIME, DATETIME), JSON with deep equality, plugin-extensible custom types
 *   **Complete JOIN support** - INNER, LEFT, RIGHT, CROSS, SEMI, and ANTI joins with proper NULL padding
 *   **Advanced window functions** - Ranking, aggregates, and frame specifications
-*   **Full constraint system** - NOT NULL, CHECK constraints with operation-specific triggers
+*   **Full constraint system** - NOT NULL, CHECK, FOREIGN KEY, and CREATE ASSERTION. Row-level constraints that reference other tables are automatically deferred to COMMIT. The `committed.tablename` pseudo-schema provides read-only access to pre-transaction state for transition constraints (e.g., "balance may not decrease")
 *   **Comprehensive subqueries** - Scalar, correlated, EXISTS, and IN subqueries
 *   **Relational orthogonality** - INSERT/UPDATE/DELETE with RETURNING can be used as table sources
 *   **Complete set operations** - UNION, INTERSECT, EXCEPT with proper deduplication
