@@ -62,7 +62,7 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 			evaluator: evaluatorInstruction.run,
 			constraintName,
 			constraintExpr,
-			shouldDefer: Boolean(check.deferrable || check.initiallyDeferred || check.containsSubquery),
+			shouldDefer: Boolean(check.deferrable || check.initiallyDeferred || check.needsDeferred),
 			baseTable: `${tableSchema.schemaName}.${tableSchema.name}`,
 			contextRow: undefined,
 			contextDescriptor

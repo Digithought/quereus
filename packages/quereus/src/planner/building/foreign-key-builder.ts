@@ -213,7 +213,7 @@ export function buildChildSideFKChecks(
 				expression,
 				deferrable: true,
 				initiallyDeferred: true,
-				containsSubquery: true,
+				needsDeferred: true,
 			});
 		} finally {
 			if (needsSchemaSwitch) ctx.schemaManager.setCurrentSchema(originalCurrentSchema);
@@ -340,7 +340,7 @@ export function buildParentSideFKChecks(
 						expression,
 						deferrable: !isRestrict,
 						initiallyDeferred: !isRestrict,
-						containsSubquery: !isRestrict, // RESTRICT must be immediate, not deferred
+						needsDeferred: !isRestrict, // RESTRICT must be immediate, not deferred
 					});
 				} finally {
 					if (needsSchemaSwitch) ctx.schemaManager.setCurrentSchema(originalCurrentSchema);

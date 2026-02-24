@@ -5,21 +5,24 @@ dependencies: committed-state-snapshot-access (provides schema resolution and sn
 
 ## Summary
 
-Wired the committed.* pseudo-schema into constraint evaluation so users can write transition constraints comparing before/after state.
+Wired the committed.* pseudo-schema into constraint evaluation so users can write transition constraints comparing before/after state within CHECK constraints and CREATE ASSERTION.
 
-### Changes
+### Key Changes
 
-1. **constraint-builder.ts**: Added `containsCommittedRef()` function that walks the full expression tree (descending into subquery plan children) to find `TableReferenceNode` nodes with `readCommitted === true`. Updated auto-deferral logic to defensively check for committed refs: `needsDeferred = containsSubquery(expression) || containsCommittedRef(expression)`.
+1. **constraint-builder.ts**: Added `containsCommittedRef()` tree walker that detects `TableReferenceNode` with `readCommitted === true`. Auto-deferral logic: `needsDeferred = containsSubquery(expression) || containsCommittedRef(expression)`.
 
-2. **database-assertions.ts**: No changes needed — `collectTables()` already resolves `committed.tablename` to the base table name (`main.tablename`) via schema resolution, so impact analysis correctly triggers re-evaluation when the underlying table changes.
+2. **database-assertions.ts**: No changes needed — `collectTables()` already resolves `committed.tablename` to the base table name via schema resolution, so impact analysis correctly triggers re-evaluation.
 
-3. **Deferred constraint queue**: No changes needed — evaluators have committed-snapshot routing baked in via the `readCommitted` flag on `TableReferenceNode` → `_readCommitted` option on module connections.
+3. **Deferred constraint queue**: No changes needed — evaluators have committed-snapshot routing via `readCommitted` flag on `TableReferenceNode` → `_readCommitted` option on module connections.
 
-### Testing
+### Review Cleanup
+
+- Renamed `ConstraintCheck.containsSubquery` → `needsDeferred` across the interface, builder, FK builder, and emitter — the field now accurately reflects its purpose (deferred due to subquery, committed ref, or FK semantics).
+
+### Test Coverage
 
 Test file: `packages/quereus/test/logic/43-transition-constraints.sqllogic`
 
-Covers:
 - CHECK constraint with committed subquery (auto-deferred, catches violations on UPDATE)
 - CHECK constraint passes when constraint holds (increase/equal allowed)
 - New rows with no committed counterpart use COALESCE default
@@ -48,9 +51,8 @@ CREATE ASSERTION no_deletes CHECK (NOT EXISTS (
 ));
 ```
 
-Note: In CHECK constraints, use `new.column` for correlated subquery references to the current row (not `tablename.column`, which isn't in the constraint scope).
-
 ### Validation
 
 - Build passes
-- All 725 tests pass (including 43-transition-constraints.sqllogic)
+- All 496 tests pass (including 43-transition-constraints.sqllogic)
+- Documentation in README up-to-date (lines 266, 293)

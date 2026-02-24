@@ -11,7 +11,7 @@ export interface ConstraintCheck {
   expression: ScalarPlanNode;       // Pre-built expression node
   deferrable?: boolean;
   initiallyDeferred?: boolean;
-  containsSubquery: boolean;        // Cached result of subquery detection
+  needsDeferred: boolean;            // Whether this constraint must be deferred (subquery, committed ref, etc.)
 }
 
 /**
