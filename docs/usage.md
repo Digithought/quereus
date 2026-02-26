@@ -253,6 +253,154 @@ await stmt.finalize();
 await db.exec("commit"); // Commits both inserts
 ```
 
+## Event System
+
+Quereus provides a database-level event system for reactive applications. Events are emitted for data changes (inserts, updates, deletes) and schema changes (table/index/column creation, alteration, dropping) across all virtual table modules.
+
+### Subscribing to Data Changes
+
+```typescript
+const unsubscribe = db.onDataChange((event) => {
+  console.log(`${event.type} on ${event.schemaName}.${event.tableName}`);
+  console.log(`Module: ${event.moduleName}, Remote: ${event.remote}`);
+
+  if (event.type === 'update') {
+    console.log('Changed columns:', event.changedColumns);
+    console.log('Old row:', event.oldRow);
+    console.log('New row:', event.newRow);
+  }
+});
+
+// Perform some operations
+await db.exec("insert into users (id, name) values (1, 'Alice')");
+// Event fires: { type: 'insert', tableName: 'users', ... }
+
+// Unsubscribe when done
+unsubscribe();
+```
+
+The `DatabaseDataChangeEvent` interface:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `'insert' \| 'update' \| 'delete'` | The mutation operation |
+| `moduleName` | `string` | The virtual table module that raised the event |
+| `schemaName` | `string` | Schema containing the table |
+| `tableName` | `string` | Table name |
+| `key` | `SqlValue[]` | Primary key values (if available) |
+| `oldRow` | `Row` | Previous row data (for update/delete) |
+| `newRow` | `Row` | New row data (for insert/update) |
+| `changedColumns` | `string[]` | Column names that changed (for updates) |
+| `remote` | `boolean` | `true` if the change originated from a sync/remote source |
+
+### Subscribing to Schema Changes
+
+```typescript
+const unsubscribe = db.onSchemaChange((event) => {
+  console.log(`${event.type} ${event.objectType}: ${event.objectName}`);
+  if (event.ddl) {
+    console.log('DDL:', event.ddl);
+  }
+});
+
+await db.exec("create table orders (id integer primary key, total real)");
+// Event fires: { type: 'create', objectType: 'table', objectName: 'orders', ... }
+
+unsubscribe();
+```
+
+The `DatabaseSchemaChangeEvent` interface:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `'create' \| 'alter' \| 'drop'` | The schema operation |
+| `objectType` | `'table' \| 'index' \| 'column'` | Type of object modified |
+| `moduleName` | `string` | The module that raised the event |
+| `schemaName` | `string` | Schema name |
+| `objectName` | `string` | Object name (table or index name) |
+| `columnName` | `string` | Column name (for column operations) |
+| `oldColumnName` | `string` | Previous column name (for renames) |
+| `ddl` | `string` | DDL statement if available |
+| `remote` | `boolean` | `true` if the change originated from a remote source |
+
+### Transaction Batching
+
+Events are batched within transactions and delivered only after a successful commit. On rollback, batched events are discarded. This ensures listeners see a consistent view of committed data.
+
+```typescript
+db.onDataChange((event) => {
+  console.log('Change committed:', event.type, event.tableName);
+});
+
+await db.exec("begin");
+await db.exec("insert into users (id, name) values (1, 'Alice')");
+await db.exec("insert into users (id, name) values (2, 'Bob')");
+// No events emitted yet — still in transaction
+await db.exec("commit");
+// Both insert events delivered now, after commit
+
+await db.exec("begin");
+await db.exec("insert into users (id, name) values (3, 'Charlie')");
+await db.exec("rollback");
+// No events — transaction was rolled back
+```
+
+Savepoint semantics are also supported: events within a savepoint are tracked separately and discarded on `ROLLBACK TO SAVEPOINT` or merged on `RELEASE`.
+
+For module-level event integration (implementing events in custom virtual table modules), see the [Module Authoring Guide](./module-authoring.md).
+
+## Database Options
+
+Quereus has a centralized options system accessible both programmatically and via SQL `pragma` statements.
+
+### Programmatic Access
+
+```typescript
+// Set an option
+db.setOption('default_column_nullability', 'nullable');
+
+// Get an option
+const nullability = db.getOption('default_column_nullability');
+console.log(nullability); // 'nullable'
+```
+
+### SQL Pragma Equivalence
+
+```sql
+-- Set via pragma
+pragma default_column_nullability = 'nullable';
+
+-- Read via pragma
+pragma default_column_nullability;
+```
+
+### Available Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `schema_path` | string | `'main'` | Comma-separated schema search path for unqualified table names. Alias: `search_path` |
+| `default_column_nullability` | string | `'not_null'` | Default nullability for columns: `'not_null'` (Third Manifesto) or `'nullable'` (SQL standard). Aliases: `column_nullability_default`, `nullable_default` |
+| `default_vtab_module` | string | `'memory'` | Default virtual table module used for `create table` without `using` clause |
+| `default_vtab_args` | object | `{}` | Default arguments passed to the default virtual table module |
+| `foreign_keys` | boolean | `false` | Enable foreign key constraint enforcement. Alias: `fk_enforcement` |
+| `runtime_stats` | boolean | `false` | Enable runtime execution statistics collection. Alias: `runtime_metrics` |
+| `validate_plan` | boolean | `false` | Enable plan validation before execution. Alias: `plan_validation` |
+| `trace_plan_stack` | boolean | `false` | Enable plan stack tracing for debugging |
+
+### Type-Safe Getters
+
+The options manager provides type-safe accessors for common option types:
+
+```typescript
+// These are available on the internal options manager
+// and throw if the option has an unexpected type
+db.getOption('foreign_keys');                    // returns OptionValue
+// For type-safe access within modules/extensions:
+// options.getBooleanOption('foreign_keys')       → boolean
+// options.getStringOption('schema_path')         → string
+// options.getObjectOption('default_vtab_args')   → Record<string, SqlValue>
+```
+
 ## Database API Reference
 
 ### `db.exec(sql: string, params?: SqlParameters): Promise<void>`
@@ -279,8 +427,63 @@ Standard transaction control methods.
 ### `db.registerModule(...)`, `db.createScalarFunction(...)`, `db.createAggregateFunction(...)`, `db.registerCollation(...)`
 Methods for extending database functionality.
 
-### `db.setInstructionTracer(tracer: InstructionTracer | null)`
-Sets an instruction tracer for debugging and performance analysis. The tracer will be used for all statement executions on this database instance.
+### `db.setInstructionTracer(tracer: InstructionTracer | undefined)`
+Sets an instruction tracer for debugging and performance analysis. The tracer receives callbacks for every instruction executed, enabling detailed visibility into query execution.
+
+```typescript
+import { CollectingInstructionTracer } from '@quereus/quereus';
+
+// Enable tracing with the built-in collecting tracer
+const tracer = new CollectingInstructionTracer();
+db.setInstructionTracer(tracer);
+
+// Execute queries — trace events are collected
+await db.exec("select * from users where id = 1");
+
+// Inspect collected events
+const events = tracer.getTraceEvents();
+for (const event of events) {
+  console.log(`[${event.type}] instruction ${event.instructionIndex}: ${event.note}`);
+}
+
+// Disable tracing
+db.setInstructionTracer(undefined);
+```
+
+#### Debug Table-Valued Functions
+
+Quereus provides built-in debug TVFs for query analysis. Each takes a SQL string and returns a table of diagnostic information:
+
+| Function | Description |
+|----------|-------------|
+| `query_plan(sql)` | Shows the logical/physical plan tree with estimated costs and row counts |
+| `scheduler_program(sql)` | Shows the compiled instruction sequence with dependencies |
+| `execution_trace(sql)` | Executes the query and returns per-instruction timing, inputs, and outputs |
+| `row_trace(sql)` | Executes the query and returns row-level data flow through each instruction |
+| `stack_trace(sql)` | Shows the planning call stack for the query |
+
+```typescript
+// Inspect the query plan
+for await (const node of db.eval("select * from query_plan('select * from users where id = 1')")) {
+  console.log(`${' '.repeat(node.subquery_level * 2)}${node.op}: ${node.detail}`);
+  console.log(`  Cost: ${node.est_cost}, Rows: ${node.est_rows}`);
+}
+
+// Analyze execution performance
+for await (const step of db.eval("select * from execution_trace('select * from users where id > 5')")) {
+  console.log(`Instruction ${step.instruction_index}: ${step.operation}`);
+  if (step.duration_ms !== null) {
+    console.log(`  Duration: ${step.duration_ms}ms`);
+  }
+}
+
+// Trace row-level data flow
+for await (const row of db.eval("select * from row_trace('select name from users order by name')")) {
+  console.log(`Instruction ${row.instruction_index} row ${row.row_index}: ${row.row_data}`);
+}
+```
+
+See [Functions Reference](./functions.md) for complete debug function column schemas.
 
 ### `db.setSchemaPath(paths: string[])`
 Sets the default schema search path for resolving unqualified table names. This is a convenience method equivalent to `PRAGMA schema_path`.
