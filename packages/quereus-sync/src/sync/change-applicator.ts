@@ -20,7 +20,7 @@ import type {
 } from './protocol.js';
 import type { ConflictEvent } from './events.js';
 import type { SyncContext } from './sync-context.js';
-import { persistHLCState } from './sync-context.js';
+import { persistHLCState, toError } from './sync-context.js';
 
 /**
  * Result of resolving a single change (without writing metadata).
@@ -118,7 +118,7 @@ export async function applyChanges(
 			// allowing the same changes to be re-resolved on the next sync attempt.
 			ctx.syncEvents.emitSyncStateChange({
 				status: 'error',
-				error: error instanceof Error ? error : new Error(String(error)),
+				error: toError(error),
 			});
 			throw error;
 		}

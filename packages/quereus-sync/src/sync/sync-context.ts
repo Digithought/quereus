@@ -50,6 +50,13 @@ export async function persistHLCState(ctx: SyncContext): Promise<void> {
 }
 
 /**
+ * Normalize an unknown caught value into an Error instance.
+ */
+export function toError(error: unknown): Error {
+	return error instanceof Error ? error : new Error(String(error));
+}
+
+/**
  * Write HLC state into an existing WriteBatch.
  */
 export function persistHLCStateBatch(

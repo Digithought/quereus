@@ -48,7 +48,7 @@ import type {
 } from './protocol.js';
 import { SyncEventEmitterImpl } from './events.js';
 import type { SyncContext } from './sync-context.js';
-import { persistHLCState, persistHLCStateBatch } from './sync-context.js';
+import { persistHLCState, persistHLCStateBatch, toError } from './sync-context.js';
 import { applyChanges as applyChangesImpl } from './change-applicator.js';
 import { getSnapshot as getSnapshotImpl, applySnapshot as applySnapshotImpl } from './snapshot.js';
 import {
@@ -228,7 +228,7 @@ export class SyncManagerImpl implements SyncManager, SyncContext {
 			console.error('[Sync] Error handling data change:', error);
 			this.syncEvents.emitSyncStateChange({
 				status: 'error',
-				error: error instanceof Error ? error : new Error(String(error)),
+				error: toError(error),
 			});
 		}
 	}
@@ -284,7 +284,7 @@ export class SyncManagerImpl implements SyncManager, SyncContext {
 			console.error('[Sync] Error handling schema change:', error);
 			this.syncEvents.emitSyncStateChange({
 				status: 'error',
-				error: error instanceof Error ? error : new Error(String(error)),
+				error: toError(error),
 			});
 		}
 	}

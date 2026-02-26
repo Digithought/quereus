@@ -16,6 +16,7 @@ import type {
   DataChangeToApply,
   SchemaChangeToApply,
 } from './protocol.js';
+import { toError } from './sync-context.js';
 
 /**
  * Options for creating a SyncStoreAdapter.
@@ -70,7 +71,7 @@ export function createStoreAdapter(options: SyncStoreAdapterOptions): ApplyToSto
       } catch (error) {
         result.errors.push({
           change: schemaChange,
-          error: error instanceof Error ? error : new Error(String(error)),
+          error: toError(error),
         });
       }
     }
@@ -97,7 +98,7 @@ export function createStoreAdapter(options: SyncStoreAdapterOptions): ApplyToSto
         for (const change of tableChanges) {
           result.errors.push({
             change,
-            error: error instanceof Error ? error : new Error(String(error)),
+            error: toError(error),
           });
         }
       }
