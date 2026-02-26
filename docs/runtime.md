@@ -1072,16 +1072,19 @@ This design keeps runtime responsibilities focused on execution and caching, whi
 
 ## Type Coercion Best Practices
 
-SQL requires different coercion strategies for different contexts. Quereus provides centralized type coercion utilities in `src/util/coercion.ts` that should be used consistently across all emitters.
+SQL requires different coercion strategies for different contexts. Quereus handles coercion at two levels:
+
+1. **Plan-time coercion** — Cross-category comparisons (numeric vs textual) are resolved by the planner, which inserts explicit `CastNode`s so the runtime never needs implicit coercion for comparisons or BETWEEN.
+2. **Runtime coercion** — Arithmetic and aggregate contexts still use centralized utilities from `src/util/coercion.ts`.
 
 ### Coercion Contexts
 
-**Comparison Context** (`coerceForComparison`):
-- Converts numeric strings to numbers when comparing with numeric values
-- Example: `42 = '42'` → true
-- Used in: binary comparison operators, JOIN conditions, WHERE clauses
+**Comparison Context** (plan-time):
+- When one operand is numeric and the other textual, the planner wraps the textual operand in a CastNode targeting the numeric type
+- Example: `42 = '42'` → planner rewrites to `42 = cast('42' as INTEGER)`, both sides are numeric at runtime
+- No runtime coercion is needed; the generic comparison path only handles temporal checks
 
-**Arithmetic Context** (`coerceToNumberForArithmetic`): 
+**Arithmetic Context** (`coerceToNumberForArithmetic`):
 - Converts all values to numbers for arithmetic operations
 - Non-numeric strings become 0 (SQL standard behavior)
 - Example: `'abc' + 0` → 0, `'123' + 0` → 123
@@ -1095,11 +1098,7 @@ SQL requires different coercion strategies for different contexts. Quereus provi
 ### Implementation Guidelines
 
 ```typescript
-import { coerceForComparison, coerceToNumberForArithmetic, coerceForAggregate } from '../../util/coercion.js';
-
-// In comparison operations:
-const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-const result = compareSqlValues(coercedV1, coercedV2);
+import { coerceToNumberForArithmetic, coerceForAggregate } from '../../util/coercion.js';
 
 // In arithmetic operations:
 const n1 = coerceToNumberForArithmetic(v1);
@@ -1111,7 +1110,7 @@ const coercedArg = coerceForAggregate(rawValue, functionName);
 accumulator = schema.stepFunction(accumulator, coercedArg);
 ```
 
-**Critical Rule**: Never implement custom coercion logic in individual emitters. Always use the centralized utilities to ensure consistent behavior across the system.
+**Critical Rule**: Never implement custom coercion logic in individual emitters. Always use centralized utilities (for arithmetic/aggregates) or rely on planner-inserted CastNodes (for comparisons) to ensure consistent behavior across the system.
 
 ## Uniqueness and sorting guidelines
 

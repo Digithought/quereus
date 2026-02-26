@@ -41,7 +41,7 @@ export function emitCast(plan: CastNode, ctx: EmissionContext): Instruction {
 function castFallback(value: SqlValue, typeName: string): SqlValue {
 	switch (typeName) {
 		case 'INTEGER':
-			return typeof value === 'string' ? 0 : 0;
+			return 0;
 		case 'REAL':
 			return 0.0;
 		case 'NUMERIC':
