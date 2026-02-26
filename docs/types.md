@@ -312,7 +312,7 @@ select * from users where age = integer('25');
 select * from users where age = '25';
 ```
 
-> **Note**: The current implementation still uses runtime coercion via `coerceForComparison` for cross-category comparisons. Migration to planner-inserted explicit conversions is in progress. See `tasks/implement/4-planner-explicit-coercion-insertion.md`.
+The planner also handles BETWEEN expressions the same way: `value BETWEEN '10' AND '100'` with a numeric `value` will have both bounds cast to the appropriate numeric type at plan time.
 
 ### Performance Characteristics
 

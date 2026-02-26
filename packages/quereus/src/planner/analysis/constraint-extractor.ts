@@ -6,7 +6,7 @@
 import type { ScalarPlanNode, RelationalPlanNode, PlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import type { ColumnReferenceNode } from '../nodes/reference.js';
-import { BinaryOpNode, BetweenNode } from '../nodes/scalar.js';
+import { BinaryOpNode, BetweenNode, CastNode } from '../nodes/scalar.js';
 import type { LiteralNode } from '../nodes/scalar.js';
 import { InNode } from '../nodes/subquery.js';
 import type { Row, SqlValue } from '../../common/types.js';
@@ -282,16 +282,18 @@ function extractBinaryConstraint(
 	let columnRef: ColumnReferenceNode | null = null;
 	let constant: SqlValue | undefined;
   let finalOp: ConstraintOp | null = null;
+  let columnIsLeft = false;
 
   if (isColumnReference(left) && (isLiteralConstant(right) || isDynamicValue(right))) {
-		columnRef = left;
+		columnRef = getColumnReference(left);
+		columnIsLeft = true;
 		if (isLiteralConstant(right)) {
 			constant = getLiteralValue(right);
 		}
     finalOp = mapOperatorToConstraint(operator, constant);
   } else if ((isLiteralConstant(left) || isDynamicValue(left)) && isColumnReference(right)) {
 		// Reverse pattern (constant op column) - flip operator
-		columnRef = right;
+		columnRef = getColumnReference(right);
 		if (isLiteralConstant(left)) {
 			constant = getLiteralValue(left);
 		}
@@ -333,13 +335,14 @@ function extractBinaryConstraint(
   const nonLiteral = !isLiteralConstant(lhs) || !isLiteralConstant(rhs);
   if (nonLiteral) {
     // Determine which side is the value side
-    const valueSide = (columnRef === lhs ? rhs : lhs) as ScalarPlanNode;
+    const valueSide = (columnIsLeft ? rhs : lhs) as ScalarPlanNode;
     if (!isLiteralConstant(valueSide)) {
       result.valueExpr = valueSide;
-      if (valueSide.nodeType === PlanNodeType.ParameterReference) {
+      const innerValue = unwrapCast(valueSide);
+      if (innerValue.nodeType === PlanNodeType.ParameterReference) {
         result.bindingKind = 'parameter';
-      } else if (valueSide.nodeType === PlanNodeType.ColumnReference) {
-        const rhsAttrId = (valueSide as unknown as ColumnReferenceNode).attributeId;
+      } else if (innerValue.nodeType === PlanNodeType.ColumnReference) {
+        const rhsAttrId = (innerValue as unknown as ColumnReferenceNode).attributeId;
         const sameTable = tableInfo.columnIndexMap.has(rhsAttrId);
         result.bindingKind = sameTable ? 'expression' : 'correlated';
       } else {
@@ -365,10 +368,10 @@ function extractBetweenConstraints(
   const up = expr.upper;
   const not = !!expr.expression.not;
 
-  if (col.nodeType !== PlanNodeType.ColumnReference) return null;
+  if (!isColumnReference(col)) return null;
   if (!isLiteralConstant(low) || !isLiteralConstant(up)) return null;
 
-  const columnRef = col as unknown as ColumnReferenceNode;
+  const columnRef = getColumnReference(col);
   const tableInfo = attributeToTableMap.get(columnRef.attributeId);
   if (!tableInfo) return null;
   const columnIndex = tableInfo.columnIndexMap.get(columnRef.attributeId);
@@ -479,27 +482,44 @@ function isOrExpression(expr: ScalarPlanNode): boolean {
 /**
  * Check if node is a column reference
  */
+/**
+ * Unwrap a CastNode inserted by the planner for cross-category coercion.
+ * Returns the inner operand if node is a Cast, otherwise returns the node itself.
+ */
+function unwrapCast(node: ScalarPlanNode): ScalarPlanNode {
+	return node.nodeType === PlanNodeType.Cast ? (node as CastNode).operand : node;
+}
+
 function isColumnReference(node: ScalarPlanNode): node is ColumnReferenceNode {
-	return CapabilityDetectors.isColumnReference(node);
+	return CapabilityDetectors.isColumnReference(unwrapCast(node));
 }
 
 /**
- * Check if node is a literal constant
+ * Extract the underlying ColumnReferenceNode, unwrapping a planner-inserted
+ * CastNode if present.
+ */
+function getColumnReference(node: ScalarPlanNode): ColumnReferenceNode {
+	return unwrapCast(node) as unknown as ColumnReferenceNode;
+}
+
+/**
+ * Check if node is a literal constant (sees through planner-inserted CastNodes).
  */
 function isLiteralConstant(node: ScalarPlanNode): node is LiteralNode {
-	return node.nodeType === PlanNodeType.Literal;
+	return unwrapCast(node).nodeType === PlanNodeType.Literal;
 }
 
 function isDynamicValue(node: ScalarPlanNode): boolean {
+  const inner = unwrapCast(node);
   // Parameter or column reference from any table (correlation handled later)
-  return node.nodeType === PlanNodeType.ParameterReference || node.nodeType === PlanNodeType.ColumnReference;
+  return inner.nodeType === PlanNodeType.ParameterReference || inner.nodeType === PlanNodeType.ColumnReference;
 }
 
 /**
- * Get literal value from literal node
+ * Get literal value from literal node (sees through planner-inserted CastNodes).
  */
 function getLiteralValue(node: ScalarPlanNode): SqlValue {
-	const literalNode = node as LiteralNode;
+	const literalNode = unwrapCast(node) as LiteralNode;
 	return getSyncLiteral(literalNode.expression);
 }
 

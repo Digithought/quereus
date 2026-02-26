@@ -6,7 +6,7 @@ import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
 import { compareSqlValuesFast } from "../../util/comparison.js";
 import type { CollationFunction } from "../../util/comparison.js";
-import { coerceForComparison, coerceToNumberForArithmetic } from "../../util/coercion.js";
+import { coerceToNumberForArithmetic } from "../../util/coercion.js";
 import { simpleLike } from "../../util/patterns.js";
 import type { EmissionContext } from "../emission-context.js";
 import { tryTemporalArithmetic, tryTemporalComparison } from "./temporal-arithmetic.js";
@@ -252,7 +252,9 @@ function buildCmpToResult(operator: string, plan: BinaryOpNode): (cmp: number) =
 	}
 }
 
-/** Build the generic (unspecialized) comparison run function with temporal + coercion */
+/** Build the generic (unspecialized) comparison run function with temporal check.
+ *  Cross-category coercion is handled at plan time via explicit CastNodes,
+ *  so no runtime coercion is needed here. */
 function buildGenericComparisonRun(
 	operator: string,
 	plan: BinaryOpNode,
@@ -265,8 +267,7 @@ function buildGenericComparisonRun(
 		const temporalResult = tryTemporalComparison(operator, v1, v2);
 		if (temporalResult !== undefined) return temporalResult;
 
-		const [coercedV1, coercedV2] = coerceForComparison(v1, v2);
-		return cmpToResult(compareSqlValuesFast(coercedV1, coercedV2, collationFunc));
+		return cmpToResult(compareSqlValuesFast(v1, v2, collationFunc));
 	};
 }
 

@@ -44,6 +44,10 @@ export function coerceToNumberForArithmetic(value: SqlValue): number {
  * Performs SQL type coercion for comparison operations.
  * If one operand is numeric and the other is text that can be converted to a number,
  * converts the text to a number before comparison.
+ *
+ * @deprecated Cross-category coercion is now inserted at plan time via explicit
+ * CastNodes in the planner. This function is no longer called from comparison or
+ * BETWEEN emission and will be removed in a future release.
  */
 export function coerceForComparison(v1: SqlValue, v2: SqlValue): [SqlValue, SqlValue] {
 	// If either value is null, no coercion needed

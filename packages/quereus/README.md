@@ -225,7 +225,7 @@ See [Store Documentation](../../docs/store.md) for the storage architecture and 
 Quereus exports all critical utilities needed for plugin and module development:
 
 * **Comparison Functions**: `compareSqlValues`, `compareRows`, `compareTypedValues`, `createTypedComparator` — Match Quereus SQL semantics in custom implementations
-* **Coercion Utilities**: `tryCoerceToNumber`, `coerceForComparison`, `coerceForAggregate` — Handle type coercion correctly
+* **Coercion Utilities**: `tryCoerceToNumber`, `coerceForAggregate` — Handle type coercion for aggregates and arithmetic
 * **Collation Support**: `registerCollation`, `getCollation`, built-in collations (`BINARY_COLLATION`, `NOCASE_COLLATION`, `RTRIM_COLLATION`)
 * **Type System**: Full access to logical types, validation, and parsing utilities
 * **Event Hooks**: `VTableEventEmitter` interface for mutation and schema change events — Enable reactive patterns, caching, and replication

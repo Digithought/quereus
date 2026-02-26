@@ -8,10 +8,10 @@ import { inferType } from '../../types/registry.js';
 export function emitCast(plan: CastNode, ctx: EmissionContext): Instruction {
 	const logicalType = inferType(plan.expression.targetType);
 
-	async function run(
+	function run(
 		_runtimeCtx: RuntimeContext,
 		operandValue: SqlValue
-	): Promise<SqlValue> {
+	): SqlValue {
 		if (operandValue === null) return null;
 
 		if (logicalType.parse) {

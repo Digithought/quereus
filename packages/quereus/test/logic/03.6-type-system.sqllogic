@@ -253,4 +253,67 @@ select i = r as r1 from num_cmp;
 select i = t as r1 from num_cmp;
 → [{"r1":true}]
 
+-- Integer column vs text literal (planner inserts cast on text)
+select i = '42' as eq, i > '10' as gt, i < '100' as lt from num_cmp;
+→ [{"eq":true,"gt":true,"lt":true}]
+
+-- Real column vs text literal
+select r = '42.0' as eq from num_cmp;
+→ [{"eq":true}]
+
+-- Text column vs integer literal (planner inserts cast on text column)
+select t = 42 as eq from num_cmp;
+→ [{"eq":true}]
+
+-- Non-numeric text compared to integer: cast produces 0
+select '42' = 42 as r1, 'abc' = 0 as r2;
+→ [{"r1":true,"r2":true}]
+
+-- BETWEEN with mixed types: integer BETWEEN text bounds
+select i from num_cmp where i between '10' and '100';
+→ [{"i":42}]
+
+-- BETWEEN with text expr and numeric bounds
+select t from num_cmp where t between 10 and 100;
+→ [{"t":"42"}]
+
 DROP TABLE num_cmp;
+
+-- === Cross-category comparison edge cases ===
+
+-- Literal cross-category comparisons (no table needed)
+select 42 = '42' as r;
+→ [{"r":true}]
+
+select 42 != '43' as r;
+→ [{"r":true}]
+
+select 10 < '20' as r;
+→ [{"r":true}]
+
+select 100 > '50' as r;
+→ [{"r":true}]
+
+select 10 <= '10' as r;
+→ [{"r":true}]
+
+select 10 >= '10' as r;
+→ [{"r":true}]
+
+-- BETWEEN with all-literal cross-category
+select 5 between '1' and '10' as r;
+→ [{"r":true}]
+
+select '5' between 1 and 10 as r;
+→ [{"r":true}]
+
+-- NOT BETWEEN with cross-category
+select 50 not between '1' and '10' as r;
+→ [{"r":true}]
+
+-- NULL handling in cross-category (NULL propagates)
+select null = '42' as r;
+→ [{"r":null}]
+
+select 42 = null as r;
+→ [{"r":null}]

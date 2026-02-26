@@ -16,6 +16,53 @@ import { createLogger } from '../../common/logger.js';
 
 const logger = createLogger('planner:expression');
 
+/** Comparison operators that should trigger cross-category coercion insertion */
+const COMPARISON_OPS = new Set(['=', '==', '!=', '<>', '<', '<=', '>', '>=']);
+
+/**
+ * If one operand is numeric and the other is textual, wrap the textual operand
+ * in a CastNode targeting the numeric side's type name (e.g. 'INTEGER' or 'REAL').
+ * Returns `[left, right]` — possibly with one side replaced by a CastNode.
+ */
+function insertCrossTypeCoercion(
+	scope: import('../scopes/scope.js').Scope,
+	left: ScalarPlanNode,
+	right: ScalarPlanNode,
+): [ScalarPlanNode, ScalarPlanNode] {
+	const leftLogical = left.getType().logicalType;
+	const rightLogical = right.getType().logicalType;
+
+	const leftNumeric = !!leftLogical.isNumeric;
+	const rightNumeric = !!rightLogical.isNumeric;
+	const leftTextual = !!leftLogical.isTextual;
+	const rightTextual = !!rightLogical.isTextual;
+
+	if (leftNumeric && rightTextual) {
+		// Wrap right (textual) in a cast to the left's numeric type
+		return [left, wrapInCast(scope, right, leftLogical.name)];
+	}
+	if (rightNumeric && leftTextual) {
+		// Wrap left (textual) in a cast to the right's numeric type
+		return [wrapInCast(scope, left, rightLogical.name), right];
+	}
+	return [left, right];
+}
+
+/** Create a synthetic CastNode wrapping `operand` with the given target type name. */
+function wrapInCast(
+	scope: import('../scopes/scope.js').Scope,
+	operand: ScalarPlanNode,
+	targetType: string,
+): CastNode {
+	// Synthesise a minimal AST.CastExpr — only `targetType` is used by the emitter.
+	const syntheticExpr: AST.CastExpr = {
+		type: 'cast',
+		expr: { type: 'literal', value: null } as AST.LiteralExpr, // placeholder
+		targetType,
+	};
+	return new CastNode(scope, syntheticExpr, operand);
+}
+
 /**
  * Builds an expression plan node from an AST expression.
  */
@@ -68,8 +115,13 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
 		}
 
 		case 'binary': {
-      const left = buildExpression(ctx, expr.left, allowAggregates);
-      const right = buildExpression(ctx, expr.right, allowAggregates);
+      let left = buildExpression(ctx, expr.left, allowAggregates);
+      let right = buildExpression(ctx, expr.right, allowAggregates);
+      // For comparison operators, insert explicit casts when one side is
+      // numeric and the other textual so the runtime can use the fast path.
+      if (COMPARISON_OPS.has(expr.operator)) {
+        [left, right] = insertCrossTypeCoercion(ctx.scope, left, right);
+      }
       return new BinaryOpNode(ctx.scope, expr, left, right);
 		}
 
@@ -198,9 +250,12 @@ export function buildExpression(ctx: PlanningContext, expr: AST.Expression, allo
 
     case 'between': {
        // Build the BETWEEN expression: expr BETWEEN lower AND upper
-       const exprNode = buildExpression(ctx, expr.expr, allowAggregates);
-       const lowerNode = buildExpression(ctx, expr.lower, allowAggregates);
-       const upperNode = buildExpression(ctx, expr.upper, allowAggregates);
+       let exprNode = buildExpression(ctx, expr.expr, allowAggregates);
+       let lowerNode = buildExpression(ctx, expr.lower, allowAggregates);
+       let upperNode = buildExpression(ctx, expr.upper, allowAggregates);
+       // Insert explicit casts for cross-category operands (same logic as comparisons)
+       [exprNode, lowerNode] = insertCrossTypeCoercion(ctx.scope, exprNode, lowerNode);
+       [exprNode, upperNode] = insertCrossTypeCoercion(ctx.scope, exprNode, upperNode);
        return new BetweenNode(ctx.scope, expr, exprNode, lowerNode, upperNode);
 		}
 
