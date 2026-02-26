@@ -6,6 +6,7 @@ import { expect } from 'chai';
 import {
   buildBatchKey,
   buildSnapshotKey,
+  defaultStoragePathResolver,
   parseS3ConfigFromEnv,
   type S3StorageConfig,
 } from '../src/service/s3-config.js';
@@ -46,6 +47,28 @@ describe('S3 Configuration', () => {
       const config: S3StorageConfig = { ...baseConfig, keyPrefix: 'prod/' };
       const key = buildSnapshotKey(config, 'org1/db1', 'snap-1', '2026-02-01T12:00:00.000Z');
       expect(key).to.equal('prod/org1/db1/snapshots/2026-02-01T12-00-00-000Z_snap-1.json');
+    });
+  });
+
+  describe('defaultStoragePathResolver', () => {
+    it('should replace colons with slashes', () => {
+      expect(defaultStoragePathResolver('org123:s_abc')).to.equal('org123/s_abc');
+    });
+
+    it('should sanitize special characters to underscores', () => {
+      expect(defaultStoragePathResolver('org@123:db#1')).to.equal('org_123/db_1');
+    });
+
+    it('should preserve alphanumeric, slashes, underscores, and hyphens', () => {
+      expect(defaultStoragePathResolver('my-org/db_name-1')).to.equal('my-org/db_name-1');
+    });
+
+    it('should handle empty string', () => {
+      expect(defaultStoragePathResolver('')).to.equal('');
+    });
+
+    it('should handle multiple colons', () => {
+      expect(defaultStoragePathResolver('a:b:c')).to.equal('a/b/c');
     });
   });
 
