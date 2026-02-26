@@ -2,7 +2,7 @@
 	"extends": "../tsconfig.base.json",
 	"compilerOptions": {
 		"outDir": "./out",
-		"rootDir": "./src",
+		"rootDir": "..",
 		"module": "ESNext",
 		"moduleResolution": "bundler",
 		"target": "ES2022",
@@ -10,7 +10,7 @@
 		"strict": true,
 		"sourceMap": true
 	},
-	"include": ["src/**/*"]
+	"include": ["src/**/*", "../shared/**/*"]
 }
 
 

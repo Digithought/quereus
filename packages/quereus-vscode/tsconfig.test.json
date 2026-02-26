@@ -13,6 +13,6 @@
     "esm": true,
     "experimentalSpecifierResolution": "node"
   },
-  "include": ["server/test/**/*", "server/src/**/*"]
+  "include": ["server/test/**/*", "server/src/**/*", "shared/**/*"]
 }
 

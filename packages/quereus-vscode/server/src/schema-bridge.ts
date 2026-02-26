@@ -1,15 +1,5 @@
 import type { Database } from '@quereus/quereus';
-
-export interface SchemaSnapshotTable {
-	name: string;
-	schema: string;
-	columns: string[];
-}
-
-export interface SchemaSnapshot {
-	tables: SchemaSnapshotTable[];
-	functions: Array<{ name: string; numArgs: number }>;
-}
+import type { SchemaSnapshot, SchemaSnapshotTable } from '../../shared/types.js';
 
 export function snapshotSchema(db: Database): SchemaSnapshot {
 	const tables: SchemaSnapshotTable[] = [];

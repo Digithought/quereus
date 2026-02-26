@@ -1,17 +1,9 @@
-import type { Connection } from 'vscode-languageserver';
+import type { Connection } from 'vscode-languageserver/node';
 import type { Database } from '@quereus/quereus';
 import { snapshotSchema } from './schema-bridge.js';
+import type { SchemaSnapshot } from '../../shared/types.js';
 
-export interface SchemaSnapshotTable {
-	name: string;
-	schema: string;
-	columns: string[];
-}
-
-export interface SchemaSnapshot {
-	tables: SchemaSnapshotTable[];
-	functions: Array<{ name: string; numArgs: number }>;
-}
+export type { SchemaSnapshot, SchemaSnapshotTable } from '../../shared/types.js';
 
 export type SchemaApplier = (snapshot: SchemaSnapshot) => void;
 

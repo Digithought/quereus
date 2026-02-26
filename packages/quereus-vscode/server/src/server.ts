@@ -15,7 +15,11 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import type { Parser as ParserType, Database as DatabaseType } from '@quereus/quereus';
+import { KEYWORDS } from '@quereus/quereus';
 import { registerCommands, type SchemaSnapshot } from './commands';
+
+/** Canonical keyword list derived from the engine's lexer. */
+const SQL_KEYWORDS = Object.keys(KEYWORDS);
 
 const connection = createConnection(ProposedFeatures.all);
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
@@ -35,18 +39,6 @@ const tokenTypes = ['keyword','function','string','number','operator','variable'
 type TokenTypeLabel = typeof tokenTypes[number];
 const tokenTypeToIndex: Record<TokenTypeLabel, number> = Object.fromEntries(tokenTypes.map((t, i) => [t, i])) as Record<TokenTypeLabel, number>;
 
-// Fallback keywords if engine exports are unavailable in this build context
-const DEFAULT_KEYWORDS = [
-	'with','recursive','select','insert','update','delete','values','create','table','view','index','assertion','drop','alter',
-	'begin','commit','rollback','savepoint','release','pragma','returning','where','from','group','by','having','order','limit','offset',
-	'join','inner','left','right','full','cross','outer','on','using','as','distinct','all','union','intersect','except','diff','null','true','false',
-	'is','not','and','or','xor','in','like','between','exists','case','when','then','else','end','over','partition','rows','range','unbounded','preceding','following','current',
-	'collate','default','primary','key','check','unique','foreign','references','constraint','generated','always','stored','virtual','into','using','if','to','add','rename','set','no','action','abort','fail','ignore','replace',
-	// Declarative schema keywords
-	'declare','schema','apply','explain','version','seed',
-	// Context variable keyword
-	'context'
-];
 
 function applySchemaSnapshot(snapshot: SchemaSnapshot): void {
 	externalSchema = snapshot;
@@ -55,7 +47,7 @@ function applySchemaSnapshot(snapshot: SchemaSnapshot): void {
 connection.onInitialize(async (_params: InitializeParams): Promise<InitializeResult> => {
 	const mod = await loadQuereus();
 	db = new mod.Database();
-	registerCommands(connection as unknown as any, db, applySchemaSnapshot);
+	registerCommands(connection, db, applySchemaSnapshot);
 	return {
 		capabilities: {
 			textDocumentSync: TextDocumentSyncKind.Incremental,
@@ -116,7 +108,7 @@ documents.onDidChangeContent((change: { document: TextDocument }): void => { voi
 
 connection.onCompletion((): CompletionItem[] => {
 	// Keywords
-	const items: CompletionItem[] = DEFAULT_KEYWORDS.map(k => ({ label: k, kind: CompletionItemKind.Keyword }));
+	const items: CompletionItem[] = SQL_KEYWORDS.map(k => ({ label: k, kind: CompletionItemKind.Keyword }));
 	// Tables and columns (from in-memory db)
 	for (const tbl of (db?.schemaManager.getMainSchema().getAllTables() ?? [])) {
 		items.push({ label: tbl.name, kind: CompletionItemKind.Class, detail: tbl.schemaName });
@@ -214,7 +206,7 @@ connection.languages.semanticTokens.on((_params: SemanticTokensParams): Semantic
 		const idx = m.index ?? 0;
 		if (isInsideSortedSpans(idx, excludeSpans)) continue;
 		const word = m[1];
-		if (DEFAULT_KEYWORDS.includes(word.toLowerCase())) {
+		if (SQL_KEYWORDS.includes(word.toLowerCase())) {
 			tokens.push({ start: idx, end: idx + word.length, type: 'keyword' });
 		}
 	}
@@ -222,7 +214,7 @@ connection.languages.semanticTokens.on((_params: SemanticTokensParams): Semantic
 		const idx = m.index ?? 0;
 		if (isInsideSortedSpans(idx, excludeSpans)) continue;
 		const name = m[1];
-		if (!DEFAULT_KEYWORDS.includes(name.toLowerCase())) {
+		if (!SQL_KEYWORDS.includes(name.toLowerCase())) {
 			tokens.push({ start: idx, end: idx + name.length, type: 'function' });
 		}
 	}
