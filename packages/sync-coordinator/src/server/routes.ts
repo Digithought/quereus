@@ -7,6 +7,7 @@ import { siteIdFromBase64, siteIdToBase64, deserializeHLC, serializeHLC, type HL
 import type { CoordinatorService } from '../service/coordinator-service.js';
 import type { AuthContext, ClientIdentity } from '../service/types.js';
 import { httpLog } from '../common/logger.js';
+import { serializeSnapshotChunk } from '../common/serialization.js';
 
 /**
  * Register sync HTTP routes.
@@ -183,7 +184,7 @@ export function registerRoutes(
       reply.raw.setHeader('Transfer-Encoding', 'chunked');
 
       for await (const chunk of service.getSnapshotStream(databaseId, client)) {
-        const serialized = JSON.stringify(chunk) + '\n';
+        const serialized = JSON.stringify(serializeSnapshotChunk(chunk)) + '\n';
         reply.raw.write(serialized);
       }
 

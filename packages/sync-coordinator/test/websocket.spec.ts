@@ -284,11 +284,7 @@ describe('WebSocket Handler', () => {
       }
     });
 
-    it('should stream snapshot after handshake (known bug: BigInt serialization)', async function () {
-      // BUG: handleGetSnapshot() sends raw SnapshotChunk objects containing HLC (BigInt wallTime)
-      // and SiteId (Uint8Array), which JSON.stringify cannot serialize.
-      // The handler should serialize these fields (like handleGetChanges does with serializeChangeSet).
-      // Once fixed, this test should assert snapshot_chunk/snapshot_complete messages.
+    it('should stream snapshot after handshake', async function () {
       const ws = await connectWs();
       try {
         await sendAndReceive(ws, {
@@ -297,14 +293,30 @@ describe('WebSocket Handler', () => {
           siteId: TEST_SITE_ID_1,
         });
 
-        const response = await sendAndReceive(ws, {
-          type: 'get_snapshot',
-        }) as { type: string; code?: string; message?: string };
+        // Collect all snapshot messages until snapshot_complete
+        const messages = await new Promise<object[]>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Timeout waiting for snapshot')), 5000);
+          const received: object[] = [];
+          ws.send(JSON.stringify({ type: 'get_snapshot' }));
+          ws.on('message', (data) => {
+            const msg = JSON.parse(data.toString()) as { type: string };
+            received.push(msg);
+            if (msg.type === 'snapshot_complete' || msg.type === 'error') {
+              clearTimeout(timeout);
+              resolve(received);
+            }
+          });
+        });
 
-        // Currently returns error due to BigInt serialization failure
-        expect(response.type).to.equal('error');
-        expect(response.code).to.equal('SNAPSHOT_ERROR');
-        expect(response.message).to.include('BigInt');
+        // Should have at least a header chunk and snapshot_complete
+        const types = messages.map((m: any) => m.type);
+        expect(types).to.include('snapshot_chunk');
+        expect(types[types.length - 1]).to.equal('snapshot_complete');
+
+        // Verify header chunk has serialized fields (strings, not BigInt/Uint8Array)
+        const headerMsg = messages.find((m: any) => m.type === 'snapshot_chunk') as any;
+        expect(headerMsg.siteId).to.be.a('string');
+        expect(headerMsg.hlc).to.be.a('string');
       } finally {
         ws.close();
         // Wait for server-side session cleanup

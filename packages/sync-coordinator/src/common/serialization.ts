@@ -1,7 +1,7 @@
 /**
- * Shared ChangeSet serialization for JSON transport.
+ * Shared serialization for JSON transport.
  *
- * Used by both the WebSocket handler and the CoordinatorService
+ * Used by both the WebSocket handler and the HTTP routes
  * for consistent wire format.
  */
 
@@ -11,6 +11,7 @@ import {
 	deserializeHLC,
 	serializeHLC,
 	type ChangeSet,
+	type SnapshotChunk,
 } from '@quereus/sync';
 
 /**
@@ -31,6 +32,46 @@ export function serializeChangeSet(cs: ChangeSet): object {
 			hlc: Buffer.from(serializeHLC(m.hlc)).toString('base64'),
 		})),
 	};
+}
+
+/**
+ * Serialize a SnapshotChunk for JSON transport.
+ * Converts binary fields (siteId, HLCs) to base64 strings.
+ */
+export function serializeSnapshotChunk(chunk: SnapshotChunk): object {
+	switch (chunk.type) {
+		case 'header':
+			return {
+				type: chunk.type,
+				siteId: siteIdToBase64(chunk.siteId),
+				hlc: Buffer.from(serializeHLC(chunk.hlc)).toString('base64'),
+				tableCount: chunk.tableCount,
+				migrationCount: chunk.migrationCount,
+				snapshotId: chunk.snapshotId,
+			};
+		case 'column-versions':
+			return {
+				type: chunk.type,
+				schema: chunk.schema,
+				table: chunk.table,
+				entries: chunk.entries.map(([key, hlc, value]) => [
+					key,
+					Buffer.from(serializeHLC(hlc)).toString('base64'),
+					value,
+				]),
+			};
+		case 'schema-migration':
+			return {
+				type: chunk.type,
+				migration: {
+					...chunk.migration,
+					hlc: Buffer.from(serializeHLC(chunk.migration.hlc)).toString('base64'),
+				},
+			};
+		// table-start, table-end, footer have no binary fields
+		default:
+			return chunk;
+	}
 }
 
 /**

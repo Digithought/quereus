@@ -15,7 +15,7 @@ import {
 } from '@quereus/sync';
 import type { CoordinatorService } from '../service/coordinator-service.js';
 import type { ClientIdentity, ClientSession } from '../service/types.js';
-import { wsLog, serializeChangeSet, deserializeChangeSet } from '../common/index.js';
+import { wsLog, serializeChangeSet, deserializeChangeSet, serializeSnapshotChunk } from '../common/index.js';
 
 // ============================================================================
 // Message Types
@@ -242,7 +242,7 @@ export function registerWebSocket(
 
       try {
         for await (const chunk of service.getSnapshotStream(session.databaseId, session.identity)) {
-          sendMessage({ ...chunk, type: 'snapshot_chunk' });
+          sendMessage({ ...serializeSnapshotChunk(chunk), type: 'snapshot_chunk' });
         }
         sendMessage({ type: 'snapshot_complete' });
       } catch (err) {
@@ -260,7 +260,7 @@ export function registerWebSocket(
 
       try {
         for await (const chunk of service.resumeSnapshotStream(session.databaseId, session.identity, msg.checkpoint)) {
-          sendMessage({ ...chunk, type: 'snapshot_chunk' });
+          sendMessage({ ...serializeSnapshotChunk(chunk), type: 'snapshot_chunk' });
         }
         sendMessage({ type: 'snapshot_complete' });
       } catch (err) {

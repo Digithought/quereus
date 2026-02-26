@@ -15,5 +15,6 @@ export {
 export {
   serializeChangeSet,
   deserializeChangeSet,
+  serializeSnapshotChunk,
 } from './serialization.js';
 
