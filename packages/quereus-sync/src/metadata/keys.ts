@@ -119,6 +119,21 @@ export function buildSchemaMigrationKey(
 }
 
 /**
+ * Build scan bounds for all column versions of a table.
+ * Returns keys to scan cv:{schema}.{table}:*
+ */
+export function buildTableColumnVersionScanBounds(
+  schemaName: string,
+  tableName: string,
+): { gte: Uint8Array; lt: Uint8Array } {
+  const prefix = `cv:${schemaName}.${tableName}${SEPARATOR}`;
+  return {
+    gte: encoder.encode(prefix),
+    lt: incrementLastByte(encoder.encode(prefix)),
+  };
+}
+
+/**
  * Build scan bounds for all column versions of a row.
  * Returns keys to scan cv:{schema}.{table}:{pk_json}:*
  */

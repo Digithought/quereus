@@ -122,6 +122,7 @@ export {
   buildPeerStateKey,
   buildSchemaMigrationKey,
   buildColumnVersionScanBounds,
+  buildTableColumnVersionScanBounds,
   buildTombstoneScanBounds,
   buildSchemaMigrationScanBounds,
   encodePK,

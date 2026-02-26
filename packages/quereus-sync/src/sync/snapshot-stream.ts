@@ -15,6 +15,7 @@ import {
 	buildAllTombstonesScanBounds,
 	buildAllSchemaMigrationsScanBounds,
 	buildAllChangeLogScanBounds,
+	buildTableColumnVersionScanBounds,
 	parseColumnVersionKey,
 	parseSchemaMigrationKey,
 	encodePK,
@@ -103,33 +104,24 @@ async function* streamSnapshotChunks(
 		if (completedSet.has(tableKey)) continue;
 
 		const [schema, table] = tableKey.split('.');
+		const tableCvBounds = buildTableColumnVersionScanBounds(schema, table);
 
-		// Count entries for this table
-		let tableEntryCount = 0;
-		const tableCvBounds = buildAllColumnVersionsScanBounds();
-		for await (const entry of ctx.kv.iterate(tableCvBounds)) {
-			const parsed = parseColumnVersionKey(entry.key);
-			if (parsed && parsed.schema === schema && parsed.table === table) {
-				tableEntryCount++;
-			}
-		}
-
-		// Yield table start
+		// Yield table start (entry count filled in at table-end)
 		const tableStart: SnapshotTableStartChunk = {
 			type: 'table-start',
 			schema,
 			table,
-			estimatedEntries: tableEntryCount,
+			estimatedEntries: 0,
 		};
 		yield tableStart;
 
-		// Stream column versions in chunks
+		// Stream column versions in chunks (single pass per table)
 		let entries: Array<[string, HLC, SqlValue]> = [];
 		let entriesWritten = 0;
 
 		for await (const entry of ctx.kv.iterate(tableCvBounds)) {
 			const parsed = parseColumnVersionKey(entry.key);
-			if (!parsed || parsed.schema !== schema || parsed.table !== table) continue;
+			if (!parsed) continue;
 
 			const cv = deserializeColumnVersion(entry.value);
 			const versionKey = `${encodePK(parsed.pk)}:${parsed.column}`;
