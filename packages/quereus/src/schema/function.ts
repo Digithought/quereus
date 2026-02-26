@@ -1,6 +1,6 @@
 import type { MaybePromise, Row, SqlValue, DeepReadonly } from '../common/types.js';
 import { FunctionFlags } from '../common/constants.js';
-import { SqlDataType } from '../common/types.js';
+
 import type { Database } from '../core/database.js';
 import type { BaseType, ScalarType, RelationType } from '../common/datatype.js';
 import type { AggValue } from '../func/registration.js';

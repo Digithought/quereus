@@ -14,7 +14,7 @@ import { createMemoryTableLoggers } from './utils/logging.js';
 import { safeJsonStringify } from '../../util/serialization.js';
 import type { VirtualTableConnection } from '../connection.js';
 import { MemoryVirtualTableConnection } from './connection.js';
-import type { ConflictResolution } from '../../common/constants.js';
+
 import type { VTableEventEmitter } from '../events.js';
 import { compareSqlValues } from '../../util/comparison.js';
 import type { TableStatistics, ColumnStatistics } from '../../planner/stats/catalog-stats.js';

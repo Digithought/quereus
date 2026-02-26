@@ -1,7 +1,7 @@
 import type { TableSchema, PrimaryKeyColumnDefinition } from '../../../schema/table.js';
 import type { Row, SqlValue } from '../../../common/types.js';
 import type { BTreeKeyForPrimary } from '../types.js';
-import { compareSqlValuesFast, resolveCollation, type CollationFunction, createTypedComparator } from '../../../util/comparison.js';
+import { resolveCollation, createTypedComparator } from '../../../util/comparison.js';
 import { QuereusError } from '../../../common/errors.js';
 import { StatusCode } from '../../../common/types.js';
 

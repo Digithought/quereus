@@ -715,7 +715,7 @@ function dropToString(stmt: AST.DropStmt): string {
 	return parts.join(' ');
 }
 
-function beginToString(stmt: AST.BeginStmt): string {
+function beginToString(_stmt: AST.BeginStmt): string {
 	return 'begin transaction';
 }
 

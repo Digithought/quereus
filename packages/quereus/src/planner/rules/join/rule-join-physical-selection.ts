@@ -18,7 +18,6 @@ import { JoinNode } from '../../nodes/join-node.js';
 import { BloomJoinNode, type EquiJoinPair } from '../../nodes/bloom-join-node.js';
 import { MergeJoinNode } from '../../nodes/merge-join-node.js';
 import { SortNode } from '../../nodes/sort.js';
-import { PlanNodeType } from '../../nodes/plan-node-type.js';
 import { BinaryOpNode } from '../../nodes/scalar.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';

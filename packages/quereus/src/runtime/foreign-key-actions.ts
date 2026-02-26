@@ -85,7 +85,7 @@ async function executeSingleFKAction(
 	parentColIndices: number[],
 	oldParentValues: SqlValue[],
 	newRow: Row | undefined,
-	visited: Set<string>,
+	_visited: Set<string>,
 ): Promise<void> {
 	const childColNames = fk.columns.map(idx => childTable.columns[idx].name);
 	const whereClause = childColNames

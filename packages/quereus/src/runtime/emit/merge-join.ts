@@ -1,7 +1,7 @@
 import type { MergeJoinNode } from '../../planner/nodes/merge-join-node.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import { emitCallFromPlan, emitPlanNode } from '../emitters.js';
-import type { Row, OutputValue, SqlValue } from '../../common/types.js';
+import type { Row, OutputValue } from '../../common/types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';

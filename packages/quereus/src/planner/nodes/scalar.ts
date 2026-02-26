@@ -1,5 +1,5 @@
 import type { ScalarType } from "../../common/datatype.js";
-import { OutputValue, SqlDataType } from "../../common/types.js";
+import { OutputValue } from "../../common/types.js";
 import { PlanNode, type ScalarPlanNode, type UnaryScalarNode, type NaryScalarNode, type ZeroAryScalarNode, type BinaryScalarNode, PhysicalProperties, type ConstantNode, type TernaryScalarNode } from "./plan-node.js";
 import type * as AST from "../../parser/ast.js";
 import type { Scope } from "../scopes/scope.js";

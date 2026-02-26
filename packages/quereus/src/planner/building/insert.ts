@@ -22,7 +22,7 @@ import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { DmlExecutorNode, type UpsertClausePlan } from '../nodes/dml-executor-node.js';
 import { buildConstraintChecks } from './constraint-builder.js';
-import { buildChildSideFKChecks, buildParentSideFKChecks } from './foreign-key-builder.js';
+import { buildChildSideFKChecks } from './foreign-key-builder.js';
 import { validateDeterministicDefault, validateDeterministicGenerated } from '../validation/determinism-validator.js';
 import { isCommittedSchemaRef } from './schema-resolution.js';
 

@@ -1,7 +1,7 @@
 import type { TableSchema } from '../schema/table.js';
 import type { ColumnSchema } from '../schema/column.js';
 import type { RelationType, ColumnDef, ScalarType, ColRef } from '../common/datatype.js';
-import { SqlDataType, StatusCode, type DeepReadonly, type SqlValue } from '../common/types.js'; // Import SqlValue and ensure SqlDataType is not type-only
+import { StatusCode, type DeepReadonly, type SqlValue } from '../common/types.js';
 import type { AstNode } from '../parser/ast.js';
 import { QuereusError } from '../common/errors.js';
 import { inferLogicalTypeFromValue } from '../common/type-inference.js';

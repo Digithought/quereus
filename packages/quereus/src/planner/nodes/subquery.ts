@@ -8,7 +8,7 @@ import { compareSqlValues } from "../../util/comparison.js";
 import type { Expression } from "../../parser/ast.js";
 import { formatExpression, formatScalarType } from "../../util/plan-formatter.js";
 import { quereusError } from "../../common/errors.js";
-import { BLOB_TYPE, BOOLEAN_TYPE, INTEGER_TYPE } from "../../types/builtin-types.js";
+import { BLOB_TYPE, BOOLEAN_TYPE } from "../../types/builtin-types.js";
 import { StatusCode } from "../../common/types.js";
 
 export class ScalarSubqueryNode extends PlanNode implements ScalarPlanNode {

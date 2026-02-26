@@ -6,7 +6,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { createLogger } from '../../common/logger.js';
 import { compareSqlValuesFast, BINARY_COLLATION } from '../../util/comparison.js';
 import { buildRowDescriptor } from '../../util/row-descriptor.js';
-import type { SqlValue } from '../../common/types.js';
+
 import { createRowSlot } from '../context-helpers.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';

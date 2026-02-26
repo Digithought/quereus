@@ -23,7 +23,7 @@ import { generateSeriesFunc } from './generation.js';
 import { queryPlanFunc, schedulerProgramFunc, stackTraceFunc, executionTraceFunc, rowTraceFunc, explainAssertionFunc } from './explain.js';
 import { schemaFunc, tableInfoFunc, functionInfoFunc } from './schema.js';
 import { jsonEachFunc, jsonTreeFunc } from './json-tvf.js';
-import { INTEGER_FUNC, REAL_FUNC, TEXT_FUNC, BOOLEAN_FUNC, DATE_FUNC, TIME_FUNC, DATETIME_FUNC, TIMESPAN_FUNC, JSON_FUNC } from './conversion.js';
+import { INTEGER_FUNC, REAL_FUNC, TEXT_FUNC, BOOLEAN_FUNC, DATE_FUNC, TIME_FUNC, DATETIME_FUNC, TIMESPAN_FUNC } from './conversion.js';
 import {
 	timespanYearsFunc, timespanMonthsFunc, timespanWeeksFunc, timespanDaysFunc,
 	timespanHoursFunc, timespanMinutesFunc, timespanSecondsFunc,

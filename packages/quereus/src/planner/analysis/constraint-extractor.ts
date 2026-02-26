@@ -440,7 +440,7 @@ function extractInConstraint(
 /**
  * Map AST operators to constraint operators
  */
-function mapOperatorToConstraint(operator: string, rightValue?: SqlValue): ConstraintOp | null {
+function mapOperatorToConstraint(operator: string, _rightValue?: SqlValue): ConstraintOp | null {
   switch (operator) {
     case '=': return '=';
     case '>': return '>';

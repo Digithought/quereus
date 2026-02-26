@@ -4,6 +4,7 @@
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket, RawData } from 'ws';
+import '@fastify/websocket';
 import {
   siteIdFromBase64,
   siteIdToBase64,

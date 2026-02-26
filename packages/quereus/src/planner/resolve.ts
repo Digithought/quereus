@@ -1,6 +1,6 @@
 import { Ambiguous, type Scope } from "./scopes/scope.js";
 import * as AST from "../parser/ast.js";
-import { ColumnReferenceNode, FunctionReferenceNode, ParameterReferenceNode, TableReferenceNode } from "./nodes/reference.js";
+import { FunctionReferenceNode, ParameterReferenceNode, TableReferenceNode } from "./nodes/reference.js";
 import { QuereusError } from "../common/errors.js";
 import { StatusCode } from "../common/types.js";
 import { isScalarNode, type ScalarPlanNode } from "./nodes/plan-node.js";

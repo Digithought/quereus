@@ -1,7 +1,6 @@
 import { Temporal } from 'temporal-polyfill';
-import { StatusCode, type SqlValue } from '../../common/types.js';
+import { type SqlValue } from '../../common/types.js';
 import { createScalarFunction } from '../registration.js';
-import { QuereusError } from '../../common/errors.js';
 
 /**
  * Helper to parse a value as a Temporal.Duration

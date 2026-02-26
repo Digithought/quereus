@@ -1,6 +1,6 @@
-import { SqlDataType } from '../common/types.js';
 import type { Expression } from '../parser/ast.js';
 import type { LogicalType } from '../types/logical-type.js';
+import { TEXT_TYPE } from '../types/builtin-types.js';
 
 /**
  * Represents the schema definition of a single column in a table.
@@ -39,9 +39,6 @@ export interface ColumnSchema {
  * @returns A new column schema with default values
  */
 export function createDefaultColumnSchema(name: string, defaultNotNull: boolean = true): ColumnSchema {
-	// Import TEXT_TYPE lazily to avoid circular dependencies
-	const { TEXT_TYPE } = require('../types/builtin-types.js');
-
 	return {
 		name: name,
 		logicalType: TEXT_TYPE,

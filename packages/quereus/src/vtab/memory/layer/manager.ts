@@ -633,7 +633,6 @@ export class MemoryTableManager {
 
 	public renameTable(newName: string): void {
 		logger.operation('Rename Table', this._tableName, { newName });
-		const oldName = this._tableName;
 		this._tableName = newName;
 
 		// Emit schema change event

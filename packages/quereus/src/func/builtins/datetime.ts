@@ -301,7 +301,7 @@ function applyTemporalModifier(dt: Temporal.ZonedDateTime, modifier: string): Te
 /** Recognized control modifiers that affect parsing/timezone, not datetime arithmetic. */
 type ControlModifier = 'unixepoch' | 'localtime' | 'utc' | 'subsec';
 
-const CONTROL_MODIFIERS = new Set<string>(['unixepoch', 'localtime', 'utc', 'subsec']);
+const _CONTROL_MODIFIERS = new Set<string>(['unixepoch', 'localtime', 'utc', 'subsec']);
 
 interface ProcessedArgs {
 	/** The resolved ZonedDateTime, or null on parse failure. */

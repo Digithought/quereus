@@ -1,4 +1,4 @@
-import type { DmlExecutorNode, UpsertClausePlan } from '../../planner/nodes/dml-executor-node.js';
+import type { DmlExecutorNode } from '../../planner/nodes/dml-executor-node.js';
 import type { Instruction, RuntimeContext, InstructionRun, OutputValue } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
 import { QuereusError, ConstraintError } from '../../common/errors.js';
@@ -237,7 +237,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 	// INSERT ----------------------------------------------------
 	// Number of context evaluators (used to split params in runInsert)
 	const numContextEvaluators = contextEvaluatorInstructions.length;
-	const numUpsertEvaluators = upsertEvaluatorInstructions.length;
+
 
 	async function* runInsert(
 		ctx: RuntimeContext,

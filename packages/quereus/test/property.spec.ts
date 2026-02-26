@@ -3,7 +3,6 @@ import { expect } from 'chai';
 import * as fc from 'fast-check';
 import { Database } from '../src/core/database.js'; // Adjust path as needed
 import { compareSqlValues } from '../src/util/comparison.js'; // Import compare helper
-import { coerceForComparison } from '../src/util/coercion.js'; // Import coercion helper
 import { safeJsonStringify } from '../src/util/serialization.js';
 import type { SqlValue } from '../src/common/types.js'; // Import SqlParameters
 
@@ -165,10 +164,10 @@ describe('Property-Based Tests', () => {
 				}
 
 				// For non-NULL values, also test SQL boolean comparisons
-				// Comparison operators (=, <) use type coercion (numeric strings become numbers)
+				// SELECT ? = ? uses storage class ordering (no column affinity coercion)
+				// NULL < INTEGER/REAL < TEXT < BLOB
 				if (actualA !== null && actualB !== null) {
-					const [coercedA, coercedB] = coerceForComparison(actualA, actualB);
-					const expectedComparison = compareSqlValues(coercedA, coercedB, 'BINARY');
+					const expectedComparison = compareSqlValues(actualA, actualB, 'BINARY');
 
 					let dbComparison: number;
 					try {

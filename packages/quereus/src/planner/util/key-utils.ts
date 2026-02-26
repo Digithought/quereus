@@ -1,7 +1,7 @@
 import type { ColRef, RelationType } from '../../common/datatype.js';
 import type { PhysicalProperties, RelationalPlanNode } from '../nodes/plan-node.js';
 import type { JoinType } from '../nodes/join-node.js';
-import type { TableSchema, ForeignKeyConstraintSchema } from '../../schema/table.js';
+import type { TableSchema } from '../../schema/table.js';
 
 /**
  * Project unique keys through a projection mapping.

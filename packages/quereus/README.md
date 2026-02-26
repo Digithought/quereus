@@ -250,7 +250,7 @@ See the [Plugin System documentation](../../docs/plugins.md#comparison-and-coerc
 
 While Quereus supports standard SQL syntax, it has several distinctive design choices:
 
-*   **Modern Type System**: Uses logical/physical type separation instead of SQLite's type affinity model. Includes native temporal types (DATE, TIME, DATETIME) and JSON type with deep equality comparison. Conversion functions (`integer()`, `date()`, `json()`) are preferred over CAST syntax. See [Type System Documentation](../../docs/types.md).
+*   **Modern Type System**: Uses logical/physical type separation instead of SQLite's type affinity model. Includes native temporal types (DATE, TIME, DATETIME) and JSON type with deep equality comparison. Conversion functions (`integer()`, `date()`, `json()`) are preferred over CAST syntax. All expressions have known types at plan time, including parameters; cross-category comparisons (e.g., numeric vs text) are handled via explicit conversions rather than implicit runtime coercion. See [Type System Documentation](../../docs/types.md).
 *   **Virtual Table Centric**: Uses `CREATE TABLE ... USING module(...)` syntax. All tables are virtual tables.
 *   **Default NOT NULL Columns**: Following Third Manifesto principles, columns default to NOT NULL unless explicitly specified otherwise. This behavior can be controlled via `pragma default_column_nullability = 'nullable'` to restore SQL standard behavior.
 *   **No Rowids**: All tables are addressed by their Primary Key. When no explicit PRIMARY KEY is defined, Quereus includes all columns in the primary key.

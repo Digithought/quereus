@@ -294,6 +294,26 @@ export function compareTypedValues(
 }
 ```
 
+### Type Coercion in Comparisons
+
+All expressions in Quereus have known types at plan time — including parameters, which must be typed at prepare time (either inferred from values or explicitly declared). There is no concept of an "untyped" expression.
+
+When the planner encounters a comparison between operands of different type categories (e.g., numeric vs textual), it inserts an **explicit conversion** on the appropriate operand, matching the target type. For example, `integer_column = '25'` becomes equivalent to `integer_column = integer('25')` at plan time. This keeps the runtime free of implicit coercion — both sides of every comparison have matching type categories, enabling fast-path execution.
+
+**Same-category comparisons** (both numeric, both textual, etc.) require no conversion and use a direct comparison path at runtime.
+
+**Cross-category comparisons** are resolved at plan time by wrapping the mismatched operand in a conversion function node. The conversion targets the other operand's type category (e.g., textual → numeric via `integer()` or `real()`). Users can also write explicit conversions directly:
+
+```sql
+-- Explicit conversion (always preferred)
+select * from users where age = integer('25');
+
+-- Planner inserts equivalent conversion when types are mixed
+select * from users where age = '25';
+```
+
+> **Note**: The current implementation still uses runtime coercion via `coerceForComparison` for cross-category comparisons. Migration to planner-inserted explicit conversions is in progress. See `tasks/implement/4-planner-explicit-coercion-insertion.md`.
+
 ### Performance Characteristics
 
 Type-aware comparisons enable optimized execution:

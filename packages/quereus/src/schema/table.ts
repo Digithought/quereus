@@ -3,7 +3,7 @@ import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { Expression } from '../parser/ast.js';
 import { type ColumnDef, type TableConstraint } from '../parser/ast.js';
-import { RowOp, SqlDataType, StatusCode, type SqlValue } from '../common/types.js';
+import { RowOp, StatusCode, type SqlValue } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { createLogger } from '../common/logger.js';
