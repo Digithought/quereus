@@ -79,14 +79,21 @@ export class InMemoryKVStore implements KVStore {
     let count = 0;
     const limit = options?.limit;
 
+    const reverse = options?.reverse;
     for (const [keyHex, { key, value }] of entries) {
-      // Check lower bounds
-      if (gteHex !== undefined && keyHex < gteHex) continue;
-      if (gtHex !== undefined && keyHex <= gtHex) continue;
-
-      // Check upper bounds
-      if (lteHex !== undefined && keyHex > lteHex) break;
-      if (ltHex !== undefined && keyHex >= ltHex) break;
+      if (reverse) {
+        // Reverse (descending): skip entries above upper bound, stop below lower bound
+        if (lteHex !== undefined && keyHex > lteHex) continue;
+        if (ltHex !== undefined && keyHex >= ltHex) continue;
+        if (gteHex !== undefined && keyHex < gteHex) break;
+        if (gtHex !== undefined && keyHex <= gtHex) break;
+      } else {
+        // Forward (ascending): skip entries below lower bound, stop above upper bound
+        if (gteHex !== undefined && keyHex < gteHex) continue;
+        if (gtHex !== undefined && keyHex <= gtHex) continue;
+        if (lteHex !== undefined && keyHex > lteHex) break;
+        if (ltHex !== undefined && keyHex >= ltHex) break;
+      }
 
       // Check limit
       if (limit !== undefined && count >= limit) break;

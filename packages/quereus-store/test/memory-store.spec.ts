@@ -136,10 +136,7 @@ describe('InMemoryKVStore', () => {
 			expect(entries).to.have.length(0);
 		});
 
-		// BUG: reverse iteration with bounds is broken — upper-bound 'break'
-		// fires on the first (highest) entry in reverse order, returning 0 results.
-		// See followup task for fix.
-		it.skip('supports reverse with bounds', async () => {
+		it('supports reverse with bounds', async () => {
 			const entries = await collect(store.iterate({
 				gte: new Uint8Array([2]),
 				lte: new Uint8Array([4]),
