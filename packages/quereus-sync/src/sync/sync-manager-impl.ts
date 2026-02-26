@@ -6,13 +6,8 @@
  */
 
 import type { KVStore, StoreEventEmitter, DataChangeEvent, SchemaChangeEvent } from '@quereus/store';
-import type { SqlValue, Row, TableSchema } from '@quereus/quereus';
-
-/**
- * Callback to get table schema by name.
- * Used to map column indices to actual column names.
- */
-export type GetTableSchemaCallback = (schemaName: string, tableName: string) => TableSchema | undefined;
+import type { SqlValue, Row } from '@quereus/quereus';
+import type { GetTableSchemaCallback } from '../create-sync-module.js';
 import { HLCManager, type HLC, compareHLC } from '../clock/hlc.js';
 import {
 	generateSiteId,
