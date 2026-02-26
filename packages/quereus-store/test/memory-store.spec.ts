@@ -146,6 +146,27 @@ describe('InMemoryKVStore', () => {
 			expect(entries[0].key).to.deep.equal(new Uint8Array([4]));
 			expect(entries[2].key).to.deep.equal(new Uint8Array([2]));
 		});
+
+		it('supports reverse with exclusive bounds (gt + lt)', async () => {
+			const entries = await collect(store.iterate({
+				gt: new Uint8Array([1]),
+				lt: new Uint8Array([5]),
+				reverse: true,
+			}));
+			expect(entries).to.have.length(3);
+			expect(entries[0].key).to.deep.equal(new Uint8Array([4]));
+			expect(entries[2].key).to.deep.equal(new Uint8Array([2]));
+		});
+
+		it('supports reverse with limit', async () => {
+			const entries = await collect(store.iterate({
+				reverse: true,
+				limit: 2,
+			}));
+			expect(entries).to.have.length(2);
+			expect(entries[0].key).to.deep.equal(new Uint8Array([5]));
+			expect(entries[1].key).to.deep.equal(new Uint8Array([4]));
+		});
 	});
 
 	describe('batch', () => {
