@@ -115,7 +115,7 @@ These codes exist for SQLite compatibility but are uncommon in practice:
 *   **`formatErrorChain(chain, includeStack?)`** — Formats an error chain for display, showing "Error: ..." / "Caused by: ..." lines.
 *   **`getPrimaryError(error)`** — Gets the `ErrorInfo` for the primary (outermost) error.
 
-This structure allows consumers to access specific details about the error, including its origin and potential root cause, facilitating better error reporting and debugging.
+This structure allows consumers to access specific details about the error, including its origin and potential root cause, facilitating better error reporting and debugging. For practical error handling patterns in application code, see the [Usage Guide](usage.md#error-handling).
 
 ## Error Chain Examples
 

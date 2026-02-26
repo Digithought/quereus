@@ -1,6 +1,6 @@
 # Built-in Functions Reference
 
-This document lists the built-in SQL functions available in Quereus.
+This document lists the built-in SQL functions available in Quereus. For the underlying type system, validation rules, and custom type registration, see the [Type System Documentation](types.md).
 
 ---
 
@@ -515,6 +515,12 @@ select addr, description from scheduler_program('select 1 + 1');
 | `classification` | TEXT | `'row'` if row-specific (PK fully covered), else `'global'` |
 | `prepared_pk_params` | TEXT? | JSON array of parameter names when row-specific |
 | `violation_sql` | TEXT | Stored violation query |
+
+---
+
+## Registration and Plugin-Based Functions
+
+Custom functions (scalar, aggregate, table-valued) can be registered via the [Plugin System](plugins.md#function-plugins). See also [Usage Guide](usage.md#user-defined-functions) for inline function registration.
 
 ---
 

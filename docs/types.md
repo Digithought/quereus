@@ -253,6 +253,8 @@ select datetime('2024-01-15T10:30:00');
 
 Note: CAST syntax is also supported for SQL compatibility, but conversion functions are preferred.
 
+See [Built-in Functions Reference](functions.md#type-conversion-functions) for the full list of conversion functions, including `json()`, date/time arithmetic with modifiers, and validation functions.
+
 ---
 
 ## Type-Aware Comparisons
@@ -380,7 +382,7 @@ const PHONENUMBER_TYPE: LogicalType = {
 
 ### Registering Custom Types
 
-Plugins can register custom logical types:
+Plugins can register custom logical types. For the full plugin packaging and loading workflow, see the [Plugin System](plugins.md). The examples below show the type registration portion:
 
 ```typescript
 // Example: UUID type plugin

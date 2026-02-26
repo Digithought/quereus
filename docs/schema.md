@@ -145,7 +145,7 @@ db.setSchemaPath(['main', 'extensions', 'plugins']);
 const path = db.getSchemaPath(); // ['main', 'extensions', 'plugins']
 ```
 
-See the [Usage Guide](usage.md) for the full schema path resolution order and `PRAGMA schema_path` syntax.
+See the [Usage Guide](usage.md) for the consumer-facing declarative schema workflow, schema path resolution order, and `PRAGMA schema_path` syntax.
 
 ## Database Options Affecting Schema
 

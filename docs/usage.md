@@ -675,7 +675,7 @@ for await (const row of db.eval(`
 
 ## Declarative Schema Workflow
 
-Quereus supports an order‑independent declarative schema with a separate apply step. DDL remains primary; declarative is an optional layer that produces canonical DDL. Modules continue to use the DDL interface.
+Quereus supports an order‑independent declarative schema with a separate apply step. DDL remains primary; declarative is an optional layer that produces canonical DDL. Modules continue to use the DDL interface. For the `DeclaredSchemaManager` API and schema change events, see [Schema Management](schema.md).
 
 ### Quick Start
 
@@ -789,7 +789,7 @@ const result = await db.prepare("select reverse(name) from users").all();
 
 ## Error Handling
 
-Quereus throws specific error types that you can catch and handle:
+Quereus throws specific error types that you can catch and handle. For the complete error class hierarchy, status codes, error chain utilities, and common error patterns, see [Error Handling](errors.md).
 
 ```typescript
 try {
