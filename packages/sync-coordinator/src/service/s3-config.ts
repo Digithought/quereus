@@ -71,6 +71,20 @@ export function createS3Client(config: S3StorageConfig): S3Client {
 }
 
 /**
+ * Function to resolve a database ID to a storage path for S3 keys.
+ * Default implementation uses the databaseId directly (with sanitization).
+ */
+export type StoragePathResolver = (databaseId: string) => string;
+
+/**
+ * Default storage path resolver - sanitizes databaseId for use as S3 path.
+ * Replaces colons with slashes for hierarchical structure.
+ */
+export function defaultStoragePathResolver(databaseId: string): string {
+	return databaseId.replace(/:/g, '/').replace(/[^a-zA-Z0-9/_-]/g, '_');
+}
+
+/**
  * Build the S3 key for a sync batch.
  *
  * Key format: <prefix><storagePath>/batches/<timestamp>_<batch_id>.json

@@ -31,9 +31,11 @@ export {
 
 export {
   type S3StorageConfig,
+  type StoragePathResolver,
   createS3Client,
   buildBatchKey,
   buildSnapshotKey,
+  defaultStoragePathResolver,
   parseS3ConfigFromEnv,
 } from './s3-config.js';
 
@@ -41,7 +43,6 @@ export {
   S3BatchStore,
   createS3BatchStore,
   type SyncBatch,
-  type StoragePathResolver,
 } from './s3-batch-store.js';
 
 export {

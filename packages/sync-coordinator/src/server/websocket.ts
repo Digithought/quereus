@@ -9,14 +9,13 @@ import {
   siteIdFromBase64,
   siteIdToBase64,
   deserializeHLC,
-  serializeHLC,
   type HLC,
   type ChangeSet,
   type SnapshotCheckpoint,
 } from '@quereus/sync';
 import type { CoordinatorService } from '../service/coordinator-service.js';
 import type { ClientIdentity, ClientSession } from '../service/types.js';
-import { wsLog } from '../common/logger.js';
+import { wsLog, serializeChangeSet, deserializeChangeSet } from '../common/index.js';
 
 // ============================================================================
 // Message Types
@@ -219,40 +218,4 @@ export function registerWebSocket(
   });
 }
 
-// ============================================================================
-// Serialization Helpers
-// ============================================================================
-
-function serializeChangeSet(cs: ChangeSet): object {
-  return {
-    siteId: siteIdToBase64(cs.siteId),
-    transactionId: cs.transactionId,
-    hlc: Buffer.from(serializeHLC(cs.hlc)).toString('base64'),
-    changes: cs.changes.map(c => ({
-      ...c,
-      hlc: Buffer.from(serializeHLC(c.hlc)).toString('base64'),
-    })),
-    schemaMigrations: cs.schemaMigrations.map(m => ({
-      ...m,
-      hlc: Buffer.from(serializeHLC(m.hlc)).toString('base64'),
-    })),
-  };
-}
-
-function deserializeChangeSet(cs: unknown): ChangeSet {
-  const obj = cs as Record<string, unknown>;
-  return {
-    siteId: siteIdFromBase64(obj.siteId as string),
-    transactionId: obj.transactionId as string,
-    hlc: deserializeHLC(Buffer.from(obj.hlc as string, 'base64')),
-    changes: (obj.changes as Record<string, unknown>[]).map(c => ({
-      ...c,
-      hlc: deserializeHLC(Buffer.from(c.hlc as string, 'base64')),
-    })),
-    schemaMigrations: ((obj.schemaMigrations as Record<string, unknown>[]) || []).map(m => ({
-      ...m,
-      hlc: deserializeHLC(Buffer.from(m.hlc as string, 'base64')),
-    })),
-  } as ChangeSet;
-}
 

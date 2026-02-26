@@ -12,3 +12,8 @@ export {
   configLog,
 } from './logger.js';
 
+export {
+  serializeChangeSet,
+  deserializeChangeSet,
+} from './serialization.js';
+

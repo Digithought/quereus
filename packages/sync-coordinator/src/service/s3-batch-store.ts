@@ -10,7 +10,9 @@ import { randomUUID } from 'node:crypto';
 import { serviceLog } from '../common/logger.js';
 import {
   type S3StorageConfig,
+  type StoragePathResolver,
   buildBatchKey,
+  defaultStoragePathResolver,
 } from './s3-config.js';
 
 /**
@@ -34,21 +36,6 @@ export interface SyncBatch {
 
   /** Optional metadata */
   metadata?: Record<string, unknown>;
-}
-
-/**
- * Function to resolve a database ID to a storage path for S3 keys.
- * Default implementation uses the databaseId directly (with sanitization).
- */
-export type StoragePathResolver = (databaseId: string) => string;
-
-/**
- * Default storage path resolver - sanitizes databaseId for use as S3 path.
- * Replaces colons with slashes for hierarchical structure.
- */
-function defaultStoragePathResolver(databaseId: string): string {
-  // Replace : with / for hierarchical structure, sanitize other chars
-  return databaseId.replace(/:/g, '/').replace(/[^a-zA-Z0-9/_-]/g, '_');
 }
 
 /**

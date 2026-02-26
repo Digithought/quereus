@@ -9,11 +9,16 @@
  * - Change volume threshold (e.g., every 1000 changes)
  */
 
-import { PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
+import { ListObjectsV2Command, PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { randomUUID } from 'node:crypto';
 import { createGzip } from 'node:zlib';
 import { serviceLog } from '../common/logger.js';
-import { type S3StorageConfig, buildSnapshotKey } from './s3-config.js';
+import {
+	type S3StorageConfig,
+	type StoragePathResolver,
+	buildSnapshotKey,
+	defaultStoragePathResolver,
+} from './s3-config.js';
 import type { SyncManager, SnapshotChunk, SnapshotColumnVersionsChunk } from '@quereus/sync';
 
 /**
@@ -69,18 +74,6 @@ interface DatabaseSnapshotState {
   lastSnapshotAt: number;
   changesSinceSnapshot: number;
   snapshotInProgress: boolean;
-}
-
-/**
- * Function to resolve a database ID to a storage path for S3 keys.
- */
-export type StoragePathResolver = (databaseId: string) => string;
-
-/**
- * Default storage path resolver - sanitizes databaseId for use as S3 path.
- */
-function defaultStoragePathResolver(databaseId: string): string {
-  return databaseId.replace(/:/g, '/').replace(/[^a-zA-Z0-9/_-]/g, '_');
 }
 
 /**
@@ -272,11 +265,17 @@ export class S3SnapshotStore {
    */
   async hasSnapshot(databaseId: string): Promise<boolean> {
     const storagePath = this.resolveStoragePath(databaseId);
-    // Check for latest snapshot pattern
     const prefix = this.config.keyPrefix ?? '';
-    void `${prefix}${storagePath}/snapshots/`; // Key pattern for listing
-    // Would need list operation to check, simplified for now
-    return false;
+    const listPrefix = `${prefix}${storagePath}/snapshots/`;
+
+    const command = new ListObjectsV2Command({
+      Bucket: this.config.bucket,
+      Prefix: listPrefix,
+      MaxKeys: 1,
+    });
+
+    const response = await this.client.send(command);
+    return (response.KeyCount ?? 0) > 0;
   }
 
   /**
