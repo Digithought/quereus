@@ -4,7 +4,7 @@
 
 import { expect } from 'chai';
 import { SyncManagerImpl } from '../../src/sync/sync-manager-impl.js';
-import { SyncEventEmitterImpl } from '../../src/sync/events.js';
+import { SyncEventEmitterImpl, type ConflictEvent, type SyncState } from '../../src/sync/events.js';
 import {
   DEFAULT_SYNC_CONFIG,
   type SyncConfig,
@@ -1171,6 +1171,291 @@ describe('SyncManager', () => {
       expect(resultA.skipped).to.equal(1);  // A's 1 column change
       expect(resultA.applied).to.equal(2);  // B's 2 column changes
       expect(resultA.conflicts).to.equal(0);
+    });
+  });
+
+  describe('error handling', () => {
+    it('should warn when data change event has no primary key', async () => {
+      const warnings: string[] = [];
+      const origWarn = console.warn;
+      console.warn = (msg: string) => warnings.push(msg);
+      try {
+        const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents);
+
+        // Emit data change without key or pk
+        storeEvents.emitDataChange({
+          type: 'insert',
+          schemaName: 'main',
+          tableName: 'test',
+          newRow: ['value'],
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 10));
+
+        expect(warnings.some(w => w.includes('Missing primary key'))).to.be.true;
+        expect(warnings.some(w => w.includes('main.test'))).to.be.true;
+      } finally {
+        console.warn = origWarn;
+      }
+    });
+
+    it('should catch errors in handleDataChange and emit error state', async () => {
+      const states: SyncState[] = [];
+      syncEvents.onSyncStateChange(state => states.push(state));
+
+      // Create a manager with a KV store that will fail on batch write
+      const failingKv = new InMemoryKVStore();
+      const origBatch = failingKv.batch.bind(failingKv);
+      failingKv.batch = () => {
+        const batch = origBatch();
+        batch.write = async () => { throw new Error('batch write failed'); };
+        return batch;
+      };
+
+      const manager = await SyncManagerImpl.create(failingKv, storeEvents, config, syncEvents);
+
+      storeEvents.emitDataChange({
+        type: 'insert',
+        schemaName: 'main',
+        tableName: 'test',
+        key: [1],
+        newRow: ['value'],
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      expect(states.some(s => s.status === 'error')).to.be.true;
+      const errorState = states.find(s => s.status === 'error') as { status: 'error'; error: Error };
+      expect(errorState.error.message).to.equal('batch write failed');
+    });
+
+    it('should catch errors in handleSchemaChange and emit error state', async () => {
+      const states: SyncState[] = [];
+      syncEvents.onSyncStateChange(state => states.push(state));
+
+      // Create a manager with a KV store that will fail
+      const failingKv = new InMemoryKVStore();
+      const manager = await SyncManagerImpl.create(failingKv, storeEvents, config, syncEvents);
+
+      // Sabotage the KV store after creation so schemaMigrations.getCurrentVersion fails
+      const origIterate = failingKv.iterate.bind(failingKv);
+      failingKv.iterate = () => {
+        throw new Error('iterate failed');
+      };
+
+      storeEvents.emitSchemaChange({
+        type: 'create',
+        objectType: 'table',
+        schemaName: 'main',
+        objectName: 'test',
+        ddl: 'CREATE TABLE test (id INTEGER)',
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      expect(states.some(s => s.status === 'error')).to.be.true;
+    });
+
+    it('should emit error state and rethrow when applyToStore callback fails', async () => {
+      const states: SyncState[] = [];
+      syncEvents.onSyncStateChange(state => states.push(state));
+
+      const applyToStore = async () => {
+        throw new Error('store apply failed');
+      };
+
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents, applyToStore);
+      const remoteSiteId = generateSiteId();
+
+      const changeSet: ChangeSet = {
+        siteId: remoteSiteId,
+        transactionId: 'tx-1',
+        hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+        changes: [{
+          type: 'column',
+          schema: 'main',
+          table: 'users',
+          pk: [1],
+          column: 'name',
+          value: 'Alice',
+          hlc: { wallTime: BigInt(Date.now()), counter: 1, siteId: remoteSiteId },
+        }],
+        schemaMigrations: [],
+      };
+
+      let thrown = false;
+      try {
+        await manager.applyChanges([changeSet]);
+      } catch (e) {
+        thrown = true;
+        expect((e as Error).message).to.equal('store apply failed');
+      }
+
+      expect(thrown).to.be.true;
+      expect(states.some(s => s.status === 'error')).to.be.true;
+    });
+
+    it('should emit conflict event when remote wins LWW', async () => {
+      const conflicts: ConflictEvent[] = [];
+      syncEvents.onConflictResolved(event => conflicts.push(event));
+
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents);
+      const remoteSite1 = generateSiteId();
+      const remoteSite2 = generateSiteId();
+      const now = Date.now();
+
+      // Apply earlier change first
+      const earlierChangeSet: ChangeSet = {
+        siteId: remoteSite1,
+        transactionId: 'tx-1',
+        hlc: { wallTime: BigInt(now), counter: 1, siteId: remoteSite1 },
+        changes: [{
+          type: 'column',
+          schema: 'main',
+          table: 'users',
+          pk: [1],
+          column: 'name',
+          value: 'Alice',
+          hlc: { wallTime: BigInt(now), counter: 1, siteId: remoteSite1 },
+        }],
+        schemaMigrations: [],
+      };
+
+      await manager.applyChanges([earlierChangeSet]);
+      conflicts.length = 0; // Clear any initial events
+
+      // Apply newer change — remote wins over existing
+      const newerChangeSet: ChangeSet = {
+        siteId: remoteSite2,
+        transactionId: 'tx-2',
+        hlc: { wallTime: BigInt(now + 1000), counter: 1, siteId: remoteSite2 },
+        changes: [{
+          type: 'column',
+          schema: 'main',
+          table: 'users',
+          pk: [1],
+          column: 'name',
+          value: 'Bob',
+          hlc: { wallTime: BigInt(now + 1000), counter: 1, siteId: remoteSite2 },
+        }],
+        schemaMigrations: [],
+      };
+
+      const result = await manager.applyChanges([newerChangeSet]);
+
+      expect(result.applied).to.equal(1);
+      expect(conflicts).to.have.lengthOf(1);
+      expect(conflicts[0].winner).to.equal('remote');
+      expect(conflicts[0].localValue).to.equal('Alice');
+      expect(conflicts[0].remoteValue).to.equal('Bob');
+      expect(conflicts[0].column).to.equal('name');
+      expect(conflicts[0].table).to.equal('users');
+    });
+
+    it('should emit conflict event for both local-wins and remote-wins', async () => {
+      const conflicts: ConflictEvent[] = [];
+      syncEvents.onConflictResolved(event => conflicts.push(event));
+
+      const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents);
+      const remoteSite1 = generateSiteId();
+      const remoteSite2 = generateSiteId();
+      const now = Date.now();
+
+      // Apply newer change first
+      const newerChangeSet: ChangeSet = {
+        siteId: remoteSite1,
+        transactionId: 'tx-1',
+        hlc: { wallTime: BigInt(now + 1000), counter: 1, siteId: remoteSite1 },
+        changes: [{
+          type: 'column',
+          schema: 'main',
+          table: 'users',
+          pk: [1],
+          column: 'name',
+          value: 'Bob',
+          hlc: { wallTime: BigInt(now + 1000), counter: 1, siteId: remoteSite1 },
+        }],
+        schemaMigrations: [],
+      };
+
+      await manager.applyChanges([newerChangeSet]);
+      conflicts.length = 0;
+
+      // Apply older change — local wins
+      const olderChangeSet: ChangeSet = {
+        siteId: remoteSite2,
+        transactionId: 'tx-2',
+        hlc: { wallTime: BigInt(now), counter: 1, siteId: remoteSite2 },
+        changes: [{
+          type: 'column',
+          schema: 'main',
+          table: 'users',
+          pk: [1],
+          column: 'name',
+          value: 'Alice',
+          hlc: { wallTime: BigInt(now), counter: 1, siteId: remoteSite2 },
+        }],
+        schemaMigrations: [],
+      };
+
+      const result = await manager.applyChanges([olderChangeSet]);
+
+      expect(result.conflicts).to.equal(1);
+      expect(conflicts).to.have.lengthOf(1);
+      expect(conflicts[0].winner).to.equal('local');
+      expect(conflicts[0].localValue).to.equal('Bob');
+      expect(conflicts[0].remoteValue).to.equal('Alice');
+    });
+
+    it('should not warn about missing table schema when getTableSchema is not provided', async () => {
+      const warnings: string[] = [];
+      const origWarn = console.warn;
+      console.warn = (msg: string) => warnings.push(msg);
+      try {
+        // Create manager WITHOUT getTableSchema callback
+        const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents);
+
+        storeEvents.emitDataChange({
+          type: 'insert',
+          schemaName: 'main',
+          tableName: 'test',
+          key: [1],
+          newRow: ['value'],
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 10));
+
+        // Should NOT have the "No table schema" warning
+        expect(warnings.some(w => w.includes('No table schema found'))).to.be.false;
+      } finally {
+        console.warn = origWarn;
+      }
+    });
+
+    it('should warn about missing table schema when getTableSchema is provided but returns undefined', async () => {
+      const warnings: string[] = [];
+      const origWarn = console.warn;
+      console.warn = (msg: string) => warnings.push(msg);
+      try {
+        // Create manager WITH getTableSchema that returns undefined
+        const getTableSchema = () => undefined;
+        const manager = await SyncManagerImpl.create(kv, storeEvents, config, syncEvents, undefined, getTableSchema);
+
+        storeEvents.emitDataChange({
+          type: 'insert',
+          schemaName: 'main',
+          tableName: 'test',
+          key: [1],
+          newRow: ['value'],
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 10));
+
+        // SHOULD have the warning since callback was provided but returned nothing
+        expect(warnings.some(w => w.includes('No table schema found'))).to.be.true;
+      } finally {
+        console.warn = origWarn;
+      }
     });
   });
 });

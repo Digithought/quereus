@@ -111,7 +111,17 @@ export async function applyChanges(
 
 	// PHASE 2: Apply data and schema changes to the store via callback
 	if (ctx.applyToStore && (dataChangesToApply.length > 0 || schemaChangesToApply.length > 0)) {
-		await ctx.applyToStore(dataChangesToApply, schemaChangesToApply, { remote: true });
+		try {
+			await ctx.applyToStore(dataChangesToApply, schemaChangesToApply, { remote: true });
+		} catch (error) {
+			// Emit error state so UI can react. CRDT metadata is NOT committed,
+			// allowing the same changes to be re-resolved on the next sync attempt.
+			ctx.syncEvents.emitSyncStateChange({
+				status: 'error',
+				error: error instanceof Error ? error : new Error(String(error)),
+			});
+			throw error;
+		}
 	}
 
 	// PHASE 3: Commit CRDT metadata
@@ -250,6 +260,20 @@ export async function resolveChange(
 			change.pk,
 			change.column,
 		) ?? undefined;
+
+		// Emit conflict event when remote overwrites an existing local version
+		if (oldColumnVersion) {
+			const conflictEvent: ConflictEvent = {
+				table: change.table,
+				pk: change.pk,
+				column: change.column,
+				localValue: oldColumnVersion.value,
+				remoteValue: change.value,
+				winner: 'remote',
+				winningHLC: change.hlc,
+			};
+			ctx.syncEvents.emitConflictResolved(conflictEvent);
+		}
 
 		return {
 			outcome: 'applied',

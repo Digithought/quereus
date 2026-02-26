@@ -179,47 +179,58 @@ export class SyncManagerImpl implements SyncManager, SyncContext {
 	 * Records CRDT metadata for the change.
 	 */
 	private async handleDataChange(event: DataChangeEvent): Promise<void> {
-		if (event.remote) return;
+		try {
+			if (event.remote) return;
 
-		const hlc = this.hlcManager.tick();
-		const { schemaName, tableName, type, oldRow, newRow } = event;
-		const pk = event.key ?? event.pk;
-		if (!pk) return;
-
-		const batch = this.kv.batch();
-
-		if (type === 'delete') {
-			this.tombstones.setTombstoneBatch(batch, schemaName, tableName, pk, hlc);
-			this.changeLog.recordDeletionBatch(batch, hlc, schemaName, tableName, pk);
-			await this.columnVersions.deleteRowVersions(schemaName, tableName, pk);
-
-			const change: RowDeletion = {
-				type: 'delete',
-				schema: schemaName,
-				table: tableName,
-				pk,
-				hlc,
-			};
-			this.pendingChanges.push(change);
-		} else {
-			if (newRow) {
-				await this.recordColumnVersions(batch, schemaName, tableName, pk, oldRow, newRow, hlc);
+			const hlc = this.hlcManager.tick();
+			const { schemaName, tableName, type, oldRow, newRow } = event;
+			const pk = event.key ?? event.pk;
+			if (!pk) {
+				console.warn(`[Sync] Missing primary key for ${schemaName}.${tableName} ${type} event — change not tracked`);
+				return;
 			}
+
+			const batch = this.kv.batch();
+
+			if (type === 'delete') {
+				this.tombstones.setTombstoneBatch(batch, schemaName, tableName, pk, hlc);
+				this.changeLog.recordDeletionBatch(batch, hlc, schemaName, tableName, pk);
+				await this.columnVersions.deleteRowVersions(schemaName, tableName, pk);
+
+				const change: RowDeletion = {
+					type: 'delete',
+					schema: schemaName,
+					table: tableName,
+					pk,
+					hlc,
+				};
+				this.pendingChanges.push(change);
+			} else {
+				if (newRow) {
+					await this.recordColumnVersions(batch, schemaName, tableName, pk, oldRow, newRow, hlc);
+				}
+			}
+
+			// Persist HLC state in batch (DRY: uses shared helper)
+			persistHLCStateBatch(this, batch);
+
+			await batch.write();
+
+			const changesToEmit = [...this.pendingChanges];
+			this.pendingChanges = [];
+
+			this.syncEvents.emitLocalChange({
+				transactionId: this.currentTransactionId || crypto.randomUUID(),
+				changes: changesToEmit,
+				pendingSync: true,
+			});
+		} catch (error) {
+			console.error('[Sync] Error handling data change:', error);
+			this.syncEvents.emitSyncStateChange({
+				status: 'error',
+				error: error instanceof Error ? error : new Error(String(error)),
+			});
 		}
-
-		// Persist HLC state in batch (DRY: uses shared helper)
-		persistHLCStateBatch(this, batch);
-
-		await batch.write();
-
-		const changesToEmit = [...this.pendingChanges];
-		this.pendingChanges = [];
-
-		this.syncEvents.emitLocalChange({
-			transactionId: this.currentTransactionId || crypto.randomUUID(),
-			changes: changesToEmit,
-			pendingSync: true,
-		});
 	}
 
 	/**
@@ -227,47 +238,55 @@ export class SyncManagerImpl implements SyncManager, SyncContext {
 	 * Records schema migrations for sync.
 	 */
 	private async handleSchemaChange(event: SchemaChangeEvent): Promise<void> {
-		if (event.remote) return;
+		try {
+			if (event.remote) return;
 
-		const hlc = this.hlcManager.tick();
-		const { type, objectType, schemaName, objectName, ddl } = event;
+			const hlc = this.hlcManager.tick();
+			const { type, objectType, schemaName, objectName, ddl } = event;
 
-		let migrationType: SchemaMigrationType;
-		if (objectType === 'table') {
-			switch (type) {
-				case 'create': migrationType = 'create_table'; break;
-				case 'drop': migrationType = 'drop_table'; break;
-				case 'alter': migrationType = 'alter_column'; break;
-				default: return;
+			let migrationType: SchemaMigrationType;
+			if (objectType === 'table') {
+				switch (type) {
+					case 'create': migrationType = 'create_table'; break;
+					case 'drop': migrationType = 'drop_table'; break;
+					case 'alter': migrationType = 'alter_column'; break;
+					default: return;
+				}
+			} else if (objectType === 'index') {
+				switch (type) {
+					case 'create': migrationType = 'add_index'; break;
+					case 'drop': migrationType = 'drop_index'; break;
+					default: return;
+				}
+			} else {
+				return;
 			}
-		} else if (objectType === 'index') {
-			switch (type) {
-				case 'create': migrationType = 'add_index'; break;
-				case 'drop': migrationType = 'drop_index'; break;
-				default: return;
-			}
-		} else {
-			return;
+
+			const currentVersion = await this.schemaMigrations.getCurrentVersion(schemaName, objectName);
+			const newVersion = currentVersion + 1;
+
+			await this.schemaMigrations.recordMigration(schemaName, objectName, {
+				type: migrationType,
+				ddl: ddl || '',
+				hlc,
+				schemaVersion: newVersion,
+			});
+
+			// Persist HLC state (DRY: uses shared helper)
+			await persistHLCState(this);
+
+			this.syncEvents.emitLocalChange({
+				transactionId: crypto.randomUUID(),
+				changes: [],
+				pendingSync: true,
+			});
+		} catch (error) {
+			console.error('[Sync] Error handling schema change:', error);
+			this.syncEvents.emitSyncStateChange({
+				status: 'error',
+				error: error instanceof Error ? error : new Error(String(error)),
+			});
 		}
-
-		const currentVersion = await this.schemaMigrations.getCurrentVersion(schemaName, objectName);
-		const newVersion = currentVersion + 1;
-
-		await this.schemaMigrations.recordMigration(schemaName, objectName, {
-			type: migrationType,
-			ddl: ddl || '',
-			hlc,
-			schemaVersion: newVersion,
-		});
-
-		// Persist HLC state (DRY: uses shared helper)
-		await persistHLCState(this);
-
-		this.syncEvents.emitLocalChange({
-			transactionId: crypto.randomUUID(),
-			changes: [],
-			pendingSync: true,
-		});
 	}
 
 	private async recordColumnVersions(
@@ -282,7 +301,7 @@ export class SyncManagerImpl implements SyncManager, SyncContext {
 		const tableSchema = this.getTableSchema?.(schemaName, tableName);
 		const columnNames = tableSchema?.columns?.map(c => c.name);
 
-		if (!tableSchema) {
+		if (!tableSchema && this.getTableSchema) {
 			console.warn(`[Sync] No table schema found for ${schemaName}.${tableName} - using fallback column names`);
 		}
 
