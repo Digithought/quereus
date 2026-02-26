@@ -587,9 +587,7 @@ export class StoreTable extends VirtualTable {
 				const oldIndexKey = buildIndexKey(oldIndexValues, pk, this.encodeOptions);
 
 				if (inTransaction && this.coordinator) {
-					// For transactions, we need to track index operations separately
-					// For now, apply directly (transaction support for indexes is TODO)
-					await indexStore.delete(oldIndexKey);
+					this.coordinator.delete(oldIndexKey, indexStore);
 				} else {
 					await indexStore.delete(oldIndexKey);
 				}
@@ -603,9 +601,7 @@ export class StoreTable extends VirtualTable {
 				const emptyValue = new Uint8Array(0);
 
 				if (inTransaction && this.coordinator) {
-					// For transactions, we need to track index operations separately
-					// For now, apply directly (transaction support for indexes is TODO)
-					await indexStore.put(newIndexKey, emptyValue);
+					this.coordinator.put(newIndexKey, emptyValue, indexStore);
 				} else {
 					await indexStore.put(newIndexKey, emptyValue);
 				}

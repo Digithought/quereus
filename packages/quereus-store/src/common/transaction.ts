@@ -12,6 +12,7 @@ import type { KVStore } from './kv-store.js';
 /** Operation recorded in the transaction. */
 interface PendingOp {
   type: 'put' | 'delete';
+  store?: KVStore;
   key: Uint8Array;
   value?: Uint8Array;
 }
@@ -73,20 +74,20 @@ export class TransactionCoordinator {
     this.savepointStack = [];
   }
 
-  /** Queue a put operation. */
-  put(key: Uint8Array, value: Uint8Array): void {
+  /** Queue a put operation. If store is provided, targets that store instead of the default. */
+  put(key: Uint8Array, value: Uint8Array, store?: KVStore): void {
     if (!this.inTransaction) {
       throw new QuereusError('Cannot queue operation outside transaction', StatusCode.MISUSE);
     }
-    this.pendingOps.push({ type: 'put', key, value });
+    this.pendingOps.push({ type: 'put', store, key, value });
   }
 
-  /** Queue a delete operation. */
-  delete(key: Uint8Array): void {
+  /** Queue a delete operation. If store is provided, targets that store instead of the default. */
+  delete(key: Uint8Array, store?: KVStore): void {
     if (!this.inTransaction) {
       throw new QuereusError('Cannot queue operation outside transaction', StatusCode.MISUSE);
     }
-    this.pendingOps.push({ type: 'delete', key });
+    this.pendingOps.push({ type: 'delete', store, key });
   }
 
   /** Queue a data change event (fired on commit). */
@@ -106,17 +107,28 @@ export class TransactionCoordinator {
     }
 
     try {
-      // Write all pending operations atomically
+      // Group pending operations by target store
       if (this.pendingOps.length > 0) {
-        const batch = this.store.batch();
+        const opsByStore = new Map<KVStore, PendingOp[]>();
         for (const op of this.pendingOps) {
-          if (op.type === 'put') {
-            batch.put(op.key, op.value!);
-          } else {
-            batch.delete(op.key);
-          }
+          const target = op.store ?? this.store;
+          let ops = opsByStore.get(target);
+          if (!ops) { ops = []; opsByStore.set(target, ops); }
+          ops.push(op);
         }
-        await batch.write();
+
+        // Write a batch per store
+        for (const [targetStore, ops] of opsByStore) {
+          const batch = targetStore.batch();
+          for (const op of ops) {
+            if (op.type === 'put') {
+              batch.put(op.key, op.value!);
+            } else {
+              batch.delete(op.key);
+            }
+          }
+          await batch.write();
+        }
       }
 
       // Fire all pending events

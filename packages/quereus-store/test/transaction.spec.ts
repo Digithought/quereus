@@ -194,4 +194,68 @@ describe('TransactionCoordinator', () => {
 			expect(coordinator.getStore()).to.equal(store);
 		});
 	});
+
+	describe('multi-store operations', () => {
+		let indexStore: InMemoryKVStore;
+
+		beforeEach(() => {
+			indexStore = new InMemoryKVStore();
+		});
+
+		afterEach(async () => {
+			await indexStore.close();
+		});
+
+		it('commit writes to both default and explicit stores', async () => {
+			coordinator.begin();
+			coordinator.put(new Uint8Array([1]), new Uint8Array([10]));
+			coordinator.put(new Uint8Array([2]), new Uint8Array([20]), indexStore);
+			await coordinator.commit();
+
+			expect(await store.get(new Uint8Array([1]))).to.deep.equal(new Uint8Array([10]));
+			expect(await indexStore.get(new Uint8Array([2]))).to.deep.equal(new Uint8Array([20]));
+			// Ensure no cross-contamination
+			expect(await store.get(new Uint8Array([2]))).to.be.undefined;
+			expect(await indexStore.get(new Uint8Array([1]))).to.be.undefined;
+		});
+
+		it('rollback discards operations on all stores', async () => {
+			coordinator.begin();
+			coordinator.put(new Uint8Array([1]), new Uint8Array([10]));
+			coordinator.put(new Uint8Array([2]), new Uint8Array([20]), indexStore);
+			coordinator.rollback();
+
+			expect(await store.get(new Uint8Array([1]))).to.be.undefined;
+			expect(await indexStore.get(new Uint8Array([2]))).to.be.undefined;
+		});
+
+		it('delete targets the explicit store', async () => {
+			// Pre-populate the index store
+			await indexStore.put(new Uint8Array([5]), new Uint8Array([50]));
+
+			coordinator.begin();
+			coordinator.delete(new Uint8Array([5]), indexStore);
+			await coordinator.commit();
+
+			expect(await indexStore.get(new Uint8Array([5]))).to.be.undefined;
+		});
+
+		it('savepoint rollback discards multi-store ops after savepoint', async () => {
+			coordinator.begin();
+			coordinator.put(new Uint8Array([1]), new Uint8Array([10]));
+			coordinator.put(new Uint8Array([2]), new Uint8Array([20]), indexStore);
+			coordinator.createSavepoint(0);
+			coordinator.put(new Uint8Array([3]), new Uint8Array([30]));
+			coordinator.put(new Uint8Array([4]), new Uint8Array([40]), indexStore);
+			coordinator.rollbackToSavepoint(0);
+			await coordinator.commit();
+
+			// Before savepoint: committed
+			expect(await store.get(new Uint8Array([1]))).to.deep.equal(new Uint8Array([10]));
+			expect(await indexStore.get(new Uint8Array([2]))).to.deep.equal(new Uint8Array([20]));
+			// After savepoint: rolled back
+			expect(await store.get(new Uint8Array([3]))).to.be.undefined;
+			expect(await indexStore.get(new Uint8Array([4]))).to.be.undefined;
+		});
+	});
 });
