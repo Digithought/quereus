@@ -90,6 +90,23 @@ Returns `true` if the table was removed. With `ifExists`, returns `false` silent
 
 Removes a view definition from the schema.
 
+#### `defineTable(definition: TableSchema): void`
+
+Programmatic alternative to `CREATE TABLE` — registers a `TableSchema` object directly in the `main` schema. This is a `Database`-level method (not SchemaManager), useful when you have a `TableSchema` from parsing or programmatic construction.
+
+Currently only supports the `main` schema; throws `MisuseError` for other schemas.
+
+```typescript
+db.defineTable({
+  name: 'metrics',
+  schemaName: 'main',
+  columns: [ /* ... */ ],
+  primaryKey: [ /* ... */ ],
+  vtabModule: myModule,
+  vtabModuleName: 'memory'
+});
+```
+
 #### `clearAll()`
 
 Clears all tables, functions, and views from all schemas. Does not call module disconnect/destroy.
@@ -113,6 +130,33 @@ Imports existing schema objects without creating new storage. Used when connecti
 - `CREATE TABLE` calls `module.connect()` instead of `module.create()`
 - `CREATE INDEX` registers the index metadata without calling `module.createIndex()`
 - Schema change events are not emitted (these are existing objects)
+
+## Schema Path
+
+The schema path controls the search order when resolving unqualified table names. These are `Database`-level methods:
+
+| Method | Description |
+|--------|-------------|
+| `db.setSchemaPath(paths: string[])` | Sets the schema search order. Equivalent to `pragma schema_path` |
+| `db.getSchemaPath(): string[]` | Returns the current schema search path as an array of schema names |
+
+```typescript
+db.setSchemaPath(['main', 'extensions', 'plugins']);
+const path = db.getSchemaPath(); // ['main', 'extensions', 'plugins']
+```
+
+See the [Usage Guide](usage.md) for the full schema path resolution order and `PRAGMA schema_path` syntax.
+
+## Database Options Affecting Schema
+
+The `db.setOption()` / `db.getOption()` methods control several schema-related behaviors:
+
+| Option | Effect |
+|--------|--------|
+| `schema_path` | Default search order for unqualified table names |
+| `default_column_nullability` | Column nullability default — `'not_null'` (Third Manifesto default) or `'nullable'` |
+
+See the [Usage Guide](usage.md) for the full options and pragmas reference.
 
 ## Schema Change Events
 
@@ -191,3 +235,49 @@ The `declare schema` / `diff schema` / `apply schema` workflow provides order-in
 - `TableAlterDiff` — columns to add or drop within an existing table
 
 Destructive changes (drops) require explicit acknowledgement. See the [SQL Reference](sql.md#20-declarative-schema-optional-order-independent) for full syntax and examples.
+
+### Migration Order
+
+`generateMigrationDDL` produces DDL in a fixed order:
+
+1. **Drops first** — `DROP TABLE`, `DROP VIEW`, `DROP INDEX` for objects not in the declaration
+2. **Creates second** — `CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX` for new objects
+3. **Alters third** — `ALTER TABLE ADD COLUMN` / `DROP COLUMN` for changed tables
+
+This ordering ensures that dropped tables free their names before creates run, and that forward references between tables (e.g. foreign keys to later-declared tables) work because declarations are order-independent.
+
+### Seed Data
+
+Declared schemas can include seed data (`seed <tableName> values ...`). When `apply schema ... with seed` is executed:
+
+1. Existing rows in each seeded table are deleted (`DELETE FROM`)
+2. Declared seed rows are inserted
+3. This happens per-table, after all structural migrations complete
+
+### Schema Hashing
+
+`explain schema [<name>]` returns a short hash of the declared schema, useful for versioning:
+
+```sql
+explain schema main;
+-- Returns: hash:a1b2c3d4
+explain schema main version '2.0';
+-- Returns: version:2.0,hash:a1b2c3d4
+```
+
+### DeclaredSchemaManager API
+
+The `DeclaredSchemaManager` (accessed via `db.declaredSchemaManager`) stores declared schema ASTs and seed data between `declare schema` and `apply schema` calls.
+
+| Method | Description |
+|--------|-------------|
+| `setDeclaredSchema(schemaName, declaration)` | Stores a `DeclareSchemaStmt` AST |
+| `getDeclaredSchema(schemaName)` | Retrieves stored declaration, or `undefined` |
+| `hasDeclaredSchema(schemaName)` | Returns `true` if a declaration exists |
+| `removeDeclaredSchema(schemaName)` | Removes declaration and its seed data |
+| `setSeedData(schemaName, tableName, rows)` | Stores seed data rows (`SqlValue[][]`) for a table |
+| `getSeedData(schemaName, tableName)` | Retrieves seed data for a specific table |
+| `getAllSeedData(schemaName)` | Returns all seed data for a schema (`Map<string, SqlValue[][]>`) |
+| `clearSeedData(schemaName)` | Clears all seed data for a schema |
+
+All name lookups are case-insensitive. The manager is stateful — `declare schema` clears previous seed data then stores the new declaration, so re-declaring replaces earlier state.
