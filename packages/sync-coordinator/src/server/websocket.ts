@@ -77,6 +77,7 @@ export function registerWebSocket(
     wsLog('New WebSocket connection from %s', request.ip);
 
     let session: ClientSession | null = null;
+    let socketClosed = false;
 
     const sendError = (code: string, message: string) => {
       socket.send(JSON.stringify({ type: 'error', code, message }));
@@ -121,6 +122,7 @@ export function registerWebSocket(
     });
 
     socket.on('close', () => {
+      socketClosed = true;
       wsLog('WebSocket closed: %s', session?.connectionId?.slice(0, 8) || 'no-session');
       if (session) {
         service.unregisterSession(session.connectionId);
@@ -156,6 +158,15 @@ export function registerWebSocket(
 
         session = await service.registerSession(msg.databaseId, socket, identity, authContext);
 
+        // If socket closed during registration, the close handler couldn't
+        // call unregisterSession because `session` wasn't assigned yet.
+        // Clean up now that we have the connectionId.
+        if (socketClosed) {
+          service.unregisterSession(session.connectionId);
+          session = null;
+          return;
+        }
+
         const serverSiteId = await service.getSiteId(msg.databaseId, identity);
         sendMessage({
           type: 'handshake_ack',
@@ -166,6 +177,12 @@ export function registerWebSocket(
 
         wsLog('Handshake complete: %s (db: %s)', session.connectionId.slice(0, 8), msg.databaseId);
       } catch (err) {
+        // If registerSession succeeded but a subsequent step threw,
+        // clean up the registered session to release the store reference.
+        if (session) {
+          service.unregisterSession(session.connectionId);
+          session = null;
+        }
         const errMsg = err instanceof Error ? err.message : 'Authentication failed';
         sendError('AUTH_FAILED', errMsg);
         socket.close(4001, 'Authentication failed');

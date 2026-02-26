@@ -134,6 +134,60 @@ describe('StoreManager', () => {
       expect(manager.openCount).to.be.at.most(3);
       expect(manager.isOpen('db-d')).to.be.true;
     });
+
+    it('should not evict a store that was re-acquired before close', async () => {
+      // Fill to capacity and release all
+      await manager.acquire('db-a');
+      manager.release('db-a');
+      await manager.acquire('db-b');
+      manager.release('db-b');
+      await manager.acquire('db-c');
+      manager.release('db-c');
+
+      // Re-acquire db-a (the LRU candidate) so refCount > 0
+      await manager.acquire('db-a');
+
+      // Acquiring a 4th triggers eviction — db-a should be skipped
+      // because its refCount is now 1
+      await manager.acquire('db-d');
+      expect(manager.isOpen('db-a')).to.be.true;
+      expect(manager.isOpen('db-d')).to.be.true;
+    });
+  });
+
+  describe('cleanup', () => {
+    it('should close idle stores past timeout', async () => {
+      const entry = await manager.acquire(TEST_DATABASE_ID);
+      manager.release(TEST_DATABASE_ID);
+      expect(entry.refCount).to.equal(0);
+
+      // Wait for idle timeout + cleanup interval to fire
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      expect(manager.isOpen(TEST_DATABASE_ID)).to.be.false;
+    });
+
+    it('should not close stores with active references', async () => {
+      await manager.acquire(TEST_DATABASE_ID);
+      // Don't release — refCount stays 1
+
+      // Wait for cleanup to fire
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      expect(manager.isOpen(TEST_DATABASE_ID)).to.be.true;
+    });
+
+    it('should not run cleanup after shutdown begins', async () => {
+      await manager.acquire(TEST_DATABASE_ID);
+      manager.release(TEST_DATABASE_ID);
+
+      // Shutdown closes all stores and prevents further cleanup from running
+      await manager.shutdown();
+      expect(manager.openCount).to.equal(0);
+
+      // Even if the cleanup interval were still active (it's cleared),
+      // _shuttingDown prevents cleanup from iterating the cleared map
+    });
   });
 
   describe('shutdown', () => {

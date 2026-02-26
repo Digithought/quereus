@@ -132,6 +132,7 @@ export class StoreManager {
   private readonly stores = new Map<string, StoreEntry>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private shutdownPromise: Promise<void> | null = null;
+  private _shuttingDown = false;
 
   constructor(config: Partial<StoreManagerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -223,6 +224,7 @@ export class StoreManager {
   async shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
 
+    this._shuttingDown = true;
     this.shutdownPromise = (async () => {
       if (this.cleanupTimer) {
         clearInterval(this.cleanupTimer);
@@ -283,6 +285,7 @@ export class StoreManager {
    * Cleanup idle stores with refCount=0 past timeout.
    */
   private async cleanup(): Promise<void> {
+    if (this._shuttingDown) return;
     const now = Date.now();
     const toClose: string[] = [];
 
@@ -326,10 +329,16 @@ export class StoreManager {
 
   /**
    * Close a specific store.
+   * Re-checks refCount to avoid closing a store acquired between the eviction
+   * decision and this call (race window across await boundaries).
    */
   private async closeStore(databaseId: string): Promise<void> {
     const entry = this.stores.get(databaseId);
     if (!entry) return;
+
+    // Guard against race: another async op may have acquired this store
+    // between the caller's refCount check and now.
+    if (entry.refCount > 0) return;
 
     try {
       await entry.store.close();
