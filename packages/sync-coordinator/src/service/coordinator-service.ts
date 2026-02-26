@@ -16,6 +16,7 @@ import {
   type ChangeSet,
   type ApplyResult,
   type SnapshotChunk,
+  type SnapshotCheckpoint,
   siteIdFromBase64,
   siteIdEquals,
   siteIdToBase64,
@@ -432,6 +433,36 @@ export class CoordinatorService {
   }
 
   /**
+   * Resume a snapshot stream from a checkpoint.
+   */
+  async *resumeSnapshotStream(
+    databaseId: string,
+    client: ClientIdentity,
+    checkpoint: SnapshotCheckpoint,
+  ): AsyncIterable<SnapshotChunk> {
+    serviceLog('resumeSnapshotStream db=%s for %s',
+      databaseId, siteIdToBase64(client.siteId));
+
+    this.metrics.registry.incCounter(this.metrics.snapshotRequestsTotal);
+
+    const allowed = await this.authorize(client, { type: 'resume_snapshot' });
+    if (!allowed) {
+      throw new Error('Not authorized');
+    }
+
+    const context = this.buildStoreContext(undefined, client);
+    const entry = await this.getStore(databaseId, context);
+    try {
+      for await (const chunk of entry.syncManager.resumeSnapshotStream(checkpoint)) {
+        this.metrics.registry.incCounter(this.metrics.snapshotChunksTotal);
+        yield chunk;
+      }
+    } finally {
+      this.releaseStore(databaseId);
+    }
+  }
+
+  /**
    * Check if delta sync is possible.
    */
   async canDeltaSync(databaseId: string, client: ClientIdentity, sinceHLC: HLC): Promise<boolean> {
@@ -587,8 +618,14 @@ export class CoordinatorService {
       }
 
       if (session.socket.readyState === 1) { // WebSocket.OPEN
-        session.socket.send(message);
-        broadcastCount++;
+        try {
+          session.socket.send(message);
+          broadcastCount++;
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : 'Unknown send error';
+          serviceLog('Broadcast send failed for %s: %s', connectionId.slice(0, 8), errMsg);
+          this.metrics.registry.incCounter(this.metrics.broadcastErrorsTotal);
+        }
       }
     }
 

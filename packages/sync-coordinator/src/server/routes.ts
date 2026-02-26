@@ -191,7 +191,8 @@ export function registerRoutes(
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to get snapshot';
       httpLog('GET /%s/snapshot error: %s', databaseId, message);
-      // Can't send error response if we've started streaming
+      // Write an error chunk so NDJSON clients can detect the failure
+      reply.raw.write(JSON.stringify({ error: message }) + '\n');
       reply.raw.end();
     }
   });

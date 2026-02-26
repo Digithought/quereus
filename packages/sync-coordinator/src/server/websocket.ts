@@ -104,6 +104,9 @@ export function registerWebSocket(
           case 'get_snapshot':
             await handleGetSnapshot();
             break;
+          case 'resume_snapshot':
+            await handleResumeSnapshot(message);
+            break;
           case 'ping':
             sendMessage({ type: 'pong' });
             break;
@@ -175,17 +178,23 @@ export function registerWebSocket(
         return;
       }
 
-      let sinceHLC: HLC | undefined;
-      if (msg.sinceHLC) {
-        sinceHLC = deserializeHLC(Buffer.from(msg.sinceHLC, 'base64'));
+      try {
+        let sinceHLC: HLC | undefined;
+        if (msg.sinceHLC) {
+          sinceHLC = deserializeHLC(Buffer.from(msg.sinceHLC, 'base64'));
+        }
+
+        const changes = await service.getChangesSince(session.databaseId, session.identity, sinceHLC);
+
+        // Serialize for JSON transport
+        const serializedChanges = changes.map(cs => serializeChangeSet(cs));
+
+        sendMessage({ type: 'changes', changeSets: serializedChanges });
+      } catch (err) {
+        const msg2 = err instanceof Error ? err.message : 'Failed to get changes';
+        wsLog('get_changes error: %s', msg2);
+        sendError('GET_CHANGES_ERROR', msg2);
       }
-
-      const changes = await service.getChangesSince(session.databaseId, session.identity, sinceHLC);
-
-      // Serialize for JSON transport
-      const serializedChanges = changes.map(cs => serializeChangeSet(cs));
-
-      sendMessage({ type: 'changes', changeSets: serializedChanges });
     }
 
     async function handleApplyChanges(msg: ApplyChangesMessage) {
@@ -194,12 +203,18 @@ export function registerWebSocket(
         return;
       }
 
-      // Deserialize from JSON transport
-      const changes: ChangeSet[] = msg.changes.map(cs => deserializeChangeSet(cs));
+      try {
+        // Deserialize from JSON transport
+        const changes: ChangeSet[] = msg.changes.map(cs => deserializeChangeSet(cs));
 
-      const result = await service.applyChanges(session.databaseId, session.identity, changes);
+        const result = await service.applyChanges(session.databaseId, session.identity, changes);
 
-      sendMessage({ type: 'apply_result', ...result });
+        sendMessage({ type: 'apply_result', ...result });
+      } catch (err) {
+        const msg2 = err instanceof Error ? err.message : 'Failed to apply changes';
+        wsLog('apply_changes error: %s', msg2);
+        sendError('APPLY_CHANGES_ERROR', msg2);
+      }
     }
 
     async function handleGetSnapshot() {
@@ -208,12 +223,34 @@ export function registerWebSocket(
         return;
       }
 
-      // Stream snapshot chunks
-      for await (const chunk of service.getSnapshotStream(session.databaseId, session.identity)) {
-        sendMessage({ ...chunk, type: 'snapshot_chunk' });
+      try {
+        for await (const chunk of service.getSnapshotStream(session.databaseId, session.identity)) {
+          sendMessage({ ...chunk, type: 'snapshot_chunk' });
+        }
+        sendMessage({ type: 'snapshot_complete' });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Snapshot streaming failed';
+        wsLog('get_snapshot error: %s', msg);
+        sendError('SNAPSHOT_ERROR', msg);
+      }
+    }
+
+    async function handleResumeSnapshot(msg: ResumeSnapshotMessage) {
+      if (!session) {
+        sendError('NOT_AUTHENTICATED', 'Must handshake first');
+        return;
       }
 
-      sendMessage({ type: 'snapshot_complete' });
+      try {
+        for await (const chunk of service.resumeSnapshotStream(session.databaseId, session.identity, msg.checkpoint)) {
+          sendMessage({ ...chunk, type: 'snapshot_chunk' });
+        }
+        sendMessage({ type: 'snapshot_complete' });
+      } catch (err) {
+        const msg2 = err instanceof Error ? err.message : 'Snapshot resume failed';
+        wsLog('resume_snapshot error: %s', msg2);
+        sendError('SNAPSHOT_ERROR', msg2);
+      }
     }
   });
 }

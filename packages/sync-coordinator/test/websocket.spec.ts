@@ -303,12 +303,29 @@ describe('WebSocket Handler', () => {
 
         // Currently returns error due to BigInt serialization failure
         expect(response.type).to.equal('error');
-        expect(response.code).to.equal('MESSAGE_ERROR');
+        expect(response.code).to.equal('SNAPSHOT_ERROR');
         expect(response.message).to.include('BigInt');
       } finally {
         ws.close();
         // Wait for server-side session cleanup
         await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    });
+  });
+
+  describe('Resume Snapshot via WS', () => {
+    it('should require authentication for resume_snapshot', async () => {
+      const ws = await connectWs();
+      try {
+        const response = await sendAndReceive(ws, {
+          type: 'resume_snapshot',
+          checkpoint: { snapshotId: 'test', tableIndex: 0, rowOffset: 0 },
+        }) as { type: string; code: string };
+
+        expect(response.type).to.equal('error');
+        expect(response.code).to.equal('NOT_AUTHENTICATED');
+      } finally {
+        ws.close();
       }
     });
   });

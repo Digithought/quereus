@@ -52,6 +52,11 @@ export function createCoordinatorMetrics(registry: MetricsRegistry = globalRegis
     'Total number of changes broadcast to clients'
   );
 
+  const broadcastErrorsTotal = registry.registerCounter(
+    'sync_broadcast_errors_total',
+    'Total broadcast send failures'
+  );
+
   // Snapshot metrics
   const snapshotRequestsTotal = registry.registerCounter(
     'sync_snapshot_requests_total',
@@ -105,6 +110,7 @@ export function createCoordinatorMetrics(registry: MetricsRegistry = globalRegis
     changesReceivedTotal,
     changesRejectedTotal,
     changesBroadcastTotal,
+    broadcastErrorsTotal,
 
     // Snapshots
     snapshotRequestsTotal,
