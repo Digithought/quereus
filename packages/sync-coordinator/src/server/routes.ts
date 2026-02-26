@@ -3,11 +3,11 @@
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { siteIdFromBase64, siteIdToBase64, deserializeHLC, serializeHLC, type HLC, type ChangeSet } from '@quereus/sync';
+import { siteIdFromBase64, deserializeHLC, type HLC, type ChangeSet } from '@quereus/sync';
 import type { CoordinatorService } from '../service/coordinator-service.js';
 import type { AuthContext, ClientIdentity } from '../service/types.js';
 import { httpLog } from '../common/logger.js';
-import { serializeSnapshotChunk } from '../common/serialization.js';
+import { serializeChangeSet, deserializeChangeSet, serializeSnapshotChunk } from '../common/serialization.js';
 
 /**
  * Register sync HTTP routes.
@@ -104,21 +104,7 @@ export function registerRoutes(
       }
 
       const changes = await service.getChangesSince(databaseId, client, sinceHLC);
-
-      // Serialize HLCs in response for JSON transport
-      const serializedChanges = changes.map(cs => ({
-        ...cs,
-        siteId: siteIdToBase64(cs.siteId),
-        hlc: Buffer.from(serializeHLC(cs.hlc)).toString('base64'),
-        changes: cs.changes.map(c => ({
-          ...c,
-          hlc: Buffer.from(serializeHLC(c.hlc)).toString('base64'),
-        })),
-        schemaMigrations: cs.schemaMigrations.map(m => ({
-          ...m,
-          hlc: Buffer.from(serializeHLC(m.hlc)).toString('base64'),
-        })),
-      }));
+      const serializedChanges = changes.map(cs => serializeChangeSet(cs));
 
       return reply.send({ ok: true, data: { changes: serializedChanges } });
     } catch (err) {
@@ -144,20 +130,7 @@ export function registerRoutes(
         return errorResponse(reply, 'INVALID_BODY', 'Request body must contain changes array');
       }
 
-      // Deserialize HLCs from JSON transport format
-      const changes: ChangeSet[] = (body.changes as Record<string, unknown>[]).map((cs) => ({
-        siteId: siteIdFromBase64(cs.siteId as string),
-        transactionId: cs.transactionId as string,
-        hlc: deserializeHLC(Buffer.from(cs.hlc as string, 'base64')),
-        changes: (cs.changes as Record<string, unknown>[]).map(c => ({
-          ...c,
-          hlc: deserializeHLC(Buffer.from(c.hlc as string, 'base64')),
-        })),
-        schemaMigrations: ((cs.schemaMigrations as Record<string, unknown>[]) || []).map(m => ({
-          ...m,
-          hlc: deserializeHLC(Buffer.from(m.hlc as string, 'base64')),
-        })),
-      })) as ChangeSet[];
+      const changes: ChangeSet[] = body.changes.map(cs => deserializeChangeSet(cs));
 
       const result = await service.applyChanges(databaseId, client, changes);
       return reply.send({ ok: true, data: result });

@@ -315,8 +315,10 @@ describe('WebSocket Handler', () => {
 
         // Verify header chunk has serialized fields (strings, not BigInt/Uint8Array)
         const headerMsg = messages.find((m: any) => m.type === 'snapshot_chunk') as any;
-        expect(headerMsg.siteId).to.be.a('string');
-        expect(headerMsg.hlc).to.be.a('string');
+        expect(headerMsg.chunk).to.be.an('object');
+        expect(headerMsg.chunk.type).to.equal('header');
+        expect(headerMsg.chunk.siteId).to.be.a('string');
+        expect(headerMsg.chunk.hlc).to.be.a('string');
       } finally {
         ws.close();
         // Wait for server-side session cleanup

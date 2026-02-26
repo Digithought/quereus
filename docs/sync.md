@@ -449,7 +449,7 @@ The WebSocket protocol provides real-time bidirectional synchronization. This is
 | `changes` | Response to `get_changes` | `{ changeSets: ChangeSet[] }` |
 | `push_changes` | Broadcast from another client | `{ changeSets: ChangeSet[] }` |
 | `apply_result` | Confirm changes applied | `{ applied, skipped, conflicts }` |
-| `snapshot_chunk` | Streamed snapshot data | `{ ...SnapshotChunk }` |
+| `snapshot_chunk` | Streamed snapshot data | `{ chunk: SnapshotChunk }` |
 | `error` | Error response | `{ code, message }` |
 | `pong` | Heartbeat response | (none) |
 

@@ -242,7 +242,7 @@ export function registerWebSocket(
 
       try {
         for await (const chunk of service.getSnapshotStream(session.databaseId, session.identity)) {
-          sendMessage({ ...serializeSnapshotChunk(chunk), type: 'snapshot_chunk' });
+          sendMessage({ type: 'snapshot_chunk', chunk: serializeSnapshotChunk(chunk) });
         }
         sendMessage({ type: 'snapshot_complete' });
       } catch (err) {
@@ -260,7 +260,7 @@ export function registerWebSocket(
 
       try {
         for await (const chunk of service.resumeSnapshotStream(session.databaseId, session.identity, msg.checkpoint)) {
-          sendMessage({ ...serializeSnapshotChunk(chunk), type: 'snapshot_chunk' });
+          sendMessage({ type: 'snapshot_chunk', chunk: serializeSnapshotChunk(chunk) });
         }
         sendMessage({ type: 'snapshot_complete' });
       } catch (err) {
