@@ -1,18 +1,20 @@
 ## General
 
-- Use lowercase SQL reserved words for readability (e.g., `select * from Table`)
+- Use lowercase SQL reserved words (e.g., `select * from Table`)
 - Don't use inline `import()` unless dynamically loading
 - Don't create summary documents; update existing documentation
-- Stay DRY; If you see code that isn't DRY, refactor and abstract.
+- Stay DRY.
 - No lengthy summaries
 - Don't worry about backwards compatibility yet.
 - Use yarn
 - No half-baked janky parsers; use a full-fledged parser or better, brainstorm with the dev for another way
 - .editorconfig contains formatting (tabs for code)
 
-## Tasks
+## Tickets (tess)
 
-- If the user mentions tasks (e.g. work task...), read tasks/AGENTS.md to know what to do
+This project uses [tess](tess/) for AI-driven ticket management.
+Read and follow the ticket workflow rules in tess/agent-rules/tickets.md.
+Tickets are in the [tickets/](tickets/) directory.
 
 ## Launch process tool (if under PowerShell)
 
@@ -26,7 +28,7 @@ Use a file or pipe based pattern as a work-around.  e.g. `git commit -F .git/COM
 - Plugins: `quereus-plugin-leveldb`, `quereus-plugin-indexeddb`, `quereus-plugin-react-native-leveldb`, `quereus-plugin-nativescript-sqlite`
 - Sync: `quereus-sync`, `quereus-sync-client`, `sync-coordinator`
 - Other: `plugin-loader`, `quereus-isolation`, `quereus-store`, `shared-ui`, `quereus-vscode`
-- Task workflow in `tasks/` folder (see `tasks/AGENTS.md`)
+- Task workflow in `tickets/` folder (see `tickets/AGENTS.md`)
 
 ## Build & Test
 - `yarn build` runs sequentially through all packages

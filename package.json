@@ -50,7 +50,7 @@
     "pub:plugin-ns": "node scripts/publish-package.js quereus-plugin-nativescript-sqlite",
     "pub:ui": "node scripts/publish-package.js shared-ui",
     "pub:cli": "node scripts/publish-package.js quoomb-cli",
-    "pub": "yarn bump && yarn build && yarn pub:quereus && yarn pub:loader && yarn pub:isolation && yarn pub:store && yarn pub:plugin-indexeddb && yarn pub:plugin-leveldb && yarn pub:plugin-rn && yarn pub:plugin-ns && yarn pub:sync && yarn pub:sync-client && yarn pub:sync-coordinator && yarn pub:ui && yarn pub:cli"
+    "pub": "yarn pub:quereus && yarn pub:loader && yarn pub:isolation && yarn pub:store && yarn pub:plugin-indexeddb && yarn pub:plugin-leveldb && yarn pub:plugin-rn && yarn pub:plugin-ns && yarn pub:sync && yarn pub:sync-client && yarn pub:sync-coordinator && yarn pub:ui && yarn pub:cli"
   },
   "devDependencies": {
     "bumpp": "^10.4.0",
