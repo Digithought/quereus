@@ -112,5 +112,20 @@ SELECT D.* FROM descendants D ORDER BY id;
 
 DROP TABLE Entity;
 
+-- Non-recursive CTE referencing an earlier CTE in the same WITH clause
+WITH
+  cte1 AS (SELECT id, name FROM base_t),
+  cte2 AS (SELECT id, name FROM cte1 WHERE id > 1)
+SELECT * FROM cte2 ORDER BY id;
+→ [{"id":2,"name":"Bob"},{"id":3,"name":"Charlie"}]
+
+-- Non-recursive CTE chain: cte3 references cte2, which references cte1
+WITH
+  cte1 AS (SELECT id, name FROM base_t),
+  cte2 AS (SELECT id, name FROM cte1 WHERE id <= 2),
+  cte3 AS (SELECT name FROM cte2 WHERE id = 1)
+SELECT * FROM cte3;
+→ [{"name":"Alice"}]
+
 DROP TABLE base_t;
 DROP TABLE hierarchy;

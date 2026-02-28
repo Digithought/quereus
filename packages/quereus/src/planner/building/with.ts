@@ -80,7 +80,7 @@ export function buildCommonTableExpr(
 	let query: RelationalPlanNode;
 
 	if (cte.query.type === 'select') {
-		query = buildSelectStmt(cteContext, cte.query) as RelationalPlanNode;
+		query = buildSelectStmt(cteContext, cte.query, existingCTEs) as RelationalPlanNode;
 	} else {
 		// CTE can also be INSERT, UPDATE, or DELETE statements
 		throw new QuereusError(
