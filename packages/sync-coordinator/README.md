@@ -128,10 +128,15 @@ sync_http_requests_total             # HTTP requests by endpoint/status
 sync_changes_applied_total           # Changes applied
 sync_changes_received_total          # Changes received from clients
 sync_changes_rejected_total          # Changes rejected during validation
+sync_changes_broadcast_total         # Changes broadcast to clients
+sync_broadcast_errors_total          # Broadcast send failures
+sync_snapshot_requests_total         # Snapshot requests
+sync_snapshot_chunks_total           # Snapshot chunks sent
 sync_auth_attempts_total             # Authentication attempts
 sync_auth_failures_total             # Authentication failures
 sync_apply_changes_duration_seconds  # Apply operation duration histogram
 sync_get_changes_duration_seconds    # Get changes duration histogram
+sync_change_batch_size               # Change batch size histogram
 ```
 
 ## Custom Hooks

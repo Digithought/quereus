@@ -226,7 +226,8 @@ WebSocket connections provide real-time bidirectional sync.
 | { type: "changes"; changeSets: ChangeSet[] }
 | { type: "apply_result"; result: ApplyResult }
 | { type: "snapshot_chunk"; chunk: SnapshotChunk }
-| { type: "push_changes"; changeSets: ChangeSet[] }  // Server pushes new changes
+| { type: "snapshot_complete" }                        // Signals successful end of snapshot stream
+| { type: "push_changes"; changeSets: ChangeSet[] }   // Server pushes new changes
 | { type: "error"; code: string; message: string }
 | { type: "pong" }
 ```
