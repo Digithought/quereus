@@ -51,13 +51,3 @@ At 1267 lines this store handles tabs, query execution, history, results, plugin
 - Sync state management
 
 **Fix:** Extract logical groups into separate files (e.g., `src/stores/session/tabs.ts`, `src/stores/session/export.ts`) and compose them in the main store using Zustand slices pattern or simple function imports.
-
-## TODO
-
-- [ ] Create `src/utils/csv.ts` with shared CSV formatting function
-- [ ] Create `src/utils/download.ts` with shared download-as-file function
-- [ ] Consolidate `saveCurrentTabAsFile`/`saveTabAsFile` into single function
-- [ ] Replace `(window as any).monaco` in EnhancedErrorDisplay with proper API
-- [ ] Decompose sessionStore into logical modules
-- [ ] Update all callers and existing tests after refactoring
-

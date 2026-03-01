@@ -18,20 +18,3 @@ Optimizer binding-aware analysis for group-specific keys and binding propagation
 Future: Materialized views with incremental ΔView computation.
 
 **Principles:** SPP, DRY, modular architecture. Single reusable kernel for multiple consumers.
-
-## TODO
-
-### Phase 1: Planning
-- [ ] Design delta pipeline architecture
-- [ ] Plan optimizer extensions
-
-### Phase 2: Implementation
-- [ ] Implement ParameterizedPlanCache
-- [ ] Build DeltaExecutor
-- [ ] Add ChangeCapture integration
-- [ ] Extend optimizer for binding analysis
-
-### Phase 3: Review & Test
-- [ ] Review architecture
-- [ ] Test delta correctness
-

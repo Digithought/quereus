@@ -10,7 +10,8 @@
  */
 
 import { join } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, rm } from 'node:fs/promises';
 import { StoreEventEmitter } from '@quereus/store';
 import { LevelDBStore } from '@quereus/plugin-leveldb';
 import {
@@ -26,6 +27,8 @@ export interface StoreEntry {
   storeEvents: StoreEventEmitter;
   refCount: number;
   lastAccess: number;
+  /** True if no local data existed before this store was opened. */
+  isNew?: boolean;
 }
 
 /**
@@ -80,6 +83,12 @@ export interface StoreManagerConfig {
   };
   /** Hooks for customizing behavior */
   hooks?: StoreManagerHooks;
+  /** Called when a new store is created (no pre-existing local data). Used for S3 restore. */
+  onStoreCreated?: (entry: StoreEntry) => Promise<void>;
+  /** Idle time (ms) before a closed store's local directory is eligible for disk eviction. 0 = disabled. */
+  diskEvictionIdleMs?: number;
+  /** Called to confirm a closed store can be safely evicted from disk. Return true to proceed with deletion. */
+  onEvictStore?: (databaseId: string) => Promise<boolean>;
 }
 
 /**
@@ -130,6 +139,12 @@ export class StoreManager {
   private readonly resolveStoragePath: (databaseId: string, context?: StoreContext) => string;
   private readonly isValidDatabaseId: (databaseId: string, context?: StoreContext) => boolean;
   private readonly stores = new Map<string, StoreEntry>();
+  private readonly pendingOpens = new Map<string, Promise<StoreEntry>>();
+  private readonly onStoreCreated?: (entry: StoreEntry) => Promise<void>;
+  /** Tracks closed stores eligible for disk eviction: databaseId → { storagePath, closedAt } */
+  private readonly closedStores = new Map<string, { storagePath: string; closedAt: number }>();
+  private readonly diskEvictionIdleMs: number;
+  private readonly onEvictStore?: (databaseId: string) => Promise<boolean>;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private shutdownPromise: Promise<void> | null = null;
   private _shuttingDown = false;
@@ -138,6 +153,9 @@ export class StoreManager {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.resolveStoragePath = config.hooks?.resolveStoragePath ?? defaultResolveStoragePath;
     this.isValidDatabaseId = config.hooks?.isValidDatabaseId ?? defaultIsValidDatabaseId;
+    this.onStoreCreated = config.onStoreCreated;
+    this.diskEvictionIdleMs = config.diskEvictionIdleMs ?? 0;
+    this.onEvictStore = config.onEvictStore;
   }
 
   /**
@@ -151,10 +169,14 @@ export class StoreManager {
 
   /**
    * Get or open a store for a database. Increments refCount.
+   * Uses pendingOpens to prevent concurrent open+restore for the same databaseId.
    * @param databaseId The database identifier
    * @param context Optional auth context for auth-aware path resolution
    */
   async acquire(databaseId: string, context?: StoreContext): Promise<StoreEntry> {
+    // Remove from eviction candidates — store is being (re-)opened
+    this.closedStores.delete(databaseId);
+
     // Check if already open
     let entry = this.stores.get(databaseId);
     if (entry) {
@@ -164,16 +186,32 @@ export class StoreManager {
       return entry;
     }
 
+    // Check if open+restore is already in progress for this databaseId
+    const pending = this.pendingOpens.get(databaseId);
+    if (pending) {
+      entry = await pending;
+      entry.refCount++;
+      entry.lastAccess = Date.now();
+      serviceLog('Store acquired (waited for pending open): %s, refCount=%d', databaseId, entry.refCount);
+      return entry;
+    }
+
     // Check if we need to evict before opening new
     if (this.stores.size >= this.config.maxOpenStores) {
       await this.evictLRU();
     }
 
-    // Open new store
-    entry = await this.openStore(databaseId, context);
-    this.stores.set(databaseId, entry);
-    serviceLog('Store acquired (opened): %s', databaseId);
-    return entry;
+    // Open new store with dedup via pendingOpens
+    const openPromise = this.openAndRestore(databaseId, context);
+    this.pendingOpens.set(databaseId, openPromise);
+    try {
+      entry = await openPromise;
+      this.stores.set(databaseId, entry);
+      serviceLog('Store acquired (opened): %s', databaseId);
+      return entry;
+    } finally {
+      this.pendingOpens.delete(databaseId);
+    }
   }
 
   /**
@@ -210,6 +248,13 @@ export class StoreManager {
   }
 
   /**
+   * Get count of closed stores pending disk eviction.
+   */
+  get evictionCandidateCount(): number {
+    return this.closedStores.size;
+  }
+
+  /**
    * Check if a database ID is valid.
    * @param databaseId The database identifier
    * @param context Optional auth context for auth-aware validation
@@ -242,10 +287,30 @@ export class StoreManager {
 
       await Promise.all(closePromises);
       this.stores.clear();
+      this.closedStores.clear();
       serviceLog('StoreManager shutdown complete');
     })();
 
     return this.shutdownPromise;
+  }
+
+  /**
+   * Open a store and run the onStoreCreated callback if the store is new.
+   * On callback failure, closes the store and rethrows.
+   */
+  private async openAndRestore(databaseId: string, context?: StoreContext): Promise<StoreEntry> {
+    const entry = await this.openStore(databaseId, context);
+
+    if (entry.isNew && this.onStoreCreated) {
+      try {
+        await this.onStoreCreated(entry);
+      } catch (err) {
+        await entry.store.close();
+        throw err;
+      }
+    }
+
+    return entry;
   }
 
   private async openStore(databaseId: string, context?: StoreContext): Promise<StoreEntry> {
@@ -257,11 +322,14 @@ export class StoreManager {
     const storagePath = this.resolveStoragePath(databaseId, context);
     const fullPath = join(this.config.dataDir, storagePath);
 
+    // Detect whether local data already exists before creating directories
+    const isNew = !existsSync(fullPath);
+
     // Ensure parent directories exist (org folder for new org-based format)
     const parentPath = join(this.config.dataDir, storagePath.split('/')[0]);
     await mkdir(parentPath, { recursive: true });
 
-    serviceLog('Opening store at: %s', fullPath);
+    serviceLog('Opening store at: %s (isNew=%s)', fullPath, isNew);
 
     const store = await LevelDBStore.open({
       path: fullPath,
@@ -278,6 +346,7 @@ export class StoreManager {
       storeEvents,
       refCount: 1,
       lastAccess: Date.now(),
+      isNew,
     };
   }
 
@@ -301,6 +370,50 @@ export class StoreManager {
 
     if (toClose.length > 0) {
       serviceLog('Cleanup: closed %d idle stores', toClose.length);
+    }
+
+    // Disk eviction: delete local directories for closed stores past the eviction threshold
+    if (this.diskEvictionIdleMs > 0 && this.onEvictStore) {
+      await this.evictFromDisk(now);
+    }
+  }
+
+  /**
+   * Evict closed stores from local disk if they've been idle long enough
+   * and the eviction callback confirms safety (e.g. data is durable in S3).
+   */
+  private async evictFromDisk(now: number): Promise<void> {
+    const toEvict: string[] = [];
+
+    for (const [databaseId, info] of this.closedStores) {
+      // Skip if store was re-opened since being closed
+      if (this.stores.has(databaseId) || this.pendingOpens.has(databaseId)) {
+        this.closedStores.delete(databaseId);
+        continue;
+      }
+
+      if (now - info.closedAt >= this.diskEvictionIdleMs) {
+        toEvict.push(databaseId);
+      }
+    }
+
+    for (const databaseId of toEvict) {
+      const info = this.closedStores.get(databaseId)!;
+      try {
+        const canEvict = await this.onEvictStore!(databaseId);
+        if (!canEvict) continue;
+
+        const fullPath = join(this.config.dataDir, info.storagePath);
+        await rm(fullPath, { recursive: true, force: true });
+        this.closedStores.delete(databaseId);
+        serviceLog('Disk eviction: deleted local directory for %s', databaseId);
+      } catch (err) {
+        serviceLog('Disk eviction failed for %s (non-fatal): %O', databaseId, err);
+      }
+    }
+
+    if (toEvict.length > 0) {
+      serviceLog('Disk eviction: processed %d candidates', toEvict.length);
     }
   }
 
@@ -332,7 +445,7 @@ export class StoreManager {
    * Re-checks refCount to avoid closing a store acquired between the eviction
    * decision and this call (race window across await boundaries).
    */
-  private async closeStore(databaseId: string): Promise<void> {
+  private async closeStore(databaseId: string, context?: StoreContext): Promise<void> {
     const entry = this.stores.get(databaseId);
     if (!entry) return;
 
@@ -340,10 +453,18 @@ export class StoreManager {
     // between the caller's refCount check and now.
     if (entry.refCount > 0) return;
 
+    // Resolve storage path before closing (needed for eviction tracking)
+    const storagePath = this.resolveStoragePath(databaseId, context);
+
     try {
       await entry.store.close();
       this.stores.delete(databaseId);
       serviceLog('Store closed: %s', databaseId);
+
+      // Track for disk eviction if configured
+      if (this.diskEvictionIdleMs > 0 && this.onEvictStore) {
+        this.closedStores.set(databaseId, { storagePath, closedAt: Date.now() });
+      }
     } catch (err) {
       serviceLog('Error closing store %s: %O', databaseId, err);
     }

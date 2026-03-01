@@ -141,13 +141,21 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		request: BestAccessPlanRequest,
 		estimatedTableSize: number
 	): BestAccessPlanResult {
-		// NOTE: IS NULL / IS NOT NULL optimization is not yet wired up.
-		// The constraint extractor produces these as unary expressions which
-		// are not currently extracted as PredicateConstraints. When that support
-		// is added, a handleNullConstraints pre-pass should be re-introduced
-		// here — but it must also produce a proper empty-result physical node
-		// (not just rows=0 on a plan lacking indexName/seekColumnIndexes, which
-		// would fall through to SeqScan and return all rows).
+		// Pre-pass: IS NULL on NOT NULL column → impossible predicate, empty result
+		for (const filter of request.filters) {
+			if (filter.op === 'IS NULL') {
+				const col = tableInfo.columns[filter.columnIndex];
+				if (col?.notNull) {
+					return AccessPlanBuilder
+						.fullScan(0)
+						.setCost(0)
+						.setRows(0)
+						.setHandledFilters(new Array(request.filters.length).fill(true))
+						.setExplanation('Empty result (IS NULL on NOT NULL column)')
+						.build();
+				}
+			}
+		}
 
 		const availableIndexes = this.gatherAvailableIndexes(tableInfo);
 		let bestPlan: BestAccessPlanResult | undefined;
@@ -177,6 +185,23 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		if (request.filters.length > 0 && bestPlan.handledFilters?.some(Boolean) === false) {
 			// Small nudge to cost to encourage using any usable index when costs are equal
 			bestPlan = { ...bestPlan, cost: bestPlan.cost + 0.01, explains: `${bestPlan.explains} (no filters handled)` };
+		}
+
+		// Post-pass: mark tautological IS NOT NULL on NOT NULL columns as handled
+		const mergedHandled = [...bestPlan.handledFilters];
+		let anyMerged = false;
+		for (let i = 0; i < request.filters.length; i++) {
+			const filter = request.filters[i];
+			if (filter.op === 'IS NOT NULL' && !mergedHandled[i]) {
+				const col = tableInfo.columns[filter.columnIndex];
+				if (col?.notNull) {
+					mergedHandled[i] = true;
+					anyMerged = true;
+				}
+			}
+		}
+		if (anyMerged) {
+			bestPlan = { ...bestPlan, handledFilters: mergedHandled };
 		}
 
 		return bestPlan;

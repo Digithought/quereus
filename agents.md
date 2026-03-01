@@ -3,11 +3,19 @@
 - Use lowercase SQL reserved words (e.g., `select * from Table`)
 - Don't use inline `import()` unless dynamically loading
 - Don't create summary documents; update existing documentation
-- Stay DRY.
+- Stay DRY
 - No lengthy summaries
-- Don't worry about backwards compatibility yet.
+- Don't worry about backwards compatibility yet
 - Use yarn
+- Prefix unused arguments with `_`
+- Enclose `case` blocks in braces if any consts/variables
+- Prefix calls to unused promises (micro-tasks) with `void`
+- ES Modules
+- Don't be type lazy - avoid `any`
+- Don't eat exceptions w/o at least logging; exceptions should be exceptional - not control flow
+- Small, single-purpose functions/methods.  Decomposed sub-functions over grouped code sections
 - No half-baked janky parsers; use a full-fledged parser or better, brainstorm with the dev for another way
+- Think cross-platform (browser, node, RN, etc.)
 - .editorconfig contains formatting (tabs for code)
 
 ## Tickets (tess)

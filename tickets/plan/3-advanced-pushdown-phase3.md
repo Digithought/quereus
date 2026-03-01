@@ -16,20 +16,4 @@ Advanced optimization with sophisticated cost decisions:
 - IN list strategy selection (seek-union vs residual)
 - Projection and aggregation push-down
 
-**Principles:** SPP, DRY, modular architecture. Cost-based decisions throughout.
-
-## TODO
-
-### Phase 1: Planning
-- [ ] Design cost model extensions
-- [ ] Plan dynamic constraint infrastructure
-
-### Phase 2: Implementation
-- [ ] Implement advanced predicate optimizations
-- [ ] Add range seek support
-- [ ] Implement projection push-down
-
-### Phase 3: Review & Test
-- [ ] Review optimization correctness
-- [ ] Benchmark performance improvements
 

@@ -4,6 +4,8 @@ dependencies: none
 
 ---
 
+Update: not sure if this is true any more, but verify.
+
 # schema() TVF Missing Views
 
 The `schema()` table-valued function in `src/func/builtins/schema.ts` only iterates `schemaInstance.getAllTables()` (line 50), which returns only tables. Views are stored in a separate `Schema.views` map (added via `addView()`), and `getAllViews()` exists but is never called in the schema function.

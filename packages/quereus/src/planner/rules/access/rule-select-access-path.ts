@@ -17,7 +17,7 @@ import { isRelationalNode, type RelationalPlanNode } from '../../nodes/plan-node
 import type { OptContext } from '../../framework/context.js';
 import { RetrieveNode } from '../../nodes/retrieve-node.js';
 import { RemoteQueryNode } from '../../nodes/remote-query-node.js';
-import { SeqScanNode, IndexScanNode, IndexSeekNode } from '../../nodes/table-access-nodes.js';
+import { SeqScanNode, IndexScanNode, IndexSeekNode, EmptyResultNode } from '../../nodes/table-access-nodes.js';
 import { seqScanCost } from '../../cost/index.js';
 import type { ColumnMeta, BestAccessPlanRequest, BestAccessPlanResult } from '../../../vtab/best-access-plan.js';
 import { FilterInfo } from '../../../vtab/filter-info.js';
@@ -182,7 +182,33 @@ function selectPhysicalNode(
 	tableRef: TableReferenceNode,
 	accessPlan: BestAccessPlanResult,
 	constraints: PlannerPredicateConstraint[]
-): SeqScanNode | IndexScanNode | IndexSeekNode {
+): SeqScanNode | IndexScanNode | IndexSeekNode | EmptyResultNode {
+
+	// Empty result optimization (e.g., IS NULL on NOT NULL column)
+	if (accessPlan.rows === 0 && accessPlan.handledFilters.every(h => h)) {
+		log('Using empty result (impossible predicate detected)');
+		const emptyFilterInfo: FilterInfo = {
+			idxNum: 0,
+			idxStr: 'empty',
+			constraints: [],
+			args: [],
+			indexInfoOutput: {
+				nConstraint: 0,
+				aConstraint: [],
+				nOrderBy: 0,
+				aOrderBy: [],
+				aConstraintUsage: [] as IndexConstraintUsage[],
+				idxNum: 0,
+				idxStr: 'empty',
+				orderByConsumed: false,
+				estimatedCost: 0,
+				estimatedRows: 0n,
+				idxFlags: 0,
+				colUsed: 0n,
+			}
+		};
+		return new EmptyResultNode(tableRef.scope, tableRef, emptyFilterInfo, 0);
+	}
 
 	// Create a default FilterInfo for the physical nodes
 	const filterInfo: FilterInfo = {

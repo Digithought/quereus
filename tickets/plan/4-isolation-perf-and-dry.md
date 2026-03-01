@@ -39,10 +39,3 @@ Both `rollback()` (line ~785) and `onConnectionRollback()` (line ~926) clear the
 ## Module-Level Mutable Counters
 
 `overlayIdCounter` in `isolation-module.ts` and `connectionIdCounter` in `isolated-connection.ts` are module-level variables that persist across tests and module instances. Consider scoping to the module instance or accepting this as intentional.
-
-## TODO
-
-- [ ] Implement PK point lookup for `getOverlayRow()` and `rowExistsInUnderlying()` (follow design doc Optimization 3)
-- [ ] Optimize `clearOverlay()` to destroy/recreate instead of row-by-row delete
-- [ ] Consolidate dual commit/rollback/savepoint paths (DRY)
-

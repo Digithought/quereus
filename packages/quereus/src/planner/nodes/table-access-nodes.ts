@@ -217,6 +217,42 @@ export class IndexScanNode extends TableAccessNode {
 }
 
 /**
+ * Empty result - produces zero rows (e.g., IS NULL on NOT NULL column)
+ * Used when the optimizer detects an impossible predicate at planning time
+ */
+export class EmptyResultNode extends TableAccessNode {
+	override readonly nodeType = PlanNodeType.EmptyResult;
+
+	getAccessMethod(): 'sequential' {
+		return 'sequential';
+	}
+
+	computePhysical(): Partial<PhysicalProperties> {
+		return {
+			estimatedRows: 0,
+			uniqueKeys: [],
+			ordering: undefined
+		};
+	}
+
+	override toString(): string {
+		return `EMPTY RESULT ${this.source.tableSchema.name}`;
+	}
+
+	override withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 1) {
+			throw new Error(`EmptyResultNode expects 1 child, got ${newChildren.length}`);
+		}
+		const [newSource] = newChildren;
+		if (!(newSource instanceof TableReferenceNode)) {
+			throw new Error('EmptyResultNode: child must be a TableReferenceNode');
+		}
+		if (newSource === this.source) return this;
+		return new EmptyResultNode(this.scope, newSource, this.filterInfo);
+	}
+}
+
+/**
  * Index seek - point lookup or tight range using an index
  * Very efficient for equality constraints and small ranges
  */

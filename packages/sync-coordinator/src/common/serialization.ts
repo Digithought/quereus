@@ -75,6 +75,49 @@ export function serializeSnapshotChunk(chunk: SnapshotChunk): object {
 }
 
 /**
+ * Deserialize a SnapshotChunk from JSON transport format.
+ * Converts base64 strings back to binary fields (SiteId, HLC).
+ */
+export function deserializeSnapshotChunk(obj: unknown): SnapshotChunk {
+	const chunk = obj as Record<string, unknown>;
+	switch (chunk.type) {
+		case 'header':
+			return {
+				type: 'header',
+				siteId: siteIdFromBase64(chunk.siteId as string),
+				hlc: deserializeHLC(Buffer.from(chunk.hlc as string, 'base64')),
+				tableCount: chunk.tableCount as number,
+				migrationCount: chunk.migrationCount as number,
+				snapshotId: chunk.snapshotId as string,
+			};
+		case 'column-versions':
+			return {
+				type: 'column-versions',
+				schema: chunk.schema as string,
+				table: chunk.table as string,
+				entries: (chunk.entries as unknown[][]).map(([key, hlc, value]) => [
+					key as string,
+					deserializeHLC(Buffer.from(hlc as string, 'base64')),
+					value,
+				]),
+			} as SnapshotChunk;
+		case 'schema-migration': {
+			const migration = chunk.migration as Record<string, unknown>;
+			return {
+				type: 'schema-migration',
+				migration: {
+					...migration,
+					hlc: deserializeHLC(Buffer.from(migration.hlc as string, 'base64')),
+				},
+			} as SnapshotChunk;
+		}
+		// table-start, table-end, footer have no binary fields
+		default:
+			return chunk as unknown as SnapshotChunk;
+	}
+}
+
+/**
  * Deserialize a ChangeSet from JSON transport format.
  * Converts base64 strings back to binary fields.
  */

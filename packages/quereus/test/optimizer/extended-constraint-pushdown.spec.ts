@@ -172,4 +172,47 @@ describe('Extended constraint pushdown', () => {
 			expect(rows[1].id).to.equal(4);
 		});
 	});
+
+	// ---- Plan-level optimization verification ----
+
+	describe('IS NULL index-level optimization', () => {
+		async function getPlanNodeTypes(sql: string): Promise<string[]> {
+			const planRows: any[] = [];
+			for await (const r of db.eval(`SELECT node_type FROM query_plan('${sql.replace(/'/g, "''")}')`)) {
+				planRows.push(r);
+			}
+			return planRows.map(r => r.node_type);
+		}
+
+		it('uses EmptyResult node for IS NULL on PK column', async () => {
+			await setupTable();
+			const nodeTypes = await getPlanNodeTypes('SELECT * FROM items WHERE id IS NULL');
+			expect(nodeTypes).to.include('EmptyResult');
+			expect(nodeTypes).not.to.include('SeqScan');
+		});
+
+		it('uses EmptyResult node for IS NULL on non-PK NOT NULL column', async () => {
+			await setupTable();
+			const nodeTypes = await getPlanNodeTypes('SELECT * FROM items WHERE name IS NULL');
+			expect(nodeTypes).to.include('EmptyResult');
+		});
+
+		it('does NOT use EmptyResult for IS NULL on nullable column', async () => {
+			await setupTable();
+			const nodeTypes = await getPlanNodeTypes('SELECT * FROM items WHERE category IS NULL');
+			expect(nodeTypes).not.to.include('EmptyResult');
+		});
+
+		it('uses EmptyResult when IS NULL on NOT NULL is combined with AND', async () => {
+			await setupTable();
+			const nodeTypes = await getPlanNodeTypes('SELECT * FROM items WHERE value IS NULL AND id = 1');
+			expect(nodeTypes).to.include('EmptyResult');
+		});
+
+		it('IS NOT NULL on NOT NULL column does not produce EmptyResult', async () => {
+			await setupTable();
+			const nodeTypes = await getPlanNodeTypes('SELECT * FROM items WHERE id IS NOT NULL');
+			expect(nodeTypes).not.to.include('EmptyResult');
+		});
+	});
 });

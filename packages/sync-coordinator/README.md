@@ -79,6 +79,10 @@ Enable S3 batch storage for durability and disaster recovery:
 | `S3_SECRET_ACCESS_KEY` | AWS secret key | — |
 | `S3_FORCE_PATH_STYLE` | Use path-style URLs (for MinIO) | `false` |
 | `S3_KEY_PREFIX` | Key prefix for all objects | — |
+| `DISK_EVICTION_ENABLED` | Enable disk eviction for idle stores backed by S3 (auto-enabled with `S3_BUCKET`) | `true` if S3 set |
+| `DISK_EVICTION_IDLE_MS` | Idle time (ms) before a closed store's local directory is deleted | `3600000` (1 hr) |
+
+When S3 is configured, local LevelDB directories act as a write-back cache. After a store is closed (idle 5 min) and remains unused for `DISK_EVICTION_IDLE_MS`, its local directory is deleted — provided an S3 snapshot exists. On next access, the store is automatically restored from S3.
 
 #### Local Testing with MinIO
 

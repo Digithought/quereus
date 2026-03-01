@@ -6,6 +6,7 @@ import { expect } from 'chai';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { StoreManager } from '../src/service/store-manager.js';
 
@@ -205,6 +206,251 @@ describe('StoreManager', () => {
       await manager.shutdown();
       await manager.shutdown(); // Second call should not throw
       expect(manager.openCount).to.equal(0);
+    });
+  });
+
+  describe('disk eviction', () => {
+    let evictManager: StoreManager;
+    let evictDataDir: string;
+    let evictCallback: (databaseId: string) => Promise<boolean>;
+
+    beforeEach(() => {
+      evictDataDir = join(tmpdir(), `sync-evict-test-${randomUUID()}`);
+      // Default: always approve eviction
+      evictCallback = async () => true;
+      evictManager = new StoreManager({
+        dataDir: evictDataDir,
+        maxOpenStores: 10,
+        idleTimeoutMs: 50,       // Close after 50ms idle
+        cleanupIntervalMs: 30,   // Cleanup every 30ms
+        diskEvictionIdleMs: 100, // Evict from disk after 100ms closed
+        onEvictStore: (id) => evictCallback(id),
+      });
+      evictManager.start();
+    });
+
+    afterEach(async () => {
+      await evictManager.shutdown();
+      await rm(evictDataDir, { recursive: true, force: true }).catch(() => {});
+    });
+
+    it('should track closed stores as eviction candidates', async () => {
+      await evictManager.acquire(TEST_DATABASE_ID);
+      evictManager.release(TEST_DATABASE_ID);
+      expect(evictManager.evictionCandidateCount).to.equal(0);
+
+      // Wait for idle close
+      await new Promise(resolve => setTimeout(resolve, 120));
+      expect(evictManager.isOpen(TEST_DATABASE_ID)).to.be.false;
+      expect(evictManager.evictionCandidateCount).to.equal(1);
+    });
+
+    it('should delete local directory after eviction idle threshold', async () => {
+      await evictManager.acquire(TEST_DATABASE_ID);
+      evictManager.release(TEST_DATABASE_ID);
+
+      // Verify local directory exists
+      const storagePath = join(evictDataDir, TEST_DATABASE_ID);
+      expect(existsSync(storagePath)).to.be.true;
+
+      // Wait for idle close + eviction threshold + cleanup cycles
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      expect(evictManager.isOpen(TEST_DATABASE_ID)).to.be.false;
+      expect(existsSync(storagePath)).to.be.false;
+      expect(evictManager.evictionCandidateCount).to.equal(0);
+    });
+
+    it('should NOT delete directory when onEvictStore returns false', async () => {
+      evictCallback = async () => false;
+
+      await evictManager.acquire(TEST_DATABASE_ID);
+      evictManager.release(TEST_DATABASE_ID);
+
+      const storagePath = join(evictDataDir, TEST_DATABASE_ID);
+      expect(existsSync(storagePath)).to.be.true;
+
+      // Wait for idle close + eviction threshold
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // Directory should still exist — eviction was denied
+      expect(existsSync(storagePath)).to.be.true;
+      // Still tracked as a candidate (will retry next cycle)
+      expect(evictManager.evictionCandidateCount).to.equal(1);
+    });
+
+    it('should cancel eviction when store is re-acquired', async () => {
+      await evictManager.acquire(TEST_DATABASE_ID);
+      evictManager.release(TEST_DATABASE_ID);
+
+      // Wait for idle close (but not eviction threshold)
+      await new Promise(resolve => setTimeout(resolve, 120));
+      expect(evictManager.isOpen(TEST_DATABASE_ID)).to.be.false;
+      expect(evictManager.evictionCandidateCount).to.equal(1);
+
+      // Re-acquire the store — should remove from eviction candidates
+      await evictManager.acquire(TEST_DATABASE_ID);
+      expect(evictManager.evictionCandidateCount).to.equal(0);
+
+      const storagePath = join(evictDataDir, TEST_DATABASE_ID);
+      expect(existsSync(storagePath)).to.be.true;
+    });
+
+    it('should not track eviction candidates when diskEvictionIdleMs is 0', async () => {
+      // The default manager (from beforeEach) has no eviction configured
+      await manager.acquire(TEST_DATABASE_ID);
+      manager.release(TEST_DATABASE_ID);
+
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(manager.isOpen(TEST_DATABASE_ID)).to.be.false;
+      expect(manager.evictionCandidateCount).to.equal(0);
+
+      // Directory should still exist
+      const storagePath = join(testDataDir, TEST_DATABASE_ID);
+      expect(existsSync(storagePath)).to.be.true;
+    });
+
+    it('should clear eviction candidates on shutdown', async () => {
+      await evictManager.acquire(TEST_DATABASE_ID);
+      evictManager.release(TEST_DATABASE_ID);
+
+      // Wait for idle close
+      await new Promise(resolve => setTimeout(resolve, 120));
+      expect(evictManager.evictionCandidateCount).to.equal(1);
+
+      await evictManager.shutdown();
+      expect(evictManager.evictionCandidateCount).to.equal(0);
+    });
+  });
+
+  describe('isNew detection', () => {
+    it('should mark first-time stores as isNew', async () => {
+      const entry = await manager.acquire(TEST_DATABASE_ID);
+      expect(entry.isNew).to.be.true;
+    });
+
+    it('should not mark re-opened stores as isNew', async () => {
+      // Open and close a store to create local data
+      await manager.acquire(TEST_DATABASE_ID);
+      manager.release(TEST_DATABASE_ID);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(manager.isOpen(TEST_DATABASE_ID)).to.be.false;
+
+      // Re-acquire — local directory exists, so isNew should be false
+      const entry = await manager.acquire(TEST_DATABASE_ID);
+      expect(entry.isNew).to.be.false;
+    });
+  });
+
+  describe('onStoreCreated callback', () => {
+    let callbackManager: StoreManager;
+    let callbackDataDir: string;
+
+    afterEach(async () => {
+      if (callbackManager) {
+        await callbackManager.shutdown();
+        await rm(callbackDataDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it('should call onStoreCreated for new stores', async () => {
+      const created: string[] = [];
+      callbackDataDir = join(tmpdir(), `sync-callback-test-${randomUUID()}`);
+      callbackManager = new StoreManager({
+        dataDir: callbackDataDir,
+        maxOpenStores: 10,
+        idleTimeoutMs: 60_000,
+        cleanupIntervalMs: 60_000,
+        onStoreCreated: async (entry) => {
+          created.push(entry.databaseId);
+        },
+      });
+      callbackManager.start();
+
+      await callbackManager.acquire(TEST_DATABASE_ID);
+      expect(created).to.deep.equal([TEST_DATABASE_ID]);
+    });
+
+    it('should NOT call onStoreCreated for existing stores', async () => {
+      const created: string[] = [];
+      callbackDataDir = join(tmpdir(), `sync-callback-test-${randomUUID()}`);
+
+      // First: open without callback to create local data
+      const tempManager = new StoreManager({
+        dataDir: callbackDataDir,
+        maxOpenStores: 10,
+        idleTimeoutMs: 60_000,
+        cleanupIntervalMs: 60_000,
+      });
+      tempManager.start();
+      await tempManager.acquire(TEST_DATABASE_ID);
+      await tempManager.shutdown();
+
+      // Second: open with callback — should NOT fire since data already exists
+      callbackManager = new StoreManager({
+        dataDir: callbackDataDir,
+        maxOpenStores: 10,
+        idleTimeoutMs: 60_000,
+        cleanupIntervalMs: 60_000,
+        onStoreCreated: async (entry) => {
+          created.push(entry.databaseId);
+        },
+      });
+      callbackManager.start();
+
+      await callbackManager.acquire(TEST_DATABASE_ID);
+      expect(created).to.deep.equal([]);
+    });
+
+    it('should close store and propagate error when onStoreCreated fails', async () => {
+      callbackDataDir = join(tmpdir(), `sync-callback-test-${randomUUID()}`);
+      callbackManager = new StoreManager({
+        dataDir: callbackDataDir,
+        maxOpenStores: 10,
+        idleTimeoutMs: 60_000,
+        cleanupIntervalMs: 60_000,
+        onStoreCreated: async () => {
+          throw new Error('S3 restore failed');
+        },
+      });
+      callbackManager.start();
+
+      try {
+        await callbackManager.acquire(TEST_DATABASE_ID);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect((err as Error).message).to.equal('S3 restore failed');
+      }
+
+      // Store should not remain open after failure
+      expect(callbackManager.isOpen(TEST_DATABASE_ID)).to.be.false;
+    });
+  });
+
+  describe('pendingOpens deduplication', () => {
+    it('should deduplicate concurrent acquires for the same databaseId', async () => {
+      // Launch two concurrent acquires
+      const [entry1, entry2] = await Promise.all([
+        manager.acquire(TEST_DATABASE_ID),
+        manager.acquire(TEST_DATABASE_ID),
+      ]);
+
+      // Both should resolve to the same store entry
+      expect(entry1.store).to.equal(entry2.store);
+      expect(entry1.refCount).to.equal(2);
+      expect(manager.openCount).to.equal(1);
+    });
+
+    it('should open separate stores for different databaseIds concurrently', async () => {
+      const [entry1, entry2] = await Promise.all([
+        manager.acquire(TEST_DATABASE_ID),
+        manager.acquire(TEST_DATABASE_ID_2),
+      ]);
+
+      expect(entry1.databaseId).to.equal(TEST_DATABASE_ID);
+      expect(entry2.databaseId).to.equal(TEST_DATABASE_ID_2);
+      expect(entry1.store).to.not.equal(entry2.store);
+      expect(manager.openCount).to.equal(2);
     });
   });
 });

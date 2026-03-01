@@ -32,10 +32,3 @@ The validation `typeof config !== 'object' || config === null` does not reject a
 
 **Fix:** Add `Array.isArray(config)` check: `if (typeof config !== 'object' || config === null || Array.isArray(config))`.
 
-## TODO
-
-- [ ] Fix `resetToDefaults` to spread `defaultSettings` instead of hardcoded values
-- [ ] Move hooks above conditional return in SyncEventsPanel
-- [ ] Add `Array.isArray` check in configStore `importConfig`
-- [ ] Update existing tests to verify fixes (settingsStore resetToDefaults test, configStore array test)
-

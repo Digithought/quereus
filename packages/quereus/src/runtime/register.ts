@@ -56,6 +56,7 @@ import { emitSink } from './emit/sink.js';
 import { emitBetween } from './emit/between.js';
 import { emitRetrieve } from './emit/retrieve.js';
 import { emitRemoteQuery } from './emit/remote-query.js';
+import { emitEmptyResult } from './emit/empty-result.js';
 import { emitDeclareSchema, emitDiffSchema, emitApplySchema, emitExplainSchema } from './emit/schema-declarative.js';
 
 let registered = false;
@@ -93,6 +94,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.SeqScan, emitSeqScan as EmitterFunc);
 	registerEmitter(PlanNodeType.IndexScan, emitSeqScan as EmitterFunc); // Reuse for now
 	registerEmitter(PlanNodeType.IndexSeek, emitSeqScan as EmitterFunc); // Reuse for now
+	registerEmitter(PlanNodeType.EmptyResult, emitEmptyResult as EmitterFunc);
 	registerEmitter(PlanNodeType.RemoteQuery, emitRemoteQuery as EmitterFunc);
 
 	registerEmitter(PlanNodeType.Values, emitValues as EmitterFunc);

@@ -5,7 +5,7 @@
  * providing durability and enabling disaster recovery.
  */
 
-import { PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { randomUUID } from 'node:crypto';
 import { serviceLog } from '../common/logger.js';
 import {
@@ -125,6 +125,53 @@ export class S3BatchStore {
     return Promise.all(
       batches.map(b => this.storeBatch(b.databaseId, b.clientId, b.changes, b.metadata))
     );
+  }
+
+  /**
+   * List batch keys stored after a given timestamp.
+   * Returns S3 keys in chronological order.
+   */
+  async listBatchesSince(databaseId: string, sinceTimestamp: string): Promise<string[]> {
+    const storagePath = this.resolveStoragePath(databaseId);
+    const prefix = this.config.keyPrefix ?? '';
+    const listPrefix = `${prefix}${storagePath}/batches/`;
+
+    // Normalize timestamp to match key format (colons/dots → hyphens)
+    const normalizedTimestamp = sinceTimestamp.replace(/[:.]/g, '-');
+    const startAfter = `${listPrefix}${normalizedTimestamp}`;
+
+    const keys: string[] = [];
+    let continuationToken: string | undefined;
+
+    do {
+      const response = await this.client.send(new ListObjectsV2Command({
+        Bucket: this.config.bucket,
+        Prefix: listPrefix,
+        StartAfter: startAfter,
+        ContinuationToken: continuationToken,
+      }));
+
+      for (const obj of response.Contents ?? []) {
+        if (obj.Key) keys.push(obj.Key);
+      }
+      continuationToken = response.NextContinuationToken;
+    } while (continuationToken);
+
+    serviceLog('Listed %d batches since %s for %s', keys.length, sinceTimestamp, databaseId);
+    return keys;
+  }
+
+  /**
+   * Download and parse a batch by its S3 key.
+   */
+  async downloadBatch(key: string): Promise<SyncBatch> {
+    const response = await this.client.send(new GetObjectCommand({
+      Bucket: this.config.bucket,
+      Key: key,
+    }));
+
+    const body = await response.Body!.transformToString();
+    return JSON.parse(body) as SyncBatch;
   }
 }
 

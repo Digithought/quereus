@@ -6,7 +6,7 @@
 import type { ScalarPlanNode, RelationalPlanNode, PlanNode } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import type { ColumnReferenceNode } from '../nodes/reference.js';
-import { BinaryOpNode, BetweenNode, CastNode } from '../nodes/scalar.js';
+import { BinaryOpNode, BetweenNode, CastNode, UnaryOpNode } from '../nodes/scalar.js';
 import type { LiteralNode } from '../nodes/scalar.js';
 import { InNode } from '../nodes/subquery.js';
 import type { Row, SqlValue } from '../../common/types.js';
@@ -207,6 +207,19 @@ function extractFromExpression(
       constraints.push(c);
       addSupportedPart(expr, attributeToTableMap, perTableParts);
       return;
+    }
+  }
+
+  // IS NULL / IS NOT NULL → unary constraint
+  if (expr.nodeType === PlanNodeType.UnaryOp) {
+    const unaryOp = expr as UnaryOpNode;
+    if (unaryOp.expression.operator === 'IS NULL' || unaryOp.expression.operator === 'IS NOT NULL') {
+      const c = extractNullConstraint(unaryOp, attributeToTableMap);
+      if (c) {
+        constraints.push(c);
+        addSupportedPart(expr, attributeToTableMap, perTableParts);
+        return;
+      }
     }
   }
 
@@ -441,6 +454,36 @@ function extractInConstraint(
 }
 
 /**
+ * Extract constraint from IS NULL / IS NOT NULL unary expression
+ */
+function extractNullConstraint(
+	expr: UnaryOpNode,
+	attributeToTableMap: Map<number, TableInfo>
+): PredicateConstraint | null {
+	const operand = expr.operand;
+	if (!isColumnReference(operand)) return null;
+
+	const columnRef = getColumnReference(operand);
+	const tableInfo = attributeToTableMap.get(columnRef.attributeId);
+	if (!tableInfo) return null;
+
+	const columnIndex = tableInfo.columnIndexMap.get(columnRef.attributeId);
+	if (columnIndex === undefined) return null;
+
+	const op = expr.expression.operator as 'IS NULL' | 'IS NOT NULL';
+	return {
+		columnIndex,
+		attributeId: columnRef.attributeId,
+		op,
+		value: undefined,
+		usable: true,
+		sourceExpression: expr,
+		targetRelation: tableInfo.relationKey,
+		bindingKind: 'literal'
+	};
+}
+
+/**
  * Map AST operators to constraint operators
  */
 function mapOperatorToConstraint(operator: string, _rightValue?: SqlValue): ConstraintOp | null {
@@ -455,10 +498,6 @@ function mapOperatorToConstraint(operator: string, _rightValue?: SqlValue): Cons
     case 'MATCH': return 'MATCH';
     case 'IN': return 'IN';
     case 'NOT IN': return 'NOT IN';
-    // NOTE: IS NULL / IS NOT NULL are parsed as unary expressions, not binary
-    // 'IS' / 'IS NOT'. To support constraint extraction for these, add unary
-    // expression handling in extractConstraints alongside a proper
-    // empty-result physical node for the IS NULL on NOT NULL optimization.
     default: return null;
   }
 }

@@ -21,7 +21,7 @@ import {
   siteIdEquals,
   siteIdToBase64,
 } from '@quereus/sync';
-import { serviceLog, authLog, serializeChangeSet } from '../common/index.js';
+import { serviceLog, authLog, serializeChangeSet, deserializeChangeSet } from '../common/index.js';
 import type { CoordinatorConfig } from '../config/types.js';
 import {
   createCoordinatorMetrics,
@@ -79,6 +79,24 @@ export class CoordinatorService {
     this.config = options.config;
     this.hooks = options.hooks || {};
     this.metrics = options.metrics || createCoordinatorMetrics();
+    // Initialize S3 stores if configured (before StoreManager, since onStoreCreated references them)
+    if (options.s3Config) {
+      const s3Client = createS3Client(options.s3Config);
+      // Pass storage path resolver from storeHooks to S3 stores
+      const resolveStoragePath = options.storeHooks?.resolveStoragePath;
+      this.s3BatchStore = new S3BatchStore(s3Client, options.s3Config, resolveStoragePath);
+      this.s3SnapshotStore = new S3SnapshotStore(s3Client, options.s3Config, options.snapshotConfig, resolveStoragePath);
+      serviceLog('S3 batch storage enabled: bucket=%s', options.s3Config.bucket);
+    }
+
+    // Disk eviction: auto-enabled when S3 is configured, can be forced on/off via env
+    const diskEvictionEnabled = options.s3Config
+      ? process.env.DISK_EVICTION_ENABLED !== 'false'
+      : process.env.DISK_EVICTION_ENABLED === 'true';
+    const diskEvictionIdleMs = diskEvictionEnabled
+      ? parseInt(process.env.DISK_EVICTION_IDLE_MS || '3600000', 10)
+      : 0;
+
     this._storeManager = new StoreManager({
       dataDir: this.config.dataDir,
       maxOpenStores: 100,
@@ -89,16 +107,23 @@ export class CoordinatorService {
         batchSize: this.config.sync.batchSize,
       },
       hooks: options.storeHooks,
+      onStoreCreated: this.s3SnapshotStore
+        ? (entry) => this.restoreFromS3(entry)
+        : undefined,
+      diskEvictionIdleMs,
+      onEvictStore: this.s3SnapshotStore && diskEvictionIdleMs > 0
+        ? async (databaseId) => {
+            const hasSnapshot = await this.s3SnapshotStore!.hasSnapshot(databaseId);
+            if (!hasSnapshot) {
+              serviceLog('Disk eviction skipped (no S3 snapshot): %s', databaseId);
+            }
+            return hasSnapshot;
+          }
+        : undefined,
     });
 
-    // Initialize S3 stores if configured
-    if (options.s3Config) {
-      const s3Client = createS3Client(options.s3Config);
-      // Pass storage path resolver from storeHooks to S3 stores
-      const resolveStoragePath = options.storeHooks?.resolveStoragePath;
-      this.s3BatchStore = new S3BatchStore(s3Client, options.s3Config, resolveStoragePath);
-      this.s3SnapshotStore = new S3SnapshotStore(s3Client, options.s3Config, options.snapshotConfig, resolveStoragePath);
-      serviceLog('S3 batch storage enabled: bucket=%s', options.s3Config.bucket);
+    if (diskEvictionIdleMs > 0) {
+      serviceLog('Disk eviction enabled: idle threshold %dms', diskEvictionIdleMs);
     }
   }
 
@@ -363,12 +388,12 @@ export class CoordinatorService {
         this.hooks.onAfterApplyChanges(client, approvedChanges, result);
       }
 
-      // Store batch to S3 for durability (non-blocking)
+      // Store batch to S3 for durability (non-blocking, serialized for JSON-safe storage)
       if (this.s3BatchStore && result.applied > 0) {
         this.s3BatchStore.storeBatch(
           databaseId,
           siteIdToBase64(client.siteId),
-          approvedChanges,
+          approvedChanges.map(cs => serializeChangeSet(cs)),
           { applied: result.applied, skipped: result.skipped, conflicts: result.conflicts }
         ).catch(err => {
           serviceLog('S3 batch storage failed (non-fatal): %s', err.message);
@@ -665,6 +690,59 @@ export class CoordinatorService {
    */
   getMetrics(): CoordinatorMetrics {
     return this.metrics;
+  }
+
+  // ============================================================================
+  // S3 Restore
+  // ============================================================================
+
+  /**
+   * Restore a database from S3 snapshot + batches.
+   * Called by StoreManager's onStoreCreated when a new store is opened with no local data.
+   */
+  private async restoreFromS3(entry: StoreEntry): Promise<void> {
+    const { databaseId, syncManager } = entry;
+
+    if (!this.s3SnapshotStore) return;
+
+    serviceLog('Attempting S3 restore for %s', databaseId);
+
+    const snapshot = await this.s3SnapshotStore.downloadLatestSnapshot(databaseId);
+
+    if (!snapshot) {
+      serviceLog('No S3 snapshot found for %s, starting with empty store', databaseId);
+      return;
+    }
+
+    // Apply snapshot chunks via async iterable
+    const { chunks } = snapshot;
+    async function* chunkIterable() {
+      for (const chunk of chunks) {
+        yield chunk;
+      }
+    }
+    await syncManager.applySnapshotStream(chunkIterable());
+    serviceLog('Restored snapshot for %s: %s (%d chunks)',
+      databaseId, snapshot.metadata.snapshotId, snapshot.chunks.length);
+
+    // Replay batches created after the snapshot
+    if (this.s3BatchStore) {
+      const batchKeys = await this.s3BatchStore.listBatchesSince(
+        databaseId, snapshot.metadata.timestamp
+      );
+
+      for (const key of batchKeys) {
+        const batch = await this.s3BatchStore.downloadBatch(key);
+        const changes = (batch.changes as unknown[]).map(c => deserializeChangeSet(c));
+        await syncManager.applyChanges(changes);
+      }
+
+      if (batchKeys.length > 0) {
+        serviceLog('Replayed %d batches for %s', batchKeys.length, databaseId);
+      }
+    }
+
+    serviceLog('S3 restore complete for %s', databaseId);
   }
 
   // ============================================================================

@@ -160,7 +160,7 @@ await db.exec("alter table users rename column created_at to registration_date")
 
 *   **Constraint Enforcement:** Primary key `UNIQUE`, `NOT NULL`, `CHECK`, and `FOREIGN KEY` constraints are enforced at the engine level. `DEFAULT` values are applied during DML operations. FK enforcement requires `pragma foreign_keys = on`.
 *   **Advanced Query Planning:** Range scans only consider the first column of composite indexes; composite index `IN` is not yet implemented — see `tasks/plan/2-composite-index-advanced-seeks.md`
-*   **IS NULL Optimization:** `IS NULL` / `IS NOT NULL` are handled as residual filters; index-level nullability-aware planning is not yet wired up — see `tasks/plan/2-is-null-index-optimization.md`
+*   **IS NULL Optimization:** `IS NULL` on NOT NULL columns produces an `EmptyResult` plan (zero-cost short-circuit); `IS NOT NULL` on NOT NULL columns is eliminated as a tautology. For nullable columns, `IS NULL` / `IS NOT NULL` are still handled as residual filters.
 *   **Expression Indexes:** Expression-based indexes are not implemented — see `tasks/plan/2-expression-indexes.md`
 
 ## **Performance Characteristics:**

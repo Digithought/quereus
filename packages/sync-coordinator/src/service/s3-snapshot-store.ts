@@ -9,10 +9,11 @@
  * - Change volume threshold (e.g., every 1000 changes)
  */
 
-import { ListObjectsV2Command, PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { randomUUID } from 'node:crypto';
-import { createGzip } from 'node:zlib';
+import { createGunzip, createGzip } from 'node:zlib';
 import { serviceLog } from '../common/logger.js';
+import { serializeSnapshotChunk, deserializeSnapshotChunk } from '../common/serialization.js';
 import {
 	type S3StorageConfig,
 	type StoragePathResolver,
@@ -212,8 +213,11 @@ export class S3SnapshotStore {
         }
       }
 
-      // Serialize and compress
-      const jsonData = JSON.stringify({ snapshotId, databaseId, timestamp, chunks });
+      // Serialize chunks for JSON-safe storage, then compress
+      const jsonData = JSON.stringify({
+        snapshotId, databaseId, timestamp,
+        chunks: chunks.map(c => serializeSnapshotChunk(c)),
+      });
       const compressed = await this.compressData(jsonData);
 
       // Upload to S3
@@ -279,6 +283,53 @@ export class S3SnapshotStore {
   }
 
   /**
+   * Download and deserialize the latest snapshot for a database.
+   * Returns null if no snapshots exist.
+   */
+  async downloadLatestSnapshot(databaseId: string): Promise<{
+    chunks: SnapshotChunk[];
+    metadata: { snapshotId: string; timestamp: string };
+  } | null> {
+    const storagePath = this.resolveStoragePath(databaseId);
+    const prefix = this.config.keyPrefix ?? '';
+    const listPrefix = `${prefix}${storagePath}/snapshots/`;
+
+    const response = await this.client.send(new ListObjectsV2Command({
+      Bucket: this.config.bucket,
+      Prefix: listPrefix,
+    }));
+
+    if (!response.Contents?.length) return null;
+
+    // Keys have timestamp prefix → alphabetical order is chronological
+    const sorted = response.Contents
+      .filter(obj => obj.Key)
+      .sort((a, b) => a.Key!.localeCompare(b.Key!));
+    const latestKey = sorted[sorted.length - 1].Key!;
+
+    serviceLog('Downloading snapshot for %s: %s', databaseId, latestKey);
+
+    const getResponse = await this.client.send(new GetObjectCommand({
+      Bucket: this.config.bucket,
+      Key: latestKey,
+    }));
+
+    const compressed = await getResponse.Body!.transformToByteArray();
+    const decompressed = await this.decompressData(Buffer.from(compressed));
+    const data = JSON.parse(decompressed);
+
+    const chunks = (data.chunks as unknown[]).map(c => deserializeSnapshotChunk(c));
+
+    serviceLog('Downloaded snapshot for %s: %s (%d chunks)',
+      databaseId, data.snapshotId, chunks.length);
+
+    return {
+      chunks,
+      metadata: { snapshotId: data.snapshotId, timestamp: data.timestamp },
+    };
+  }
+
+  /**
    * Compress data using gzip.
    */
   private async compressData(data: string): Promise<Buffer> {
@@ -291,6 +342,22 @@ export class S3SnapshotStore {
       gzip.on('end', () => resolve(Buffer.concat(buffers)));
       gzip.on('error', reject);
       gzip.end(Buffer.from(data, 'utf-8'));
+    });
+  }
+
+  /**
+   * Decompress gzipped data.
+   */
+  private async decompressData(data: Buffer): Promise<string> {
+    const gunzip = createGunzip();
+    const buffers: Buffer[] = [];
+
+    gunzip.on('data', (chunk: Buffer) => buffers.push(chunk));
+
+    return new Promise((resolve, reject) => {
+      gunzip.on('end', () => resolve(Buffer.concat(buffers).toString('utf-8')));
+      gunzip.on('error', reject);
+      gunzip.end(data);
     });
   }
 
