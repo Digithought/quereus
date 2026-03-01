@@ -16,11 +16,6 @@ export const SyncEventsPanel: React.FC = () => {
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
   const [lastEventCount, setLastEventCount] = useState(0);
 
-  // Only show when sync module is enabled
-  if (storageModule !== 'sync') {
-    return null;
-  }
-
   // Watch for new events and create toasts
   useEffect(() => {
     if (syncEvents.length > lastEventCount) {
@@ -48,6 +43,11 @@ export const SyncEventsPanel: React.FC = () => {
       });
     }
   }, [syncEvents, lastEventCount]);
+
+  // Only show when sync module is enabled
+  if (storageModule !== 'sync') {
+    return null;
+  }
 
   const dismissToast = (id: string) => {
     setToasts((prev) =>

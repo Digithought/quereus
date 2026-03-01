@@ -104,10 +104,8 @@ describe('configStore', () => {
       expect(() => useConfigStore.getState().importConfig('null')).toThrow('Config must be a JSON object');
     });
 
-    it('does not reject array JSON (validation gap)', () => {
-      // Arrays pass typeof === 'object' && !== null check - a known validation gap
-      const result = useConfigStore.getState().importConfig('[]');
-      expect(result).toBeDefined();
+    it('rejects array JSON', () => {
+      expect(() => useConfigStore.getState().importConfig('[]')).toThrow('Config must be a JSON object');
     });
   });
 });

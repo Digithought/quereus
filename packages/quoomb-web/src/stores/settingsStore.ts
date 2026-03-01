@@ -258,29 +258,12 @@ export const useSettingsStore = create<SettingsState>()(
 
       resetToDefaults: () => {
         set({
-          theme: 'auto',
-          fontSize: 14,
-          fontFamily: '"Fira Code", "Cascadia Code", "JetBrains Mono", Monaco, Consolas, monospace',
-          autoSave: false,
-          autoSaveDelay: 2000,
-          wordWrap: false,
-          showLineNumbers: true,
-          showMinimap: false,
-          autoExecuteOnShiftEnter: true,
-          showExecutionTime: true,
-          maxHistoryItems: 100,
-          defaultPanelSizes: {
-            editor: 60,
-            results: 40,
-          },
+          ...defaultSettings,
           plugins: [],
-          storageModule: 'memory',
-          syncUrl: 'ws://localhost:8080/sync/ws',
-          syncDatabaseId: 'local-s1',
         });
 
         // Reapply theme
-        applyThemeToDocument('auto');
+        applyThemeToDocument(defaultSettings.theme);
       },
     }),
     {

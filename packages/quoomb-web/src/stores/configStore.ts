@@ -53,7 +53,7 @@ export const useConfigStore = create<ConfigState>()(
           const config = JSON.parse(json) as QuoombConfig;
 
           // Validate basic structure
-          if (typeof config !== 'object' || config === null) {
+          if (typeof config !== 'object' || config === null || Array.isArray(config)) {
             throw new Error('Config must be a JSON object');
           }
 
