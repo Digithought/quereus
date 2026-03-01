@@ -215,4 +215,110 @@ describe('Extended constraint pushdown', () => {
 			expect(nodeTypes).not.to.include('EmptyResult');
 		});
 	});
+
+	// ---- OR predicate support ----
+
+	describe('OR predicates', () => {
+		it('returns correct rows for OR of equalities on PK', async () => {
+			await setupTable();
+			const rows: any[] = [];
+			for await (const r of db.eval("SELECT id FROM items WHERE id = 1 OR id = 3 ORDER BY id")) {
+				rows.push(r);
+			}
+			expect(rows).to.have.lengthOf(2);
+			expect(rows[0].id).to.equal(1);
+			expect(rows[1].id).to.equal(3);
+		});
+
+		it('returns correct rows for three-way OR of equalities on PK', async () => {
+			await setupTable();
+			const rows: any[] = [];
+			for await (const r of db.eval("SELECT id FROM items WHERE id = 1 OR id = 3 OR id = 5 ORDER BY id")) {
+				rows.push(r);
+			}
+			expect(rows).to.have.lengthOf(3);
+			expect(rows[0].id).to.equal(1);
+			expect(rows[1].id).to.equal(3);
+			expect(rows[2].id).to.equal(5);
+		});
+
+		it('returns correct rows for OR of equalities on non-PK column', async () => {
+			await setupTable();
+			const rows: any[] = [];
+			for await (const r of db.eval("SELECT id FROM items WHERE category = 'A' OR category = 'B' ORDER BY id")) {
+				rows.push(r);
+			}
+			expect(rows).to.have.lengthOf(3);
+			expect(rows[0].id).to.equal(1);
+			expect(rows[1].id).to.equal(2);
+			expect(rows[2].id).to.equal(4);
+		});
+
+		it('returns correct rows for OR on different columns (residual filter)', async () => {
+			await setupTable();
+			const rows: any[] = [];
+			for await (const r of db.eval("SELECT id FROM items WHERE id = 1 OR name = 'Beta' ORDER BY id")) {
+				rows.push(r);
+			}
+			expect(rows).to.have.lengthOf(2);
+			expect(rows[0].id).to.equal(1);
+			expect(rows[1].id).to.equal(2);
+		});
+
+		it('returns correct rows for OR combined with AND', async () => {
+			await setupTable();
+			const rows: any[] = [];
+			for await (const r of db.eval("SELECT id FROM items WHERE (id = 1 OR id = 3 OR id = 5) AND value > 25 ORDER BY id")) {
+				rows.push(r);
+			}
+			expect(rows).to.have.lengthOf(2);
+			expect(rows[0].id).to.equal(3);
+			expect(rows[1].id).to.equal(5);
+		});
+
+		it('handles OR with range predicate as residual correctly', async () => {
+			await setupTable();
+			const rows: any[] = [];
+			for await (const r of db.eval("SELECT id FROM items WHERE id > 3 OR id < 2 ORDER BY id")) {
+				rows.push(r);
+			}
+			expect(rows).to.have.lengthOf(3);
+			expect(rows[0].id).to.equal(1);
+			expect(rows[1].id).to.equal(4);
+			expect(rows[2].id).to.equal(5);
+		});
+	});
+
+	// ---- OR plan-level optimization verification ----
+
+	describe('OR plan-level optimization', () => {
+		async function getPlanNodeTypes(sql: string): Promise<string[]> {
+			const planRows: any[] = [];
+			for await (const r of db.eval(`SELECT node_type FROM query_plan('${sql.replace(/'/g, "''")}')`)) {
+				planRows.push(r);
+			}
+			return planRows.map(r => r.node_type);
+		}
+
+		it('uses IndexSeek for OR of equalities on PK (normalizer collapses to IN)', async () => {
+			await setupTable();
+			const nodeTypes = await getPlanNodeTypes('SELECT * FROM items WHERE id = 1 OR id = 3');
+			expect(nodeTypes).to.include('IndexSeek');
+			expect(nodeTypes).not.to.include('SeqScan');
+		});
+
+		it('uses IndexSeek for three-way OR of equalities on PK', async () => {
+			await setupTable();
+			const nodeTypes = await getPlanNodeTypes('SELECT * FROM items WHERE id = 1 OR id = 3 OR id = 5');
+			expect(nodeTypes).to.include('IndexSeek');
+			expect(nodeTypes).not.to.include('SeqScan');
+		});
+
+		it('does not use IndexSeek for OR on different columns', async () => {
+			await setupTable();
+			const nodeTypes = await getPlanNodeTypes("SELECT * FROM items WHERE id = 1 OR name = 'Beta'");
+			// Should fall back to scan + filter since columns differ
+			expect(nodeTypes).not.to.include('IndexSeek');
+		});
+	});
 });

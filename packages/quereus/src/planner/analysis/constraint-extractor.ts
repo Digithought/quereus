@@ -183,9 +183,18 @@ function extractFromExpression(
 		return;
 	}
 
-	// Handle OR expressions - for now, treat as residual (could be enhanced later)
+	// Handle OR expressions: try to extract as IN or OR constraint group
 	if (isOrExpression(expr)) {
-		log('OR expression found, treating as residual: %s', expr.toString());
+		const orResult = tryExtractOrBranches(expr, attributeToTableMap);
+		if (orResult) {
+			for (const c of orResult.constraints) {
+				constraints.push(c);
+			}
+			addSupportedPart(expr, attributeToTableMap, perTableParts);
+			log('OR expression extracted %d constraints', orResult.constraints.length);
+			return;
+		}
+		log('OR expression not extractable, treating as residual');
 		residual.push(expr);
 		return;
 	}
@@ -423,14 +432,11 @@ function extractInConstraint(
   expr: InNode,
   attributeToTableMap: Map<number, TableInfo>
 ): PredicateConstraint | null {
-  // Only support column IN (literal, ...)
+  // Only support column IN (value-list), not subqueries
   if (expr.source) return null;
   if (!expr.values || expr.values.length === 0) return null;
   const col = expr.condition;
   if (col.nodeType !== PlanNodeType.ColumnReference) return null;
-
-  // Ensure all are literals
-  if (!expr.values.every(v => isLiteralConstant(v))) return null;
 
   const columnRef = col as unknown as ColumnReferenceNode;
   const tableInfo = attributeToTableMap.get(columnRef.attributeId);
@@ -438,10 +444,16 @@ function extractInConstraint(
   const columnIndex = tableInfo.columnIndexMap.get(columnRef.attributeId);
   if (columnIndex === undefined) return null;
 
-  // Virtual table IN constraint can carry a single array value or multiple equality constraints.
-  // Our API supports op 'IN' with value array.
-  const values = expr.values.map(v => getLiteralValue(v));
-  return {
+  // Check if all values are literals, or if some are dynamic (parameters/expressions)
+  const allLiteral = expr.values.every(v => isLiteralConstant(v));
+  const allUsable = expr.values.every(v => isLiteralConstant(v) || isDynamicValue(v));
+  if (!allUsable) return null;
+
+  const values = allLiteral
+    ? expr.values.map(v => getLiteralValue(v))
+    : expr.values.map(v => isLiteralConstant(v) ? getLiteralValue(v) : undefined);
+
+  const result: PredicateConstraint = {
     columnIndex,
     attributeId: columnRef.attributeId,
     op: 'IN',
@@ -451,6 +463,14 @@ function extractInConstraint(
     sourceExpression: expr,
     targetRelation: tableInfo.relationKey
   };
+
+  // Attach dynamic binding metadata when not all values are literals
+  if (!allLiteral) {
+    result.valueExpr = expr.values as ScalarPlanNode[];
+    result.bindingKind = 'mixed';
+  }
+
+  return result;
 }
 
 /**
@@ -500,6 +520,148 @@ function mapOperatorToConstraint(operator: string, _rightValue?: SqlValue): Cons
     case 'NOT IN': return 'NOT IN';
     default: return null;
   }
+}
+
+/**
+ * Flatten an OR expression tree into a list of disjuncts.
+ */
+function flattenOrDisjuncts(expr: ScalarPlanNode): ScalarPlanNode[] {
+	const result: ScalarPlanNode[] = [];
+	const stack: ScalarPlanNode[] = [expr];
+	while (stack.length > 0) {
+		const node = stack.pop()!;
+		if (isOrExpression(node)) {
+			const binary = node as BinaryOpNode;
+			stack.push(binary.right, binary.left);
+		} else {
+			result.push(node);
+		}
+	}
+	return result;
+}
+
+/**
+ * Attempt to extract index-friendly constraints from an OR expression.
+ *
+ * Handles two cases:
+ * 1. All branches are equality on the same column → collapse to IN constraint
+ * 2. All branches target the same table with extractable constraints → OR constraint group
+ *
+ * Returns null if the OR cannot be extracted (remains residual).
+ */
+function tryExtractOrBranches(
+	expr: ScalarPlanNode,
+	attributeToTableMap: Map<number, TableInfo>
+): { constraints: PredicateConstraint[] } | null {
+	const disjuncts = flattenOrDisjuncts(expr);
+	if (disjuncts.length < 2) return null;
+
+	// Extract constraints from each branch independently
+	const branches: { constraints: PredicateConstraint[]; hasResidual: boolean }[] = [];
+	for (const d of disjuncts) {
+		const branchConstraints: PredicateConstraint[] = [];
+		const branchResidual: ScalarPlanNode[] = [];
+		const branchParts = new Map<string, ScalarPlanNode[]>();
+		extractFromExpression(d, branchConstraints, branchResidual, attributeToTableMap, branchParts);
+		branches.push({
+			constraints: branchConstraints,
+			hasResidual: branchResidual.length > 0
+		});
+	}
+
+	// If any branch has residual (not fully extractable), the entire OR must be residual.
+	// We can't partially push down an OR — all branches must be handled.
+	if (branches.some(b => b.hasResidual || b.constraints.length === 0)) {
+		return null;
+	}
+
+	// Check if all branches target the same table
+	const allRelations = new Set<string>();
+	for (const b of branches) {
+		for (const c of b.constraints) {
+			if (c.targetRelation) allRelations.add(c.targetRelation);
+		}
+	}
+	if (allRelations.size !== 1) return null;
+
+	// Case 1: All branches are single equality or IN on the same column → collapse to IN
+	const allEqOrIn = branches.every(b =>
+		b.constraints.length === 1 &&
+		(b.constraints[0].op === '=' || b.constraints[0].op === 'IN')
+	);
+	if (allEqOrIn) {
+		const firstConstraint = branches[0].constraints[0];
+		const sameColumn = branches.every(b =>
+			b.constraints[0].columnIndex === firstConstraint.columnIndex &&
+			b.constraints[0].attributeId === firstConstraint.attributeId
+		);
+		if (sameColumn) {
+			return collapseBranchesToIn(branches, firstConstraint, expr);
+		}
+	}
+
+	// Case 2: All branches target the same table — not yet handled as multi-seek
+	// Future: OrConstraintGroup for range disjunctions and composite multi-seek
+	return null;
+}
+
+/**
+ * Collapse OR branches (equality and/or IN) on the same column into a single IN constraint.
+ * Handles mixed equality + IN branches (e.g., from nested OR normalization)
+ * and both literal and non-literal (parameter, expression) values.
+ */
+function collapseBranchesToIn(
+	branches: { constraints: PredicateConstraint[] }[],
+	template: PredicateConstraint,
+	sourceExpr: ScalarPlanNode
+): { constraints: PredicateConstraint[] } {
+	const values: SqlValue[] = [];
+	const valueExprs: ScalarPlanNode[] = [];
+	let hasNonLiteral = false;
+
+	for (const b of branches) {
+		const c = b.constraints[0];
+		if (c.op === 'IN' && Array.isArray(c.value)) {
+			// IN branch: merge all its values
+			for (const v of c.value as SqlValue[]) {
+				values.push(v);
+			}
+			if (Array.isArray(c.valueExpr)) {
+				for (const ve of c.valueExpr as ScalarPlanNode[]) {
+					valueExprs.push(ve);
+				}
+				hasNonLiteral = true;
+			} else {
+				// All literal IN — push placeholder source expressions
+				for (const _v of c.value as SqlValue[]) {
+					valueExprs.push(c.sourceExpression);
+				}
+			}
+		} else {
+			// Equality branch: single value
+			values.push(c.value as SqlValue);
+			if (c.valueExpr && !Array.isArray(c.valueExpr)) {
+				valueExprs.push(c.valueExpr as ScalarPlanNode);
+				hasNonLiteral = true;
+			} else {
+				valueExprs.push(c.sourceExpression);
+			}
+		}
+	}
+
+	const result: PredicateConstraint = {
+		columnIndex: template.columnIndex,
+		attributeId: template.attributeId,
+		op: 'IN',
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		value: values as any,
+		usable: true,
+		sourceExpression: sourceExpr,
+		targetRelation: template.targetRelation,
+		valueExpr: hasNonLiteral ? valueExprs : undefined,
+		bindingKind: hasNonLiteral ? 'mixed' : 'literal'
+	};
+	return { constraints: [result] };
 }
 
 /**

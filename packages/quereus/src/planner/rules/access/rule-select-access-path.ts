@@ -306,10 +306,14 @@ function selectPhysicalNodeFromPlan(
 			const inConstraint = eqBySeekCol.get(colIdx)!;
 			const inValues = inConstraint.value as unknown as unknown[];
 
-			const seekKeys: ScalarPlanNode[] = inValues.map(v => {
-				const lit: AST.LiteralExpr = { type: 'literal', value: v } as unknown as AST.LiteralExpr;
-				return new LiteralNode(tableRef.scope, lit);
-			});
+			// Use valueExpr nodes when available (mixed-binding IN from OR collapse),
+			// otherwise construct literal nodes from values
+			const seekKeys: ScalarPlanNode[] = Array.isArray(inConstraint.valueExpr)
+				? (inConstraint.valueExpr as ScalarPlanNode[])
+				: inValues.map(v => {
+					const lit: AST.LiteralExpr = { type: 'literal', value: v } as unknown as AST.LiteralExpr;
+					return new LiteralNode(tableRef.scope, lit);
+				});
 
 			const inConstraints = inValues.map((_v, i) => ({
 				constraint: { iColumn: colIdx, op: IndexConstraintOp.EQ, usable: true },

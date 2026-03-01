@@ -582,7 +582,7 @@ if (shouldCache(node, context)) {
 ## Known Issues
 
 **Current Limitations**
-- **Enhanced Predicate Analysis**: The constraint extractor handles binary predicates and IN lists (multi-value IN → index multi-seek). IS NULL/IS NOT NULL are parsed as unary expressions and handled as residual filters; index-level nullability optimization requires unary constraint extraction. OR conditions and complex expressions are not yet supported
+- **Enhanced Predicate Analysis**: The constraint extractor handles binary predicates, IN lists (multi-value IN → index multi-seek), IS NULL/IS NOT NULL, and OR-of-equality disjunctions (collapsed to IN for index multi-seek). OR conditions with range predicates or disjunctions across different columns/tables remain as residual filters. OR-to-UNION rewriting for disjoint index-friendly branches on separate indexes is a future enhancement
 - **Relational Folding Pending**: Scalar constant folding is implemented; relational constant folding (materializing foldable relational subtrees) is planned
 - **Access Path Selection**: Supports primary and secondary index seek/range via module-provided `indexName`/`seekColumnIndexes`. Prefix-equality + trailing-range on composite indexes is not yet supported
 
@@ -590,7 +590,11 @@ if (shouldCache(node, context)) {
 
 See tasks/ for future optimizer work.
 
-The modular rule-based design ensures these enhancements can be added incrementally without disrupting existing functionality. 
+**OR-to-UNION rewriting**: When OR branches reference different indexes (e.g., `WHERE colA = 1 OR colB = 2` with separate indexes on colA and colB), the optimizer could rewrite to `UNION ALL` of per-branch queries with duplicate elimination. This requires cost model evaluation (N index seeks + dedup vs. single scan + residual) and `UnionAllNode` insertion. The OR branch analysis infrastructure in the constraint extractor provides the foundation.
+
+**OR multi-range seek**: OR disjunctions with range predicates on the same index columns (e.g., `WHERE date > '2024-01' OR date < '2023-06'`) could be served by multiple range scans on the same index. This requires extending `ScanPlan` and cursor layers to support multiple range specs per scan.
+
+The modular rule-based design ensures these enhancements can be added incrementally without disrupting existing functionality.
 
 ## Join Optimization with QuickPick
 
