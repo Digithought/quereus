@@ -95,6 +95,16 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 					}
 				}
 
+				// Process Views
+				for (const viewSchema of schemaInstance.getAllViews()) {
+					yield [
+						'view',
+						viewSchema.name,
+						viewSchema.name,
+						viewSchema.sql
+					] as Row;
+				}
+
 				// Process Functions
 				for (const funcSchema of schemaInstance._getAllFunctions()) {
 					yield [
