@@ -6,7 +6,7 @@ import { useSessionStore } from './stores/sessionStore.js';
 import { useSettingsStore } from './stores/settingsStore.js';
 
 export const App: React.FC = () => {
-  const { initializeSession, saveCurrentTabAsFile, loadSQLFile, tabs, isConnected, isConnecting } = useSessionStore();
+  const { initializeSession, saveTabAsFile, loadSQLFile, tabs, isConnected, isConnecting } = useSessionStore();
   const { loadSettings, theme } = useSettingsStore();
   const [systemIsDark, setSystemIsDark] = useState(
     () => window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -45,7 +45,7 @@ export const App: React.FC = () => {
           case 's':
             e.preventDefault();
             try {
-              await saveCurrentTabAsFile();
+              await saveTabAsFile();
             } catch (error) {
               console.error('Failed to save file:', error);
             }
@@ -64,7 +64,7 @@ export const App: React.FC = () => {
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [saveCurrentTabAsFile, loadSQLFile]);
+  }, [saveTabAsFile, loadSQLFile]);
 
   useEffect(() => {
     // Warn before closing browser tab/window if there are unsaved changes

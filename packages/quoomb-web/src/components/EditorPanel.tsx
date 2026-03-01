@@ -31,6 +31,7 @@ export const EditorPanel: React.FC = () => {
     updateTabContent,
     executeSQL,
     isExecuting,
+    setNavigateToError,
   } = useSessionStore();
 
   const {
@@ -83,6 +84,36 @@ export const EditorPanel: React.FC = () => {
       resizeObserver.disconnect();
     };
   }, []);
+
+  // Register navigateToError callback so other components can jump to editor positions
+  useEffect(() => {
+    setNavigateToError((line: number, column: number) => {
+      const ed = editorRef.current;
+      if (!ed) return;
+
+      ed.setPosition({ lineNumber: line, column });
+      ed.focus();
+
+      // Highlight the error area briefly
+      if (ed.getModel()) {
+        void loader.init().then(monaco => {
+          const decoration = ed.deltaDecorations([], [{
+            range: new monaco.Range(line, column, line, column + 10),
+            options: {
+              isWholeLine: false,
+              className: 'error-highlight',
+              glyphMarginClassName: 'error-glyph',
+            }
+          }]);
+          setTimeout(() => {
+            ed.deltaDecorations(decoration, []);
+          }, 3000);
+        });
+      }
+    });
+
+    return () => setNavigateToError(null);
+  }, [setNavigateToError]);
 
   const activeTab = tabs.find(tab => tab.id === activeTabId);
 

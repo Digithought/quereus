@@ -22,15 +22,11 @@ export const EnhancedErrorDisplay: React.FC<EnhancedErrorDisplayProps> = ({
   selectionInfo,
   className = '',
 }) => {
-  const { tabs, activeTabId, setActiveTab } = useSessionStore();
+  const navigateToErrorFn = useSessionStore(s => s.navigateToError);
   const [isExpanded, setIsExpanded] = React.useState(false);
 
-  const navigateToError = (errorInfo: ErrorInfo) => {
-    if (!errorInfo.line || !errorInfo.column || !activeTabId) return;
-
-    // Find the active tab
-    const activeTab = tabs.find(tab => tab.id === activeTabId);
-    if (!activeTab) return;
+  const handleNavigateToError = (errorInfo: ErrorInfo) => {
+    if (!errorInfo.line || !errorInfo.column || !navigateToErrorFn) return;
 
     // Calculate the actual line and column in the editor
     let targetLine = errorInfo.line;
@@ -44,34 +40,7 @@ export const EnhancedErrorDisplay: React.FC<EnhancedErrorDisplayProps> = ({
       }
     }
 
-    // Use Monaco editor API to navigate to the error location
-    const editorElement = document.querySelector('[data-uri*="model"]') as any;
-    if (editorElement?._commandService) {
-      // Try to get the Monaco editor instance
-      const editor = (window as any).monaco?.editor?.getEditors()?.[0];
-      if (editor) {
-        editor.setPosition({ lineNumber: targetLine, column: targetColumn });
-        editor.focus();
-        
-        // Optionally highlight the error area
-        const model = editor.getModel();
-        if (model) {
-          const decoration = editor.deltaDecorations([], [{
-            range: new (window as any).monaco.Range(targetLine, targetColumn, targetLine, targetColumn + 10),
-            options: {
-              isWholeLine: false,
-              className: 'error-highlight',
-              glyphMarginClassName: 'error-glyph',
-            }
-          }]);
-          
-          // Clear the decoration after 3 seconds
-          setTimeout(() => {
-            editor.deltaDecorations(decoration, []);
-          }, 3000);
-        }
-      }
-    }
+    navigateToErrorFn(targetLine, targetColumn);
   };
 
   const primaryError = errorChain?.[0];
@@ -87,7 +56,7 @@ export const EnhancedErrorDisplay: React.FC<EnhancedErrorDisplayProps> = ({
             <span className="text-sm font-medium text-red-700 dark:text-red-300">Error</span>
             {primaryError?.line && primaryError?.column && (
               <button
-                onClick={() => primaryError && navigateToError(primaryError)}
+                onClick={() => primaryError && handleNavigateToError(primaryError)}
                 className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-200 hover:underline"
                 title={`Navigate to line ${primaryError.line}, column ${primaryError.column}`}
               >
@@ -122,7 +91,7 @@ export const EnhancedErrorDisplay: React.FC<EnhancedErrorDisplayProps> = ({
                 </span>
                 {errorInfo.line && errorInfo.column && (
                   <button
-                    onClick={() => navigateToError(errorInfo)}
+                    onClick={() => handleNavigateToError(errorInfo)}
                     className="flex items-center gap-1 text-xs text-red-500 dark:text-red-500 hover:text-red-700 dark:hover:text-red-300 hover:underline"
                     title={`Navigate to line ${errorInfo.line}, column ${errorInfo.column}`}
                   >

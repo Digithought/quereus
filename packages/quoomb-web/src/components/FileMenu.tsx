@@ -8,7 +8,7 @@ interface FileMenuProps {
 }
 
 export const FileMenu: React.FC<FileMenuProps> = ({ isOpen, onClose }) => {
-  const { tabs, activeTabId, saveCurrentTabAsFile, loadSQLFile } = useSessionStore();
+  const { tabs, activeTabId, saveTabAsFile, loadSQLFile } = useSessionStore();
   const [isLoading, setIsLoading] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -36,7 +36,7 @@ export const FileMenu: React.FC<FileMenuProps> = ({ isOpen, onClose }) => {
 
     try {
       setIsLoading(true);
-      await saveCurrentTabAsFile();
+      await saveTabAsFile();
       onClose();
     } catch (error) {
       console.error('Failed to save file:', error);

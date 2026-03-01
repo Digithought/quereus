@@ -12,6 +12,7 @@ import type { SqlValue } from '@quereus/quereus';
 import { useSessionStore } from '../stores/sessionStore.js';
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Copy, Check } from 'lucide-react';
 import { EnhancedErrorDisplay } from './EnhancedErrorDisplay.js';
+import { formatRowsAsCSV } from '../utils/csv.js';
 
 type Row = Record<string, SqlValue>;
 
@@ -75,24 +76,7 @@ export const ResultsGrid: React.FC = () => {
 
   const copyAsCSV = async () => {
     if (data.length === 0) return;
-
-    const headers = Object.keys(data[0]);
-    const csvRows = [
-      headers.join(','), // Header row
-      ...data.map(row =>
-        headers.map(header => {
-          const value = row[header];
-          if (value === null) return '';
-          if (typeof value === 'string' && (value.includes(',') || value.includes('"') || value.includes('\n'))) {
-            return `"${value.replace(/"/g, '""')}"`;
-          }
-          return String(value);
-        }).join(',')
-      )
-    ];
-
-    const csvContent = csvRows.join('\n');
-    await copyToClipboard(csvContent, 'csv');
+    await copyToClipboard(formatRowsAsCSV(data), 'csv');
   };
 
   const copyAsTable = async () => {
