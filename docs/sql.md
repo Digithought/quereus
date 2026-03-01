@@ -1284,12 +1284,15 @@ The order by clause sorts the result set.
 
 **Syntax:**
 ```sql
-order by expression [asc | desc] [, expression [asc | desc]...]
+order by expression [asc | desc] [nulls first | nulls last]
+       [, expression [asc | desc] [nulls first | nulls last] ...]
 ```
 
 **Options:**
 - `asc`: Ascending order (default)
 - `desc`: Descending order
+- `nulls first`: NULL values sort before non-NULL values
+- `nulls last`: NULL values sort after non-NULL values
 - Expression can be a column name, alias, or expression
 
 **Examples:**
@@ -1298,7 +1301,7 @@ order by expression [asc | desc] [, expression [asc | desc]...]
 select * from products order by price;
 
 -- Multiple sort keys
-select * from employees 
+select * from employees
 order by department asc, salary desc;
 
 -- Ordering by expression
@@ -1306,11 +1309,9 @@ select name, price, quantity, price * quantity as total
 from order_items
 order by total desc;
 
--- Ordering with NULLS handling
-select * from users 
-order by 
-  case when last_login is null then 1 else 0 end,
-  last_login desc;
+-- Ordering with NULLS FIRST/LAST
+select * from users
+order by last_login desc nulls last;
 ```
 
 ### 3.6 LIMIT and OFFSET Clauses
@@ -3083,7 +3084,7 @@ While Quereus supports similar SQL syntax, it has evolved into a distinct system
 | **Virtual Tables** | Central to design; all tables are virtual | Additional feature |
 | **Triggers** | Not supported | Supported |
 | **Views** | Basic support | Full support |
-| **Foreign Keys** | Parsed but not enforced | Full support (when enabled) |
+| **Foreign Keys** | Supported (via `pragma foreign_keys = on`) | Full support (when enabled) |
 | **Window Functions** | Phase 1 Complete (ranking, aggregates, partitioning) | Full support |
 | **Recursive CTEs** | Basic support | Full support |
 | **JSON Functions** | Extensive support with native JSON type | Available as extension |
@@ -3182,6 +3183,7 @@ sql_statement      = [ with_clause ] ( select_stmt
                     | savepoint_stmt
                     | release_stmt
                     | pragma_stmt
+                    | analyze_stmt
                     | declare_schema_stmt
                     | diff_schema_stmt
                     | apply_schema_stmt
@@ -3205,7 +3207,8 @@ simple_select      = "select" [ distinct_clause ] result_column { "," result_col
                      [ from_clause ]
                      [ where_clause ]
                      [ group_by_clause ]
-                     [ having_clause ] ;
+                     [ having_clause ]
+                     [ with_schema_clause ] ;
 
 distinct_clause    = "distinct" | "all" ;
 
@@ -3221,8 +3224,8 @@ table_or_subquery  = table_name [ [ "as" ] table_alias ]
 
 join_clause        = table_or_subquery { join_operator table_or_subquery join_constraint } ;
 
-join_operator      = "," 
-                   | [ "natural" ] [ "left" [ "outer" ] | "inner" | "cross" | "right" [ "outer" ] | "full" [ "outer" ] ] "join" ;
+join_operator      = ","
+                   | [ "natural" ] [ "left" [ "outer" ] | "inner" | "cross" | "right" [ "outer" ] | "full" [ "outer" ] ] "join" [ "lateral" ] ;
 
 join_constraint    = [ "on" expr | "using" "(" column_name { "," column_name } ")" ] ;
 
@@ -3241,10 +3244,19 @@ ordering_term      = expr [ "asc" | "desc" ] [ "nulls" ( "first" | "last" ) ] ;
 limit_clause       = "limit" expr [ ( "offset" expr ) | ( "," expr ) ] ;
 
 /* INSERT statement */
-insert_stmt        = "insert" [ "into" ] table_name [ "(" column_name { "," column_name } ")" ]
+insert_stmt        = "insert" [ "or" conflict_resolution ] "into" table_name
+                     [ "(" column_name { "," column_name } ")" ]
                      ( values_clause | select_stmt )
+                     { upsert_clause }
                      [ context_clause ]
+                     [ with_schema_clause ]
                      [ returning_clause ] ;
+
+conflict_resolution = "rollback" | "abort" | "fail" | "ignore" | "replace" ;
+
+upsert_clause      = "on" "conflict" [ "(" column_name { "," column_name } ")" ]
+                     ( "do" "nothing" | "do" "update" "set" column_name "=" expr
+                       { "," column_name "=" expr } [ where_clause ] ) ;
 
 values_clause      = "values" "(" expr { "," expr } ")" { "," "(" expr { "," expr } ")" } ;
 
@@ -3255,16 +3267,20 @@ update_stmt        = "update" table_name
                      "set" column_name "=" expr { "," column_name "=" expr }
                      [ where_clause ]
                      [ context_clause ]
+                     [ with_schema_clause ]
                      [ returning_clause ] ;
 
 /* DELETE statement */
 delete_stmt        = "delete" "from" table_name [ where_clause ]
                      [ context_clause ]
+                     [ with_schema_clause ]
                      [ returning_clause ] ;
 
-context_clause     = "with" "context" "(" context_item { "," context_item } ")" ;
+context_clause     = "with" "context" context_assignment { "," context_assignment } ;
 
-context_item       = identifier "=" expr ;
+context_assignment = identifier "=" expr ;
+
+with_schema_clause = "with" "schema" schema_name { "," schema_name } ;
 
 returning_clause   = "returning" [ qualifier "." ] "*" { "," [ qualifier "." ] "*" }
                    | "returning" [ qualifier "." ] expr [ [ "as" ] column_alias ]
@@ -3275,7 +3291,12 @@ qualifier          = "old" | "new" ;
 /* CREATE TABLE statement */
 create_table_stmt  = "create" [ "temp" | "temporary" ] "table" [ "if" "not" "exists" ]
                      table_name "(" column_def { "," ( column_def | table_constraint ) } ")"
-                     [ "using" module_name [ "(" module_arg { "," module_arg } ")" ] ] ;
+                     [ "using" module_name [ "(" module_arg { "," module_arg } ")" ] ]
+                     [ context_def_clause ] ;
+
+context_def_clause = "with" "context" "(" context_var_def { "," context_var_def } ")" ;
+
+context_var_def    = identifier type_name [ "null" ] ;
 
 column_def         = column_name [ type_name ] { column_constraint } ;
 
@@ -3304,7 +3325,7 @@ foreign_key_clause = "references" foreign_table [ "(" column_name { "," column_n
                      | [ "match" name ] }
                      [ [ "not" ] "deferrable" [ "initially" ( "deferred" | "immediate" ) ] ] ;
 
-conflict_clause    = "on" "conflict" ( "rollback" | "abort" | "fail" | "ignore" | "replace" ) ;
+conflict_clause    = "on" "conflict" conflict_resolution ;
 
 row_op_list        = row_op { "," row_op } ;
 
@@ -3329,10 +3350,11 @@ drop_stmt          = "drop" ( "table" | "index" | "view" | "assertion" ) [ "if" 
 
 /* ALTER TABLE statement */
 alter_table_stmt   = "alter" "table" table_name
-                     ( rename_table_stmt 
-                     | rename_column_stmt 
-                     | add_column_stmt 
-                     | drop_column_stmt ) ;
+                     ( rename_table_stmt
+                     | rename_column_stmt
+                     | add_column_stmt
+                     | drop_column_stmt
+                     | add_constraint_stmt ) ;
 
 rename_table_stmt  = "rename" "to" new_table_name ;
 
@@ -3341,6 +3363,8 @@ rename_column_stmt = "rename" [ "column" ] old_column_name "to" new_column_name 
 add_column_stmt    = "add" [ "column" ] column_def ;
 
 drop_column_stmt   = "drop" [ "column" ] column_name ;
+
+add_constraint_stmt = "add" table_constraint ;
 
 /* Transaction statements */
 begin_stmt         = "begin" [ "deferred" | "immediate" | "exclusive" ] [ "transaction" ] ;
@@ -3356,18 +3380,37 @@ release_stmt       = "release" [ "savepoint" ] savepoint_name ;
 /* PRAGMA statement */
 pragma_stmt        = "pragma" pragma_name [ "=" pragma_value ] ;
 
+/* ANALYZE statement */
+analyze_stmt       = "analyze" [ [ schema_name "." ] table_name ] ;
+
 pragma_value       = signed_number | name | string_literal ;
 
 /* Declarative schema statements */
-declare_schema_stmt = "declare" "schema" schema_item { schema_item } "end" ;
+declare_schema_stmt = "declare" "schema" schema_name
+                      [ "version" string_literal ]
+                      [ "using" "(" schema_option { "," schema_option } ")" ]
+                      "{" { schema_item } "}" ;
 
-schema_item        = create_table_stmt | create_index_stmt | create_view_stmt | create_assertion_stmt ;
+schema_option      = identifier "=" string_literal ;
 
-diff_schema_stmt   = "diff" "schema" ;
+schema_item        = "table" table_name ( "{" | "(" ) column_def { "," ( column_def | table_constraint ) } ( "}" | ")" )
+                     [ "using" module_name [ "(" module_arg { "," module_arg } ")" ] ] ";"
+                   | "index" index_name "on" table_name "(" indexed_column { "," indexed_column } ")" ";"
+                   | "view" view_name [ "(" column_name { "," column_name } ")" ] "as" select_stmt ";"
+                   | seed_item ;
 
-apply_schema_stmt  = "apply" "schema" ;
+seed_item          = "seed" table_name [ "(" column_name { "," column_name } ")" ]
+                     [ "values" ] "(" expr { "," expr } ")" { "," "(" expr { "," expr } ")" } ";" ;
 
-explain_schema_stmt = "explain" "schema" ;
+diff_schema_stmt   = "diff" "schema" schema_name ;
+
+apply_schema_stmt  = "apply" "schema" schema_name
+                     [ "to" "version" string_literal ]
+                     [ "with" "seed" ]
+                     [ "options" "(" schema_option { "," schema_option } ")" ] ;
+
+explain_schema_stmt = "explain" "schema" schema_name
+                      [ "version" string_literal ] ;
 
 /* Basic elements */
 expr               = literal_value
@@ -3454,9 +3497,9 @@ hex_digit          = digit | "a" | "b" | "c" | "d" | "e" | "f" | "A" | "B" | "C"
 
 unary_operator     = "-" | "+" | "~" | "not" ;
 
-binary_operator    = "||" | "*" | "/" | "%" | "+" | "-" | "<<" | ">>" | "&" | "|" 
-                   | "<" | "<=" | ">" | ">=" | "=" | "==" | "!=" | "<>" 
-                   | "and" | "or" ;
+binary_operator    = "||" | "*" | "/" | "%" | "+" | "-" | "<<" | ">>" | "&" | "|"
+                   | "<" | "<=" | ">" | ">=" | "=" | "==" | "!=" | "<>"
+                   | "and" | "or" | "xor" ;
 ```
 
 This grammar defines the syntax of SQL statements supported by Quereus. While it captures most of the language features, some specialized constructs and edge cases may not be fully represented. For the definitive reference, always consult the Quereus parser implementation.
