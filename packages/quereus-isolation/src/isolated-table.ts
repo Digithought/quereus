@@ -1,5 +1,5 @@
 import type { Database, DatabaseInternal, MaybePromise, Row, SqlValue, TableIndexSchema as IndexSchema, FilterInfo, SchemaChangeInfo, UpdateArgs, VirtualTableConnection, UpdateResult } from '@quereus/quereus';
-import { VirtualTable, compareSqlValues, isUpdateOk } from '@quereus/quereus';
+import { VirtualTable, compareSqlValues, isUpdateOk, IndexConstraintOp } from '@quereus/quereus';
 import type { IsolationModule, ConnectionOverlayState } from './isolation-module.js';
 import { IsolatedConnection, type IsolatedTableCallback } from './isolated-connection.js';
 import { mergeStreams, createMergeEntry, createTombstone } from './merge-iterator.js';
@@ -733,21 +733,13 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	}
 
 	/**
-	 * Gets a row from the overlay by primary key.
+	 * Gets a row from the overlay by primary key using O(log n) point lookup.
 	 */
 	private async getOverlayRow(overlay: VirtualTable, pk: SqlValue[]): Promise<Row | undefined> {
 		if (!overlay.query) return undefined;
 
-		const pkIndices = this.getPrimaryKeyIndices();
-		const mergeConfig = this.buildMergeConfig();
-
-		// Scan overlay looking for matching PK
-		// This is inefficient but correct; optimization can use index later
-		for await (const row of overlay.query(this.createFullScanFilterInfo())) {
-			const rowPK = pkIndices.map(i => row[i]);
-			if (mergeConfig.comparePK(rowPK, pk) === 0) {
-				return row;
-			}
+		for await (const row of overlay.query(this.buildPKPointLookupFilter(pk))) {
+			return row;
 		}
 		return undefined;
 	}
@@ -778,6 +770,39 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 		};
 	}
 
+	/**
+	 * Creates a FilterInfo for a primary key point lookup (equality on all PK columns).
+	 * This produces O(log n) lookups instead of O(n) full scans.
+	 */
+	private buildPKPointLookupFilter(pk: SqlValue[]): FilterInfo {
+		const pkIndices = this.getPrimaryKeyIndices();
+		const constraints = pkIndices.map((colIdx, i) => ({
+			constraint: { iColumn: colIdx, op: IndexConstraintOp.EQ, usable: true },
+			argvIndex: i + 1,
+		}));
+
+		return {
+			idxNum: 0,
+			idxStr: 'idx=_primary_(0);plan=2',
+			constraints,
+			args: pk,
+			indexInfoOutput: {
+				nConstraint: constraints.length,
+				aConstraint: constraints.map(c => c.constraint),
+				nOrderBy: 0,
+				aOrderBy: [],
+				colUsed: 0n,
+				aConstraintUsage: constraints.map(c => ({ argvIndex: c.argvIndex, omit: true })),
+				idxNum: 0,
+				idxStr: 'idx=_primary_(0);plan=2',
+				orderByConsumed: false,
+				estimatedCost: 1,
+				estimatedRows: 1n,
+				idxFlags: 0,
+			},
+		};
+	}
+
 	// ==================== Transaction Lifecycle ====================
 
 	async begin(): Promise<void> {
@@ -791,12 +816,20 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	}
 
 	async commit(): Promise<void> {
+		await this.flushAndClearOverlay();
+		await this.underlyingTable.commit?.();
+	}
+
+	/**
+	 * Flushes overlay changes to underlying (if any) and discards the overlay.
+	 * Shared by commit() and onConnectionCommit().
+	 */
+	private async flushAndClearOverlay(): Promise<void> {
 		const overlay = this.overlayTable;
 		if (this.hasChanges && overlay) {
 			await this.flushOverlayToUnderlying(overlay);
 		}
-		await this.underlyingTable.commit?.();
-		await this.clearOverlay();
+		this.clearOverlay();
 	}
 
 	/**
@@ -867,75 +900,47 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 
 	/**
 	 * Checks if a row with the given primary key exists in the underlying table.
+	 * Uses O(log n) point lookup via the PK index.
 	 */
 	private async rowExistsInUnderlying(pk: SqlValue[]): Promise<boolean> {
 		if (!this.underlyingTable.query) return false;
 
-		const pkIndices = this.getPrimaryKeyIndices();
-		const mergeConfig = this.buildMergeConfig();
-
-		for await (const row of this.underlyingTable.query(this.createFullScanFilterInfo())) {
-			const rowPK = pkIndices.map(i => row[i]);
-			if (mergeConfig.comparePK(rowPK, pk) === 0) {
-				return true;
-			}
+		for await (const _row of this.underlyingTable.query(this.buildPKPointLookupFilter(pk))) {
+			return true;
 		}
 		return false;
 	}
 
 	async rollback(): Promise<void> {
 		await this.underlyingTable.rollback?.();
-		await this.clearOverlay();
+		this.clearOverlay();
 	}
 
 	/**
-	 * Clears the connection-scoped overlay and resets state.
+	 * Discards the connection-scoped overlay entirely.
+	 * The overlay table is per-connection and ephemeral, so simply removing
+	 * the reference allows GC to reclaim it. A fresh overlay will be created
+	 * lazily via ensureOverlay() on the next write.
 	 */
-	private async clearOverlay(): Promise<void> {
-		const state = this.getOverlayState();
-		if (!state) return;
-
-		const overlay = state.overlayTable;
-		if (overlay.query) {
-			const pkIndices = this.getPrimaryKeyIndices();
-
-			// Collect all PKs first to avoid modifying while iterating
-			const pksToDelete: SqlValue[][] = [];
-			for await (const row of overlay.query(this.createFullScanFilterInfo())) {
-				// Extract just the PK values (same columns as underlying table)
-				const pk = pkIndices.map(i => row[i]);
-				pksToDelete.push(pk);
-			}
-
-			// Delete each row from overlay by PK
-			for (const pk of pksToDelete) {
-				await overlay.update({
-					operation: 'delete',
-					values: undefined,
-					oldKeyValues: pk,
-				});
-			}
-		}
-
-		// Clear the connection overlay state
+	private clearOverlay(): void {
 		this.isolationModule.clearConnectionOverlay(this.db, this.schemaName, this.tableName);
 	}
 
 	// ==================== Savepoints ====================
+	// Overlay savepoints are managed by IsolatedConnection (which forwards
+	// to the overlay's own registered connection). The table-level methods
+	// only forward to the underlying table to avoid double-savepointing.
 
 	async savepoint(index: number): Promise<void> {
 		await this.underlyingTable.savepoint?.(index);
-		await this.overlayTable?.savepoint?.(index);
 	}
 
 	async release(index: number): Promise<void> {
 		await this.underlyingTable.release?.(index);
-		await this.overlayTable?.release?.(index);
 	}
 
 	async rollbackTo(index: number): Promise<void> {
 		await this.underlyingTable.rollbackTo?.(index);
-		await this.overlayTable?.rollbackTo?.(index);
 	}
 
 	// ==================== Schema Operations ====================
@@ -1013,11 +1018,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	 * Flushes overlay to underlying and clears overlay.
 	 */
 	async onConnectionCommit(): Promise<void> {
-		const overlay = this.overlayTable;
-		if (this.hasChanges && overlay) {
-			await this.flushOverlayToUnderlying(overlay);
-		}
-		await this.clearOverlay();
+		await this.flushAndClearOverlay();
 		this.savepointsBeforeOverlay.clear();
 	}
 
@@ -1026,7 +1027,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	 * Clears overlay without flushing.
 	 */
 	async onConnectionRollback(): Promise<void> {
-		await this.clearOverlay();
+		this.clearOverlay();
 		this.savepointsBeforeOverlay.clear();
 	}
 
@@ -1067,7 +1068,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	async onConnectionRollbackToSavepoint(index: number): Promise<void> {
 		if (this.savepointsBeforeOverlay.has(index)) {
 			// Rolling back to before the overlay existed — discard all overlay changes
-			await this.clearOverlay();
+			this.clearOverlay();
 			// Remove savepoints above the target (they're implicitly gone)
 			for (const depth of [...this.savepointsBeforeOverlay]) {
 				if (depth > index) {
