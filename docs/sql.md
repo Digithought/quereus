@@ -3225,7 +3225,7 @@ table_or_subquery  = table_name [ [ "as" ] table_alias ]
 join_clause        = table_or_subquery { join_operator table_or_subquery join_constraint } ;
 
 join_operator      = ","
-                   | [ "natural" ] [ "left" [ "outer" ] | "inner" | "cross" | "right" [ "outer" ] | "full" [ "outer" ] ] "join" [ "lateral" ] ;
+                   | [ "left" [ "outer" ] | "inner" | "cross" | "right" [ "outer" ] | "full" [ "outer" ] ] "join" [ "lateral" ] ;
 
 join_constraint    = [ "on" expr | "using" "(" column_name { "," column_name } ")" ] ;
 
