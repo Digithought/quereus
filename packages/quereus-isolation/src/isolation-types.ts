@@ -1,4 +1,4 @@
-import type { VirtualTableModule, VirtualTable } from '@quereus/quereus';
+import type { VirtualTableModule } from '@quereus/quereus';
 
 /**
  * Configuration for creating an isolation-wrapped module.
@@ -20,21 +20,4 @@ export interface IsolationModuleConfig {
 	 * Defaults to '_tombstone'.
 	 */
 	tombstoneColumn?: string;
-}
-
-/**
- * Internal state for an isolated table instance.
- */
-export interface IsolatedTableState {
-	/** The wrapped underlying table */
-	underlyingTable: VirtualTable;
-
-	/** The overlay table storing uncommitted changes */
-	overlayTable: VirtualTable;
-
-	/** Whether there are any pending changes in the overlay */
-	hasChanges: boolean;
-
-	/** Current savepoint depth */
-	savepointDepth: number;
 }

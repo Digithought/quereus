@@ -191,8 +191,9 @@ console.log(caps.persistent); // (from underlying module)
 The isolation layer adds minimal overhead:
 
 - **Fast path** — No overlay merging if no writes have occurred
-- **Point lookups** — Currently O(n) full scan (PK point lookup optimization planned)
+- **Point lookups** — O(log n) via PK index seek on the overlay
 - **Range scans** — Streaming merge of sorted results
+- **Commit flush** — O(log n) per-row existence check against the underlying table
 
 For performance-critical applications, consider:
 - Using memory overlay for small transactions

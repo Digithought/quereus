@@ -566,7 +566,8 @@ Using fast-check or similar:
 ### Phase 6: Optimization
 
 - [ ] Switch Quoomb Web's Store and Sync modes to use isolated.
-- [ ] Implement optimizations for common scenarios (see below)
+- [x] O(log n) PK point lookups via `buildPKPointLookupFilter()` (overlay reads and underlying existence checks)
+- [x] O(1) `clearOverlay()` via reference discard instead of row-by-row deletion
 - [ ] Performance benchmarking vs. non-isolated access
 
 ---

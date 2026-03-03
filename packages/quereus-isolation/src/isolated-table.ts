@@ -599,24 +599,17 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 							oldKeyValues: pk,
 							onConflict: args.onConflict,
 						});
-						if (isUpdateOk(result) && result.row) {
-							return { status: 'ok', row: result.row.slice(0, tombstoneIndex) };
-						}
-						return result;
+						return this.stripTombstoneFromResult(result, tombstoneIndex);
 					}
 				}
 
 				// Normal insert into overlay with tombstone = 0
-				const overlayRow = [...(values ?? []), 0]; // Append tombstone = 0
+				const overlayRow = [...(values ?? []), 0];
 				const result = await overlay.update({
 					...args,
 					values: overlayRow,
 				});
-				// Strip tombstone from result
-				if (isUpdateOk(result) && result.row) {
-					return { status: 'ok', row: result.row.slice(0, tombstoneIndex) };
-				}
-				return result;
+				return this.stripTombstoneFromResult(result, tombstoneIndex);
 			}
 
 			case 'update': {
@@ -625,7 +618,6 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 				// 2. Underlying only - insert into overlay with new values
 				// 3. Both (previous update) - update the overlay row
 
-				// First, try to find in overlay
 				const pkIndices = this.getPrimaryKeyIndices();
 				const targetPK = oldKeyValues ?? (values ? pkIndices.map(i => values[i]) : undefined);
 
@@ -633,36 +625,25 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 					throw new Error('UPDATE requires oldKeyValues or values with primary key');
 				}
 
-				// Check if row exists in overlay
-				const existsInOverlay = await this.rowExistsInOverlay(overlay, targetPK);
+				const existingOverlayRow = await this.getOverlayRow(overlay, targetPK);
+				const overlayRow = [...values, 0]; // tombstone = 0
 
-				if (existsInOverlay) {
+				if (existingOverlayRow) {
 					// Update existing overlay row
-					const overlayRow = [...values, 0]; // tombstone = 0
-					// oldKeyValues should only contain PK columns, not tombstone
 					const result = await overlay.update({
 						...args,
 						values: overlayRow,
 						oldKeyValues: targetPK,
 					});
-					// Strip tombstone from result
-					if (isUpdateOk(result) && result.row) {
-						return { status: 'ok', row: result.row.slice(0, tombstoneIndex) };
-					}
-					return result;
+					return this.stripTombstoneFromResult(result, tombstoneIndex);
 				} else {
 					// Insert new overlay row (shadows underlying)
-					const overlayRow = [...values, 0];
 					const result = await overlay.update({
 						operation: 'insert',
 						values: overlayRow,
 						onConflict: args.onConflict,
 					});
-					// Strip tombstone from result
-					if (isUpdateOk(result) && result.row) {
-						return { status: 'ok', row: result.row.slice(0, tombstoneIndex) };
-					}
-					return result;
+					return this.stripTombstoneFromResult(result, tombstoneIndex);
 				}
 			}
 
@@ -675,28 +656,21 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 					throw new Error('DELETE requires oldKeyValues or values with primary key');
 				}
 
-				// Check if row exists in overlay
-				const existsInOverlay = await this.rowExistsInOverlay(overlay, targetPK);
+				const existingOverlayRow = await this.getOverlayRow(overlay, targetPK);
 
-				if (existsInOverlay) {
-					// Check if it's already a tombstone
-					const overlayRow = await this.getOverlayRow(overlay, targetPK);
-					if (overlayRow) {
-						const isTombstone = overlayRow[tombstoneIndex] === 1;
-						if (isTombstone) {
-							// Already deleted, nothing to do
-							return { status: 'ok' };
-						}
-						// Convert to tombstone by updating the tombstone flag
-						const tombstoneRow = [...overlayRow.slice(0, tombstoneIndex), 1];
-						// oldKeyValues should only contain PK columns, not the full row
-						await overlay.update({
-							operation: 'update',
-							values: tombstoneRow,
-							oldKeyValues: targetPK,
-							onConflict: args.onConflict,
-						});
+				if (existingOverlayRow) {
+					if (existingOverlayRow[tombstoneIndex] === 1) {
+						// Already deleted, nothing to do
+						return { status: 'ok' };
 					}
+					// Convert to tombstone by updating the tombstone flag
+					const tombstoneRow = [...existingOverlayRow.slice(0, tombstoneIndex), 1];
+					await overlay.update({
+						operation: 'update',
+						values: tombstoneRow,
+						oldKeyValues: targetPK,
+						onConflict: args.onConflict,
+					});
 				} else {
 					// Insert tombstone to shadow underlying row
 					// Build a minimal row with PK values and tombstone = 1
@@ -725,11 +699,13 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	}
 
 	/**
-	 * Checks if a row with the given primary key exists in the overlay.
+	 * Strips the tombstone column from an overlay update result.
 	 */
-	private async rowExistsInOverlay(overlay: VirtualTable, pk: SqlValue[]): Promise<boolean> {
-		const row = await this.getOverlayRow(overlay, pk);
-		return row !== undefined;
+	private stripTombstoneFromResult(result: UpdateResult, tombstoneIndex: number): UpdateResult {
+		if (isUpdateOk(result) && result.row) {
+			return { status: 'ok', row: result.row.slice(0, tombstoneIndex) };
+		}
+		return result;
 	}
 
 	/**
