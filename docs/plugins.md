@@ -1311,7 +1311,7 @@ interface OrderingSpec {
   nullsFirst?: boolean;
 }
 
-type ConstraintOp = '=' | '>' | '>=' | '<' | '<=' | 'MATCH' | 'LIKE' | 'GLOB' | 'IS NULL' | 'IS NOT NULL';
+type ConstraintOp = '=' | '>' | '>=' | '<' | '<=' | 'MATCH' | 'LIKE' | 'GLOB' | 'IS NULL' | 'IS NOT NULL' | 'IN' | 'NOT IN';
 ```
 
 ### Legacy Planning Interface

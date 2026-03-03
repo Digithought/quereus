@@ -582,19 +582,13 @@ if (shouldCache(node, context)) {
 ## Known Issues
 
 **Current Limitations**
-- **Enhanced Predicate Analysis**: The constraint extractor handles binary predicates, IN lists (multi-value IN → index multi-seek), IS NULL/IS NOT NULL, and OR-of-equality disjunctions (collapsed to IN for index multi-seek). OR conditions with range predicates or disjunctions across different columns/tables remain as residual filters. OR-to-UNION rewriting for disjoint index-friendly branches on separate indexes is a future enhancement
-- **Relational Folding Pending**: Scalar constant folding is implemented; relational constant folding (materializing foldable relational subtrees) is planned
-- **Access Path Selection**: Supports primary and secondary index seek/range via module-provided `indexName`/`seekColumnIndexes`. Prefix-equality + trailing-range on composite indexes is not yet supported
+- **OR predicate extraction**: The constraint extractor handles OR-of-equality disjunctions (collapsed to IN for index multi-seek). OR conditions with range predicates on the same index (`tickets/plan/2-or-multi-range-seek.md`) or disjunctions across different indexes (`tickets/plan/2-or-to-union-rewriting.md`) remain as residual filters.
+- **Relational Folding Pending**: Scalar constant folding is implemented; relational constant folding is planned (`tickets/plan/2-relational-constant-folding.md`).
+- **Access Path Selection**: Supports primary and secondary index seek/range via module-provided `indexName`/`seekColumnIndexes`. Prefix-equality + trailing-range on composite indexes is not yet supported (`tickets/plan/2-composite-index-advanced-seeks.md`).
 
 ## Future Directions
 
-See tasks/ for future optimizer work.
-
-**OR-to-UNION rewriting**: When OR branches reference different indexes (e.g., `WHERE colA = 1 OR colB = 2` with separate indexes on colA and colB), the optimizer could rewrite to `UNION ALL` of per-branch queries with duplicate elimination. This requires cost model evaluation (N index seeks + dedup vs. single scan + residual) and `UnionAllNode` insertion. The OR branch analysis infrastructure in the constraint extractor provides the foundation.
-
-**OR multi-range seek**: OR disjunctions with range predicates on the same index columns (e.g., `WHERE date > '2024-01' OR date < '2023-06'`) could be served by multiple range scans on the same index. This requires extending `ScanPlan` and cursor layers to support multiple range specs per scan.
-
-The modular rule-based design ensures these enhancements can be added incrementally without disrupting existing functionality.
+See `tickets/plan/` for future optimizer work.
 
 ## Join Optimization with QuickPick
 
@@ -1136,6 +1130,7 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 - `SeqScanNode`: Full table scan
 - `IndexScanNode`: Index-based scan with filters
 - `IndexSeekNode`: Index-based point/range lookups
+- `EmptyResultNode`: Zero-row short-circuit (e.g., `IS NULL` on NOT NULL column)
 
 ### Parameterization hand-off
 
