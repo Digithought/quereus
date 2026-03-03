@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Download, Upload, AlertCircle, CheckCircle } from 'lucide-react';
 import { useConfigStore } from '../stores/configStore.js';
+import { downloadBlob } from '../utils/download.js';
 
 interface ConfigModalProps {
   isOpen: boolean;
@@ -69,15 +70,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
 
   const handleDownload = () => {
     const json = exportConfig();
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'quoomb.config.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadBlob(json, 'quoomb.config.json', 'application/json');
   };
 
   return (
