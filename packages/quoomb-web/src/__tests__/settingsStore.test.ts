@@ -161,12 +161,18 @@ describe('settingsStore', () => {
     it('resets all settings to defaults', () => {
       useSettingsStore.getState().setTheme('dark');
       useSettingsStore.getState().setFontSize(24);
+      useSettingsStore.getState().setAutoSave(false);
+      useSettingsStore.getState().setWordWrap(false);
+      useSettingsStore.getState().setPanelSizes({ editor: 70, results: 30 });
       useSettingsStore.getState().setStorageModule('sync');
       useSettingsStore.getState().addPlugin({ id: 'p1', url: 'x', enabled: true, config: {} });
       useSettingsStore.getState().resetToDefaults();
       const state = useSettingsStore.getState();
       expect(state.theme).toBe('auto');
       expect(state.fontSize).toBe(14);
+      expect(state.autoSave).toBe(true);
+      expect(state.wordWrap).toBe(true);
+      expect(state.defaultPanelSizes).toEqual({ editor: 50, results: 50 });
       expect(state.storageModule).toBe('memory');
       expect(state.plugins).toEqual([]);
     });
