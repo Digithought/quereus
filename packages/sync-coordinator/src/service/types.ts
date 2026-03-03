@@ -167,9 +167,10 @@ export interface CoordinatorHooks {
    *
    * @param client - Authenticated client identity
    * @param socket - The WebSocket connection
+   * @param databaseId - The database the client is connecting to
    * @returns true to accept, false to reject
    */
-  onClientConnect?(client: ClientIdentity, socket: WebSocket): Promise<boolean>;
+  onClientConnect?(client: ClientIdentity, socket: WebSocket, databaseId: string): Promise<boolean>;
 
   /**
    * Called when a WebSocket client disconnects.

@@ -527,7 +527,7 @@ export class CoordinatorService {
 
     // Call connect hook
     if (this.hooks.onClientConnect) {
-      const allowed = await this.hooks.onClientConnect(identity, socket);
+      const allowed = await this.hooks.onClientConnect(identity, socket, databaseId);
       if (!allowed) {
         throw new Error('Connection rejected');
       }

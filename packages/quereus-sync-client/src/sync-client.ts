@@ -253,7 +253,11 @@ export class SyncClient {
         break;
 
       default:
-        console.warn('Unknown sync message type:', message.type);
+        if (this.options.onUnhandledMessage) {
+          this.options.onUnhandledMessage(message);
+        } else {
+          console.warn('Unknown sync message type:', message.type);
+        }
     }
   }
 

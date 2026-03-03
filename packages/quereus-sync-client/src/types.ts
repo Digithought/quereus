@@ -78,6 +78,12 @@ export interface SyncClientOptions {
   onError?: (error: Error) => void;
 
   /**
+   * Callback for messages the client doesn't handle (e.g., topology).
+   * Receives the raw parsed JSON message object.
+   */
+  onUnhandledMessage?: (message: Record<string, unknown>) => void;
+
+  /**
    * Whether to automatically reconnect on disconnect.
    * @default true
    */
