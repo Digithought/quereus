@@ -30,13 +30,35 @@ The `launch-process` tool wraps commands in `powershell -Command ...`, which str
 Use a file or pipe based pattern as a work-around.  e.g. `git commit -F .git/COMMIT_EDITMSG`
 
 ## Project Structure
-- Yarn 4 monorepo with workspaces under `packages/`
-- Main engine: `packages/quereus` (TypeScript SQL query processor)
-- CLI: `packages/quoomb-cli`, Web: `packages/quoomb-web`
-- Plugins: `quereus-plugin-leveldb`, `quereus-plugin-indexeddb`, `quereus-plugin-react-native-leveldb`, `quereus-plugin-nativescript-sqlite`
-- Sync: `quereus-sync`, `quereus-sync-client`, `sync-coordinator`
-- Other: `plugin-loader`, `quereus-isolation`, `quereus-store`, `shared-ui`, `quereus-vscode`
-- Task workflow in `tickets/` folder (see `tickets/AGENTS.md`)
+
+Yarn 4 monorepo. All packages under `packages/`.
+
+```
+quereus/                   # Main SQL engine — see its README for detailed src/ layout
+├── src/                   #   core/ parser/ planner/ runtime/ emit/ schema/ types/ func/ vtab/ common/ util/
+│   ├── planner/           #   building/ nodes/ rules/{access,aggregate,cache,distinct,join,predicate,retrieve,subquery}/
+│   │                      #   framework/ cost/ analysis/ stats/ validation/ scopes/ cache/
+│   └── runtime/emit/      #   Instruction emitters — mirrors planner/nodes/ 1:1
+├── test/                  #   logic/*.sqllogic (primary), plan/, optimizer/, planner/, vtab/
+└── docs/                  #   runtime.md, types.md, sql.md, optimizer.md, schema.md, ...
+quoomb-cli/                # CLI tool
+quoomb-web/                # Web UI
+quereus-store/             # Persistent key-value store abstraction
+quereus-isolation/         # Snapshot isolation layer
+quereus-sync/              # Sync engine
+quereus-sync-client/       # Sync client
+sync-coordinator/          # Sync server/coordinator
+plugin-loader/             # Plugin loading infrastructure
+quereus-plugin-leveldb/    # LevelDB storage plugin
+quereus-plugin-indexeddb/  # IndexedDB storage plugin
+quereus-plugin-react-native-leveldb/
+quereus-plugin-nativescript-sqlite/
+quereus-vscode/            # VS Code extension
+shared-ui/                 # Shared UI components
+sample-plugins/            # Example plugins
+```
+
+Task workflow in `tickets/` folder (see `tickets/AGENTS.md`).
 
 ## Build & Test
 - `yarn build` runs sequentially through all packages
@@ -50,11 +72,11 @@ Use a file or pipe based pattern as a work-around.  e.g. `git commit -F .git/COM
 - Async core: cursors are `AsyncIterable<Row>`
 - Key-based addressing (no rowids)
 - Type system: logical/physical type separation with temporal types
-- Planner uses PlanNodes, runtime uses Instructions
+- Pipeline: SQL → parser → AST → planner/building → PlanNode tree → optimizer rules → emit → Instructions
 
 ## Docs
-- Main docs in `docs/` folder (runtime.md, types.md, sql.md, usage.md, etc.)
+- Main docs in `docs/` folder (runtime.md, types.md, sql.md, optimizer.md, schema.md, usage.md, etc.)
 - Package README at `packages/quereus/README.md`
 ----
 
-For all but the most trivial asks, read and maintain the relevant docs along with the work. 
+For all but the most trivial asks, read and maintain the relevant docs along with the work.

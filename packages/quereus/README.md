@@ -47,18 +47,73 @@ Quereus is built on a modern architecture based on partially immutable PlanNodes
 
 ## Source File Layout
 
-The project is organized into the following main directories:
+```
+src/
+├── core/                     # Database, Statement, transactions
+├── parser/                   # SQL parser → AST
+├── planner/                  # AST → PlanNode tree
+│   ├── building/             # Plan builders (select.ts, expression.ts, ddl.ts, ...)
+│   ├── nodes/                # PlanNode classes (one per node type)
+│   │   └── plan-node-type.ts # PlanNodeType enum — add new node types here
+│   ├── rules/                # Optimizer rules, by category:
+│   │   ├── access/           #   access-path selection
+│   │   ├── aggregate/        #   streaming aggregation
+│   │   ├── cache/            #   CTE, IN-subquery, materialization
+│   │   ├── distinct/         #   distinct elimination
+│   │   ├── join/             #   join commutation, physical selection
+│   │   ├── predicate/        #   predicate pushdown
+│   │   ├── retrieve/         #   retrieve growth
+│   │   └── subquery/         #   subquery decorrelation
+│   ├── framework/            # Optimizer framework (characteristics, passes, registry)
+│   ├── cost/                 # Cost model (index.ts)
+│   ├── analysis/             # Const evaluator, constraint extractor, predicate normalizer
+│   ├── stats/                # Table/column statistics
+│   ├── validation/           # Plan validation passes
+│   ├── scopes/               # Name resolution scopes
+│   └── cache/                # Plan cache
+├── runtime/
+│   ├── emit/                 # Instruction emitters (mirrors planner/nodes/)
+│   ├── cache/                # Runtime caching
+│   └── functions/            # Runtime function dispatch
+├── emit/                     # Top-level emitter entry (plan → instructions)
+├── schema/                   # Catalog, schema manager, table/column/view/assertion defs
+├── types/                    # Type system (logical types, registry, temporal, JSON)
+├── func/builtins/            # Built-in functions (scalar, aggregate, string, datetime, json, ...)
+├── vtab/                     # Virtual table framework
+│   └── memory/               # In-memory VTab implementation (layers, merge iterators)
+├── common/                   # Shared constants, errors, logger, type inference
+└── util/                     # Miscellaneous utilities
 
-*   `src/common`: Foundational types, constants, and error classes.
-*   `src/core`: High-level API classes (`Database`, `Statement`).
-*   `src/parser`: SQL lexing, parsing, and AST definitions.
-*   `src/planner`: Building and optimizing `PlanNode` trees from AST.
-*   `src/runtime`: Emission, scheduling, and execution of runtime `Instruction`s.
-*   `src/schema`: Management of database schemas.
-*   `src/vtab`: Virtual table interface and build-ins (including `memory`).
-*   `src/func`: User-defined functions.
-*   `src/util`: General utility functions.
-*   `docs`: Project documentation.
+test/
+├── logic/                    # SQL logic tests (*.sqllogic) — primary test suite
+├── plan/                     # Plan-shape tests (basic/, joins/, aggregates/)
+├── optimizer/                # Optimizer-specific tests
+├── planner/                  # Planner unit tests
+├── vtab/                     # VTab tests
+└── util/                     # Test utilities
+```
+
+Key relationships: each PlanNode in `planner/nodes/` has a matching emitter in `runtime/emit/`. Optimizer rules in `planner/rules/` are registered via `planner/framework/registry.ts`. Tests go in `test/logic/*.sqllogic` (SQL logic tests) or `test/plan/` (plan shape tests).
+
+### Common Implementation Patterns
+
+**Adding a new PlanNode** (follow an existing node as template):
+1. `planner/nodes/my-node.ts` — node class (e.g. copy `bloom-join-node.ts` for joins)
+2. `planner/nodes/plan-node-type.ts` — add enum entry
+3. `runtime/emit/my-node.ts` — matching emitter
+4. `emit/emitter.ts` — register emitter in the visitor
+5. Tests in `test/logic/*.sqllogic` or `test/plan/`
+
+**Adding an optimizer rule:**
+1. `planner/rules/<category>/rule-my-rule.ts` (copy an existing rule in the same category)
+2. Register in `planner/framework/registry.ts`
+3. Cost constants go in `planner/cost/index.ts`
+
+**Adding a built-in function:**
+1. `func/builtins/<category>.ts` (scalar.ts, string.ts, aggregate.ts, json.ts, datetime.ts, ...)
+2. Register via `func/registration.ts`
+
+All paths above are relative to `src/`.
 
 ## Quick Start
 

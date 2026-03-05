@@ -2,7 +2,7 @@
  * WebSocket handler for real-time sync.
  */
 
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from 'fastify';
 import type { WebSocket, RawData } from 'ws';
 import '@fastify/websocket';
 import {
@@ -73,7 +73,10 @@ export function registerWebSocket(
   service: CoordinatorService,
   basePath: string
 ): void {
-  app.get(`${basePath}/ws`, { websocket: true }, (socket: WebSocket, request: FastifyRequest) => {
+  // RouteShorthandOptions cast: @fastify/websocket augments this type, but when compiled
+  // via portal-linked consumers, the augmentation may target a different fastify instance.
+  const wsOpts: RouteShorthandOptions & { websocket: true } = { websocket: true };
+  app.get(`${basePath}/ws`, wsOpts, (socket: WebSocket, request: FastifyRequest) => {
     wsLog('New WebSocket connection from %s', request.ip);
 
     let session: ClientSession | null = null;
