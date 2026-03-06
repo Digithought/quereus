@@ -416,10 +416,15 @@ Quereus employs a multi-faceted testing strategy:
     *   Integration boundary tests (`integration-boundaries.spec.ts`) verify all boundary transitions: Parser→Planner, Planner→Optimizer, Optimizer→Runtime, Runtime→VTab.
     *   Golden plan tests (`plan/golden-plans.spec.ts`) use snapshot testing to detect unintended query plan changes.
 
-5.  **CI Integration (Planned)**:
+5.  **Benchmark Suite (`bench/`)**:
+    *   Standalone benchmark harness run via `yarn bench`. Measures parser, planner, execution, and mutation throughput across 18 benchmarks.
+    *   Records results to timestamped JSON files in `bench/results/` (gitignored).
+    *   `yarn bench --baseline <file>` compares against a previous result, color-codes regressions (>20% red) and improvements (>10% green), and exits non-zero on regressions.
+
+6.  **CI Integration (Planned)**:
     *   Utilize GitHub Actions (or similar) to run test suites automatically, potentially with different configurations (quick checks, full runs, browser environment).
 
-This layered approach aims for broad coverage via the logic tests, unit tests for individual subsystems, property tests to explore edge cases, and performance sentinels to guard against regressions.
+This layered approach aims for broad coverage via the logic tests, unit tests for individual subsystems, property tests to explore edge cases, performance sentinels to guard against regressions, and a dedicated benchmark suite for tracking performance over time.
 
 ## Supported Built-in Functions
 

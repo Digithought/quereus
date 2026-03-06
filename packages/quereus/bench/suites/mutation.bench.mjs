@@ -1,12 +1,5 @@
 import { Database } from '../../dist/src/index.js';
 
-/** Collect an async iterable into an array. */
-async function collect(iter) {
-	const out = [];
-	for await (const item of iter) out.push(item);
-	return out;
-}
-
 let db;
 
 export const benchmarks = [
