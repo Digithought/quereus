@@ -21,6 +21,25 @@ export function safeJsonParse(jsonString: SqlValue): JSONValue | null {
 }
 
 /**
+ * Coerces a SqlValue to a JSONValue, accepting both native objects and JSON strings.
+ * This is the primary entry point for json_* functions that accept JSON input.
+ *
+ * Returns `undefined` on parse/conversion failure (to distinguish from JSON null).
+ *
+ * @param input The SQL value to coerce
+ * @returns The JSON value (including null for SQL NULL / JSON null), or undefined on failure
+ */
+export function coerceToJsonValue(input: SqlValue): JSONValue | undefined {
+	if (input === null) return null;
+	if (typeof input === 'string') {
+		try { return JSON.parse(input) as JSONValue; } catch { return undefined; }
+	}
+	if (typeof input === 'object' && !(input instanceof Uint8Array)) return input as JSONValue;
+	if (typeof input === 'number' || typeof input === 'boolean') return input;
+	return undefined;
+}
+
+/**
  * Parses a JSON path and returns information needed for modification
  *
  * Handles standard JSON path syntax ($, $.key, $[0], etc.) and optionally

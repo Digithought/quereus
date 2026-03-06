@@ -18,7 +18,7 @@ Quereus implements a **logical type system** that separates type semantics from 
 - **Type Enforcement**: Always strict - values must match declared types or be explicitly converted via conversion functions
 - **Type Conversion**: Use functions like `integer()`, `text()`, `date()` instead of CAST syntax (though CAST is supported for compatibility)
 - **Date/Time**: Native DATE, TIME, DATETIME types using Temporal API internally, stored as ISO 8601 strings
-- **JSON**: Native JSON type with object storage (future)
+- **JSON**: Native JSON type with `PhysicalType.OBJECT` — values stored as JS objects in memory, serialized to JSON strings on disk
 - **Constraints**: Length, precision, and other restrictions handled via CHECK constraints, not type definitions
 
 ---
@@ -40,7 +40,8 @@ export enum PhysicalType {
   OBJECT = 6,     // object (for JSON, custom types)
 }
 
-export type SqlValue = string | number | bigint | boolean | Uint8Array | null | object;
+export type SqlValue = string | number | bigint | boolean | Uint8Array | JsonSqlValue | null;
+// JsonSqlValue = { [key: string]: JSONValue } | JSONValue[]
 ```
 
 ### Logical Types
@@ -183,12 +184,15 @@ This ensures type information flows through the entire planning and execution pi
 - Values: `null` only
 - Used for expressions that always return NULL
 
-**JSON** (Future)
+**JSON**
 - Physical: `PhysicalType.OBJECT`
-- Values: JSON-serializable objects/arrays
-- Validation: Must be valid JSON
-- Comparison: Deep equality, no ordering
+- Values: Native JS objects, arrays, and JSON-compatible primitives (stored in memory as-is)
+- Validation: Must be valid JSON; accepts objects, arrays, numbers, booleans, strings (parsed as JSON), and null
+- Comparison: Deep equality via JSON string comparison
 - Collations: None
+- Serialization: `serialize()` converts to JSON string for storage; `deserialize()` parses back to native object
+- Conversion: `json(value)` parses a JSON string into a native object; inserting a JSON string into a JSON column auto-parses it
+- Functions: All `json_*` functions accept both native objects and JSON strings as input
 
 ---
 
@@ -250,6 +254,7 @@ select datetime('2024-01-15T10:30:00');
 - `time(value)` - Convert to TIME
 - `datetime(value)` - Convert to DATETIME
 - `timespan(value)` - Convert to TIMESPAN (supports ISO 8601 durations and human-readable strings)
+- `json(value)` - Convert to JSON (parses JSON strings into native objects)
 
 Note: CAST syntax is also supported for SQL compatibility, but conversion functions are preferred.
 
@@ -524,8 +529,9 @@ When you pass parameter values, Quereus automatically infers the logical type ba
 | `boolean` | BOOLEAN | `true`, `false` |
 | `string` | TEXT | `'hello'`, `''` |
 | `Uint8Array` | BLOB | `new Uint8Array([1, 2, 3])` |
+| `object` (plain) | JSON | `{ x: 1 }`, `[1, 2, 3]` |
 
-**Note**: Strings are always inferred as TEXT type. To use date/time types, either:
+**Note**: Strings are always inferred as TEXT type. Plain objects and arrays are inferred as JSON type. To use date/time types, either:
 - Use conversion functions in your query: `date(:param)`, `time(:param)`, `datetime(:param)`
 - Or pass the value through a conversion function before binding
 
@@ -631,6 +637,7 @@ Parameter type validation ensures type safety across executions:
 - TEXT physical type accepts: `string` (any string, including date-like strings)
 - BOOLEAN physical type accepts: `boolean`
 - BLOB physical type accepts: `Uint8Array`
+- OBJECT physical type accepts: plain objects, arrays (for JSON)
 
 ### Performance Benefits
 
@@ -686,12 +693,8 @@ The parameter type system provides significant performance benefits:
 
 **Performance Target**: 2-3x speedup for index operations, joins, and sorts.
 
-### JSON Type
+### JSON Enhancements
 
-**Goal**: Native JSON type with object storage.
-
-**Considerations**:
-- JSON schema validation (optional)
-- JSONPath queries
-- Indexing JSON properties
-- Performance vs TEXT-based JSON
+**Potential future work**:
+- Indexing JSON properties (functional indexes on `json_extract`)
+- JSON-specific index types for nested queries

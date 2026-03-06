@@ -91,6 +91,7 @@ const TYPE_INTEGER = 0x01;
 const TYPE_REAL = 0x02;
 const TYPE_TEXT = 0x03;
 const TYPE_BLOB = 0x04;
+const TYPE_OBJECT = 0x05;
 
 /** Escape byte for null bytes within strings. */
 const ESCAPE_BYTE = 0x01;
@@ -124,6 +125,11 @@ export function encodeValue(value: SqlValue, options?: EncodeOptions): Uint8Arra
 
   if (typeof value === 'boolean') {
     return encodeInteger(value ? 1n : 0n);
+  }
+
+  // JSON objects/arrays — serialize to JSON string and encode as text with OBJECT prefix
+  if (typeof value === 'object') {
+    return encodeObject(JSON.stringify(value), collation);
   }
 
   throw new Error(`Cannot encode value of type ${typeof value}`);
@@ -244,6 +250,41 @@ function encodeBlob(value: Uint8Array): Uint8Array {
 }
 
 /**
+ * Encode a JSON object/array as text with TYPE_OBJECT prefix.
+ * Uses the same encoding as TEXT for sort order (by JSON string representation).
+ */
+function encodeObject(jsonString: string, collation: string): Uint8Array {
+  const collationEncoder = getCollationEncoder(collation) ?? NOCASE_ENCODER;
+  const sortValue = collationEncoder.encode(jsonString);
+  const encoder = new TextEncoder();
+  const utf8 = encoder.encode(sortValue);
+
+  let escapeCount = 0;
+  for (const byte of utf8) {
+    if (byte === NULL_BYTE || byte === ESCAPE_BYTE) escapeCount++;
+  }
+
+  const result = new Uint8Array(1 + utf8.length + escapeCount + 1);
+  result[0] = TYPE_OBJECT;
+
+  let writePos = 1;
+  for (const byte of utf8) {
+    if (byte === NULL_BYTE) {
+      result[writePos++] = ESCAPE_BYTE;
+      result[writePos++] = 0x01;
+    } else if (byte === ESCAPE_BYTE) {
+      result[writePos++] = ESCAPE_BYTE;
+      result[writePos++] = 0x02;
+    } else {
+      result[writePos++] = byte;
+    }
+  }
+  result[writePos] = NULL_BYTE;
+
+  return result;
+}
+
+/**
  * Encode an unsigned integer as a variable-length byte sequence.
  * Uses high bit continuation: 1xxxxxxx means more bytes follow.
  */
@@ -295,6 +336,9 @@ export function decodeValue(
 
     case TYPE_BLOB:
       return decodeBlob(buffer, offset);
+
+    case TYPE_OBJECT:
+      return decodeObject(buffer, offset);
 
     default:
       throw new Error(`Unknown type prefix: 0x${typePrefix.toString(16)}`);
@@ -420,6 +464,31 @@ function decodeBlob(buffer: Uint8Array, offset: number): { value: Uint8Array; by
 
   const value = buffer.slice(dataStart, dataStart + length);
   return { value, bytesRead: 1 + lengthBytes + length };
+}
+
+function decodeObject(buffer: Uint8Array, offset: number): { value: SqlValue; bytesRead: number } {
+  // Decode like TEXT (null-terminated with escapes) then parse JSON
+  const bytes: number[] = [];
+  let i = offset + 1;
+
+  while (i < buffer.length) {
+    const byte = buffer[i];
+    if (byte === NULL_BYTE) { i++; break; }
+    if (byte === ESCAPE_BYTE && i + 1 < buffer.length) {
+      const next = buffer[i + 1];
+      if (next === 0x01) { bytes.push(NULL_BYTE); i += 2; }
+      else if (next === 0x02) { bytes.push(ESCAPE_BYTE); i += 2; }
+      else { bytes.push(byte); i++; }
+    } else {
+      bytes.push(byte);
+      i++;
+    }
+  }
+
+  const decoder = new TextDecoder();
+  const jsonString = decoder.decode(new Uint8Array(bytes));
+  const value = JSON.parse(jsonString) as SqlValue;
+  return { value, bytesRead: i - offset };
 }
 
 function decodeVarInt(buffer: Uint8Array, offset: number): { value: number; bytesRead: number } {

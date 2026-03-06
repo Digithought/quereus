@@ -1,14 +1,26 @@
 import type { RuntimeContext } from '../runtime/types.js';
+import type { JSONValue } from './json-types.js';
 
 export type MaybePromise<T> = T | Promise<T>;
 
-export type DeepReadonly<T> = { readonly [P in keyof T]: DeepReadonly<T[P]> };
+export type DeepReadonly<T> =
+	T extends string | number | bigint | boolean | symbol | null | undefined | Function | Uint8Array
+		? T
+		: T extends JSONValue
+			? T // Stop recursing into JSON values (recursive type)
+			: { readonly [P in keyof T]: DeepReadonly<T[P]> };
+
+/**
+ * A JSON-compatible object or array stored natively as a SQL value.
+ * Distinguishes JSON objects from other `object` types (Uint8Array, Date, etc.).
+ */
+export type JsonSqlValue = { [key: string]: JSONValue } | JSONValue[];
 
 /**
  * Represents the primitive scalar types Quereus can handle internally in this implementation.
  * These are the values that can be stored in Quereus columns and passed as parameters.
  */
-export type SqlValue = string | number | bigint | boolean | Uint8Array | null;
+export type SqlValue = string | number | bigint | boolean | Uint8Array | JsonSqlValue | null;
 
 /**
  * Represents a row of data, which is an array of SqlValue.
@@ -186,6 +198,8 @@ export function isSqlValue(value: unknown): value is SqlValue {
 	const t = typeof value;
 	if (t === 'string' || t === 'number' || t === 'bigint' || t === 'boolean') return true;
 	if (value instanceof Uint8Array) return true;
+	// Accept plain objects and arrays as JSON values
+	if (t === 'object' && (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype)) return true;
 	return false;
 }
 
@@ -194,7 +208,13 @@ export function isSqlValue(value: unknown): value is SqlValue {
  */
 export function describeSqlValueViolation(value: unknown): string {
 	const t = typeof value;
-	return t === 'object' ? ((value as object).constructor?.name ?? 'object') : t;
+	if (t === 'object' && value !== null) {
+		if (value instanceof Uint8Array) return 'Uint8Array';
+		if (Array.isArray(value)) return 'Array (JSON)';
+		if (Object.getPrototypeOf(value) === Object.prototype) return 'Object (JSON)';
+		return (value as object).constructor?.name ?? 'object';
+	}
+	return t;
 }
 
 export type { JSONValue } from './json-types.js';

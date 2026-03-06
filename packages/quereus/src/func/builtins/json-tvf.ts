@@ -2,7 +2,7 @@ import type { Row, SqlValue, JSONValue } from "../../common/types.js";
 import { createTableValuedFunction } from "../registration.js";
 import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
-import { safeJsonParse, evaluateJsonPathBasic, getJsonType } from "./json-helpers.js";
+import { coerceToJsonValue, evaluateJsonPathBasic, getJsonType } from "./json-helpers.js";
 import { jsonStringify } from "../../util/serialization.js";
 import { INTEGER_TYPE, TEXT_TYPE } from "../../types/builtin-types.js";
 
@@ -30,14 +30,10 @@ export const jsonEachFunc = createTableValuedFunction(
 			rowConstraints: []
 		}
 	},
-	async function* (jsonText: SqlValue, rootPath?: SqlValue): AsyncIterable<Row> {
-		if (typeof jsonText !== 'string') {
-			throw new QuereusError('json_each() requires a JSON string as first argument', StatusCode.ERROR);
-		}
-
-		const parsedJson = safeJsonParse(jsonText);
-		if (parsedJson === null && typeof jsonText === 'string') {
-			throw new QuereusError('Invalid JSON provided to json_each', StatusCode.ERROR);
+	async function* (jsonInput: SqlValue, rootPath?: SqlValue): AsyncIterable<Row> {
+		const parsedJson = coerceToJsonValue(jsonInput);
+		if (parsedJson === undefined) {
+			throw new QuereusError('json_each() requires a valid JSON value as first argument', StatusCode.ERROR);
 		}
 
 		const rootPathStr = (typeof rootPath === 'string' && rootPath) ? rootPath : null;
@@ -132,14 +128,10 @@ export const jsonTreeFunc = createTableValuedFunction(
 			rowConstraints: []
 		}
 	},
-	async function* (jsonText: SqlValue, rootPath?: SqlValue): AsyncIterable<Row> {
-		if (typeof jsonText !== 'string') {
-			throw new QuereusError('json_tree() requires a JSON string as first argument', StatusCode.ERROR);
-		}
-
-		const parsedJson = safeJsonParse(jsonText);
-		if (parsedJson === null && typeof jsonText === 'string') {
-			throw new QuereusError('Invalid JSON provided to json_tree', StatusCode.ERROR);
+	async function* (jsonInput: SqlValue, rootPath?: SqlValue): AsyncIterable<Row> {
+		const parsedJson = coerceToJsonValue(jsonInput);
+		if (parsedJson === undefined) {
+			throw new QuereusError('json_tree() requires a valid JSON value as first argument', StatusCode.ERROR);
 		}
 
 		const rootPathStr = (typeof rootPath === 'string' && rootPath) ? rootPath : null;
@@ -149,7 +141,7 @@ export const jsonTreeFunc = createTableValuedFunction(
 			startNode = evaluateJsonPathBasic(startNode, rootPathStr);
 		}
 
-		const localStack: { value: any; parentPath: string; parentKey: string | number | null; parentId: number; childrenPushed: boolean; }[] = [];
+		const localStack: { value: JSONValue; parentPath: string; parentKey: string | number | null; parentId: number; childrenPushed: boolean; }[] = [];
 		let localElementIdCounter = 0;
 
 		if (startNode !== undefined) {
@@ -207,7 +199,7 @@ export const jsonTreeFunc = createTableValuedFunction(
 						const keys = Object.keys(value).sort().reverse();
 						for (const objKey of keys) {
 							localStack.push({
-								value: value[objKey],
+								value: (value as Record<string, JSONValue>)[objKey],
 								parentPath: parentFullKeyForRow,
 								parentKey: objKey,
 								parentId: parentIdForRow,

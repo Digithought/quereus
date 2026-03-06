@@ -3,78 +3,74 @@ import { safeJsonParse } from '../func/builtins/json-helpers.js';
 import type { JSONValue } from '../common/json-types.js';
 
 /**
- * JSON type - stores valid JSON strings
- * Uses TEXT for physical storage but validates JSON syntax
- * Provides deep equality comparison for JSON values
+ * JSON type - stores JSON values as native JS objects/arrays/primitives.
+ * Uses PhysicalType.OBJECT for in-memory representation.
+ * Serialize/deserialize hooks convert between native objects and JSON strings for storage.
  */
 export const JSON_TYPE: LogicalType = {
 	name: 'JSON',
-	physicalType: PhysicalType.TEXT,
+	physicalType: PhysicalType.OBJECT,
 
 	validate: (v) => {
 		if (v === null) return true;
-		if (typeof v !== 'string') return false;
-		// Validate that it's valid JSON
-		return safeJsonParse(v) !== null;
+		// Native objects/arrays are always valid JSON values
+		if (typeof v === 'object' && !(v instanceof Uint8Array)) return true;
+		// JSON-compatible primitives (including strings — they represent JSON scalars)
+		if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') return true;
+		return false;
 	},
 
 	parse: (v) => {
 		if (v === null) return null;
-		
-		// If it's already a string, validate and normalize it
+		// Already a native object/array — pass through
+		if (typeof v === 'object' && !(v instanceof Uint8Array)) return v;
+		// JSON-compatible primitives — pass through as native values
+		if (typeof v === 'number') return v;
+		if (typeof v === 'boolean') return v;
+		// Parse JSON strings into native objects
 		if (typeof v === 'string') {
 			const parsed = safeJsonParse(v);
-			if (parsed === null) {
+			if (parsed === null && v !== 'null') {
 				throw new TypeError(`Cannot convert '${v}' to JSON: invalid JSON syntax`);
 			}
-			// Normalize by re-stringifying (removes whitespace, ensures consistent format)
-			try {
-				return JSON.stringify(parsed);
-			} catch (e) {
-				throw new TypeError(`Cannot convert to JSON: ${e instanceof Error ? e.message : String(e)}`);
-			}
+			return parsed;
 		}
-
-		// Convert other types to JSON
-		if (typeof v === 'number' || typeof v === 'boolean') {
-			return JSON.stringify(v);
-		}
-
-		if (typeof v === 'bigint') {
-			// BigInt can't be directly serialized to JSON, convert to number
-			return JSON.stringify(Number(v));
-		}
-
+		if (typeof v === 'bigint') return Number(v);
 		throw new TypeError(`Cannot convert ${typeof v} to JSON`);
+	},
+
+	serialize: (v) => {
+		// Native object → JSON string for storage
+		if (v === null) return null;
+		return JSON.stringify(v);
+	},
+
+	deserialize: (v) => {
+		// JSON string from storage → native object
+		if (v === null) return null;
+		if (typeof v === 'string') return JSON.parse(v) as JSONValue;
+		return v; // Already native
 	},
 
 	compare: (a, b) => {
 		const nullCmp = compareNulls(a, b);
 		if (nullCmp !== undefined) return nullCmp;
 
-		// Both should be strings at this point
-		if (typeof a !== 'string' || typeof b !== 'string') {
-			// Fallback to string comparison
-			return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
-		}
+		// Ensure both are in native form for comparison
+		const parsedA = typeof a === 'string' ? safeJsonParse(a) : a as JSONValue;
+		const parsedB = typeof b === 'string' ? safeJsonParse(b) : b as JSONValue;
 
-		// Parse both JSON values
-		const parsedA = safeJsonParse(a);
-		const parsedB = safeJsonParse(b);
-
-		// If either is invalid JSON, fall back to string comparison
 		if (parsedA === null || parsedB === null) {
-			return a < b ? -1 : a > b ? 1 : 0;
+			const strA = typeof a === 'string' ? a : JSON.stringify(a);
+			const strB = typeof b === 'string' ? b : JSON.stringify(b);
+			return strA < strB ? -1 : strA > strB ? 1 : 0;
 		}
 
-		// Deep equality comparison
 		return deepCompareJson(parsedA, parsedB);
 	},
 
-	// No collations for JSON type
 	supportedCollations: [],
 
-	// Metadata
 	isNumeric: false,
 	isTextual: false,
 	isTemporal: false,
@@ -139,4 +135,3 @@ function deepCompareJson(a: JSONValue, b: JSONValue): number {
 
 	return 0;
 }
-

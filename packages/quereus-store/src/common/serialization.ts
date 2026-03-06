@@ -1,9 +1,10 @@
 /**
  * Row serialization for persistent storage.
- * 
+ *
  * Uses extended JSON format that preserves SQL value types:
  * - bigint: { "$bigint": "12345678901234567890" }
  * - Uint8Array: { "$blob": "base64..." }
+ * - JSON objects with marker-colliding keys: { "$json": { "$bigint": "not-a-bigint" } }
  * - Other types: Native JSON representation
  */
 
@@ -11,12 +12,15 @@ import type { Row, SqlValue } from '@quereus/quereus';
 
 const BIGINT_MARKER = '$bigint';
 const BLOB_MARKER = '$blob';
+const JSON_MARKER = '$json';
 
 /**
  * Serialize a row to a byte array for storage.
  */
 export function serializeRow(row: Row): Uint8Array {
-  const json = JSON.stringify(row, replacer);
+  // Pre-process row elements to handle JSON objects with marker-colliding keys
+  const safeRow = row.map(wrapJsonIfNeeded);
+  const json = JSON.stringify(safeRow, replacer);
   return new TextEncoder().encode(json);
 }
 
@@ -32,7 +36,8 @@ export function deserializeRow(buffer: Uint8Array): Row {
  * Serialize a single SQL value to a byte array.
  */
 export function serializeValue(value: SqlValue): Uint8Array {
-  const json = JSON.stringify(value, replacer);
+  const safe = wrapJsonIfNeeded(value);
+  const json = JSON.stringify(safe, replacer);
   return new TextEncoder().encode(json);
 }
 
@@ -45,17 +50,32 @@ export function deserializeValue(buffer: Uint8Array): SqlValue {
 }
 
 /**
+ * Wraps a JSON object in a $json marker if it contains keys that
+ * would collide with our bigint/blob markers during deserialization.
+ */
+function wrapJsonIfNeeded(value: SqlValue): unknown {
+  if (typeof value !== 'object' || value === null || value instanceof Uint8Array) {
+    return value;
+  }
+  // It's a JSON object or array stored as a SqlValue
+  if (!Array.isArray(value) && (BIGINT_MARKER in value || BLOB_MARKER in value)) {
+    return { [JSON_MARKER]: value };
+  }
+  return value;
+}
+
+/**
  * JSON replacer function for SQL values.
  */
 function replacer(_key: string, value: unknown): unknown {
   if (typeof value === 'bigint') {
     return { [BIGINT_MARKER]: value.toString() };
   }
-  
+
   if (value instanceof Uint8Array) {
     return { [BLOB_MARKER]: uint8ArrayToBase64(value) };
   }
-  
+
   return value;
 }
 
@@ -65,16 +85,21 @@ function replacer(_key: string, value: unknown): unknown {
 function reviver(_key: string, value: unknown): unknown {
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const obj = value as Record<string, unknown>;
-    
+
+    // Unwrap $json marker first (before checking for $bigint/$blob)
+    if (JSON_MARKER in obj && Object.keys(obj).length === 1) {
+      return obj[JSON_MARKER];
+    }
+
     if (BIGINT_MARKER in obj && typeof obj[BIGINT_MARKER] === 'string') {
       return BigInt(obj[BIGINT_MARKER]);
     }
-    
+
     if (BLOB_MARKER in obj && typeof obj[BLOB_MARKER] === 'string') {
       return base64ToUint8Array(obj[BLOB_MARKER]);
     }
   }
-  
+
   return value;
 }
 
@@ -87,7 +112,7 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   if (typeof Buffer !== 'undefined') {
     return Buffer.from(bytes).toString('base64');
   }
-  
+
   // Browser fallback
   let binary = '';
   for (let i = 0; i < bytes.length; i++) {
@@ -105,7 +130,7 @@ function base64ToUint8Array(base64: string): Uint8Array {
   if (typeof Buffer !== 'undefined') {
     return new Uint8Array(Buffer.from(base64, 'base64'));
   }
-  
+
   // Browser fallback
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -140,4 +165,3 @@ export function serializeStats(stats: TableStats): Uint8Array {
 export function deserializeStats(buffer: Uint8Array): TableStats {
   return JSON.parse(new TextDecoder().decode(buffer)) as TableStats;
 }
-

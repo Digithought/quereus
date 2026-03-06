@@ -132,6 +132,11 @@ export function expressionToString(expr: AST.Expression): string {
 				const hex = uint8ArrayToHex(expr.value);
 				return `x'${hex}'`;
 			}
+			// JSON objects/arrays — render as quoted JSON string
+			if (typeof expr.value === 'object' && expr.value !== null) {
+				const jsonStr = JSON.stringify(expr.value);
+				return `'${jsonStr.replace(/'/g, "''")}'`;
+			}
 			return String(expr.value);
 		}
 

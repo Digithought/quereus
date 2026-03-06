@@ -151,10 +151,17 @@ describe('Boundary Validation', () => {
 	// ========================================================================
 
 	describe('bind() SqlValue validation', () => {
-		it('should reject object values', async () => {
+		it('should accept plain object values as JSON', async () => {
 			await db.exec('CREATE TABLE t1 (id INTEGER PRIMARY KEY, val TEXT)');
 			const stmt = db.prepare('INSERT INTO t1 VALUES (?, ?)');
-			expect(() => stmt.bind(1, { foo: 'bar' } as any)).to.throw(MisuseError, /invalid value/i);
+			// Plain objects are now valid SqlValues (JSON)
+			expect(() => stmt.bind(1, { foo: 'bar' })).to.not.throw();
+		});
+
+		it('should reject class instance values', async () => {
+			await db.exec('CREATE TABLE t2 (id INTEGER PRIMARY KEY, val TEXT)');
+			const stmt = db.prepare('INSERT INTO t2 VALUES (?, ?)');
+			expect(() => stmt.bind(1, new Date() as any)).to.throw(MisuseError, /invalid value/i);
 		});
 
 		it('should reject function values', async () => {
@@ -188,16 +195,16 @@ describe('Boundary Validation', () => {
 	});
 
 	describe('bindAll() SqlValue validation', () => {
-		it('should reject array with object value', async () => {
+		it('should accept array with plain object value as JSON', async () => {
 			await db.exec('CREATE TABLE t1 (id INTEGER PRIMARY KEY, val TEXT)');
 			const stmt = db.prepare('INSERT INTO t1 VALUES (?, ?)');
-			expect(() => stmt.bindAll([1, { foo: 'bar' } as any])).to.throw(MisuseError, /invalid value/i);
+			expect(() => stmt.bindAll([1, { foo: 'bar' }])).to.not.throw();
 		});
 
-		it('should reject named params with object value', async () => {
+		it('should accept named params with plain object value as JSON', async () => {
 			await db.exec('CREATE TABLE t1 (id INTEGER PRIMARY KEY, val TEXT)');
 			const stmt = db.prepare('INSERT INTO t1 VALUES (:id, :val)');
-			expect(() => stmt.bindAll({ id: 1, val: { foo: 'bar' } as any })).to.throw(MisuseError, /invalid value/i);
+			expect(() => stmt.bindAll({ id: 1, val: { foo: 'bar' } })).to.not.throw();
 		});
 
 		it('should accept valid array parameters', async () => {

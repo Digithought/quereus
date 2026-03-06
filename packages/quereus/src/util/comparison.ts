@@ -105,6 +105,7 @@ enum StorageClass {
 	NUMERIC = 1, // INTEGER or REAL
 	TEXT = 2,
 	BLOB = 3,
+	OBJECT = 4, // JSON objects/arrays
 	UNKNOWN = 99
 }
 
@@ -120,7 +121,10 @@ function getStorageClass(v: SqlValue): StorageClass {
 	if (type === 'number') return StorageClass.NUMERIC;
 	if (type === 'string') return StorageClass.TEXT;
 	if (type === 'boolean' || type === 'bigint') return StorageClass.NUMERIC;
-	if (type === 'object' && v instanceof Uint8Array) return StorageClass.BLOB;
+	if (type === 'object') {
+		if (v instanceof Uint8Array) return StorageClass.BLOB;
+		return StorageClass.OBJECT;
+	}
 
 	return StorageClass.UNKNOWN;
 }
@@ -130,7 +134,7 @@ function getStorageClass(v: SqlValue): StorageClass {
  * @param v The value
  * @returns The datatype name as a string
  */
-export function getSqlDataTypeName(v: SqlValue): 'null' | 'integer' | 'real' | 'text' | 'blob' {
+export function getSqlDataTypeName(v: SqlValue): 'null' | 'integer' | 'real' | 'text' | 'blob' | 'json' {
 	if (v === null || v === undefined) return 'null';
 	const type = typeof v;
 	if (type === 'boolean') return 'integer';
@@ -139,7 +143,10 @@ export function getSqlDataTypeName(v: SqlValue): 'null' | 'integer' | 'real' | '
 	}
 	if (type === 'bigint') return 'integer';
 	if (type === 'string') return 'text';
-	if (type === 'object' && v instanceof Uint8Array) return 'blob';
+	if (type === 'object') {
+		if (v instanceof Uint8Array) return 'blob';
+		return 'json';
+	}
 	return 'null';
 }
 
@@ -182,6 +189,12 @@ function compareSameType(a: SqlValue, b: SqlValue, storageClass: StorageClass, c
 				}
 			}
 			return blobA.length < blobB.length ? -1 : blobA.length > blobB.length ? 1 : 0;
+		}
+		case StorageClass.OBJECT: {
+			// Compare JSON objects by their stringified representation
+			const strA = JSON.stringify(a);
+			const strB = JSON.stringify(b);
+			return strA < strB ? -1 : strA > strB ? 1 : 0;
 		}
 		default: {
 			return 0;
@@ -439,6 +452,11 @@ export function sqlValuesEqual(a: SqlValue, b: SqlValue): boolean {
 			if (a[i] !== b[i]) return false;
 		}
 		return true;
+	}
+	// JSON object comparison by value
+	if (typeof a === 'object' && a !== null && !(a instanceof Uint8Array) &&
+		typeof b === 'object' && b !== null && !(b instanceof Uint8Array)) {
+		return JSON.stringify(a) === JSON.stringify(b);
 	}
 	return a === b;
 }

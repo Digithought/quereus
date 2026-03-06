@@ -17,6 +17,7 @@ export enum PhysicalType {
 	TEXT = 3,       // string
 	BLOB = 4,       // Uint8Array
 	BOOLEAN = 5,    // boolean
+	OBJECT = 6,     // plain objects/arrays (JSON values)
 }
 
 /**
@@ -70,6 +71,7 @@ export function getPhysicalType(value: SqlValue): PhysicalType {
 	if (typeof value === 'string') return PhysicalType.TEXT;
 	if (typeof value === 'boolean') return PhysicalType.BOOLEAN;
 	if (value instanceof Uint8Array) return PhysicalType.BLOB;
+	if (typeof value === 'object' && value !== null) return PhysicalType.OBJECT;
 	return PhysicalType.NULL;
 }
 
@@ -96,6 +98,7 @@ export function physicalTypeName(physicalType: PhysicalType): string {
 		case PhysicalType.TEXT: return 'TEXT';
 		case PhysicalType.BLOB: return 'BLOB';
 		case PhysicalType.BOOLEAN: return 'BOOLEAN';
+		case PhysicalType.OBJECT: return 'OBJECT';
 		default: return 'UNKNOWN';
 	}
 }

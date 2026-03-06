@@ -180,13 +180,13 @@ export const DATETIME_FUNC = createScalarFunction(
  * json() - Convert value to JSON
  * Usage: json(value)
  *
- * Converts a value to a JSON string. If the value is already a valid JSON string,
- * it normalizes it. Otherwise, it converts the value to JSON representation.
+ * Converts a value to a native JSON object. If the value is a valid JSON string,
+ * it parses it. Otherwise, it converts the value to its JSON representation.
  */
 export const JSON_FUNC = createScalarFunction(
 	{ name: 'json', numArgs: 1, deterministic: true, returnType: { typeClass: 'scalar', logicalType: JSON_TYPE, nullable: true, isReadOnly: true } },
 	(value: SqlValue): SqlValue => {
-		if (value === null) return 'null';
+		if (value === null) return null;
 
 		try {
 			return JSON_TYPE.parse!(value);

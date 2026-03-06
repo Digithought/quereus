@@ -232,7 +232,7 @@ CREATE TABLE json_tbl (id INTEGER PRIMARY KEY, j JSON);
 INSERT INTO json_tbl VALUES (1, '{"a":1}'), (2, '[1,2,3]'), (3, '"hello"');
 
 select j from json_tbl order by id;
-→ [{"j":"{\"a\":1}"},{"j":"[1,2,3]"},{"j":"\"hello\""}]
+→ [{"j":{"a":1}},{"j":[1,2,3]},{"j":"hello"}]
 
 -- Invalid JSON rejected
 INSERT INTO json_tbl VALUES (4, '{invalid');

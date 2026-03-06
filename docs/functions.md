@@ -18,7 +18,7 @@ Quereus uses conversion functions instead of the SQL `CAST` operator for explici
 | `time(X)` | TEXT | `HH:MM:SS` format. Accepts `'now'` for current UTC time |
 | `datetime(X)` | TEXT | ISO 8601 datetime. Accepts `'now'` for current UTC timestamp |
 | `timespan(X)` | TEXT | ISO 8601 duration. Accepts ISO (`'PT1H30M'`) or human-readable (`'1 hour 30 minutes'`) |
-| `json(X)` | TEXT | Validates/normalizes JSON. Non-JSON values converted to JSON representation |
+| `json(X)` | JSON | Parses JSON string into native object. Passes through native objects unchanged |
 
 ```sql
 select integer('42');        -- 42
@@ -27,7 +27,7 @@ select text(true);           -- 'true'
 select boolean(0);           -- false
 select date('now');           -- '2024-01-15'
 select timespan('2 hours');  -- 'PT2H'
-select json('{"x":1}');      -- '{"x":1}'
+select json('{"x":1}');      -- {"x":1}  (native object)
 ```
 
 ---
@@ -327,6 +327,8 @@ select timespan_total_days(timespan('1 week'));           -- 7
 
 ## JSON Functions
 
+JSON values are stored natively as JS objects/arrays in memory (`PhysicalType.OBJECT`). All `json_*` functions accept both native JSON objects and JSON strings as input. Functions that produce JSON results return native objects (not JSON strings).
+
 JSON paths use `$` as root, `.key` for object members, and `[N]` for array indices (e.g., `$.phones[0].type`). Invalid JSON input typically returns `NULL`.
 
 ### Inspection
@@ -335,7 +337,7 @@ JSON paths use `$` as root, `.key` for object members, and `[N]` for array indic
 |---|---|---|---|
 | `json_valid(json)` | 1 | INTEGER | 1 if well-formed JSON, 0 otherwise |
 | `json_type(json, path?)` | 1-2 | TEXT | JSON type: `'null'`, `'true'`, `'false'`, `'integer'`, `'real'`, `'text'`, `'array'`, `'object'` |
-| `json_extract(json, path, ...)` | variadic | any | Extract value at first matching path. Arrays/objects returned as TEXT |
+| `json_extract(json, path, ...)` | variadic | any | Extract value at first matching path. Nested arrays/objects returned as native JSON |
 | `json_array_length(json, path?)` | 1-2 | INTEGER | Length of JSON array (0 if not an array) |
 
 ```sql
@@ -350,8 +352,8 @@ select json_array_length('[1,2,3]');    -- 3
 | Function | Args | Returns | Description |
 |---|---|---|---|
 | `json_quote(value)` | 1 | TEXT | SQL value as JSON literal (`NULL` becomes `'null'`, TEXT becomes quoted string) |
-| `json_array(V1, V2, ...)` | variadic | TEXT | Build a JSON array from SQL values |
-| `json_object(N1, V1, ...)` | variadic | TEXT | Build a JSON object from key/value pairs |
+| `json_array(V1, V2, ...)` | variadic | JSON | Build a JSON array from SQL values (returns native array) |
+| `json_object(N1, V1, ...)` | variadic | JSON | Build a JSON object from key/value pairs (returns native object) |
 
 ```sql
 select json_quote('hello');              -- '"hello"'
@@ -361,7 +363,7 @@ select json_object('name', 'Alice', 'age', 30); -- '{"name":"Alice","age":30}'
 
 ### Mutation
 
-All mutation functions operate on a copy and return the modified JSON string.
+All mutation functions operate on a copy and return the modified native JSON object.
 
 | Function | Behavior |
 |---|---|
