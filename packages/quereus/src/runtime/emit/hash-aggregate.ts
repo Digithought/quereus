@@ -6,10 +6,9 @@ import type { EmissionContext } from '../emission-context.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import { isAggregateFunctionSchema } from '../../schema/function.js';
 import { AggregateFunctionCallNode } from '../../planner/nodes/aggregate-function.js';
-import type { PlanNode, RowDescriptor } from '../../planner/nodes/plan-node.js';
+import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { isRelationalNode } from '../../planner/nodes/plan-node.js';
 import { BTree } from 'inheritree';
-import { createLogger } from '../../common/logger.js';
 import { logContextPush, logContextPop } from '../utils.js';
 import { coerceForAggregate } from '../../util/coercion.js';
 import { quereusError } from '../../common/errors.js';
@@ -19,40 +18,7 @@ import { AggValue } from '../../func/registration.js';
 import { serializeKeyNullGrouping, resolveKeyNormalizer } from '../../util/key-serializer.js';
 import { createTypedComparator } from '../../util/comparison.js';
 import type { LogicalType } from '../../types/logical-type.js';
-
-const ctxLog = createLogger('runtime:context');
-
-/** Clone an aggregate initial value so each group gets an independent accumulator. */
-function cloneInitialValue(initialValue: unknown): AggValue {
-	if (typeof initialValue === 'function') {
-		return initialValue();
-	} else if (Array.isArray(initialValue)) {
-		return [...initialValue] as AggValue;
-	} else if (initialValue && typeof initialValue === 'object') {
-		return { ...initialValue } as AggValue;
-	} else {
-		return initialValue as AggValue;
-	}
-}
-
-/**
- * Find the source relation node that column references should use as their context key.
- */
-function findSourceRelation(node: PlanNode): PlanNode {
-	let current = node;
-	while (current) {
-		if (current.nodeType === 'Values' || current.nodeType === 'SingleRow') {
-			return current;
-		}
-		const relations = current.getRelations();
-		if (relations.length > 0) {
-			current = relations[0];
-		} else {
-			break;
-		}
-	}
-	return node;
-}
+import { cloneInitialValue, findSourceRelation, ctxLog } from './aggregate.js';
 
 interface GroupState {
 	groupValues: SqlValue[];

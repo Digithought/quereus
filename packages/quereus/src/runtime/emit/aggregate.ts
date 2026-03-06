@@ -22,7 +22,7 @@ import { AggValue } from '../../func/registration.js';
 export const ctxLog = createLogger('runtime:context');
 
 /** Clone an aggregate initial value so each group gets an independent accumulator. */
-function cloneInitialValue(initialValue: unknown): AggValue {
+export function cloneInitialValue(initialValue: unknown): AggValue {
 	if (typeof initialValue === 'function') {
 		return initialValue();
 	} else if (Array.isArray(initialValue)) {
@@ -38,7 +38,7 @@ function cloneInitialValue(initialValue: unknown): AggValue {
  * Find the source relation node that column references should use as their context key.
  * This traverses up the tree to find the original table scan or similar node.
  */
-function findSourceRelation(node: PlanNode): PlanNode {
+export function findSourceRelation(node: PlanNode): PlanNode {
 	// Keep going up until we find a values node
 	let current = node;
 	while (current) {

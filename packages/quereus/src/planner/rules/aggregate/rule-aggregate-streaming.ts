@@ -155,8 +155,10 @@ function combineAttributes(aggregateAttrs: readonly Attribute[], sourceAttrs: re
 
 	// Add aggregate attributes first (GROUP BY + aggregates)
 	for (const attr of aggregateAttrs) {
-		combinedAttrs.push(attr);
-		seenNames.add(attr.name);
+		if (!seenNames.has(attr.name)) {
+			combinedAttrs.push(attr);
+			seenNames.add(attr.name);
+		}
 	}
 
 	// Add source attributes that aren't already present by name
@@ -167,15 +169,5 @@ function combineAttributes(aggregateAttrs: readonly Attribute[], sourceAttrs: re
 		}
 	}
 
-	// Final deduplication pass
-	const uniqueByName = new Set<string>();
-	const deduped: any[] = [];
-	for (const attr of combinedAttrs) {
-		if (!uniqueByName.has(attr.name)) {
-			deduped.push(attr);
-			uniqueByName.add(attr.name);
-		}
-	}
-
-	return deduped;
+	return combinedAttrs;
 }

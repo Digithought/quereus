@@ -221,7 +221,7 @@ export class HashAggregateNode extends PlanNode implements UnaryRelationalNode {
 		}
 
 		const groupCount = this.groupBy.length;
-		(props as any).uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
+		props.uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
 		return props;
 	}
 
