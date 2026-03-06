@@ -31,6 +31,19 @@ export interface IndexedDBPluginConfig {
 	 * @default true
 	 */
 	isolation?: boolean;
+
+	/**
+	 * Read cache configuration for data and index stores.
+	 * Wraps each store with an in-memory LRU cache to reduce IDB round-trips.
+	 */
+	cache?: {
+		/** Maximum cached entries per store. @default 1000 */
+		maxEntries?: number;
+		/** Maximum cached bytes per store. No limit if omitted. */
+		maxBytes?: number;
+		/** Enable/disable the cache. @default true */
+		enabled?: boolean;
+	};
 }
 
 /**
@@ -44,8 +57,11 @@ export default function register(
 	const moduleName = (config.moduleName as string) ?? 'store';
 	const isolation = (config.isolation as boolean) ?? true;
 
+	const cache = config.cache as IndexedDBPluginConfig['cache'];
+
 	const provider = new IndexedDBProvider({
 		databaseName,
+		cache,
 	});
 
 	const storeModule = isolation

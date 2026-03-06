@@ -16,9 +16,11 @@ import type { KVStore, KVStoreProvider } from '@quereus/store';
 import {
 	buildDataStoreName,
 	buildIndexStoreName,
+	CachedKVStore,
 	CATALOG_STORE_NAME,
 	STATS_STORE_NAME,
 	STORE_SUFFIX,
+	type CacheOptions,
 } from '@quereus/store';
 import { IndexedDBStore } from './store.js';
 import { IndexedDBManager } from './manager.js';
@@ -33,6 +35,12 @@ export interface IndexedDBProviderOptions {
 	 * @default 'quereus'
 	 */
 	databaseName?: string;
+
+	/**
+	 * Read cache configuration.
+	 * Wraps each data/index store with an in-memory LRU cache.
+	 */
+	cache?: CacheOptions;
 }
 
 /**
@@ -43,14 +51,16 @@ export interface IndexedDBProviderOptions {
  */
 export class IndexedDBProvider implements KVStoreProvider {
 	private databaseName: string;
-	private stores = new Map<string, IndexedDBStore>();
+	private stores = new Map<string, KVStore>();
 	private catalogStore: IndexedDBStore | null = null;
 	private statsStore: IndexedDBStore | null = null;
 	private manager: IndexedDBManager;
+	private cacheOptions: CacheOptions | undefined;
 
 	constructor(options: IndexedDBProviderOptions = {}) {
 		this.databaseName = options.databaseName ?? 'quereus';
 		this.manager = IndexedDBManager.getInstance(this.databaseName);
+		this.cacheOptions = options.cache;
 	}
 
 	async getStore(schemaName: string, tableName: string, _options?: Record<string, unknown>): Promise<KVStore> {
@@ -150,16 +160,43 @@ export class IndexedDBProvider implements KVStoreProvider {
 		return this.manager;
 	}
 
-	private async getOrCreateStore(storeName: string): Promise<IndexedDBStore> {
+	/**
+	 * Invalidate the read cache for a specific table store.
+	 * Called by cross-tab sync when remote data changes are detected.
+	 */
+	invalidateCache(schemaName: string, tableName: string): void {
+		const storeName = buildDataStoreName(schemaName, tableName);
+		const store = this.stores.get(storeName);
+		if (store instanceof CachedKVStore) {
+			store.invalidateAll();
+		}
+	}
+
+	/**
+	 * Invalidate all read caches. Called on remote data change events
+	 * when the affected store is unknown.
+	 */
+	invalidateAllCaches(): void {
+		for (const store of this.stores.values()) {
+			if (store instanceof CachedKVStore) {
+				store.invalidateAll();
+			}
+		}
+	}
+
+	private async getOrCreateStore(storeName: string): Promise<KVStore> {
 		let store = this.stores.get(storeName);
 
 		if (!store) {
-			store = await IndexedDBStore.openForTable(this.databaseName, storeName);
+			const raw = await IndexedDBStore.openForTable(this.databaseName, storeName);
 
-			if (!store) {
+			if (!raw) {
 				throw new Error(`IndexedDBStore.openForTable returned null/undefined for ${storeName}`);
 			}
 
+			store = this.cacheOptions?.enabled === false
+				? raw
+				: new CachedKVStore(raw, this.cacheOptions);
 			this.stores.set(storeName, store);
 		}
 

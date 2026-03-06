@@ -5,6 +5,7 @@
  */
 
 import type { DataChangeEvent, StoreEventEmitter } from '@quereus/store';
+import type { IndexedDBProvider } from './provider.js';
 
 /** Channel name prefix for Quereus store broadcasts. */
 const CHANNEL_PREFIX = 'quereus-store:';
@@ -22,16 +23,19 @@ interface BroadcastMessage {
  *
  * Listens for local data changes and broadcasts them to other tabs.
  * Receives broadcasts from other tabs and emits them locally.
+ * Invalidates read caches on remote data change events.
  */
 export class CrossTabSync {
   private channel: BroadcastChannel | null = null;
   private eventEmitter: StoreEventEmitter;
   private databaseName: string;
   private unsubscribe: (() => void) | null = null;
+  private provider: IndexedDBProvider | null = null;
 
-  constructor(databaseName: string, eventEmitter: StoreEventEmitter) {
+  constructor(databaseName: string, eventEmitter: StoreEventEmitter, provider?: IndexedDBProvider) {
     this.databaseName = databaseName;
     this.eventEmitter = eventEmitter;
+    this.provider = provider ?? null;
   }
 
   /**
@@ -104,6 +108,16 @@ export class CrossTabSync {
   private handleMessage(message: BroadcastMessage): void {
     if (message.type !== 'data-change') {
       return;
+    }
+
+    // Invalidate read cache for the affected table
+    if (this.provider) {
+      const { schemaName, tableName } = message.event;
+      if (schemaName && tableName) {
+        this.provider.invalidateCache(schemaName, tableName);
+      } else {
+        this.provider.invalidateAllCaches();
+      }
     }
 
     // Mark as remote to prevent re-broadcast

@@ -85,6 +85,9 @@ export {
 // In-memory KV store
 export { InMemoryKVStore } from './memory-store.js';
 
+// Cached KV store wrapper
+export { CachedKVStore, type CacheOptions } from './cached-kv-store.js';
+
 // Generic store table and connection
 export {
   StoreTable,
