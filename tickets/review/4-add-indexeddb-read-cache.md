@@ -11,6 +11,8 @@ files:
 
 ## What was built
 
+**Human update**: 2Qs (maintain two separate queues, or maintain a mid insertion point) is far more effective for database situations than pure LRU and is nearly as easy to implement.
+
 A `CachedKVStore` wrapper in `@quereus/store` that adds read-through in-memory caching
 to any `KVStore` implementation. Integrated into the IndexedDB plugin so every data and
 index store is automatically wrapped with the cache (stats and catalog stores are excluded).
