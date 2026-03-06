@@ -30,7 +30,7 @@ A helper `isFunctional(node)` returns the effective value.
 During a single post-order DFS every `PlanNode` is assigned a `ConstInfo`:
 ```ts
 /* not exported – internal to folding pass */
-interface ConstInfoConst { kind: 'const'; value: SqlValue; }
+interface ConstInfoConst { kind: 'const'; node: PlanNode; }
 interface ConstInfoDep   { kind: 'dep';   deps: Set<AttributeId>; }
 interface ConstInfoVar   { kind: 'non-const'; }
 

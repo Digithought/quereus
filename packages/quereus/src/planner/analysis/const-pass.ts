@@ -253,10 +253,8 @@ function replaceBorderNodes(node: PlanNode, ctx: ConstFoldingContext): PlanNode 
 	// If this node is a border node, replace it
 	if (ctx.borderNodes.has(node.id)) {
 		try {
-			const evaluatedValue = ctx.evaluateExpression(node);
-
-			// Choose replacement type based on node type
 			if (node.getType().typeClass === 'scalar') {
+				const evaluatedValue = ctx.evaluateExpression(node);
 				const literalExpr = { type: 'literal' as const, value: evaluatedValue as SqlValue };
 
 				const replacement = new LiteralNode(
@@ -268,13 +266,12 @@ function replaceBorderNodes(node: PlanNode, ctx: ConstFoldingContext): PlanNode 
 				);
 				log('Replaced scalar border node %s with LiteralNode', node.id);
 				return replacement;
-			} else {
+			} else if (ctx.evaluateRelation) {
 				// Relational node - replace with TableLiteralNode
-				if (ctx.evaluateRelation) {
-					const replacement = ctx.evaluateRelation(node);
-					log('Replaced relational border node %s with TableLiteralNode', node.id);
-					return replacement;
-				}
+				const replacement = ctx.evaluateRelation(node);
+				log('Replaced relational border node %s with TableLiteralNode', node.id);
+				return replacement;
+			} else {
 				log('Relational border node %s skipped (no relational evaluator)', node.id);
 				return node;
 			}
