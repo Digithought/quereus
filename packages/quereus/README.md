@@ -399,6 +399,12 @@ Quereus employs a multi-faceted testing strategy:
         *   **Collation Consistency**: Ensures `ORDER BY` results match the behavior of the `compareSqlValues` utility for `BINARY`, `NOCASE`, and `RTRIM` collations across various strings.
         *   **Numeric Affinity**: Verifies that comparisons (`=`, `<`) in SQL handle mixed types (numbers, strings, booleans, nulls) consistently with SQLite's affinity rules, using `compareSqlValues` as the reference.
         *   **JSON Roundtrip**: Confirms that arbitrary JSON values survive being processed by `json_quote()` and `json_extract('$')` without data loss or corruption.
+        *   **Mixed Type Arithmetic**: Checks that arithmetic on mixed types behaves consistently between SELECT and WHERE contexts.
+        *   **Parser Robustness**: Feeds random strings, SQL-like fragment mixtures, and random identifiers to the parser, asserting it either produces a valid AST or throws `QuereusError` — never unhandled exceptions.
+        *   **Expression Evaluation**: Compares random arithmetic expression trees and boolean comparisons evaluated in SQL against JS semantics.
+        *   **Comparison Properties**: Validates `compareSqlValues` maintains antisymmetry, reflexivity, and transitivity across mixed types.
+        *   **Insert/Select Roundtrip**: Tests value preservation through insert+select for INTEGER, REAL, TEXT, BLOB, and ANY column types.
+        *   **ORDER BY Determinism**: Verifies repeated ORDER BY queries on data with duplicate sort keys produce identical results.
 
 3.  **Performance Sentinels (`test/performance-sentinels.spec.ts`)**:
     *   Micro-benchmarks with generous thresholds to catch severe performance regressions.

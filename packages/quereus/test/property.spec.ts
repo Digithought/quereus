@@ -101,7 +101,7 @@ describe('Property-Based Tests', () => {
 		}
 	});
 
-		// --- 2. Numeric Affinity ---
+	// --- 2. Numeric Affinity ---
 	describe('Numeric Affinity', () => {
 		// Define an arbitrary that generates values representable as NULL, INTEGER, REAL, or TEXT that might look numeric
 		const sqlValueArbitrary = fc.oneof(
