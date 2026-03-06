@@ -68,7 +68,7 @@ select clamp(15, 0, 10);  -- 10
 | `coalesce(X, Y, ...)` | variadic | any | First non-NULL argument |
 | `nullif(X, Y)` | 2 | any | `NULL` if X = Y, else X |
 | `iif(X, Y, Z)` | 3 | any | If X is truthy then Y, else Z |
-| `typeof(X)` | 1 | TEXT | Type name: `'null'`, `'integer'`, `'real'`, `'text'`, `'blob'` |
+| `typeof(X)` | 1 | TEXT | Type name: `'null'`, `'integer'`, `'real'`, `'text'`, `'blob'`, `'json'` |
 | `greatest(X, Y, ...)` | variadic | any | Largest value using SQL comparison |
 | `least(X, Y, ...)` | variadic | any | Smallest value using SQL comparison |
 | `choose(N, V1, V2, ...)` | variadic | any | Returns the N-th value (1-based index). `NULL` if out of range |
@@ -159,16 +159,16 @@ Aggregate functions compute a single result from multiple rows within a `GROUP B
 | `var_pop(X)` | 1 | REAL | Population variance. `NULL` for empty set |
 | `var_samp(X)` | 1 | REAL | Sample variance. `NULL` if fewer than 2 values |
 | `stddev_samp(X)` | 1 | REAL | Sample standard deviation |
-| `json_group_array(X)` | 1 | TEXT | JSON array of all values (including NULLs as JSON `null`) |
-| `json_group_object(N, V)` | 2 | TEXT | JSON object from key/value pairs. Skips NULL keys |
+| `json_group_array(X)` | 1 | JSON | Native JSON array of all values (including NULLs as JSON `null`) |
+| `json_group_object(N, V)` | 2 | JSON | Native JSON object from key/value pairs. Skips NULL keys |
 
 ```sql
 select count(*), sum(salary), avg(salary) from employees;
 select group_concat(name, '; ') from users;
 select json_group_array(score) from results;
--- '[95,80,null,95]'
+-- [95,80,null,95]  (native array)
 select json_group_object(key, value) from config;
--- '{"theme":"dark","fontSize":12}'
+-- {"theme":"dark","fontSize":12}  (native object)
 ```
 
 **Difference from SQLite:** `sum()` promotes to BIGINT to avoid overflow, falling back to REAL only when types are mixed.

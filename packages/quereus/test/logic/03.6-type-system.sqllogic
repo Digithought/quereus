@@ -238,7 +238,39 @@ select j from json_tbl order by id;
 INSERT INTO json_tbl VALUES (4, '{invalid');
 -- error: Type conversion failed
 
+-- typeof returns 'json' for native JSON objects
+select typeof(j) as t from json_tbl where id = 1;
+→ [{"t":"json"}]
+
 DROP TABLE json_tbl;
+
+-- === json() conversion function returns native objects ===
+
+select json('{"a":1}') as r;
+→ [{"r":{"a":1}}]
+
+select json('[1,2,3]') as r;
+→ [{"r":[1,2,3]}]
+
+select json('null') as r;
+→ [{"r":null}]
+
+select typeof(json('{"a":1}')) as t;
+→ [{"t":"json"}]
+
+-- === JSON deep comparison ===
+
+select json('{"a":1}') = json('{"a":1}') as eq;
+→ [{"eq":true}]
+
+select json('{"a":1}') = json('{"a":2}') as eq;
+→ [{"eq":false}]
+
+select json('[1,2,3]') = json('[1,2,3]') as eq;
+→ [{"eq":true}]
+
+select json('[1,2,3]') = json('[1,2,4]') as eq;
+→ [{"eq":false}]
 
 -- === Numeric type coercion in comparisons (table context) ===
 
