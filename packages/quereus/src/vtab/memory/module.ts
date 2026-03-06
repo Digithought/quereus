@@ -273,6 +273,21 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 				.build();
 		}
 
+		// Check for OR_RANGE constraint on first index column
+		const orRangeMatch = this.findOrRangeMatch(indexCols[0], request.filters);
+		if (orRangeMatch) {
+			const rangeCount = orRangeMatch.rangeCount;
+			const estimatedRangeRows = Math.max(1, Math.floor(estimatedTableSize / (4 * rangeCount)) * rangeCount);
+			const seekCols = [indexCols[0].index];
+			return AccessPlanBuilder
+				.rangeScan(estimatedRangeRows)
+				.setHandledFilters(orRangeMatch.handledFilters)
+				.setIndexName(index.name)
+				.setSeekColumns(seekCols)
+				.setExplanation(`Index multi-range scan (${rangeCount} ranges) on ${index.name}`)
+				.build();
+		}
+
 		// No useful index access - return full scan
 		return AccessPlanBuilder.fullScan(estimatedTableSize)
 			.setHandledFilters(new Array(request.filters.length).fill(false))
@@ -350,6 +365,27 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		}
 
 		return { hasRange: hasLower || hasUpper, handledFilters };
+	}
+
+	/**
+	 * Find OR_RANGE match for a column
+	 */
+	private findOrRangeMatch(
+		indexCol: IndexColumnSchema,
+		filters: readonly PredicateConstraint[]
+	): { handledFilters: boolean[]; rangeCount: number } | null {
+		for (let i = 0; i < filters.length; i++) {
+			const filter = filters[i];
+			if (filter.columnIndex === indexCol.index && filter.usable && filter.op === 'OR_RANGE') {
+				const handledFilters = new Array(filters.length).fill(false);
+				handledFilters[i] = true;
+				// Count ranges from the constraint (cast to extended type)
+				const ranges = (filter as any).ranges as unknown[];
+				const rangeCount = ranges ? ranges.length : 2;
+				return { handledFilters, rangeCount };
+			}
+		}
+		return null;
 	}
 
 	/**

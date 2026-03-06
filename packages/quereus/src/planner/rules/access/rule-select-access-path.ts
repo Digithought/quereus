@@ -24,7 +24,7 @@ import { FilterInfo } from '../../../vtab/filter-info.js';
 import type { IndexConstraintUsage } from '../../../vtab/index-info.js';
 import { TableReferenceNode } from '../../nodes/reference.js';
 import { FilterNode } from '../../nodes/filter.js';
-import { extractConstraintsForTable, type PredicateConstraint as PlannerPredicateConstraint, createTableInfoFromNode } from '../../analysis/constraint-extractor.js';
+import { extractConstraintsForTable, type PredicateConstraint as PlannerPredicateConstraint, type RangeSpec, createTableInfoFromNode } from '../../analysis/constraint-extractor.js';
 import { LiteralNode } from '../../nodes/scalar.js';
 import type * as AST from '../../../parser/ast.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
@@ -539,6 +539,61 @@ function selectPhysicalNodeFromPlan(
 		};
 
 		log('Using index seek (range) on %s', physicalIndexName);
+		return new IndexSeekNode(
+			tableRef.scope,
+			tableRef,
+			fi,
+			physicalIndexName,
+			seekKeys,
+			true,
+			providesOrdering,
+			accessPlan.cost
+		);
+	}
+
+	// Check for OR_RANGE constraint on a seek column
+	const orRangeConstraint = constraints.find(c =>
+		c.op === 'OR_RANGE' && c.ranges && c.ranges.length > 0 &&
+		seekCols.includes(c.columnIndex) && handledByCol.has(c.columnIndex)
+	);
+
+	if (orRangeConstraint && orRangeConstraint.ranges) {
+		const ranges = orRangeConstraint.ranges as RangeSpec[];
+
+		// Build seekKeys: for each range, emit lower value then upper value
+		// Encode which ops each range has in rangeOps string
+		const seekKeys: ScalarPlanNode[] = [];
+		const rangeOps: string[] = [];
+
+		for (const range of ranges) {
+			const parts: string[] = [];
+			if (range.lower) {
+				const opStr = range.lower.op === '>=' ? 'ge' : 'gt';
+				parts.push(opStr);
+				seekKeys.push(range.lower.valueExpr
+					?? new LiteralNode(tableRef.scope, { type: 'literal', value: range.lower.value } as any));
+			}
+			if (range.upper) {
+				const opStr = range.upper.op === '<=' ? 'le' : 'lt';
+				parts.push(opStr);
+				seekKeys.push(range.upper.valueExpr
+					?? new LiteralNode(tableRef.scope, { type: 'literal', value: range.upper.value } as any));
+			}
+			rangeOps.push(parts.join(':'));
+		}
+
+		const orRangeConstraints = seekKeys.map((_sk, i) => ({
+			constraint: { iColumn: orRangeConstraint.columnIndex, op: IndexConstraintOp.GE as unknown as number, usable: true },
+			argvIndex: i + 1,
+		}));
+
+		const fi: FilterInfo = {
+			...filterInfo,
+			constraints: orRangeConstraints as any,
+			idxStr: `idx=${idxStrName}(0);plan=6;rangeCount=${ranges.length};rangeOps=${rangeOps.join(',')}`,
+		};
+
+		log('Using index multi-range seek on %s (%d ranges)', physicalIndexName, ranges.length);
 		return new IndexSeekNode(
 			tableRef.scope,
 			tableRef,

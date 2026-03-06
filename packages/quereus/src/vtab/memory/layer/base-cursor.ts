@@ -20,6 +20,20 @@ export async function* scanBaseLayer(
 		return;
 	}
 
+	// Multi-range: iterate over multiple range specs
+	if (plan.ranges && plan.ranges.length > 0) {
+		for (const range of plan.ranges) {
+			const singlePlan: ScanPlan = {
+				...plan,
+				ranges: undefined,
+				lowerBound: range.lowerBound,
+				upperBound: range.upperBound,
+			};
+			yield* scanBaseLayer(layer, singlePlan);
+		}
+		return;
+	}
+
 	const { primaryKeyExtractorFromRow: keyFromEntry, primaryKeyComparator } = layer.getPkExtractorsAndComparators(layer.getSchema());
 	const isEqPlan = plan.equalityKey !== undefined;
 

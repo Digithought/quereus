@@ -19,6 +19,12 @@ export interface ScanPlanRangeBound {
 	value: SqlValue; // Range bounds typically apply to the first column
 }
 
+/** Describes a single range for multi-range OR scans */
+export interface ScanPlanRange {
+	lowerBound?: ScanPlanRangeBound;
+	upperBound?: ScanPlanRangeBound;
+}
+
 /**
  * Encapsulates the details needed to execute a scan across layers.
  * Derived from IndexInfo during xBestIndex/xFilter.
@@ -38,6 +44,8 @@ export interface ScanPlan {
 	lowerBound?: ScanPlanRangeBound;
 	/** Upper bound for a range scan (used if planType is RANGE_*) */
 	upperBound?: ScanPlanRangeBound;
+	/** Multiple ranges for OR-range multi-seek (plan=6) */
+	ranges?: ScanPlanRange[];
 	/** The original idxNum from xBestIndex, potentially useful for cursor logic */
 	idxNum?: number;
 	/** The original idxStr from xBestIndex, potentially useful for debugging */
@@ -260,6 +268,40 @@ export function buildScanPlanFromFilterInfo(filterInfo: FilterInfo, tableSchema:
 	const isMultiSeekPlan = planType === 5;
 	const isRangePlan = planType === 3 || planType === 4;
 	const isPrefixRangePlan = planType === 7;
+	const isMultiRangePlan = planType === 6;
+
+	if (isMultiRangePlan) {
+		const rangeCount = parseInt(params.get('rangeCount') ?? '0', 10);
+		const rangeOpsStr = params.get('rangeOps') ?? '';
+		const rangeOpsList = rangeOpsStr.split(',');
+		const ranges: ScanPlanRange[] = [];
+		let argIdx = 0;
+
+		for (let i = 0; i < rangeCount; i++) {
+			const ops = (rangeOpsList[i] ?? '').split(':');
+			const range: ScanPlanRange = {};
+
+			for (const op of ops) {
+				if (op === 'gt' || op === 'ge') {
+					range.lowerBound = {
+						op: op === 'ge' ? ActualIndexConstraintOp.GE : ActualIndexConstraintOp.GT,
+						value: args[argIdx],
+					};
+					argIdx++;
+				} else if (op === 'lt' || op === 'le') {
+					range.upperBound = {
+						op: op === 'le' ? ActualIndexConstraintOp.LE : ActualIndexConstraintOp.LT,
+						value: args[argIdx],
+					};
+					argIdx++;
+				}
+			}
+
+			ranges.push(range);
+		}
+
+		return { indexName, descending, ranges, idxNum, idxStr };
+	}
 
 	if (isPrefixRangePlan && indexSchema) {
 		const prefixLen = parseInt(params.get('prefixLen') ?? '0', 10);

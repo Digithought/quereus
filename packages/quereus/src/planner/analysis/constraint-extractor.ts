@@ -22,6 +22,15 @@ const log = createLogger('planner:analysis:constraint-extractor');
 // ConstraintOp is imported from vtab/best-access-plan.ts
 
 /**
+ * A single range specification within an OR_RANGE constraint.
+ * Each range has optional lower and upper bounds.
+ */
+export interface RangeSpec {
+	lower?: { op: '>=' | '>'; value: SqlValue; valueExpr?: ScalarPlanNode };
+	upper?: { op: '<=' | '<'; value: SqlValue; valueExpr?: ScalarPlanNode };
+}
+
+/**
  * A constraint extracted from a predicate expression
  * Extends the vtab PredicateConstraint with additional metadata for the planner
  */
@@ -36,6 +45,8 @@ export interface PredicateConstraint extends VtabPredicateConstraint {
 	valueExpr?: ScalarPlanNode | ScalarPlanNode[];
 	/** Binding kind describing how value is supplied */
 	bindingKind?: 'literal' | 'parameter' | 'correlated' | 'expression' | 'mixed';
+	/** Range specifications for OR_RANGE constraints */
+	ranges?: RangeSpec[];
 }
 
 /**
@@ -600,8 +611,10 @@ function tryExtractOrBranches(
 		}
 	}
 
-	// Case 2: All branches target the same table — not yet handled as multi-seek
-	// Future: OrConstraintGroup for range disjunctions and composite multi-seek
+	// Case 2: All branches are range (or equality) on the same column → OR_RANGE
+	const orRangeResult = tryCollapseToOrRange(branches, expr);
+	if (orRangeResult) return orRangeResult;
+
 	return null;
 }
 
@@ -661,6 +674,83 @@ function collapseBranchesToIn(
 		valueExpr: hasNonLiteral ? valueExprs : undefined,
 		bindingKind: hasNonLiteral ? 'mixed' : 'literal'
 	};
+	return { constraints: [result] };
+}
+
+/**
+ * Collapse OR branches that are all range/equality constraints on the same column
+ * into a single OR_RANGE constraint with multiple range specs.
+ */
+function tryCollapseToOrRange(
+	branches: { constraints: PredicateConstraint[] }[],
+	sourceExpr: ScalarPlanNode
+): { constraints: PredicateConstraint[] } | null {
+	// All branches must have constraints on a single column (possibly multiple for BETWEEN-style ranges)
+	let targetColumnIndex: number | undefined;
+	let targetAttributeId: number | undefined;
+	let targetRelation: string | undefined;
+
+	const rangeSpecs: RangeSpec[] = [];
+
+	for (const b of branches) {
+		// A branch may have 1 constraint (single bound or equality) or 2 constraints (lower + upper on same col)
+		if (b.constraints.length === 0 || b.constraints.length > 2) return null;
+
+		// All constraints in this branch must target the same column
+		const firstCol = b.constraints[0].columnIndex;
+		const firstAttr = b.constraints[0].attributeId;
+		const firstRel = b.constraints[0].targetRelation;
+		if (!b.constraints.every(c => c.columnIndex === firstCol)) return null;
+
+		// Initialize target or verify consistency across branches
+		if (targetColumnIndex === undefined) {
+			targetColumnIndex = firstCol;
+			targetAttributeId = firstAttr;
+			targetRelation = firstRel;
+		} else if (targetColumnIndex !== firstCol || targetAttributeId !== firstAttr) {
+			return null;
+		}
+
+		// Build range spec from branch constraints
+		const spec: RangeSpec = {};
+		for (const c of b.constraints) {
+			const dynExpr = c.valueExpr && !Array.isArray(c.valueExpr) ? c.valueExpr : undefined;
+			if (c.op === '=') {
+				// Equality: treat as >= v AND <= v
+				spec.lower = { op: '>=', value: c.value as SqlValue, valueExpr: dynExpr };
+				spec.upper = { op: '<=', value: c.value as SqlValue, valueExpr: dynExpr };
+			} else if (c.op === '>' || c.op === '>=') {
+				spec.lower = { op: c.op, value: c.value as SqlValue, valueExpr: dynExpr };
+			} else if (c.op === '<' || c.op === '<=') {
+				spec.upper = { op: c.op, value: c.value as SqlValue, valueExpr: dynExpr };
+			} else {
+				// Non-range, non-equality op → can't collapse
+				return null;
+			}
+		}
+
+		// Each branch must define at least one bound
+		if (!spec.lower && !spec.upper) return null;
+
+		rangeSpecs.push(spec);
+	}
+
+	if (targetColumnIndex === undefined || targetAttributeId === undefined || rangeSpecs.length < 2) {
+		return null;
+	}
+
+	const result: PredicateConstraint = {
+		columnIndex: targetColumnIndex,
+		attributeId: targetAttributeId,
+		op: 'OR_RANGE',
+		value: undefined,
+		usable: true,
+		sourceExpression: sourceExpr,
+		targetRelation: targetRelation,
+		bindingKind: 'literal',
+		ranges: rangeSpecs,
+	};
+
 	return { constraints: [result] };
 }
 

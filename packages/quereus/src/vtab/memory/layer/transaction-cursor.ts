@@ -21,6 +21,20 @@ export async function* scanTransactionLayer(
 		return;
 	}
 
+	// Multi-range: iterate over multiple range specs
+	if (plan.ranges && plan.ranges.length > 0) {
+		for (const range of plan.ranges) {
+			const singlePlan: ScanPlan = {
+				...plan,
+				ranges: undefined,
+				lowerBound: range.lowerBound,
+				upperBound: range.upperBound,
+			};
+			yield* scanTransactionLayer(layer, singlePlan, _parentIterable);
+		}
+		return;
+	}
+
 	const tableSchema = layer.getSchema();
 
 	// General plan application check

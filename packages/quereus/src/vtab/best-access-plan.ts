@@ -11,7 +11,7 @@ import type { LogicalType } from '../types/logical-type.js';
 /**
  * Constraint operators that can be pushed down to virtual tables
  */
-export type ConstraintOp = '=' | '>' | '>=' | '<' | '<=' | 'MATCH' | 'LIKE' | 'GLOB' | 'IS NULL' | 'IS NOT NULL' | 'IN' | 'NOT IN';
+export type ConstraintOp = '=' | '>' | '>=' | '<' | '<=' | 'MATCH' | 'LIKE' | 'GLOB' | 'IS NULL' | 'IS NOT NULL' | 'IN' | 'NOT IN' | 'OR_RANGE';
 
 /**
  * Column metadata provided to virtual tables for planning
