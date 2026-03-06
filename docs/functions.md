@@ -340,11 +340,19 @@ JSON paths use `$` as root, `.key` for object members, and `[N]` for array indic
 | `json_extract(json, path, ...)` | variadic | any | Extract value at first matching path. Nested arrays/objects returned as native JSON |
 | `json_array_length(json, path?)` | 1-2 | INTEGER | Length of JSON array (0 if not an array) |
 
+The `->` and `->>` operators are syntactic sugar for `json_extract()`:
+- `expr -> path` desugars to `json_extract(expr, path)` (returns JSON)
+- `expr ->> path` desugars to `cast(json_extract(expr, path) as text)` (returns TEXT)
+
+Path shorthand: `'name'` becomes `'$.name'`, `0` becomes `'$[0]'`.
+
 ```sql
 select json_valid('{"a":1}');           -- 1
 select json_type('{"a":1}', '$.a');     -- 'integer'
 select json_extract('{"a":[1,2]}', '$.a[1]'); -- 2
 select json_array_length('[1,2,3]');    -- 3
+select '{"a":1}' -> 'a';               -- 1 (same as json_extract(..., '$.a'))
+select '{"a":"hello"}' ->> 'a';        -- 'hello' (as TEXT)
 ```
 
 ### Construction

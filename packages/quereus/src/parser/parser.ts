@@ -1466,7 +1466,7 @@ export class Parser {
 	 */
 	private collateExpression(): AST.Expression {
 		const startToken = this.peek();
-		const expr = this.primary();
+		const expr = this.jsonPath();
 
 		if (this.matchKeyword('COLLATE')) {
 			const collationToken = this.consume(TokenType.IDENTIFIER, "Expected collation name after COLLATE.");
@@ -1474,6 +1474,67 @@ export class Parser {
 		}
 
 		return expr;
+	}
+
+	/**
+	 * Parse JSON path operators -> and ->>
+	 * Desugars to json_extract() function calls.
+	 * -> returns JSON (native object), ->> returns SQL scalar value.
+	 */
+	private jsonPath(): AST.Expression {
+		const startToken = this.peek();
+		let expr = this.primary();
+
+		while (this.match(TokenType.ARROW, TokenType.DARROW)) {
+			const opToken = this.previous();
+			const pathExpr = this.jsonPathRhs();
+
+			// Desugar to json_extract(expr, path)
+			expr = {
+				type: 'function',
+				name: 'json_extract',
+				args: [expr, pathExpr],
+				loc: _createLoc(startToken, this.previous()),
+			};
+
+			// For ->>, wrap in cast(... as text) to ensure scalar TEXT result
+			if (opToken.type === TokenType.DARROW) {
+				expr = {
+					type: 'cast',
+					expr,
+					targetType: 'text',
+					loc: _createLoc(startToken, this.previous()),
+				};
+			}
+		}
+
+		return expr;
+	}
+
+	/**
+	 * Parse the right-hand side of -> / ->> operators.
+	 * Accepts string literals, integer literals, or general expressions.
+	 * Normalizes shorthand paths: 'name' → '$.name', 0 → '$[0]'.
+	 */
+	private jsonPathRhs(): AST.Expression {
+		if (this.match(TokenType.STRING)) {
+			const token = this.previous();
+			let path = token.literal as string;
+			if (!path.startsWith('$')) {
+				path = '$.' + path;
+			}
+			return { type: 'literal', value: path, loc: _createLoc(token, token) };
+		}
+
+		if (this.match(TokenType.INTEGER)) {
+			const token = this.previous();
+			const index = token.literal as number;
+			const path = `$[${index}]`;
+			return { type: 'literal', value: path, loc: _createLoc(token, token) };
+		}
+
+		// General expression — user must provide a proper JSON path
+		return this.primary();
 	}
 
 	/**

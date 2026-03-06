@@ -157,6 +157,7 @@ export enum TokenType {
 	COLON = 'COLON',             // : (for named parameters)
 	DOLLAR = 'DOLLAR',           // $ (for named parameters)
 	ARROW = 'ARROW',             // -> (JSON operator)
+	DARROW = 'DARROW',           // ->> (JSON scalar operator)
 	LBRACE = 'LBRACE',           // {
 	RBRACE = 'RBRACE',           // }
 
@@ -367,7 +368,7 @@ export class Lexer {
 						this.advance();
 					}
 				} else if (this.match('>')) {
-					this.addToken(TokenType.ARROW);
+					this.addToken(this.match('>') ? TokenType.DARROW : TokenType.ARROW);
 				} else {
 					this.addToken(TokenType.MINUS);
 				}

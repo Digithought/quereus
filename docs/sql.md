@@ -1685,6 +1685,12 @@ select null as no_value;
 **String Operators:**
 - Concatenation: `||`
 
+**JSON Path Operators:**
+- `->`: Extract JSON value at path, returns JSON (syntactic sugar for `json_extract()`)
+- `->>`: Extract JSON value at path, returns scalar TEXT (syntactic sugar for `cast(json_extract() as text)`)
+
+Path shorthand: `expr -> 'name'` is equivalent to `expr -> '$.name'`; `expr -> 0` is equivalent to `expr -> '$[0]'`.
+
 **Other Operators:**
 - `is`: Tests if values are identical (including NULL)
 - `is not`: Tests if values are not identical
@@ -1711,6 +1717,12 @@ select * from products where price > 100;
 select * from employees
 where (department = 'Sales' or department = 'Marketing')
 and salary > 50000;
+
+-- JSON path operators
+select data -> 'name' from users;                -- extract as JSON
+select data ->> 'age' from users;                -- extract as TEXT
+select data -> 'address' -> 'city' from users;   -- chained access
+select data -> 0 from json_array_col;            -- array index shorthand
 
 -- IS NULL / IS NOT NULL
 select * from users where profile_picture is null;
@@ -3499,7 +3511,8 @@ unary_operator     = "-" | "+" | "~" | "not" ;
 
 binary_operator    = "||" | "*" | "/" | "%" | "+" | "-" | "<<" | ">>" | "&" | "|"
                    | "<" | "<=" | ">" | ">=" | "=" | "==" | "!=" | "<>"
-                   | "and" | "or" | "xor" ;
+                   | "and" | "or" | "xor"
+                   | "->" | "->>" ;
 ```
 
 This grammar defines the syntax of SQL statements supported by Quereus. While it captures most of the language features, some specialized constructs and edge cases may not be fully represented. For the definitive reference, always consult the Quereus parser implementation.
