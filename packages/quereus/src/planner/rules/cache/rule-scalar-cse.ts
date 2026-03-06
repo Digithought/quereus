@@ -107,40 +107,6 @@ function collectChain(project: ProjectNode): {
 	return { filter, sort, bottomSource: current };
 }
 
-/**
- * Replace a specific scalar node within a scalar expression tree.
- * Returns the new root, or the same root if no replacement occurred.
- */
-function replaceInScalar(
-	root: ScalarPlanNode,
-	target: ScalarPlanNode,
-	replacement: ScalarPlanNode
-): ScalarPlanNode {
-	if (root === target) {
-		return replacement;
-	}
-
-	const children = root.getChildren();
-	if (children.length === 0) {
-		return root;
-	}
-
-	const newChildren: PlanNode[] = [];
-	let changed = false;
-	for (const child of children) {
-		if (child.getType().typeClass === 'scalar') {
-			const replaced = replaceInScalar(child as ScalarPlanNode, target, replacement);
-			newChildren.push(replaced);
-			if (replaced !== child) changed = true;
-		} else {
-			newChildren.push(child);
-		}
-	}
-
-	if (!changed) return root;
-	return root.withChildren(newChildren) as ScalarPlanNode;
-}
-
 export function ruleScalarCSE(node: PlanNode, _context: OptContext): PlanNode | null {
 	if (node.nodeType !== PlanNodeType.Project) {
 		return null;
