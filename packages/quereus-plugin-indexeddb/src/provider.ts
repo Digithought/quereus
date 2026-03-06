@@ -161,14 +161,17 @@ export class IndexedDBProvider implements KVStoreProvider {
 	}
 
 	/**
-	 * Invalidate the read cache for a specific table store.
+	 * Invalidate the read cache for a specific table's data and index stores.
 	 * Called by cross-tab sync when remote data changes are detected.
 	 */
 	invalidateCache(schemaName: string, tableName: string): void {
-		const storeName = buildDataStoreName(schemaName, tableName);
-		const store = this.stores.get(storeName);
-		if (store instanceof CachedKVStore) {
-			store.invalidateAll();
+		const dataStoreName = buildDataStoreName(schemaName, tableName);
+		const indexPrefix = `${dataStoreName}${STORE_SUFFIX.INDEX}`;
+
+		for (const [name, store] of this.stores) {
+			if ((name === dataStoreName || name.startsWith(indexPrefix)) && store instanceof CachedKVStore) {
+				store.invalidateAll();
+			}
 		}
 	}
 

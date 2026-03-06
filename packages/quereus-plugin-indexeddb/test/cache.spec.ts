@@ -426,4 +426,33 @@ describe('CachedKVStore', () => {
 			expect(cached.getUnderlying()).to.equal(store);
 		});
 	});
+
+	describe('Concurrent access', () => {
+		it('should not leak linked-list nodes on concurrent get() for same key', async () => {
+			const { store, calls } = createSpyStore();
+			const cached = new CachedKVStore(store, { maxEntries: 10 });
+
+			await store.put(KEY_A, VAL_1);
+			calls.get = 0;
+
+			// Fire two concurrent get() calls — both will miss and race to addEntry
+			const [r1, r2] = await Promise.all([cached.get(KEY_A), cached.get(KEY_A)]);
+			expect(r1).to.deep.equal(VAL_1);
+			expect(r2).to.deep.equal(VAL_1);
+			expect(calls.get).to.equal(2); // both hit underlying
+
+			// After the race, the cache should still serve correctly
+			calls.get = 0;
+			const r3 = await cached.get(KEY_A);
+			expect(r3).to.deep.equal(VAL_1);
+			expect(calls.get).to.equal(0); // served from cache
+
+			// Invalidate and verify we can still refetch cleanly
+			cached.invalidateAll();
+			calls.get = 0;
+			const r4 = await cached.get(KEY_A);
+			expect(r4).to.deep.equal(VAL_1);
+			expect(calls.get).to.equal(1);
+		});
+	});
 });

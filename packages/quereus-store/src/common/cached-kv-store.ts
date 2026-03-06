@@ -170,6 +170,17 @@ export class CachedKVStore implements KVStore {
 	// --- LRU internals ---
 
 	private addEntry(hex: string, value: Uint8Array | undefined, size: number): void {
+		// Guard against concurrent async callers that both missed on the same key
+		const existing = this.map.get(hex);
+		if (existing) {
+			this.totalBytes -= existing.size;
+			existing.value = value;
+			existing.size = size;
+			this.totalBytes += size;
+			this.moveToHead(existing);
+			return;
+		}
+
 		const node: LRUNode = { key: hex, value, size, prev: null, next: null };
 		this.map.set(hex, node);
 		this.totalBytes += size;

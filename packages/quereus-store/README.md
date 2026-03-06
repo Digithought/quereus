@@ -264,6 +264,13 @@ console.log(hasIsolation(isolatedModule)); // true
 | `hasIsolation` | Check if a module has isolation capability |
 | `IsolatedStoreModuleConfig` | Configuration for isolated store module |
 
+### Caching
+
+| Export | Description |
+|--------|-------------|
+| `CachedKVStore` | Read-through LRU cache wrapper for any `KVStore` |
+| `CacheOptions` | Configuration for cache (maxEntries, maxBytes, enabled) |
+
 ### Encoding Utilities
 
 | Export | Description |

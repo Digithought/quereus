@@ -6,7 +6,8 @@ IndexedDB storage plugin for Quereus. Provides persistent storage for browser en
 
 - **Browser-native**: Uses IndexedDB for reliable persistent storage
 - **Transaction isolation**: Read-your-own-writes and snapshot isolation by default
-- **Cross-tab sync**: BroadcastChannel-based synchronization across browser tabs
+- **Read cache**: In-memory LRU cache reduces redundant IDB transactions (enabled by default)
+- **Cross-tab sync**: BroadcastChannel-based synchronization across browser tabs, with automatic cache invalidation
 - **Async iteration**: Efficient range queries with cursor-based iteration
 
 ## Installation
@@ -127,14 +128,24 @@ sync.close();
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `prefix` | string | `'quereus'` | Prefix for IndexedDB database names |
+| `databaseName` | string | `'quereus'` | Name for the unified IndexedDB database |
 | `moduleName` | string | `'store'` | Name to register the virtual table module under |
+| `cache` | CacheOptions | `{ enabled: true, maxEntries: 1000 }` | Read cache configuration (see below) |
+
+### Cache Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxEntries` | number | `1000` | Maximum cached entries per store |
+| `maxBytes` | number | — | Maximum cached bytes per store (unlimited if omitted) |
+| `enabled` | boolean | `true` | Set `false` to disable caching entirely |
 
 ### IndexedDBProvider Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `prefix` | string | `'quereus'` | Prefix for database names: `${prefix}_${schema}_${table}` |
+| `databaseName` | string | `'quereus'` | Name for the unified IndexedDB database |
+| `cache` | CacheOptions | — | Read cache configuration |
 
 ## Related Packages
 

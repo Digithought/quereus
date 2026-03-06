@@ -5,7 +5,7 @@
  */
 
 import type { Database, SqlValue } from '@quereus/quereus';
-import { StoreModule, createIsolatedStoreModule } from '@quereus/store';
+import { StoreModule, createIsolatedStoreModule, type CacheOptions } from '@quereus/store';
 import { IndexedDBProvider } from './provider.js';
 
 /**
@@ -36,14 +36,7 @@ export interface IndexedDBPluginConfig {
 	 * Read cache configuration for data and index stores.
 	 * Wraps each store with an in-memory LRU cache to reduce IDB round-trips.
 	 */
-	cache?: {
-		/** Maximum cached entries per store. @default 1000 */
-		maxEntries?: number;
-		/** Maximum cached bytes per store. No limit if omitted. */
-		maxBytes?: number;
-		/** Enable/disable the cache. @default true */
-		enabled?: boolean;
-	};
+	cache?: CacheOptions;
 }
 
 /**
