@@ -49,6 +49,14 @@ function restoreNodeGlobals(saved: Map<string, unknown>): void {
 	}
 }
 
+async function collectRows(db: Database, sql: string): Promise<Record<string, unknown>[]> {
+	const rows: Record<string, unknown>[] = [];
+	for await (const row of db.eval(sql)) {
+		rows.push(row);
+	}
+	return rows;
+}
+
 describe('Browser Environment Smoke Test', () => {
 	let db: Database;
 	let saved: Map<string, unknown>;
@@ -73,12 +81,7 @@ describe('Browser Environment Smoke Test', () => {
 	it('should create a table and verify via schema()', async () => {
 		await db.exec('create table t (id integer primary key, name text, value real)');
 
-		const rows: Record<string, unknown>[] = [];
-		for await (const row of db.eval(
-			"select name from schema() where type = 'table' and name = 't'",
-		)) {
-			rows.push(row);
-		}
+		const rows = await collectRows(db, "select name from schema() where type = 'table' and name = 't'");
 		void expect(rows).to.have.length(1);
 		void expect(rows[0].name).to.equal('t');
 	});
@@ -87,10 +90,7 @@ describe('Browser Environment Smoke Test', () => {
 		await db.exec('create table items (id integer primary key, label text)');
 		await db.exec("insert into items values (1, 'alpha'), (2, 'beta'), (3, 'gamma')");
 
-		const rows: Record<string, unknown>[] = [];
-		for await (const row of db.eval('select * from items order by id')) {
-			rows.push(row);
-		}
+		const rows = await collectRows(db, 'select * from items order by id');
 		void expect(rows).to.have.length(3);
 		void expect(rows[0]).to.deep.include({ id: 1, label: 'alpha' });
 		void expect(rows[2]).to.deep.include({ id: 3, label: 'gamma' });
@@ -101,10 +101,7 @@ describe('Browser Environment Smoke Test', () => {
 		await db.exec("insert into data values ('x', 10), ('y', 20)");
 		await db.exec("update data set v = 99 where k = 'x'");
 
-		const rows: Record<string, unknown>[] = [];
-		for await (const row of db.eval("select v from data where k = 'x'")) {
-			rows.push(row);
-		}
+		const rows = await collectRows(db, "select v from data where k = 'x'");
 		void expect(rows).to.have.length(1);
 		void expect(rows[0].v).to.equal(99);
 	});
@@ -114,10 +111,7 @@ describe('Browser Environment Smoke Test', () => {
 		await db.exec('insert into tmp values (1), (2), (3)');
 		await db.exec('delete from tmp where id = 2');
 
-		const rows: Record<string, unknown>[] = [];
-		for await (const row of db.eval('select id from tmp order by id')) {
-			rows.push(row);
-		}
+		const rows = await collectRows(db, 'select id from tmp order by id');
 		void expect(rows).to.have.length(2);
 		void expect(rows.map(r => r.id)).to.deep.equal([1, 3]);
 	});
@@ -126,10 +120,7 @@ describe('Browser Environment Smoke Test', () => {
 		await db.exec('create table nums (val integer)');
 		await db.exec('insert into nums values (10), (20), (30)');
 
-		const rows: Record<string, unknown>[] = [];
-		for await (const row of db.eval('select sum(val) as total, count(*) as cnt from nums')) {
-			rows.push(row);
-		}
+		const rows = await collectRows(db, 'select sum(val) as total, count(*) as cnt from nums');
 		void expect(rows).to.have.length(1);
 		void expect(rows[0].total).to.equal(60);
 		void expect(rows[0].cnt).to.equal(3);
@@ -143,12 +134,9 @@ describe('Browser Environment Smoke Test', () => {
 			"insert into orders values (1, 1, 'Widget'), (2, 1, 'Gadget'), (3, 2, 'Gizmo')",
 		);
 
-		const rows: Record<string, unknown>[] = [];
-		for await (const row of db.eval(
+		const rows = await collectRows(db,
 			'select u.name, o.item from users u join orders o on u.id = o.user_id order by o.id',
-		)) {
-			rows.push(row);
-		}
+		);
 		void expect(rows).to.have.length(3);
 		void expect(rows[0]).to.deep.include({ name: 'Alice', item: 'Widget' });
 		void expect(rows[2]).to.deep.include({ name: 'Bob', item: 'Gizmo' });
@@ -160,12 +148,9 @@ describe('Browser Environment Smoke Test', () => {
 			"insert into scores values ('a', 100), ('b', 200), ('a', 150), ('b', 300)",
 		);
 
-		const rows: Record<string, unknown>[] = [];
-		for await (const row of db.eval(
+		const rows = await collectRows(db,
 			'select player, total from (select player, sum(points) as total from scores group by player) sub order by total desc',
-		)) {
-			rows.push(row);
-		}
+		);
 		void expect(rows).to.have.length(2);
 		void expect(rows[0]).to.deep.include({ player: 'b', total: 500 });
 		void expect(rows[1]).to.deep.include({ player: 'a', total: 250 });

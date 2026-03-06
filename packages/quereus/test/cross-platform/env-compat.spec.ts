@@ -22,15 +22,17 @@ const FORBIDDEN_NODE_PREFIXED = [
 	'node:util', 'node:buffer', 'node:events', 'node:assert',
 	'node:worker_threads', 'node:cluster', 'node:dgram', 'node:dns',
 	'node:readline', 'node:tls', 'node:vm', 'node:zlib',
+	'node:perf_hooks', 'node:string_decoder', 'node:querystring',
 ];
 
 /** Bare Node.js built-in module names (without node: prefix) */
 const BARE_NODE_MODULES = [
 	'fs', 'path', 'child_process', 'os', 'crypto',
-	'net', 'http', 'https', 'stream',
+	'net', 'http', 'https', 'stream', 'url',
 	'util', 'buffer', 'events', 'assert',
 	'worker_threads', 'cluster', 'dgram', 'dns',
 	'readline', 'tls', 'vm', 'zlib',
+	'perf_hooks', 'string_decoder', 'querystring',
 ];
 
 /**
