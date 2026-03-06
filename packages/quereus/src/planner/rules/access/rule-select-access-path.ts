@@ -338,6 +338,68 @@ function selectPhysicalNodeFromPlan(
 			);
 		}
 
+		if (hasMultiValueIn && seekCols.length > 1) {
+			// Composite IN multi-seek: generate cross-product of all column values
+			const columnValues: { colIdx: number; values: unknown[]; exprs?: ScalarPlanNode[] }[] = [];
+			for (const colIdx of seekCols) {
+				const c = eqBySeekCol.get(colIdx)!;
+				if (c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length > 1) {
+					columnValues.push({
+						colIdx,
+						values: c.value as unknown as unknown[],
+						exprs: Array.isArray(c.valueExpr) ? c.valueExpr as ScalarPlanNode[] : undefined,
+					});
+				} else {
+					// Single equality value for this column
+					const val = c.op === 'IN' && Array.isArray(c.value) ? (c.value as unknown[])[0] : c.value;
+					columnValues.push({ colIdx, values: [val] });
+				}
+			}
+
+			// Compute cross-product of value indices
+			const crossProduct = cartesianProduct(columnValues.map(cv =>
+				cv.values.map((_v, i) => i)
+			));
+			const seekWidth = seekCols.length;
+
+			// Build seekKeys — one ScalarPlanNode per value in flattened cross-product
+			const seekKeys: ScalarPlanNode[] = crossProduct.flatMap(combo =>
+				combo.map((valueIdx, colPos) => {
+					const cv = columnValues[colPos];
+					if (cv.exprs && cv.exprs[valueIdx]) {
+						return cv.exprs[valueIdx];
+					}
+					const v = cv.values[valueIdx];
+					const lit: AST.LiteralExpr = { type: 'literal', value: v } as unknown as AST.LiteralExpr;
+					return new LiteralNode(tableRef.scope, lit);
+				})
+			);
+
+			// Build constraints: one EQ constraint per value in the flattened args
+			const constraints = seekKeys.map((_sk, i) => ({
+				constraint: { iColumn: seekCols[i % seekWidth], op: IndexConstraintOp.EQ, usable: true },
+				argvIndex: i + 1,
+			}));
+
+			const fi: FilterInfo = {
+				...filterInfo,
+				constraints: constraints as any,
+				idxStr: `idx=${idxStrName}(0);plan=5;inCount=${crossProduct.length};seekWidth=${seekWidth}`,
+			};
+
+			log('Using composite index multi-seek on %s (cross-product of %d seeks, width %d)', physicalIndexName, crossProduct.length, seekWidth);
+			return new IndexSeekNode(
+				tableRef.scope,
+				tableRef,
+				fi,
+				physicalIndexName,
+				seekKeys,
+				false,
+				providesOrdering,
+				accessPlan.cost
+			);
+		}
+
 		// Standard equality seek on all seek columns
 		const seekKeys: ScalarPlanNode[] = seekCols.map(colIdx => {
 			const c = eqBySeekCol.get(colIdx)!;
@@ -619,6 +681,14 @@ function createSeqScan(tableRef: TableReferenceNode, filterInfo?: FilterInfo, co
 	);
 
 	return seqScan;
+}
+
+/** Compute the cartesian product of an array of arrays */
+function cartesianProduct<T>(arrays: T[][]): T[][] {
+	return arrays.reduce<T[][]>(
+		(acc, arr) => acc.flatMap(combo => arr.map(v => [...combo, v])),
+		[[]],
+	);
 }
 
 function opToIndexOp(op: '>' | '>=' | '<' | '<='): number {

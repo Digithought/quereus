@@ -123,6 +123,64 @@ describe('Secondary index access path selection', () => {
 		expect(results[0].title).to.equal('DevCon');
 	});
 
+	describe('composite index IN multi-seek', () => {
+		async function setupEvents(): Promise<void> {
+			await db.exec("CREATE TABLE events (id INTEGER PRIMARY KEY, category TEXT, year INTEGER, title TEXT) USING memory");
+			await db.exec(`INSERT INTO events VALUES
+				(1, 'tech', 2024, 'DevCon'),
+				(2, 'tech', 2025, 'CodeFest'),
+				(3, 'music', 2024, 'SoundWave'),
+				(4, 'music', 2025, 'BeatDrop'),
+				(5, 'art', 2024, 'Canvas'),
+				(6, 'art', 2025, 'Palette')`);
+			await db.exec("CREATE INDEX idx_cat_year ON events(category, year)");
+		}
+
+		it('IN on first column with equality on second: a IN (1,2) AND b = 5', async () => {
+			await setupEvents();
+			const q = "SELECT title FROM events WHERE category in ('tech', 'music') AND year = 2024 ORDER BY title";
+			const results: any[] = [];
+			for await (const r of db.eval(q)) results.push(r);
+			expect(results.map(r => r.title)).to.deep.equal(['DevCon', 'SoundWave']);
+		});
+
+		it('equality on first column with IN on second: a = 1 AND b IN (3,4,5)', async () => {
+			await setupEvents();
+			const q = "SELECT title FROM events WHERE category = 'tech' AND year in (2024, 2025) ORDER BY title";
+			const results: any[] = [];
+			for await (const r of db.eval(q)) results.push(r);
+			expect(results.map(r => r.title)).to.deep.equal(['CodeFest', 'DevCon']);
+		});
+
+		it('IN on both columns: cross-product', async () => {
+			await setupEvents();
+			const q = "SELECT title FROM events WHERE category in ('tech', 'music') AND year in (2024, 2025) ORDER BY title";
+			const results: any[] = [];
+			for await (const r of db.eval(q)) results.push(r);
+			expect(results.map(r => r.title)).to.deep.equal(['BeatDrop', 'CodeFest', 'DevCon', 'SoundWave']);
+		});
+
+		it('explain shows IndexSeek for composite IN', async () => {
+			await setupEvents();
+			const q = "SELECT title FROM events WHERE category in ('tech', 'music') AND year = 2024";
+			const planRows: any[] = [];
+			for await (const r of db.eval("SELECT json_group_array(op) AS ops FROM query_plan(?)", [q])) {
+				planRows.push(r);
+			}
+			expect(planRows).to.have.lengthOf(1);
+			const ops = planRows[0].ops as string;
+			expect(ops).to.match(/INDEXSEEK|INDEX SEEK|IndexSeek/i);
+		});
+
+		it('single-column IN still works (regression)', async () => {
+			await setup();
+			const q = "SELECT name FROM items WHERE age in (25, 35) ORDER BY name";
+			const results: any[] = [];
+			for await (const r of db.eval(q)) results.push(r);
+			expect(results.map(r => r.name)).to.deep.equal(['Bob', 'Charlie', 'Diana']);
+		});
+	});
+
 	it('still uses PK seek when filtering on primary key', async () => {
 		await setup();
 		const q = "SELECT name FROM items WHERE id = 3";

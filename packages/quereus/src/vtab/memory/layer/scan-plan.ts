@@ -255,10 +255,22 @@ export function buildScanPlanFromFilterInfo(filterInfo: FilterInfo, tableSchema:
 			indexName, indexSchema, argvMap, args, constraints, indexInfoOutput, tableSchema,
 		);
 	} else if (isMultiSeekPlan && indexSchema) {
-		// Multi-seek: all args are individual lookup keys
+		// Multi-seek: args are individual lookup keys (single-col) or flattened composite keys
 		const inCount = parseInt(params.get('inCount') ?? '0', 10);
-		if (inCount > 0 && args.length >= inCount) {
-			equalityKeys = args.slice(0, inCount) as BTreeKey[];
+		const seekWidth = parseInt(params.get('seekWidth') ?? '1', 10);
+		if (inCount > 0 && args.length >= inCount * seekWidth) {
+			if (seekWidth === 1) {
+				// Single-column: each arg is one key
+				equalityKeys = args.slice(0, inCount) as BTreeKey[];
+			} else {
+				// Composite: group args into composite keys
+				equalityKeys = [];
+				for (let i = 0; i < inCount; i++) {
+					const start = i * seekWidth;
+					const key = args.slice(start, start + seekWidth) as SqlValue[];
+					equalityKeys.push(key.length === 1 ? key[0] : key);
+				}
+			}
 		}
 	} else if (isRangePlan && indexSchema) {
 		({ lowerBound, upperBound } = extractRangeBounds(
