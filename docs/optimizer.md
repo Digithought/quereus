@@ -386,6 +386,10 @@ Rules are organized by optimization family in `src/planner/rules/`:
 **Join** (`join/`)
 - `ruleJoinPhysicalSelection`: Selects hash join or merge join over nested loop for equi-joins when cheaper. Three-way cost comparison (nested-loop vs hash vs merge). Supports INNER, LEFT, SEMI, and ANTI join types.
 
+**Predicate** (`predicate/`)
+- `rulePredicatePushdown`: Pushes filter predicates down into RetrieveNode boundaries where the virtual table module supports them, reducing rows processed upstream.
+- `ruleFilterMerge`: Merges adjacent Filter nodes into a single Filter with an AND-combined predicate. Iteratively absorbs entire chains of adjacent filters in one visit. Runs in the Structural pass at priority 21 (after predicate pushdown at 20).
+
 **Subquery** (`subquery/`)
 - `ruleSubqueryDecorrelation`: Transforms correlated EXISTS/IN subqueries in WHERE-clause filters into semi/anti joins, enabling hash join selection and eliminating per-row re-execution. Handles: correlated EXISTS → semi join, NOT EXISTS → anti join, correlated IN → semi join. NOT IN is deferred (NULL semantics complexity). Runs in the Structural pass at priority 25 (after predicate pushdown).
 
