@@ -26,6 +26,7 @@ import { SortNode } from '../../nodes/sort.js';
 import { DistinctNode } from '../../nodes/distinct-node.js';
 import { ProjectNode } from '../../nodes/project-node.js';
 import { RetrieveNode } from '../../nodes/retrieve-node.js';
+import { AliasNode } from '../../nodes/alias-node.js';
 import { CapabilityDetectors } from '../../framework/characteristics.js';
 import type { ScalarPlanNode } from '../../nodes/plan-node.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
@@ -75,6 +76,14 @@ function tryPushDown(child: RelationalPlanNode, predicate: ScalarPlanNode, scope
       return updatedRetrieve;
     }
     return new FilterNode(scope, updatedRetrieve as unknown as RelationalPlanNode, extraction.residualPredicate);
+	}
+
+	// Across AliasNode (view boundary)
+	if (child instanceof AliasNode) {
+		log('Pushing predicate below AliasNode');
+		const under = child.source;
+		const newUnder = new FilterNode(under.scope, under, predicate);
+		return new AliasNode(child.scope, newUnder, child.alias);
 	}
 
 	// Across Sort

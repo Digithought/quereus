@@ -38,6 +38,15 @@ SELECT * FROM filtered_items WHERE value > 100 ORDER BY id;
 → [{"id":3,"name":"Gamma","value":150},{"id":5,"name":"Zeta","value":125}]
 DROP VIEW filtered_items;
 
+-- Predicate pushdown through view alias boundary
+-- id = 1 should push through AliasNode into the view's underlying plan (index seek, no residual FILTER)
+SELECT * FROM category_a_view WHERE id = 1;
+→ [{"id":1,"name":"Alpha","value":100}]
+
+-- Qualified column references should also work after pushdown
+SELECT v.name FROM category_a_view v WHERE v.id = 3;
+→ [{"name":"Gamma"}]
+
 -- Drop views
 DROP VIEW category_a_view;
 DROP VIEW summary_view;

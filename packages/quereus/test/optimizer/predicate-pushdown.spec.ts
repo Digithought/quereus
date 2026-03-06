@@ -36,6 +36,40 @@ describe('Predicate push-down (supported-only fragments)', () => {
     expect(access[0].accesses).to.equal(1);
   });
 
+  it('pushes predicate through AliasNode (view boundary)', async () => {
+    await setup();
+    await db.exec("CREATE VIEW v AS SELECT id, name FROM ptab");
+    // id = 2 should push through Alias → Project → into Retrieve pipeline
+    const q = "SELECT * FROM v WHERE id = 2";
+    const rows: any[] = [];
+    for await (const r of db.eval(q)) {
+      rows.push(r);
+    }
+    expect(rows).to.have.lengthOf(1);
+    expect(rows[0].name).to.equal('Bob');
+
+    // Verify the predicate was pushed down (no residual FILTER above Alias)
+    const filters: any[] = [];
+    for await (const r of db.eval("SELECT COUNT(*) AS filters FROM query_plan(?) WHERE op = 'FILTER'", [q])) {
+      filters.push(r);
+    }
+    expect(filters[0].filters).to.equal(0);
+    await db.exec("DROP VIEW v");
+  });
+
+  it('pushes predicate through AliasNode with qualified column references', async () => {
+    await setup();
+    await db.exec("CREATE VIEW v AS SELECT id, name FROM ptab");
+    const q = "SELECT v.name FROM v WHERE v.id = 1";
+    const rows: any[] = [];
+    for await (const r of db.eval(q)) {
+      rows.push(r);
+    }
+    expect(rows).to.have.lengthOf(1);
+    expect(rows[0].name).to.equal('Alice');
+    await db.exec("DROP VIEW v");
+  });
+
   it('handles key-equality with residual arithmetic, keeping residual filter above index seek', async () => {
     await setup();
     const q = "SELECT name FROM ptab WHERE id = 2 AND (id + 0) > 0";
