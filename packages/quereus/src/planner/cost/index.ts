@@ -64,6 +64,16 @@ export const COST_CONSTANTS = {
 	CACHE_ACCESS_PER_ROW: 0.1,
 	/** Cost per row for cache population */
 	CACHE_POPULATE_PER_ROW: 0.2,
+
+	/** Cost per input row for hash aggregate (hashing + map insertion) */
+	HASH_AGG_BUILD_PER_ROW: 0.5,
+	/** Cost per group for hash aggregate finalization */
+	HASH_AGG_PER_GROUP: 1.0,
+
+	/** Cost per input row for stream aggregate */
+	STREAM_AGG_PER_INPUT_ROW: 0.1,
+	/** Cost per output group for stream aggregate */
+	STREAM_AGG_PER_GROUP: 1.5,
 } as const;
 
 /**
@@ -116,6 +126,22 @@ export function projectCost(rows: number, projectionCount: number = 1): number {
 export function aggregateCost(inputRows: number, outputRows: number): number {
 	return (inputRows * COST_CONSTANTS.AGGREGATE_PER_INPUT_ROW) +
 		   (outputRows * COST_CONSTANTS.AGGREGATE_PER_GROUP);
+}
+
+/**
+ * Calculate cost for hash aggregate operation
+ */
+export function hashAggregateCost(inputRows: number, estimatedGroups: number): number {
+	return (inputRows * COST_CONSTANTS.HASH_AGG_BUILD_PER_ROW) +
+		   (estimatedGroups * COST_CONSTANTS.HASH_AGG_PER_GROUP);
+}
+
+/**
+ * Calculate cost for stream aggregate operation (excluding any sort)
+ */
+export function streamAggregateCost(inputRows: number, outputRows: number): number {
+	return (inputRows * COST_CONSTANTS.STREAM_AGG_PER_INPUT_ROW) +
+		   (outputRows * COST_CONSTANTS.STREAM_AGG_PER_GROUP);
 }
 
 /**

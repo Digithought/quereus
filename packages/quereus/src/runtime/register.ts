@@ -31,6 +31,7 @@ import { emitDistinct } from './emit/distinct.js';
 import { emitScalarFunctionCall } from './emit/scalar-function.js';
 import { emitLimitOffset } from './emit/limit-offset.js';
 import { emitStreamAggregate } from './emit/aggregate.js';
+import { emitHashAggregate } from './emit/hash-aggregate.js';
 import { emitCaseExpr } from './emit/case.js';
 import { emitCast } from './emit/cast.js';
 import { emitCollate } from "./emit/collate.js";
@@ -114,9 +115,9 @@ export function registerEmitters() {
 
 	// Physical aggregate emitters
 	registerEmitter(PlanNodeType.StreamAggregate, emitStreamAggregate as EmitterFunc);
+	registerEmitter(PlanNodeType.HashAggregate, emitHashAggregate as EmitterFunc);
 	// Do not map the aggregate node to an emitter.  It is logical only.
 	// NO: registerEmitter(PlanNodeType.Aggregate, emitStreamAggregate as EmitterFunc);
-	// TODO: registerEmitter(PlanNodeType.HashAggregate, emitHashAggregate as EmitterFunc);
 
 	// DML/DDL emitters
 	registerEmitter(PlanNodeType.CreateTable, emitCreateTable as EmitterFunc);

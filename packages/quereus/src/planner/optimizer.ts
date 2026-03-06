@@ -24,7 +24,7 @@ import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
 // Predicate pushdown rules
 // Core optimization rules
-import { ruleAggregateStreaming } from './rules/aggregate/rule-aggregate-streaming.js';
+import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
 import { ruleQuickPickJoinEnumeration } from './rules/join/rule-quickpick-enumeration.js';
 import { ruleJoinPhysicalSelection } from './rules/join/rule-join-physical-selection.js';
 // Constraint rules removed - now handled in builders for correctness
@@ -174,10 +174,10 @@ export class Optimizer {
 		});
 
 		this.passManager.addRuleToPass(PassId.Physical, {
-			id: 'aggregate-streaming',
+			id: 'aggregate-physical',
 			nodeType: PlanNodeType.Aggregate,
 			phase: 'impl',
-			fn: ruleAggregateStreaming,
+			fn: ruleAggregatePhysical,
 			priority: 20
 		});
 

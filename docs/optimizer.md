@@ -83,7 +83,7 @@ The optimizer executes transformations through a series of **optimization passes
 
 #### Pass 2: Physical Selection (Bottom-up)
 - **Purpose**: Convert logical operators to physical implementations
-- **Key Rules**: `ruleSelectAccessPath`, `ruleAggregateStreaming`
+- **Key Rules**: `ruleSelectAccessPath`, `ruleAggregatePhysical`
 - **Traversal**: Bottom-up to select implementations based on child properties
 - **Result**: Executable physical plan with concrete operators
 
@@ -374,7 +374,7 @@ Rules are organized by optimization family in `src/planner/rules/`:
 - `ruleSelectAccessPath`: Chooses between sequential scan, index scan, and index seek for both primary and secondary indexes
 
 **Aggregation** (`aggregate/`)
-- `ruleAggregateStreaming`: Converts `AggregateNode` to `StreamAggregateNode` when beneficial
+- `ruleAggregatePhysical`: Cost-based selection between `StreamAggregateNode` and `HashAggregateNode`. Scalar aggregates (no GROUP BY) always use stream. Already-sorted input always uses stream (preserves ordering). Unsorted input compares sort+stream cost vs hash cost and picks the cheaper option.
 
 **Caching** (`cache/`)
 - `ruleCteOptimization`: Adds caching to frequently-accessed CTEs

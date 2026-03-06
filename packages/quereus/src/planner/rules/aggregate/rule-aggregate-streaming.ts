@@ -1,22 +1,19 @@
 /**
- * Rule: Aggregate Streaming
+ * Rule: Aggregate Physical Selection
  *
- * Required Characteristics:
- * - Node must support aggregation operations (AggregationCapable interface)
- * - Node must be relational (produces rows)
- * - Node must be read-only (no side effects for streaming)
+ * Cost-based selection between StreamAggregateNode and HashAggregateNode.
  *
- * Applied When:
- * - Logical aggregate node needs physical streaming implementation
- * - Source data can be processed incrementally
- *
- * Benefits: Enables streaming aggregation with proper grouping order, memory efficient processing
+ * Decision logic:
+ * - No GROUP BY → always StreamAggregate (no hash needed for scalar aggregate)
+ * - Already sorted → always StreamAggregate (no sort overhead, preserves ordering)
+ * - Unsorted → choose cheaper of sort+stream vs hash based on cost model
  */
 
 import { createLogger } from '../../../common/logger.js';
 import type { PlanNode, ScalarPlanNode, Attribute } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { StreamAggregateNode } from '../../nodes/stream-aggregate.js';
+import { HashAggregateNode } from '../../nodes/hash-aggregate.js';
 import { SortNode } from '../../nodes/sort.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
@@ -25,95 +22,88 @@ import {
 	CapabilityDetectors,
 	type AggregationCapable
 } from '../../framework/characteristics.js';
+import { sortCost, streamAggregateCost, hashAggregateCost } from '../../cost/index.js';
 
-const log = createLogger('optimizer:rule:aggregate-streaming');
+const log = createLogger('optimizer:rule:aggregate-physical');
 
-export function ruleAggregateStreaming(node: PlanNode, _context: OptContext): PlanNode | null {
-	// Guard: node must support aggregation operations
+export function ruleAggregatePhysical(node: PlanNode, _context: OptContext): PlanNode | null {
 	if (!CapabilityDetectors.isAggregating(node)) {
 		return null;
 	}
 
-	log('Applying aggregate streaming rule to node %s', node.id);
+	log('Applying aggregate physical selection rule to node %s', node.id);
 
-	// Get aggregation characteristics
 	const aggregateNode = node as AggregationCapable;
 	const groupingKeys = aggregateNode.getGroupingKeys();
 	const aggregateExpressions = aggregateNode.getAggregateExpressions();
-
-	// Check if we can stream the aggregation over the source
 	const source = aggregateNode.getSource();
 
-	// Check if streaming aggregation is beneficial
 	if (!aggregateNode.canStreamAggregate()) {
 		log('Node cannot use streaming aggregation, skipping');
 		return null;
 	}
 
-	if (groupingKeys.length > 0) {
-		// Need to ensure ordering for streaming aggregate
-		// Check if source already provides the required ordering
-		const sourceOrdering = PlanNodeCharacteristics.getOrdering(source);
-		const needsSort = !isOrderedForGrouping(sourceOrdering, groupingKeys, source.getAttributes());
+	const finalAttrs = combineAttributes(node.getAttributes(), source.getAttributes());
+	const aggregates = aggregateExpressions.map(agg => ({
+		expression: agg.expr,
+		alias: agg.alias
+	}));
 
-		let sortedSource = source;
-		if (needsSort) {
-			// Insert sort to ensure proper grouping order
-			const sortKeys = groupingKeys.map(expr => ({
-				expression: expr,
-				direction: 'asc' as const,
-				nulls: undefined
-			}));
-
-			sortedSource = new SortNode(node.scope, source, sortKeys);
-			log('Inserted sort for grouping keys');
-		} else {
-			log('Source already provides required ordering for streaming');
-		}
-
-		// Create combined attributes preserving attribute IDs
-		const finalAttrs = combineAttributes(node.getAttributes(), source.getAttributes());
-
-		// Convert aggregate expressions to match StreamAggregateNode interface
-		const streamAggregates = aggregateExpressions.map(agg => ({
-			expression: agg.expr,
-			alias: agg.alias
-		}));
-
+	// No GROUP BY — always use stream aggregate (single accumulator, no hash map needed)
+	if (groupingKeys.length === 0) {
 		const result = new StreamAggregateNode(
-			node.scope,
-			sortedSource,
-			groupingKeys,
-			streamAggregates,
-			undefined, // estimatedCostOverride
-			finalAttrs
+			node.scope, source, groupingKeys, aggregates, undefined, finalAttrs
 		);
+		log('Scalar aggregate → StreamAggregate');
+		return result;
+	}
 
-		log('Transformed aggregation to StreamAggregateNode with %s', needsSort ? 'sort' : 'existing order');
+	// Check if source already provides the required ordering
+	const sourceOrdering = PlanNodeCharacteristics.getOrdering(source);
+	const alreadySorted = isOrderedForGrouping(sourceOrdering, groupingKeys, source.getAttributes());
+
+	if (alreadySorted) {
+		// Already sorted → always stream aggregate (no sort cost, preserves ordering for downstream)
+		const result = new StreamAggregateNode(
+			node.scope, source, groupingKeys, aggregates, undefined, finalAttrs
+		);
+		log('Already sorted → StreamAggregate');
+		return result;
+	}
+
+	// Cost-based decision: sort+stream vs hash
+	const inputRows = source.estimatedRows ?? 1000;
+	const estimatedGroups = Math.max(1, Math.floor(inputRows / 10));
+
+	const streamCostTotal = sortCost(inputRows) + streamAggregateCost(inputRows, estimatedGroups);
+	const hashCostTotal = hashAggregateCost(inputRows, estimatedGroups);
+
+	log('Cost comparison: sort+stream=%.2f, hash=%.2f (inputRows=%d, groups=%d)',
+		streamCostTotal, hashCostTotal, inputRows, estimatedGroups);
+
+	if (hashCostTotal < streamCostTotal) {
+		const result = new HashAggregateNode(
+			node.scope, source, groupingKeys, aggregates, undefined, finalAttrs
+		);
+		log('Unsorted → HashAggregate (cheaper)');
 		return result;
 	} else {
-		// No GROUP BY - can stream aggregate without sorting
-		const finalAttrs = combineAttributes(node.getAttributes(), source.getAttributes());
-
-		// Convert aggregate expressions to match StreamAggregateNode interface
-		const streamAggregates = aggregateExpressions.map(agg => ({
-			expression: agg.expr,
-			alias: agg.alias
+		const sortKeys = groupingKeys.map(expr => ({
+			expression: expr,
+			direction: 'asc' as const,
+			nulls: undefined
 		}));
-
+		const sortedSource = new SortNode(node.scope, source, sortKeys);
 		const result = new StreamAggregateNode(
-			node.scope,
-			source,
-			groupingKeys,
-			streamAggregates,
-			undefined, // estimatedCostOverride
-			finalAttrs
+			node.scope, sortedSource, groupingKeys, aggregates, undefined, finalAttrs
 		);
-
-		log('Transformed aggregation to StreamAggregateNode without sort');
+		log('Unsorted → Sort+StreamAggregate (cheaper)');
 		return result;
 	}
 }
+
+/** Backwards-compatible export name */
+export const ruleAggregateStreaming = ruleAggregatePhysical;
 
 /**
  * Check if source ordering matches grouping requirements for streaming
