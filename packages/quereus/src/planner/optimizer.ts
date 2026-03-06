@@ -33,6 +33,7 @@ import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-
 import { ruleInSubqueryCache } from './rules/cache/rule-in-subquery-cache.js';
 import { ruleSubqueryDecorrelation } from './rules/subquery/rule-subquery-decorrelation.js';
 import { ruleDistinctElimination } from './rules/distinct/rule-distinct-elimination.js';
+import { ruleProjectionPruning } from './rules/retrieve/rule-projection-pruning.js';
 // Phase 3 rules
 import { validatePhysicalTree } from './validation/plan-validator.js';
 import { Database } from '../core/database.js';
@@ -126,6 +127,15 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleDistinctElimination,
 			priority: 18
+		});
+
+		// Projection pruning: remove unused inner projections in Project-on-Project
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'projection-pruning',
+			nodeType: PlanNodeType.Project,
+			phase: 'rewrite',
+			fn: ruleProjectionPruning,
+			priority: 19
 		});
 
 		this.passManager.addRuleToPass(PassId.Structural, {
