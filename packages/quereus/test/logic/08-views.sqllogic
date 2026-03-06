@@ -32,6 +32,12 @@ SELECT * FROM category_a_view ORDER BY id;
 SELECT v.* FROM category_a_view v ORDER BY id;
 → [{"id":1,"name":"Alpha","value":100},{"id":3,"name":"Gamma","value":150},{"id":5,"name":"Zeta","value":125}]
 
+-- Filter merge: view WHERE + outer WHERE should produce correct results
+CREATE VIEW filtered_items AS SELECT id, name, value FROM base_data WHERE category = 'A';
+SELECT * FROM filtered_items WHERE value > 100 ORDER BY id;
+→ [{"id":3,"name":"Gamma","value":150},{"id":5,"name":"Zeta","value":125}]
+DROP VIEW filtered_items;
+
 -- Drop views
 DROP VIEW category_a_view;
 DROP VIEW summary_view;

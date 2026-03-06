@@ -19,6 +19,7 @@ import { ruleMaterializationAdvisory } from './rules/cache/rule-materialization-
 import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js';
 import { ruleGrowRetrieve } from './rules/retrieve/rule-grow-retrieve.js';
 import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown.js';
+import { ruleFilterMerge } from './rules/predicate/rule-filter-merge.js';
 import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
 // Predicate pushdown rules
@@ -133,6 +134,15 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: rulePredicatePushdown,
 			priority: 20
+		});
+
+		// Filter merge: combine adjacent Filter nodes into one AND-combined Filter
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'filter-merge',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleFilterMerge,
+			priority: 21
 		});
 
 		// Subquery decorrelation: transform correlated EXISTS/IN into semi/anti joins
