@@ -75,3 +75,23 @@ select data -> 'name' as person_name from jdoc order by id;
 -- -> in WHERE clause with subexpression
 select id from jdoc where cast(data -> 'name' as text) = 'bob';
 → [{"id":2}]
+
+-- ->> in WHERE clause (returns text directly, no cast needed)
+select id from jdoc where data ->> 'name' = 'bob';
+→ [{"id":2}]
+
+-- Mixed -> and ->> chaining
+select '{"a":{"b":"deep"}}' -> 'a' ->> 'b' as val;
+→ [{"val":"deep"}]
+
+-- -> with boolean value
+select '{"t":true}' -> 't';
+→ [true]
+
+-- -> with JSON null value (distinct from SQL NULL for non-existent path)
+select '{"n":null}' -> 'n';
+→ [null]
+
+-- ->> with nested object returns text
+select '{"a":{"x":1}}' ->> 'a' as val;
+→ [{"val":"[object Object]"}]
