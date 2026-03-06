@@ -73,10 +73,12 @@ export function registerWebSocket(
   service: CoordinatorService,
   basePath: string
 ): void {
-  // RouteShorthandOptions cast: @fastify/websocket augments this type, but when compiled
-  // via portal-linked consumers, the augmentation may target a different fastify instance.
+  // @fastify/websocket augments RouteShorthandMethod to accept (socket, request) handlers
+  // when { websocket: true } is set, but portal-linked consumers may resolve fastify types
+  // from a different instance, breaking the augmentation merge.  Cast both opts and handler.
   const wsOpts: RouteShorthandOptions & { websocket: true } = { websocket: true };
-  app.get(`${basePath}/ws`, wsOpts, (socket: WebSocket, request: FastifyRequest) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app.get(`${basePath}/ws`, wsOpts, ((socket: WebSocket, request: FastifyRequest) => {
     wsLog('New WebSocket connection from %s', request.ip);
 
     let session: ClientSession | null = null;
@@ -272,7 +274,7 @@ export function registerWebSocket(
         sendError('SNAPSHOT_ERROR', msg2);
       }
     }
-  });
+  }) as any);
 }
 
 
