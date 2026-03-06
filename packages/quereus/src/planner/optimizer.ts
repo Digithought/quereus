@@ -34,6 +34,7 @@ import { ruleInSubqueryCache } from './rules/cache/rule-in-subquery-cache.js';
 import { ruleSubqueryDecorrelation } from './rules/subquery/rule-subquery-decorrelation.js';
 import { ruleDistinctElimination } from './rules/distinct/rule-distinct-elimination.js';
 import { ruleProjectionPruning } from './rules/retrieve/rule-projection-pruning.js';
+import { ruleScalarCSE } from './rules/cache/rule-scalar-cse.js';
 // Phase 3 rules
 import { validatePhysicalTree } from './validation/plan-validator.js';
 import { Database } from '../core/database.js';
@@ -153,6 +154,15 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleFilterMerge,
 			priority: 21
+		});
+
+		// Scalar CSE: deduplicate common scalar expressions across Project + Filter + Sort chains
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'scalar-cse',
+			nodeType: PlanNodeType.Project,
+			phase: 'rewrite',
+			fn: ruleScalarCSE,
+			priority: 22
 		});
 
 		// Subquery decorrelation: transform correlated EXISTS/IN into semi/anti joins

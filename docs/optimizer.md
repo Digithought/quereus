@@ -77,9 +77,9 @@ The optimizer executes transformations through a series of **optimization passes
 
 #### Pass 1: Structural Transformations (Top-down)
 - **Purpose**: Restructure the plan tree for optimal execution boundaries
-- **Key Rules**: `ruleGrowRetrieve`, `rulePredicatePushdown`
+- **Key Rules**: `ruleGrowRetrieve`, `rulePredicatePushdown`, `ruleScalarCSE`
 - **Traversal**: Top-down to see parent context for sliding operations
-- **Result**: Operations pushed into virtual table boundaries where beneficial
+- **Result**: Operations pushed into virtual table boundaries where beneficial; duplicate scalar expressions eliminated
 
 #### Pass 2: Physical Selection (Bottom-up)
 - **Purpose**: Convert logical operators to physical implementations
@@ -381,6 +381,7 @@ Rules are organized by optimization family in `src/planner/rules/`:
 - `ruleInSubqueryCache`: Wraps uncorrelated, deterministic IN-subquery sources in CacheNode
 - `ruleMaterializationAdvisory`: Global analysis for cache injection
 - `ruleMutatingSubqueryCache`: Ensures mutating subqueries execute once
+- `ruleScalarCSE`: Scalar common subexpression elimination. Detects duplicate deterministic scalar expressions across a ProjectNode and its child chain (Filter, Sort), injects a lower ProjectNode that computes each deduplicated expression once, and replaces duplicates with column references. Skips bare column references, literals, and non-deterministic expressions. Runs in the Structural pass at priority 22.
 
 **Join** (`join/`)
 - `ruleJoinPhysicalSelection`: Selects hash join or merge join over nested loop for equi-joins when cheaper. Three-way cost comparison (nested-loop vs hash vs merge). Supports INNER, LEFT, SEMI, and ANTI join types.
