@@ -2,9 +2,9 @@
 
 This document describes the design, data-flow, and implementation of constant folding in Titan. It assumes familiarity with `README.md` and `docs/runtime.md`.
 
-Implementation status: Implemented as a dedicated pre-optimization pass (Pass 0) in the optimizer’s multi-pass framework. Scalar expression folding is live; relational folding is planned. See “Pass 0: Constant Folding” in `docs/optimizer.md`.
+Implementation status: Implemented as a dedicated pre-optimization pass (Pass 0) in the optimizer’s multi-pass framework. Both scalar and relational constant folding are live. See “Pass 0: Constant Folding” in `docs/optimizer.md`.
 
-The goal is to make any scalar (and later, relational) sub-tree that is functionally constant collapse to a `LiteralNode` or a pre-materialised `ValuesNode`, using one evaluation engine — the existing runtime.
+The goal is to make any scalar or relational sub-tree that is functionally constant collapse to a `LiteralNode` or a `TableLiteralNode`, using one evaluation engine — the existing runtime.
 
 ---
 ## 1. Definitions
@@ -89,7 +89,25 @@ Notes
 ---
 ## 5. Folding relational constants
 
-`ValuesNode` folding works automatically once every cell is `const`.  In the future, entire sub-queries can be folded if their relational node receives `ConstInfoConst` (e.g. `SELECT 1`).
+Relational subtrees classified as `const` are replaced with `TableLiteralNode` via **deferred materialization**:
+
+1. The relational subtree is emitted into an instruction tree and a `Scheduler` is created.
+2. A `MaterializingAsyncIterable` wraps execution: on first iteration it runs the scheduler, collects all rows, caches them, and yields. Subsequent iterations yield from the cache.
+3. A `TableLiteralNode` is constructed with the iterable, preserving the original node's `RelationType` and attribute IDs (via `predefinedAttributes`).
+
+This keeps the optimizer synchronous while deferring actual execution to first runtime access. Attribute ID preservation ensures parent `ColumnReference` nodes continue to resolve correctly.
+
+**What gets folded:**
+- `VALUES` clauses with all-literal cells
+- Constant subqueries (`SELECT 1+2, 'hello'`) — Project over SingleRow with const expressions
+- Deterministic TVF calls with constant arguments (e.g., `query_plan('SELECT 1')`)
+- Any functional relational node whose entire child subtree is const
+
+**What does NOT get folded:**
+- Anything referencing actual tables (`Retrieve` nodes are non-const)
+- Non-deterministic expressions (`random()`, `datetime('now')`)
+- Mutating operations (marked `readonly: false`)
+- Void-type nodes (e.g., `Block`) — border detection recurses through these to find inner foldable nodes
 
 ---
 ## 6. API & integration points
@@ -98,7 +116,7 @@ Notes
 - Implemented as a dedicated pre-optimization pass (Pass 0) in the pass framework. The pass:
   1. Runs bottom-up classification.
   2. Runs top-down propagation.
-  3. Replaces foldable scalar subtrees.
+  3. Replaces foldable scalar subtrees with `LiteralNode` and relational subtrees with `TableLiteralNode`.
 
 Builders do not perform folding themselves; they rely on the optimizer pass.
 
@@ -118,18 +136,18 @@ Builders do not perform folding themselves; they rely on the optimizer pass.
 ---
 ## 8. Extension ideas
 * **Cost-based cut-off**: skip folding very large expression trees if projected gain is low.
-* **Relational constant detection**: fold sub-queries that are provably constant (e.g., `SELECT COUNT(*) FROM (VALUES(1,2,3))`).
 
 ---
 ## 9. Implementation TODO list
-1. Relational constant detection and replacement (e.g., replace foldable relational subtrees with materialized nodes).
+1. ~~Relational constant detection and replacement~~ — **Done.** Foldable relational subtrees replaced with `TableLiteralNode` via deferred materialization.
 2. Cost-based cut-off heuristics for very large expression trees.
 3. Optional PRAGMA to enable/disable constant folding for debugging.
 4. Broader test coverage and golden plans for complex dependency scenarios.
 
 ---
 ### TL;DR
-* functional = deterministic && readonly indicates fold-safety.  
-* Bottom-up builds dependency sets, top-down resolves them.  
-* Evaluation uses the **existing runtime** through a mini-Scheduler.  
-* No environment-variable logic is needed in the folding path. 
+* functional = deterministic && readonly indicates fold-safety.
+* Bottom-up builds dependency sets, top-down resolves them.
+* Scalar constants → `LiteralNode`; relational constants → `TableLiteralNode` (deferred materialization).
+* Evaluation uses the **existing runtime** through a mini-Scheduler.
+* No environment-variable logic is needed in the folding path.

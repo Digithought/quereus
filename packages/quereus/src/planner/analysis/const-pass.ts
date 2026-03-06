@@ -46,18 +46,22 @@ export interface ConstFoldingContext {
 	borderNodes: Map<string, PlanNode>;
 	/** Evaluation function for border expressions */
 	evaluateExpression: (node: PlanNode) => MaybePromise<OutputValue>;
+	/** Evaluation function for relational border nodes */
+	evaluateRelation?: (node: PlanNode) => PlanNode;
 }
 
 /**
  * Create a new constant folding context
  */
 export function createConstFoldingContext(
-	evaluateExpression: (node: PlanNode) => MaybePromise<OutputValue>
+	evaluateExpression: (node: PlanNode) => MaybePromise<OutputValue>,
+	evaluateRelation?: (node: PlanNode) => PlanNode
 ): ConstFoldingContext {
 	return {
 		constInfo: new Map(),
 		borderNodes: new Map(),
-		evaluateExpression
+		evaluateExpression,
+		evaluateRelation
 	};
 }
 
@@ -67,9 +71,10 @@ export function createConstFoldingContext(
  */
 export function performConstantFolding(
 	root: PlanNode,
-	evaluateExpression: (node: PlanNode) => MaybePromise<OutputValue>
+	evaluateExpression: (node: PlanNode) => MaybePromise<OutputValue>,
+	evaluateRelation?: (node: PlanNode) => PlanNode
 ): PlanNode {
-	const ctx = createConstFoldingContext(evaluateExpression);
+	const ctx = createConstFoldingContext(evaluateExpression, evaluateRelation);
 
 	// Phase 1: Bottom-up classification
 	classifyConstants(root, ctx);
@@ -171,13 +176,19 @@ function detectBorderNodes(
 
 	// Check if this node is a border node
 	if (nodeInfo?.kind === 'const') {
-		if (!node.physical.constant) {
-			// Const nodes are always border nodes
+		const typeClass = node.getType().typeClass;
+		if (!node.physical.constant && (typeClass === 'scalar' || typeClass === 'relation')) {
+			// Foldable const border node (scalar or relational)
 			ctx.borderNodes.set(node.id, node);
 			log('Detected const border node: %s (%s)', node.id, node.nodeType);
+			// Don't recurse into const subtrees - they'll all be replaced
+			return;
 		}
-		// Don't recurse into const subtrees - they'll all be replaced
-		return;
+		if (node.physical.constant) {
+			// Already a physical constant (e.g. LiteralNode) - no folding needed
+			return;
+		}
+		// Non-foldable const node (e.g. Block with void type) - recurse to find inner borders
 	} else if (nodeInfo?.kind === 'dep') {
 		// Dep nodes become border nodes if all dependencies are resolved
 		if (isSubsetOf(nodeInfo.deps, knownConstAttrs)) {
@@ -259,8 +270,12 @@ function replaceBorderNodes(node: PlanNode, ctx: ConstFoldingContext): PlanNode 
 				return replacement;
 			} else {
 				// Relational node - replace with TableLiteralNode
-				// TODO: Handle relational evaluation properly
-				log('Relational border node %s detected but not yet implemented', node.id);
+				if (ctx.evaluateRelation) {
+					const replacement = ctx.evaluateRelation(node);
+					log('Replaced relational border node %s with TableLiteralNode', node.id);
+					return replacement;
+				}
+				log('Relational border node %s skipped (no relational evaluator)', node.id);
 				return node;
 			}
 		} catch (error) {

@@ -12,7 +12,7 @@ import type { RuleHandle } from './registry.js';
 import { hasRuleBeenApplied, markRuleApplied } from './registry.js';
 import { createLogger } from '../../common/logger.js';
 import { performConstantFolding } from '../analysis/const-pass.js';
-import { createRuntimeExpressionEvaluator } from '../analysis/const-evaluator.js';
+import { createRuntimeExpressionEvaluator, createRuntimeRelationalEvaluator } from '../analysis/const-evaluator.js';
 import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
 
@@ -112,8 +112,9 @@ function createConstantFoldingPass(): OptimizationPass {
 		order: 0,
 		execute: (plan: PlanNode, context: OptContext) => {
 			// Custom execution for constant folding
-			const evaluator = createRuntimeExpressionEvaluator(context.db);
-			const result = performConstantFolding(plan, evaluator);
+			const scalarEvaluator = createRuntimeExpressionEvaluator(context.db);
+			const relationalEvaluator = createRuntimeRelationalEvaluator(context.db);
+			const result = performConstantFolding(plan, scalarEvaluator, relationalEvaluator);
 			log('Constant folding completed');
 			return result;
 		}

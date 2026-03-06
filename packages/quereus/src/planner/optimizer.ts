@@ -38,7 +38,7 @@ import { ruleProjectionPruning } from './rules/retrieve/rule-projection-pruning.
 import { validatePhysicalTree } from './validation/plan-validator.js';
 import { Database } from '../core/database.js';
 import { performConstantFolding } from './analysis/const-pass.js';
-import { createRuntimeExpressionEvaluator } from './analysis/const-evaluator.js';
+import { createRuntimeExpressionEvaluator, createRuntimeRelationalEvaluator } from './analysis/const-evaluator.js';
 
 const log = createLogger('optimizer');
 
@@ -315,11 +315,12 @@ export class Optimizer {
 	 * Perform single-pass constant folding over the entire plan tree
 	 */
 	private performConstantFolding(plan: PlanNode, context: OptContext): PlanNode {
-		// Create runtime expression evaluator
-		const evaluator = createRuntimeExpressionEvaluator(context.db);
+		// Create runtime evaluators
+		const scalarEvaluator = createRuntimeExpressionEvaluator(context.db);
+		const relationalEvaluator = createRuntimeRelationalEvaluator(context.db);
 
 		// Perform single-pass constant folding
-		const result = performConstantFolding(plan, evaluator);
+		const result = performConstantFolding(plan, scalarEvaluator, relationalEvaluator);
 
 		log('Constant folding completed');
 		return result;

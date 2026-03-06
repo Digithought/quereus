@@ -583,7 +583,7 @@ if (shouldCache(node, context)) {
 
 **Current Limitations**
 - **OR predicate extraction**: The constraint extractor handles OR-of-equality disjunctions (collapsed to IN for index multi-seek). OR conditions with range predicates on the same index (`tickets/plan/2-or-multi-range-seek.md`) or disjunctions across different indexes (`tickets/plan/2-or-to-union-rewriting.md`) remain as residual filters.
-- **Relational Folding Pending**: Scalar constant folding is implemented; relational constant folding is in progress (`tickets/implement/4-relational-constant-folding.md`).
+- **Constant Folding**: Both scalar and relational constant folding are implemented. Constant relational subtrees (e.g., all-literal VALUES, constant subqueries) are replaced with `TableLiteralNode` via deferred materialization. See `docs/optimizer-const.md`.
 - **Access Path Selection**: Supports primary and secondary index seek/range via module-provided `indexName`/`seekColumnIndexes`. Prefix-equality + trailing-range on composite indexes is not yet supported (`tickets/plan/2-composite-index-advanced-seeks.md`).
 
 ## Future Directions

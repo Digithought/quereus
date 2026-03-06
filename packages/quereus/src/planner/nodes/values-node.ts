@@ -187,10 +187,17 @@ export class TableLiteralNode extends PlanNode implements ZeroAryRelationalNode 
 		public readonly rowCount: number | undefined,
 		// The relation type defining the structure and column types
 		public readonly type: RelationType,
+		/** Optional predefined attributes for preserving IDs during optimization */
+		predefinedAttributes?: Attribute[],
 	) {
 		super(scope, 0.001); // Minimal cost
 
-		this.attributesCache = new Cached(() => this.buildAttributes());
+		this.attributesCache = new Cached(() => {
+			if (predefinedAttributes) {
+				return predefinedAttributes.slice();
+			}
+			return this.buildAttributes();
+		});
 	}
 
 	private buildAttributes(): Attribute[] {
