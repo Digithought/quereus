@@ -9,3 +9,6 @@ packages/sync-coordinator/.data
 
 # Task runner agent logs
 tasks/.logs/
+
+# Benchmark results
+packages/quereus/bench/results/
