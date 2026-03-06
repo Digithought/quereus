@@ -7,6 +7,7 @@
  * Safe moves implemented now:
  * - Across Sort: always safe (ordering unaffected by selection)
  * - Across Distinct: safe for selection predicates (commute)
+ * - Across Alias: safe because AliasNode only renames relationName; attribute IDs are unchanged
  * - Across Project: only if predicate references attribute IDs available below the Project source
  *   (we verify attribute-id coverage), and we keep predicate unchanged (IDs preserved by design)
  * - Into Retrieve: wrap Retrieve.source with a Filter
