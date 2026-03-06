@@ -1,7 +1,7 @@
 description: Additional physical aggregation operators beyond stream aggregate
 dependencies: aggregate rule, physical properties, cost model
 
-Currently the optimizer has `StreamAggregateNode` as the sole physical aggregation operator. For unsorted inputs, a sort is injected before stream aggregation. A hash-based aggregation operator would avoid sorting costs when the input is large and unsorted.
+Currently the optimizer has `StreamAggregateNode` as the sole physical aggregation operator. For unsorted inputs, a sort is injected before stream aggregation. A hash-based aggregation operator would avoid sorting costs when the input is large and unsorted.  We now have hashing primitives via bloom, so this may now be within reach; we didn't have that when this ticket was written.
 
 ### Scope
 

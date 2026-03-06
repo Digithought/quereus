@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "packageManager": "yarn@4.12.0",
-  "description": "Quereus monorepo - Federated SQL query processor inspired by SQLite",
+  "description": "Quereus monorepo - Pure TypeScript SQL engine with CRDT sync. No WASM, no native bindings.",
   "workspaces": [
     "packages/*"
   ],

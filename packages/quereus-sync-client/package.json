@@ -10,6 +10,8 @@
     "crdt",
     "replication",
     "offline-first",
+    "local-first",
+    "realtime",
     "client"
   ],
   "publisher": "Got Choices Foundation",

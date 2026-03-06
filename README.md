@@ -2,19 +2,23 @@
 
 <img src="docs/images/Quereus_colored_wide.svg" alt="Quereus Logo" height="150">
 
-A modern, TypeScript-native SQL engine designed for federated query processing with extensible virtual table support.
+A pure-TypeScript SQL engine. No WASM. No native bindings. Runs natively in the browser, Node.js, React Native, edge workers — anywhere JavaScript runs.
 
 ## Overview
 
-Quereus is a lightweight SQL database engine built from the ground up in TypeScript, inspired by SQLite but optimized for modern JavaScript environments. Unlike traditional databases, Quereus is **virtual table-centric** — all data access happens through pluggable virtual table modules that can connect to any data source: memory, JSON, APIs, files, or custom sources.
+Quereus is a full SQL engine built from the ground up in TypeScript. It gives you real SQL — joins, CTEs, window functions, transactions, constraints — running directly in your JavaScript process with zero compilation or binary dependencies.
+
+Unlike SQLite-in-the-browser approaches that ship WASM blobs, Quereus is native JavaScript with an async-first architecture. All data access flows through **virtual table modules** — pluggable adapters that can connect to memory, IndexedDB, LevelDB, REST APIs, or any data source you can imagine.
+
+Pair it with [**Quereus Sync**](#sync) for fully opaque CRDT replication: write normal SQL, and sync handles conflict resolution, schema migration propagation, and offline-first operation automatically — no special data types, no manual conflict wiring, no schema annotations.
 
 **Key Characteristics:**
-- 🚀 **Pure TypeScript** — No native dependencies, runs anywhere JS runs
-- 🔄 **Async/Await Native** — Built for modern JavaScript with full async support  
-- 🧩 **Virtual Table Architecture** — Extensible data access through pluggable modules
-- 💾 **Memory-Focused** — Optimized for in-memory operations with optional persistence
-- 📊 **Rich SQL Support** — Comprehensive SQL dialect with CTEs, joins, window functions, and more
-- 🌐 **Universal Runtime** — Node.js, browsers, workers, edge environments
+- **Pure TypeScript** — No native dependencies, no WASM, runs anywhere JS runs
+- **Async/Await Native** — Built for modern JavaScript with full async support
+- **Virtual Table Architecture** — Extensible data access through pluggable modules
+- **Persistent Storage** — IndexedDB (browser), LevelDB (Node/RN), SQLite (NativeScript), or your own
+- **Rich SQL** — Joins, CTEs, window functions, constraints, assertions, declarative schema
+- **Universal Runtime** — Node.js, browsers, React Native, Cloudflare Workers, Deno
 
 ## Quick Start
 
@@ -107,7 +111,9 @@ This repository contains multiple packages:
 - **[`packages/quereus-plugin-indexeddb/`](packages/quereus-plugin-indexeddb/)** — IndexedDB storage backend for browsers
 
 ### Sync
-- **[`packages/quereus-sync/`](packages/quereus-sync/)** — Multi-master CRDT replication plugin
+- **[`packages/quereus-sync/`](packages/quereus-sync/)** — Multi-master CRDT replication with automatic conflict resolution
+- **[`packages/quereus-sync-client/`](packages/quereus-sync-client/)** — WebSocket sync client (connection management, reconnection, batching)
+- **[`packages/sync-coordinator/`](packages/sync-coordinator/)** — Production-ready sync server/coordinator
 
 ### Tools
 - **[`packages/plugin-loader/`](packages/plugin-loader/)** — Dynamic plugin loading system
@@ -152,16 +158,45 @@ This repository contains multiple packages:
 - **Efficient Execution** — Dependency-aware instruction scheduling
 - **Memory Management** — Copy-on-write data structures with automatic cleanup
 
+## Sync
+
+Quereus Sync provides **fully opaque CRDT replication** — your application writes normal SQL and sync handles the rest. No special data types in your app code, no manual conflict wiring, no schema annotations.
+
+```typescript
+import { createSyncModule, createStoreAdapter } from '@quereus/sync';
+
+// Sync plugs into your existing Quereus database
+const { syncManager, syncEvents } = await createSyncModule(kv, storeEvents, {
+  applyToStore: createStoreAdapter({ db, getKVStore, events: storeEvents, getTableSchema }),
+  getTableSchema: (schema, table) => db.getTableSchema(schema, table),
+});
+
+// Delta sync between replicas
+const changes = await syncManager.getChangesSince(peerSiteId);
+await syncManager.applyChanges(remoteChanges);
+```
+
+**What makes this different from other sync solutions:**
+
+- **Opaque to app code** — Write normal `INSERT`/`UPDATE`/`DELETE`. No CRDT document types, no special APIs. Your app doesn't know sync exists.
+- **Column-level conflict resolution** — Concurrent updates to different columns of the same row both apply. Same column uses Last-Write-Wins with hybrid logical clocks.
+- **Schema sync** — DDL changes (`CREATE TABLE`, `ALTER TABLE`) propagate across replicas automatically.
+- **Pure JavaScript** — No WASM runtime (unlike cr-sqlite). Same code runs in browser, Node.js, React Native.
+- **Transport agnostic** — Bring your own WebSocket, HTTP, or WebRTC. The sync-client and coordinator packages provide a production-ready WebSocket implementation.
+- **Snapshot + delta sync** — New replicas bootstrap via streaming snapshots with checkpoint/resume. Existing replicas use efficient delta sync.
+
+See [`@quereus/sync` README](packages/quereus-sync/) for full API details.
+
 ## Use Cases
 
 Quereus excels in scenarios where you need SQL capabilities without traditional database overhead:
 
-- **Data Analysis** — ETL pipelines, data transformation, reporting
-- **Application Logic** — Complex business rules expressed in SQL
-- **API Backends** — In-memory caching with SQL query capabilities  
-- **Edge Computing** — Lightweight SQL processing in serverless environments
-- **Development Tools** — SQL interfaces for configuration, testing, prototyping
-- **Embedded Analytics** — SQL queries over application data structures
+- **Local-first apps** — Full SQL + sync on the client with offline support and multi-device replication
+- **AI agent storage** — Embedded SQL engine for tool-using agents — structured working memory in the same JS process
+- **Edge computing** — SQL processing in Cloudflare Workers, Deno Deploy, or serverless functions with no external DB
+- **Data analysis** — ETL pipelines, data transformation, reporting with familiar SQL
+- **Application logic** — Complex business rules expressed in SQL with constraints and assertions
+- **Embedded analytics** — SQL queries over application data structures via virtual tables
 
 ## Contributing
 
@@ -195,11 +230,6 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Status
 
-Quereus is actively developed and suitable for production use in appropriate scenarios. The core SQL engine and memory table implementation are stable, with ongoing work on:
+Quereus is actively developed with the core SQL engine, storage plugins, and sync system all in production use. Ongoing work includes query optimizer improvements, additional virtual table modules, and extended SQL standard compliance.
 
-- Enhanced query optimization capabilities
-- Additional virtual table modules  
-- Performance improvements and tooling
-- Extended SQL standard compliance
-
-For questions, issues, or discussions, please use our [GitHub Issues](https://github.com/your-org/quereus/issues) or [Discussions](https://github.com/your-org/quereus/discussions). 
+For questions, issues, or discussions, please use [GitHub Issues](https://github.com/gotchoices/quereus/issues) or [Discussions](https://github.com/gotchoices/quereus/discussions).

@@ -9,6 +9,7 @@ When views are expanded inline, the resulting plan may contain redundant subexpr
 - Projection pruning: eliminate columns from the view expansion that are not referenced by the outer query
 - Merge adjacent filter/project nodes that arise from view expansion layering
 - Consider view merging: flatten simple views (single-table SELECT with WHERE) directly into the outer query plan
+- Where views are referenced multiply, there may be opportunities for materialization.  Or maybe with the common subexpression elimination ticket, that isn't necessary, or is just a hint.
 
 ### References
 

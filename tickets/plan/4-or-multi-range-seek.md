@@ -5,7 +5,7 @@ files: packages/quereus/src/planner/analysis/constraint-extractor.ts, packages/q
 
 ## Summary
 
-OR disjunctions with range predicates on the same index columns (e.g., `WHERE date > '2024-01' OR date < '2023-06'`) should be served by multiple range scans on the same index rather than falling back to a sequential scan with residual filter.
+OR disjunctions with range predicates on the same index columns (e.g., `WHERE date > '2024-01' OR date < '2023-06'`) should be served by multiple range scans on the same index rather than falling back to a sequential scan with residual filter.  With this, we may be able to unlock other optimizations, which we should add tickets for.
 
 ## Use case
 

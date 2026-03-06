@@ -2,7 +2,7 @@
   "name": "@quereus/sync",
   "version": "0.8.0",
   "type": "module",
-  "description": "Multi-master CRDT replication for Quereus - automatic sync with conflict resolution",
+  "description": "Fully opaque CRDT sync for Quereus - write normal SQL, get automatic multi-master replication with conflict resolution",
   "keywords": [
     "quereus",
     "sql",
@@ -11,8 +11,12 @@
     "crdt",
     "replication",
     "offline-first",
+    "local-first",
     "multi-master",
     "conflict-resolution",
+    "hybrid-logical-clock",
+    "column-level-lww",
+    "schema-sync",
     "plugin"
   ],
   "publisher": "Got Choices Foundation",
