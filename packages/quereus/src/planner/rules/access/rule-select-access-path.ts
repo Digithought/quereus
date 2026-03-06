@@ -375,15 +375,15 @@ function selectPhysicalNodeFromPlan(
 				})
 			);
 
-			// Build constraints: one EQ constraint per value in the flattened args
-			const constraints = seekKeys.map((_sk, i) => ({
+			// Build seek constraints: one EQ constraint per value in the flattened args
+			const seekConstraints = seekKeys.map((_sk, i) => ({
 				constraint: { iColumn: seekCols[i % seekWidth], op: IndexConstraintOp.EQ, usable: true },
 				argvIndex: i + 1,
 			}));
 
 			const fi: FilterInfo = {
 				...filterInfo,
-				constraints: constraints as any,
+				constraints: seekConstraints as any,
 				idxStr: `idx=${idxStrName}(0);plan=5;inCount=${crossProduct.length};seekWidth=${seekWidth}`,
 			};
 
