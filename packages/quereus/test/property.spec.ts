@@ -1,10 +1,12 @@
 import { expect } from 'chai';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as fc from 'fast-check';
-import { Database } from '../src/core/database.js'; // Adjust path as needed
-import { compareSqlValues } from '../src/util/comparison.js'; // Import compare helper
+import { Database } from '../src/core/database.js';
+import { compareSqlValues } from '../src/util/comparison.js';
 import { safeJsonStringify } from '../src/util/serialization.js';
-import type { SqlValue } from '../src/common/types.js'; // Import SqlParameters
+import type { SqlValue } from '../src/common/types.js';
+import { Parser } from '../src/parser/parser.js';
+import { QuereusError } from '../src/common/errors.js';
 
 describe('Property-Based Tests', () => {
 	let db: Database;
@@ -343,6 +345,340 @@ describe('Property-Based Tests', () => {
 					}
 				}
 			}), { numRuns: 100 });
+		});
+	});
+
+	// --- 5. Parser Robustness ---
+	describe('Parser Robustness', () => {
+		it('should never throw unhandled exceptions on random input', () => {
+			const parser = new Parser();
+
+			fc.assert(fc.property(fc.string({ minLength: 0, maxLength: 200 }), (input) => {
+				try {
+					parser.parseAll(input);
+				} catch (e) {
+					if (!(e instanceof QuereusError)) {
+						throw new Error(`Parser threw non-QuereusError on input ${safeJsonStringify(input)}: ${e}`);
+					}
+				}
+			}), { numRuns: 200 });
+		});
+
+		it('should handle SQL-like fragments mixed with garbage', () => {
+			const parser = new Parser();
+			const sqlFragments = fc.oneof(
+				fc.constant('select'),
+				fc.constant('from'),
+				fc.constant('where'),
+				fc.constant('insert'),
+				fc.constant('into'),
+				fc.constant('values'),
+				fc.constant('update'),
+				fc.constant('delete'),
+				fc.constant('create'),
+				fc.constant('table'),
+				fc.constant('drop'),
+				fc.constant('alter'),
+				fc.constant('join'),
+				fc.constant('on'),
+				fc.constant('group by'),
+				fc.constant('order by'),
+				fc.constant('having'),
+				fc.constant('limit'),
+				fc.constant('('),
+				fc.constant(')'),
+				fc.constant(','),
+				fc.constant(';'),
+				fc.constant('*'),
+				fc.constant('='),
+				fc.constant('and'),
+				fc.constant('or'),
+				fc.constant('not'),
+				fc.string({ minLength: 1, maxLength: 10 })
+			);
+
+			fc.assert(fc.property(fc.array(sqlFragments, { minLength: 1, maxLength: 15 }), (fragments) => {
+				const input = fragments.join(' ');
+				try {
+					parser.parseAll(input);
+				} catch (e) {
+					if (!(e instanceof QuereusError)) {
+						throw new Error(`Parser threw non-QuereusError on SQL fragment input: ${e}`);
+					}
+				}
+			}), { numRuns: 200 });
+		});
+
+		it('should handle random identifiers in SELECT statements gracefully', () => {
+			const parser = new Parser();
+			const identArbitrary = fc.oneof(
+				fc.stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]{0,20}$/),
+				// Bracket-quoted identifiers
+				fc.string({ minLength: 1, maxLength: 20 }).map(s => `[${s.replace(/]/g, ']]')}]`),
+				// Double-quote identifiers
+				fc.string({ minLength: 1, maxLength: 20 }).map(s => `"${s.replace(/"/g, '""')}"`),
+				// Backtick identifiers
+				fc.string({ minLength: 1, maxLength: 20 }).map(s => '`' + s.replace(/`/g, '``') + '`'),
+				// Reserved words used as identifiers
+				fc.constantFrom('select', 'from', 'where', 'table', 'index', 'order', 'group', 'having', 'limit', 'null', 'true', 'false')
+			);
+
+			fc.assert(fc.property(identArbitrary, (ident) => {
+				const sql = `select ${ident} from t`;
+				try {
+					parser.parseAll(sql);
+				} catch (e) {
+					if (!(e instanceof QuereusError)) {
+						throw new Error(`Parser threw non-QuereusError on identifier ${safeJsonStringify(ident)}: ${e}`);
+					}
+				}
+			}), { numRuns: 200 });
+		});
+	});
+
+	// --- 6. Expression Evaluation Consistency ---
+	describe('Expression Evaluation Consistency', () => {
+		// Build random arithmetic expression trees
+		const literalArb = fc.integer({ min: -100, max: 100 });
+		const opArb = fc.constantFrom('+', '-', '*');
+
+		// Generate expression as [sqlString, jsValue] pairs
+		// Avoid division to keep things simple (division-by-zero, integer vs float semantics)
+		// Negative literals are wrapped in parens so the parser doesn't see e.g. `* -1`
+		function litToSql(n: number): string {
+			return n < 0 ? `(${n})` : String(n);
+		}
+
+		function exprArbitrary(depth: number): fc.Arbitrary<{ sql: string; value: number }> {
+			if (depth <= 0) {
+				return literalArb.map(n => ({ sql: litToSql(n), value: n }));
+			}
+			return fc.oneof(
+				literalArb.map(n => ({ sql: litToSql(n), value: n })),
+				fc.tuple(exprArbitrary(depth - 1), opArb, exprArbitrary(depth - 1)).map(([left, op, right]) => {
+					let value: number;
+					switch (op) {
+						case '+': value = left.value + right.value; break;
+						case '-': value = left.value - right.value; break;
+						case '*': value = left.value * right.value; break;
+						default: value = left.value + right.value;
+					}
+					return { sql: `(${left.sql} ${op} ${right.sql})`, value };
+				})
+			);
+		}
+
+		it('should evaluate arithmetic expressions consistently with JS', async () => {
+			await fc.assert(fc.asyncProperty(exprArbitrary(3), async (expr) => {
+				// Skip expressions that would overflow JS safe integers
+				fc.pre(Math.abs(expr.value) < Number.MAX_SAFE_INTEGER);
+
+				let result: any;
+				for await (const row of db.eval(`select ${expr.sql} as r`)) {
+					result = row.r;
+					break;
+				}
+
+				expect(result).to.equal(expr.value,
+					`Mismatch for expression: ${expr.sql}, expected ${expr.value}, got ${result}`);
+			}), { numRuns: 200 });
+		});
+
+		it('should evaluate boolean comparison expressions consistently', async () => {
+			const compOp = fc.constantFrom('=', '!=', '<', '>', '<=', '>=');
+
+			await fc.assert(fc.asyncProperty(literalArb, compOp, literalArb, async (a, op, b) => {
+				let jsResult: boolean;
+				switch (op) {
+					case '=': jsResult = a === b; break;
+					case '!=': jsResult = a !== b; break;
+					case '<': jsResult = a < b; break;
+					case '>': jsResult = a > b; break;
+					case '<=': jsResult = a <= b; break;
+					case '>=': jsResult = a >= b; break;
+					default: jsResult = false;
+				}
+
+				let sqlResult: any;
+				for await (const row of db.eval(`select (${litToSql(a)} ${op} ${litToSql(b)}) as r`)) {
+					sqlResult = row.r;
+					break;
+				}
+
+				// SQL may return boolean true/false or 1/0
+				const sqlBool = sqlResult === true || sqlResult === 1;
+				expect(sqlBool).to.equal(jsResult,
+					`Mismatch for ${a} ${op} ${b}: SQL=${sqlResult}, JS=${jsResult}`);
+			}), { numRuns: 200 });
+		});
+	});
+
+	// --- 7. Comparison Transitivity and Antisymmetry ---
+	describe('Comparison Properties', () => {
+		const mixedValueArb = fc.oneof(
+			fc.constant(null as SqlValue),
+			fc.integer({ min: -1000, max: 1000 }) as fc.Arbitrary<SqlValue>,
+			fc.float({ min: -1000, max: 1000, noNaN: true, noDefaultInfinity: true }) as fc.Arbitrary<SqlValue>,
+			fc.string({ minLength: 0, maxLength: 10 }) as fc.Arbitrary<SqlValue>,
+			fc.boolean() as fc.Arbitrary<SqlValue>
+		);
+
+		it('should maintain antisymmetry: compare(a,b) === -compare(b,a)', () => {
+			fc.assert(fc.property(mixedValueArb, mixedValueArb, (a, b) => {
+				const ab = compareSqlValues(a, b);
+				const ba = compareSqlValues(b, a);
+				expect(Math.sign(ab)).to.equal(-Math.sign(ba),
+					`Antisymmetry violated: compare(${safeJsonStringify(a)}, ${safeJsonStringify(b)})=${ab}, compare(${safeJsonStringify(b)}, ${safeJsonStringify(a)})=${ba}`);
+			}), { numRuns: 200 });
+		});
+
+		it('should maintain reflexivity: compare(a,a) === 0', () => {
+			fc.assert(fc.property(mixedValueArb, (a) => {
+				expect(compareSqlValues(a, a)).to.equal(0,
+					`Reflexivity violated for ${safeJsonStringify(a)}`);
+			}), { numRuns: 200 });
+		});
+
+		it('should maintain transitivity: if a<=b and b<=c then a<=c', () => {
+			fc.assert(fc.property(mixedValueArb, mixedValueArb, mixedValueArb, (a, b, c) => {
+				const ab = compareSqlValues(a, b);
+				const bc = compareSqlValues(b, c);
+				const ac = compareSqlValues(a, c);
+
+				if (ab <= 0 && bc <= 0) {
+					expect(ac).to.be.at.most(0,
+						`Transitivity violated: ${safeJsonStringify(a)} <= ${safeJsonStringify(b)} <= ${safeJsonStringify(c)}, but compare(a,c)=${ac}`);
+				}
+				if (ab >= 0 && bc >= 0) {
+					expect(ac).to.be.at.least(0,
+						`Transitivity violated: ${safeJsonStringify(a)} >= ${safeJsonStringify(b)} >= ${safeJsonStringify(c)}, but compare(a,c)=${ac}`);
+				}
+			}), { numRuns: 200 });
+		});
+	});
+
+	// --- 8. Insert/Select Roundtrip ---
+	describe('Insert/Select Roundtrip', () => {
+		it('should roundtrip INTEGER values', async () => {
+			await db.exec('CREATE TABLE rt_int (id INTEGER PRIMARY KEY, v INTEGER) USING memory');
+
+			await fc.assert(fc.asyncProperty(fc.integer(), async (val) => {
+				await db.exec('DELETE FROM rt_int');
+				const stmt = db.prepare('INSERT INTO rt_int (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_int')) {
+					expect(row.v).to.equal(val);
+				}
+			}), { numRuns: 100 });
+		});
+
+		it('should roundtrip REAL values', async () => {
+			await db.exec('CREATE TABLE rt_real (id INTEGER PRIMARY KEY, v REAL) USING memory');
+
+			await fc.assert(fc.asyncProperty(fc.float({ noNaN: true, noDefaultInfinity: true }), async (val) => {
+				await db.exec('DELETE FROM rt_real');
+				const stmt = db.prepare('INSERT INTO rt_real (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_real')) {
+					// Account for -0 vs +0
+					if (val === 0 && row.v === 0) return;
+					expect(row.v).to.equal(val);
+				}
+			}), { numRuns: 100 });
+		});
+
+		it('should roundtrip TEXT values', async () => {
+			await db.exec('CREATE TABLE rt_text (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+
+			await fc.assert(fc.asyncProperty(fc.string({ minLength: 0, maxLength: 100 }), async (val) => {
+				await db.exec('DELETE FROM rt_text');
+				const stmt = db.prepare('INSERT INTO rt_text (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_text')) {
+					expect(row.v).to.equal(val);
+				}
+			}), { numRuns: 100 });
+		});
+
+		it('should roundtrip BLOB values', async () => {
+			await db.exec('CREATE TABLE rt_blob (id INTEGER PRIMARY KEY, v BLOB) USING memory');
+
+			await fc.assert(fc.asyncProperty(fc.uint8Array({ minLength: 0, maxLength: 100 }), async (val) => {
+				await db.exec('DELETE FROM rt_blob');
+				const stmt = db.prepare('INSERT INTO rt_blob (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_blob')) {
+					expect(row.v).to.deep.equal(val);
+				}
+			}), { numRuns: 100 });
+		});
+
+		it('should roundtrip ANY column values exactly', async () => {
+			await db.exec('CREATE TABLE rt_any (id INTEGER PRIMARY KEY, v ANY null) USING memory');
+
+			const anyValueArb = fc.oneof(
+				fc.constant(null),
+				fc.integer(),
+				fc.float({ noNaN: true, noDefaultInfinity: true }),
+				fc.string({ minLength: 0, maxLength: 50 }),
+				fc.boolean()
+			);
+
+			await fc.assert(fc.asyncProperty(anyValueArb, async (val) => {
+				await db.exec('DELETE FROM rt_any');
+				const stmt = db.prepare('INSERT INTO rt_any (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_any')) {
+					if (val === null) {
+						expect(row.v).to.be.null;
+					} else if (typeof val === 'number' && val === 0) {
+						// Account for -0 vs +0
+						expect(row.v).to.equal(0);
+					} else {
+						expect(row.v).to.equal(val);
+					}
+				}
+			}), { numRuns: 100 });
+		});
+	});
+
+	// --- 9. ORDER BY Stability ---
+	describe('ORDER BY Stability', () => {
+		it('should produce identical results for repeated ORDER BY on same data', async () => {
+			await db.exec('CREATE TABLE stab_t (id INTEGER PRIMARY KEY, sort_key INTEGER, payload TEXT) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(fc.tuple(fc.integer({ min: 1, max: 5 }), fc.string({ minLength: 1, maxLength: 10 })), { minLength: 2, maxLength: 20 }),
+				async (rows) => {
+					await db.exec('DELETE FROM stab_t');
+					const stmt = db.prepare('INSERT INTO stab_t (id, sort_key, payload) VALUES (?, ?, ?)');
+					try {
+						for (let i = 0; i < rows.length; i++) {
+							await stmt.run([i + 1, rows[i][0], rows[i][1]]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					// Run ORDER BY twice
+					const run1: any[] = [];
+					for await (const row of db.eval('SELECT id, sort_key, payload FROM stab_t ORDER BY sort_key, id')) {
+						run1.push(row);
+					}
+
+					const run2: any[] = [];
+					for await (const row of db.eval('SELECT id, sort_key, payload FROM stab_t ORDER BY sort_key, id')) {
+						run2.push(row);
+					}
+
+					expect(run1).to.deep.equal(run2, 'ORDER BY should produce identical results across repeated executions');
+				}
+			), { numRuns: 100 });
 		});
 	});
 
