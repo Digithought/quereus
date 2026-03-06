@@ -239,10 +239,25 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 				.build();
 		}
 
-		// NOTE: Prefix-equality + trailing-range on composite indexes is not yet
-		// supported at the physical scan level (partial prefix seek on composite
-		// B-tree keys requires composite range bounds).  Fall through to
-		// range-on-first-column check, which the runtime can execute correctly.
+		// Prefix-equality + trailing-range on composite indexes
+		if (equalityMatches.matchCount > 0 && equalityMatches.matchCount < indexCols.length) {
+			const trailingCol = indexCols[equalityMatches.matchCount];
+			const trailingRange = this.findRangeMatch(trailingCol, request.filters);
+			if (trailingRange.hasRange) {
+				const combinedHandled = equalityMatches.handledFilters.map(
+					(eq, i) => eq || trailingRange.handledFilters[i]
+				);
+				const seekCols = indexCols.slice(0, equalityMatches.matchCount + 1).map(c => c.index);
+				const estimatedRows = Math.max(1, Math.floor(estimatedTableSize / 8));
+				return AccessPlanBuilder
+					.rangeScan(estimatedRows)
+					.setHandledFilters(combinedHandled)
+					.setIndexName(index.name)
+					.setSeekColumns(seekCols)
+					.setExplanation(`Index prefix-range scan on ${index.name}`)
+					.build();
+			}
+		}
 
 		// Check for range constraints on first index column
 		const rangeMatch = this.findRangeMatch(indexCols[0], request.filters);

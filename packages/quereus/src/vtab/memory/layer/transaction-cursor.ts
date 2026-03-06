@@ -30,9 +30,7 @@ export async function* scanTransactionLayer(
 		// For index keys, we need the comparator for that specific index
 		let comparator;
 		if (isIndexKey && plan.indexName !== 'primary') {
-			// We can get the comparator from the MemoryIndex, but this is simplified for now
-			// In practice, we'd need access to the MemoryIndex's compareKeys method
-			comparator = (a: any, b: any) => compareSqlValues(a, b); // Simplified
+			comparator = (a: any, b: any) => compareSqlValues(a, b);
 		} else {
 			const { primaryKeyComparator } = layer.getPkExtractorsAndComparators(tableSchema);
 			comparator = primaryKeyComparator;
@@ -42,7 +40,26 @@ export async function* scanTransactionLayer(
 			return comparator(key, plan.equalityKey as any) === 0;
 		}
 
-		// For range checks on composite keys, this still simplifies to first column.
+		// Prefix-range: check prefix equality + trailing column bounds
+		if (plan.equalityPrefix) {
+			const keyArr = Array.isArray(key) ? key : [key];
+			for (let i = 0; i < plan.equalityPrefix.length; i++) {
+				if (compareSqlValues(keyArr[i], plan.equalityPrefix[i]) !== 0) return false;
+			}
+			const trailingValue = keyArr[plan.equalityPrefix.length];
+			if (trailingValue !== undefined && trailingValue !== null) {
+				if (plan.lowerBound) {
+					const cmp = compareSqlValues(trailingValue, plan.lowerBound.value);
+					if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) return false;
+				}
+				if (plan.upperBound) {
+					const cmp = compareSqlValues(trailingValue, plan.upperBound.value);
+					if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) return false;
+				}
+			}
+			return true;
+		}
+
 		const keyForBoundComparison = Array.isArray(key) ? key[0] : key;
 
 		if (plan.lowerBound) {
@@ -79,15 +96,16 @@ export async function* scanTransactionLayer(
 		} else {
 			// Determine start key for range scans
 			let startKey: { value: BTreeKeyForPrimary } | undefined;
-			if (plan.lowerBound) {
+			if (plan.equalityPrefix) {
+				const compositeStart = [...plan.equalityPrefix];
+				if (plan.lowerBound) compositeStart.push(plan.lowerBound.value);
+				startKey = { value: compositeStart as BTreeKeyForPrimary };
+			} else if (plan.lowerBound) {
 				startKey = { value: plan.lowerBound.value as BTreeKeyForPrimary };
 			}
 
 			// Use mutation-safe iterator for full scans or range scans with range support
 			for await (const value of safeIterate(primaryTree, isAscending, startKey)) {
-				// With inheritree, deleted entries simply don't appear in iteration
-				// No need to check for deletion markers
-
 				const row = value as Row;
 				const primaryKey = primaryKeyExtractorFromRow(row);
 
@@ -95,6 +113,19 @@ export async function* scanTransactionLayer(
 				if (planAppliesToKey(primaryKey, false)) {
 					yield row;
 				} else {
+					// Early termination for prefix-range: break when prefix no longer matches
+					if (plan.equalityPrefix) {
+						const keyArr = Array.isArray(primaryKey) ? primaryKey : [primaryKey];
+						let prefixMismatch = false;
+						for (let i = 0; i < plan.equalityPrefix.length; i++) {
+							if (compareSqlValues(keyArr[i], plan.equalityPrefix[i]) !== 0) {
+								prefixMismatch = true;
+								break;
+							}
+						}
+						if (prefixMismatch) break;
+						continue;
+					}
 					// Early termination for ascending scans past upper bound
 					if (isAscending && plan.upperBound) {
 						const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
@@ -137,11 +168,13 @@ export async function* scanTransactionLayer(
 			const indexDef = tableSchema.indexes?.find(idx => idx.name === plan.indexName);
 			const isDescFirstColumn = indexDef?.columns[0]?.desc === true;
 
-			// For DESC indexes the tree stores higher values first, so:
-			// - ASC index: start from lowerBound (values increase forward)
-			// - DESC index: start from upperBound (higher values first; upper bound is the start)
+			// Determine start key
 			let startKey: { value: BTreeKeyForIndex } | undefined;
-			if (isDescFirstColumn) {
+			if (plan.equalityPrefix) {
+				const compositeStart = [...plan.equalityPrefix];
+				if (plan.lowerBound) compositeStart.push(plan.lowerBound.value);
+				startKey = { value: compositeStart as BTreeKeyForIndex };
+			} else if (isDescFirstColumn) {
 				if (plan.upperBound) {
 					startKey = { value: plan.upperBound.value as BTreeKeyForIndex };
 				}
@@ -168,6 +201,19 @@ export async function* scanTransactionLayer(
 						}
 					}
 				} else {
+					// Early termination for prefix-range: break when prefix no longer matches
+					if (plan.equalityPrefix) {
+						const keyArr = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey : [indexEntry.indexKey];
+						let prefixMismatch = false;
+						for (let i = 0; i < plan.equalityPrefix.length; i++) {
+							if (compareSqlValues(keyArr[i], plan.equalityPrefix[i]) !== 0) {
+								prefixMismatch = true;
+								break;
+							}
+						}
+						if (prefixMismatch) break;
+						continue;
+					}
 					// Early termination: for ASC indexes break when past upper bound,
 					// for DESC indexes break when past lower bound
 					if (isAscending) {

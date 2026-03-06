@@ -47,6 +47,7 @@ The `MemoryTable` implementation (`src/vtab/memory/`) provides a sophisticated, 
     *   Full table scans (ascending/descending based on primary key)
     *   Fast equality lookups (`WHERE indexed_col = ?`) on single or composite keys
     *   Range scans (`WHERE indexed_col > ?`, etc.) on the first column of chosen index
+    *   Prefix-equality + trailing-range scans on composite indexes (`WHERE a = ? AND b > ?` on `idx(a, b)`)
     *   `ORDER BY` satisfaction using index ordering
 
 ### **Schema Evolution:**
@@ -159,7 +160,7 @@ await db.exec("alter table users rename column created_at to registration_date")
 ## **Current Limitations:**
 
 *   **Constraint Enforcement:** Primary key `UNIQUE`, `NOT NULL`, `CHECK`, and `FOREIGN KEY` constraints are enforced at the engine level. `DEFAULT` values are applied during DML operations. FK enforcement requires `pragma foreign_keys = on`.
-*   **Advanced Query Planning:** Range scans only consider the first column of composite indexes. Composite index `IN` multi-seek is supported (cross-product of `IN` lists across index columns).
+*   **Advanced Query Planning:** Composite index `IN` multi-seek is supported (cross-product of `IN` lists across index columns). Prefix-equality + trailing-range scans are supported on composite indexes (e.g., `WHERE a = 1 AND b > 5` on `idx(a, b)`).
 *   **IS NULL Optimization:** `IS NULL` on NOT NULL columns produces an `EmptyResult` plan (zero-cost short-circuit); `IS NOT NULL` on NOT NULL columns is eliminated as a tautology. For nullable columns, `IS NULL` / `IS NOT NULL` are still handled as residual filters.
 *   **Expression Indexes:** Expression-based indexes are not implemented — see `tasks/plan/2-expression-indexes.md`
 

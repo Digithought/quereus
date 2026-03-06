@@ -31,6 +31,26 @@ export async function* scanBaseLayer(
 
 		if (plan.equalityKey !== undefined) return comparator(key, plan.equalityKey) === 0;
 
+		// Prefix-range: check prefix equality + trailing column bounds
+		if (plan.equalityPrefix) {
+			const keyArr = Array.isArray(key) ? key : [key];
+			for (let i = 0; i < plan.equalityPrefix.length; i++) {
+				if (compareSqlValues(keyArr[i], plan.equalityPrefix[i]) !== 0) return false;
+			}
+			const trailingValue = keyArr[plan.equalityPrefix.length];
+			if (trailingValue !== undefined && trailingValue !== null) {
+				if (plan.lowerBound) {
+					const cmp = compareSqlValues(trailingValue, plan.lowerBound.value);
+					if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) return false;
+				}
+				if (plan.upperBound) {
+					const cmp = compareSqlValues(trailingValue, plan.upperBound.value);
+					if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) return false;
+				}
+			}
+			return true;
+		}
+
 		const keyForBoundComparison = Array.isArray(key) ? key[0] : key;
 		if (plan.lowerBound && (keyForBoundComparison !== undefined && keyForBoundComparison !== null)) {
 			const cmp = compareSqlValues(keyForBoundComparison, plan.lowerBound.value);
@@ -56,7 +76,12 @@ export async function* scanBaseLayer(
 
 		// Determine start key for range scans
 		let startKey: { value: BTreeKeyForPrimary } | undefined;
-		if (plan.lowerBound) {
+		if (plan.equalityPrefix) {
+			// Prefix-range: start at [prefix..., lowerBound] or just [prefix...]
+			const compositeStart = [...plan.equalityPrefix];
+			if (plan.lowerBound) compositeStart.push(plan.lowerBound.value);
+			startKey = { value: compositeStart as BTreeKeyForPrimary };
+		} else if (plan.lowerBound) {
 			startKey = { value: plan.lowerBound.value as BTreeKeyForPrimary };
 		}
 
@@ -65,8 +90,20 @@ export async function* scanBaseLayer(
 			const row = value as Row;
 			const primaryKey = keyFromEntry(row);
 			if (!planAppliesToKey(primaryKey, false)) {
+				// Early termination for prefix-range: break when prefix no longer matches
+				if (plan.equalityPrefix) {
+					const keyArr = Array.isArray(primaryKey) ? primaryKey : [primaryKey];
+					let prefixMismatch = false;
+					for (let i = 0; i < plan.equalityPrefix.length; i++) {
+						if (compareSqlValues(keyArr[i], plan.equalityPrefix[i]) !== 0) {
+							prefixMismatch = true;
+							break;
+						}
+					}
+					if (prefixMismatch) break;
+				}
 				// If we're doing an ascending scan and we've passed the upper bound, we can break early
-				if (!plan.descending && plan.upperBound) {
+				if (!plan.descending && plan.upperBound && !plan.equalityPrefix) {
 					const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
 					const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
 					if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
@@ -100,11 +137,14 @@ export async function* scanBaseLayer(
 		const isAscending = !plan.descending;
 		const isDescFirstColumn = secondaryIndex.specColumns[0]?.desc === true;
 
-		// For DESC indexes the tree stores higher values first, so:
-		// - ASC index: start from lowerBound (values increase forward in tree order)
-		// - DESC index: start from upperBound (higher values first; upper bound is the start)
+		// Determine start key
 		let startKey: { value: BTreeKeyForIndex } | undefined;
-		if (isDescFirstColumn) {
+		if (plan.equalityPrefix) {
+			// Prefix-range: start at [prefix..., lowerBound] or just [prefix...]
+			const compositeStart = [...plan.equalityPrefix];
+			if (plan.lowerBound) compositeStart.push(plan.lowerBound.value);
+			startKey = { value: compositeStart as BTreeKeyForIndex };
+		} else if (isDescFirstColumn) {
 			if (plan.upperBound) {
 				startKey = { value: plan.upperBound.value as BTreeKeyForIndex };
 			}
@@ -116,6 +156,20 @@ export async function* scanBaseLayer(
 
 		for await (const indexEntry of safeIterate(indexTree, isAscending, startKey)) {
 			if (!planAppliesToKey(indexEntry.indexKey, true)) {
+				// Early termination for prefix-range: break when prefix no longer matches
+				if (plan.equalityPrefix) {
+					const keyArr = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey : [indexEntry.indexKey];
+					let prefixMismatch = false;
+					for (let i = 0; i < plan.equalityPrefix.length; i++) {
+						if (compareSqlValues(keyArr[i], plan.equalityPrefix[i]) !== 0) {
+							prefixMismatch = true;
+							break;
+						}
+					}
+					if (prefixMismatch) break;
+					// Within prefix, still check trailing upper bound for early termination
+					continue;
+				}
 				// Early termination: for ASC indexes break when past upper bound,
 				// for DESC indexes break when past lower bound (since values decrease in tree order)
 				if (isAscending) {

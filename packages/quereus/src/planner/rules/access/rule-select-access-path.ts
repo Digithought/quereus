@@ -432,6 +432,79 @@ function selectPhysicalNodeFromPlan(
 		);
 	}
 
+	// Check for prefix-equality + trailing-range pattern
+	if (!allEquality && seekCols.length > 1) {
+		const prefixEqCols: number[] = [];
+		let trailingRangeCol: number | undefined;
+		for (const colIdx of seekCols) {
+			const colConstraints = constraintsByCol.get(colIdx) ?? [];
+			const eqConstraint = colConstraints.find(c =>
+				(c.op === '=' || (c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length === 1)) &&
+				handledByCol.has(c.columnIndex));
+			if (eqConstraint) {
+				prefixEqCols.push(colIdx);
+			} else {
+				const hasRange = colConstraints.some(c =>
+					['>', '>=', '<', '<='].includes(c.op) && handledByCol.has(c.columnIndex));
+				if (hasRange) trailingRangeCol = colIdx;
+				break;
+			}
+		}
+
+		if (prefixEqCols.length > 0 && trailingRangeCol !== undefined) {
+			const seekKeys: ScalarPlanNode[] = [];
+			const allConstraints: { constraint: { iColumn: number; op: number; usable: boolean }; argvIndex: number }[] = [];
+			let argv = 1;
+
+			// Add prefix equality values
+			for (const colIdx of prefixEqCols) {
+				const c = (constraintsByCol.get(colIdx) ?? []).find(c =>
+					(c.op === '=' || (c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length === 1)) &&
+					handledByCol.has(c.columnIndex))!;
+				const val = c.op === 'IN' && Array.isArray(c.value) ? (c.value as unknown[])[0] : c.value;
+				seekKeys.push(c.valueExpr && !Array.isArray(c.valueExpr)
+					? c.valueExpr as unknown as ScalarPlanNode
+					: new LiteralNode(tableRef.scope, { type: 'literal', value: val } as any));
+				allConstraints.push({ constraint: { iColumn: colIdx, op: IndexConstraintOp.EQ as unknown as number, usable: true }, argvIndex: argv });
+				argv++;
+			}
+
+			// Add trailing range values
+			const trailingConstraints = constraintsByCol.get(trailingRangeCol) ?? [];
+			const lower = trailingConstraints.find(c => (c.op === '>' || c.op === '>=') && handledByCol.has(c.columnIndex));
+			const upper = trailingConstraints.find(c => (c.op === '<' || c.op === '<=') && handledByCol.has(c.columnIndex));
+
+			if (lower) {
+				allConstraints.push({ constraint: { iColumn: trailingRangeCol, op: opToIndexOp(lower.op as any), usable: true }, argvIndex: argv });
+				seekKeys.push(lower.valueExpr && !Array.isArray(lower.valueExpr) ? lower.valueExpr as any : new LiteralNode(tableRef.scope, { type: 'literal', value: lower.value } as any));
+				argv++;
+			}
+			if (upper) {
+				allConstraints.push({ constraint: { iColumn: trailingRangeCol, op: opToIndexOp(upper.op as any), usable: true }, argvIndex: argv });
+				seekKeys.push(upper.valueExpr && !Array.isArray(upper.valueExpr) ? upper.valueExpr as any : new LiteralNode(tableRef.scope, { type: 'literal', value: upper.value } as any));
+				argv++;
+			}
+
+			const fi: FilterInfo = {
+				...filterInfo,
+				constraints: allConstraints as any,
+				idxStr: `idx=${idxStrName}(0);plan=7;prefixLen=${prefixEqCols.length}`,
+			};
+
+			log('Using index prefix-range seek on %s (prefix=%d cols)', physicalIndexName, prefixEqCols.length);
+			return new IndexSeekNode(
+				tableRef.scope,
+				tableRef,
+				fi,
+				physicalIndexName,
+				seekKeys,
+				true,
+				providesOrdering,
+				accessPlan.cost
+			);
+		}
+	}
+
 	// Check for range constraints on the seek columns
 	// Use the first (or only) seek column that has range constraints
 	const rangeCol = seekCols.find(colIdx => {

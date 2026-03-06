@@ -32,6 +32,8 @@ export interface ScanPlan {
 	equalityKey?: BTreeKey;
 	/** Multiple keys for IN-list multi-seek (used instead of equalityKey) */
 	equalityKeys?: BTreeKey[];
+	/** Equality prefix values for prefix-range scans (plan=7) */
+	equalityPrefix?: SqlValue[];
 	/** Lower bound for a range scan (used if planType is RANGE_*) */
 	lowerBound?: ScanPlanRangeBound;
 	/** Upper bound for a range scan (used if planType is RANGE_*) */
@@ -189,17 +191,13 @@ function isUpperBoundOp(op: IndexConstraintOp): op is typeof ActualIndexConstrai
 	return op === ActualIndexConstraintOp.LT || op === ActualIndexConstraintOp.LE;
 }
 
-function extractRangeBounds(
-	indexSchema: IndexSchemaLike,
+function extractRangeBoundsForColumn(
+	targetColumnIndex: number,
 	argvMap: ArgvMap,
 	args: ReadonlyArray<SqlValue>,
 	constraints: ReadonlyArray<{ constraint: IndexConstraint; argvIndex: number }>,
 	indexInfoOutput: IndexInfo,
 ): { lowerBound?: ScanPlanRangeBound; upperBound?: ScanPlanRangeBound } {
-	const firstColumn = indexSchema.columns[0];
-	if (!firstColumn) return {};
-
-	const targetColumnIndex = firstColumn.index;
 	let lowerBound: ScanPlanRangeBound | undefined;
 	let upperBound: ScanPlanRangeBound | undefined;
 
@@ -231,6 +229,18 @@ function extractRangeBounds(
 	return { lowerBound, upperBound };
 }
 
+function extractRangeBounds(
+	indexSchema: IndexSchemaLike,
+	argvMap: ArgvMap,
+	args: ReadonlyArray<SqlValue>,
+	constraints: ReadonlyArray<{ constraint: IndexConstraint; argvIndex: number }>,
+	indexInfoOutput: IndexInfo,
+): { lowerBound?: ScanPlanRangeBound; upperBound?: ScanPlanRangeBound } {
+	const firstColumn = indexSchema.columns[0];
+	if (!firstColumn) return {};
+	return extractRangeBoundsForColumn(firstColumn.index, argvMap, args, constraints, indexInfoOutput);
+}
+
 export function buildScanPlanFromFilterInfo(filterInfo: FilterInfo, tableSchema: TableSchema): ScanPlan {
 	const { idxNum, idxStr, constraints, args, indexInfoOutput } = filterInfo;
 
@@ -249,8 +259,30 @@ export function buildScanPlanFromFilterInfo(filterInfo: FilterInfo, tableSchema:
 	const isEqPlan = planType === 2;
 	const isMultiSeekPlan = planType === 5;
 	const isRangePlan = planType === 3 || planType === 4;
+	const isPrefixRangePlan = planType === 7;
 
-	if (isEqPlan && indexSchema) {
+	if (isPrefixRangePlan && indexSchema) {
+		const prefixLen = parseInt(params.get('prefixLen') ?? '0', 10);
+		// Build equality prefix from the first prefixLen columns
+		const prefix: SqlValue[] = [];
+		for (let i = 0; i < prefixLen; i++) {
+			const colSpec = indexSchema.columns[i];
+			if (!colSpec) break;
+			const val = findArgValueForColumn(colSpec.index, argvMap, args, indexInfoOutput)
+				?? findConstraintValueForColumn(colSpec.index, constraints, args);
+			if (val !== undefined) {
+				prefix.push(val);
+			}
+		}
+		// Extract range bounds for the trailing column (the one after the prefix)
+		const trailingCol = indexSchema.columns[prefixLen];
+		if (trailingCol) {
+			({ lowerBound, upperBound } = extractRangeBoundsForColumn(
+				trailingCol.index, argvMap, args, constraints, indexInfoOutput,
+			));
+		}
+		return { indexName, descending, equalityPrefix: prefix, lowerBound, upperBound, idxNum, idxStr };
+	} else if (isEqPlan && indexSchema) {
 		equalityKey = buildEqualityKey(
 			indexName, indexSchema, argvMap, args, constraints, indexInfoOutput, tableSchema,
 		);
