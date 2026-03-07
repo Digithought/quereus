@@ -7352,6 +7352,7 @@ __metadata:
   dependencies:
     bumpp: "npm:^10.4.0"
     esbuild: "npm:^0.27.2"
+    rimraf: "npm:^6.1.2"
     typescript: "npm:^5.9.3"
   languageName: unknown
   linkType: soft
