@@ -136,6 +136,7 @@ This repository contains multiple packages:
 ### Advanced Topics
 - **[Query Optimizer](docs/optimizer.md)** — Query planning and optimization
 - **[Usage Examples](docs/usage.md)** — Practical examples and patterns
+- **[Release Process](docs/releasing.md)** — Versioning, branching strategy, and publishing
 
 ## Features
 
@@ -203,9 +204,11 @@ Quereus excels in scenarios where you need SQL capabilities without traditional 
 We welcome contributions! Please see our [development guide](packages/quereus/README.md) for:
 
 - Setting up the development environment
-- Running tests and benchmarks  
+- Running tests and benchmarks
 - Code style and architectural guidelines
 - Submitting issues and pull requests
+
+**Branching:** `main` is the stable release branch. All development happens on `dev` — please target pull requests there. See the [release process](docs/releasing.md) for details.
 
 ### Development Quick Start
 
@@ -213,6 +216,9 @@ We welcome contributions! Please see our [development guide](packages/quereus/RE
 # Clone the repository
 git clone https://github.com/gotchoices/quereus.git
 cd quereus
+
+# Switch to the dev branch
+git checkout dev
 
 # Install dependencies
 yarn install

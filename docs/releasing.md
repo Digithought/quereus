@@ -5,22 +5,36 @@
 Quereus uses [bumpp](https://github.com/antfu/bumpp) for version bumping and follows semver.
 Tags use the `v` prefix (e.g. `v1.0.0`).
 
+## Branching Strategy
+
+- **`main`** — Stable release branch. Always reflects the latest published release. Only receives merges from `dev` (for releases) or hotfix branches.
+- **`dev`** — Active development branch. All feature branches and day-to-day work target `dev`. This is the default branch for pull requests.
+
 ## Prerequisites
 
-- All CI checks pass on `main`
+- All CI checks pass on `dev`
 - `yarn build` succeeds
 - `yarn test` passes
 
 ## Steps
 
-### 1. Ensure a clean working tree
+### 1. Merge `dev` into `main`
+
+When ready to cut a release, merge `dev` into `main`:
+
+```bash
+git checkout main
+git pull origin main
+git merge dev
+```
+
+### 2. Ensure a clean working tree
 
 ```bash
 git status          # no uncommitted changes
-git pull origin main
 ```
 
-### 2. Bump versions
+### 3. Bump versions
 
 `bumpp` updates `package.json` files, commits, tags, and pushes in one step.
 
@@ -42,7 +56,7 @@ The `-r` (recursive) flag bumps all workspace `package.json` files together.
 3. Create an annotated tag: `v{version}`
 4. Push the commit and tag to `origin`
 
-### 3. Publish to npm
+### 4. Publish to npm
 
 After the tag is pushed:
 
@@ -56,7 +70,7 @@ yarn workspaces foreach -A --no-private npm publish --access public
 
 Only public (non-private) packages are published. Private packages (workspace root, internal tools) are skipped automatically.
 
-### 4. Create a GitHub release (optional)
+### 5. Create a GitHub release (optional)
 
 ```bash
 gh release create v{version} --generate-notes
@@ -83,7 +97,7 @@ yarn workspaces foreach -A --no-private npm publish --access public --tag next
 2. Apply the fix, commit
 3. Bump: `yarn bump -r --release patch`
 4. Publish
-5. Merge back into `main`
+5. Merge back into both `main` and `dev`
 
 ## Version Alignment
 
@@ -91,9 +105,10 @@ All packages in the monorepo share the same version number. The `-r` flag to `bu
 
 ## Checklist
 
-- [ ] CI green on `main`
+- [ ] CI green on `dev`
 - [ ] `yarn build` succeeds
 - [ ] `yarn test` passes
+- [ ] Merge `dev` into `main`
 - [ ] `yarn bump -r` (interactive version selection)
 - [ ] Verify tag: `git tag -l -n1 | tail -1`
 - [ ] `npm publish` (with dry-run first)
