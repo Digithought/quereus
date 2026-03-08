@@ -16,11 +16,10 @@ const packageDir = join(rootDir, 'packages', packageName);
 try {
 	process.chdir(packageDir);
 	
-	console.log(`Bumping ${packageName}`);
-	
+	console.log(`Publishing ${packageName}`);
+
 	execSync('yarn clean', { stdio: 'inherit' });
 	execSync('yarn build', { stdio: 'inherit' });
-	execSync('npx bumpp --no-push --no-commit --no-tag --no-git-check -y', { stdio: 'inherit' });
 	execSync('yarn npm publish --access public', { stdio: 'inherit' });
 } catch (error) {
 	console.error(`Failed to publish ${packageName}:`, error.message);
