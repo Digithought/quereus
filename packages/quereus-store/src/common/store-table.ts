@@ -434,14 +434,19 @@ export class StoreTable extends VirtualTable {
 
 				// Check for existing row (for conflict handling)
 				const existing = await store.get(key);
-				if (existing && args.onConflict !== ConflictResolution.REPLACE) {
-					const existingRow = deserializeRow(existing);
-					return {
-						status: 'constraint',
-						constraint: 'unique',
-						message: 'UNIQUE constraint failed: primary key',
-						existingRow,
-					};
+				if (existing) {
+					if (args.onConflict === ConflictResolution.IGNORE) {
+						return { status: 'ok', row: undefined };
+					}
+					if (args.onConflict !== ConflictResolution.REPLACE) {
+						const existingRow = deserializeRow(existing);
+						return {
+							status: 'constraint',
+							constraint: 'unique',
+							message: 'UNIQUE constraint failed: primary key',
+							existingRow,
+						};
+					}
 				}
 
 				const serializedRow = serializeRow(values);
