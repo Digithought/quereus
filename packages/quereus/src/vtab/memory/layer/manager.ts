@@ -521,7 +521,7 @@ export class MemoryTableManager {
 			}
 			if (onConflict === ConflictResolution.REPLACE) {
 				targetLayer.recordUpsert(primaryKey, newRowData, existingRow);
-				return { status: 'ok', row: newRowData };
+				return { status: 'ok', row: newRowData, replacedRow: existingRow };
 			}
 			return {
 				status: 'constraint',

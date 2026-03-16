@@ -299,6 +299,66 @@ describe('Database-Level Event System', () => {
 		});
 	});
 
+	describe('INSERT OR REPLACE Events', () => {
+		it('should emit update event when INSERT OR REPLACE replaces existing row', async () => {
+			await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)');
+			await db.exec("INSERT INTO users VALUES (1, 'Alice', 'alice@example.com')");
+			dataEvents = [];
+
+			await db.exec("INSERT OR REPLACE INTO users VALUES (1, 'Alice Updated', 'alice2@example.com')");
+
+			assert.equal(dataEvents.length, 1);
+			assert.equal(dataEvents[0].type, 'update');
+			assert.deepEqual(dataEvents[0].key, [1]);
+			assert.deepEqual(dataEvents[0].oldRow, [1, 'Alice', 'alice@example.com']);
+			assert.deepEqual(dataEvents[0].newRow, [1, 'Alice Updated', 'alice2@example.com']);
+			assert.deepEqual(dataEvents[0].changedColumns, ['name', 'email']);
+		});
+
+		it('should emit insert event when INSERT OR REPLACE inserts new row', async () => {
+			await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+
+			await db.exec("INSERT OR REPLACE INTO users VALUES (1, 'Alice')");
+
+			assert.equal(dataEvents.length, 1);
+			assert.equal(dataEvents[0].type, 'insert');
+			assert.deepEqual(dataEvents[0].key, [1]);
+			assert.deepEqual(dataEvents[0].newRow, [1, 'Alice']);
+			assert.equal(dataEvents[0].oldRow, undefined);
+		});
+
+		it('should emit update event with only changed columns on partial replace', async () => {
+			await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)');
+			await db.exec("INSERT INTO users VALUES (1, 'Alice', 'alice@example.com')");
+			dataEvents = [];
+
+			// Replace but keep same email
+			await db.exec("INSERT OR REPLACE INTO users VALUES (1, 'Alice Updated', 'alice@example.com')");
+
+			assert.equal(dataEvents.length, 1);
+			assert.equal(dataEvents[0].type, 'update');
+			assert.deepEqual(dataEvents[0].changedColumns, ['name']);
+		});
+
+		it('should emit update event for INSERT OR REPLACE in transaction', async () => {
+			await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+			await db.exec("INSERT INTO users VALUES (1, 'Alice')");
+			dataEvents = [];
+
+			await db.exec('BEGIN');
+			await db.exec("INSERT OR REPLACE INTO users VALUES (1, 'Bob')");
+			// No events yet — batched until commit
+			assert.equal(dataEvents.length, 0);
+			await db.exec('COMMIT');
+
+			assert.equal(dataEvents.length, 1);
+			assert.equal(dataEvents[0].type, 'update');
+			assert.deepEqual(dataEvents[0].key, [1]);
+			assert.deepEqual(dataEvents[0].oldRow, [1, 'Alice']);
+			assert.deepEqual(dataEvents[0].newRow, [1, 'Bob']);
+		});
+	});
+
 	describe('Edge Cases', () => {
 		it('should handle composite primary keys', async () => {
 			await db.exec('CREATE TABLE orders (store_id INTEGER, order_id INTEGER, amount REAL, PRIMARY KEY (store_id, order_id))');

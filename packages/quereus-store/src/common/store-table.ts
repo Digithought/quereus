@@ -449,6 +449,7 @@ export class StoreTable extends VirtualTable {
 					}
 				}
 
+				const oldRow = existing ? deserializeRow(existing) : null;
 				const serializedRow = serializeRow(values);
 				if (inTransaction) {
 					coordinator.put(key, serializedRow);
@@ -457,7 +458,7 @@ export class StoreTable extends VirtualTable {
 				}
 
 				// Update secondary indexes
-				await this.updateSecondaryIndexes(inTransaction, null, values, pk);
+				await this.updateSecondaryIndexes(inTransaction, oldRow, values, pk);
 
 				// Track statistics (only count as new if not replacing)
 				if (!existing) {
@@ -465,20 +466,37 @@ export class StoreTable extends VirtualTable {
 				}
 
 				// Queue or emit event
-				const insertEvent = {
-					type: 'insert' as const,
-					schemaName: schema.schemaName,
-					tableName: schema.name,
-					key: pk,
-					newRow: values,
-				};
-				if (inTransaction) {
-					coordinator.queueEvent(insertEvent);
+				if (oldRow) {
+					// REPLACE — emit as update
+					const updateEvent = {
+						type: 'update' as const,
+						schemaName: schema.schemaName,
+						tableName: schema.name,
+						key: pk,
+						oldRow,
+						newRow: values,
+					};
+					if (inTransaction) {
+						coordinator.queueEvent(updateEvent);
+					} else {
+						this.eventEmitter?.emitDataChange(updateEvent);
+					}
 				} else {
-					this.eventEmitter?.emitDataChange(insertEvent);
+					const insertEvent = {
+						type: 'insert' as const,
+						schemaName: schema.schemaName,
+						tableName: schema.name,
+						key: pk,
+						newRow: values,
+					};
+					if (inTransaction) {
+						coordinator.queueEvent(insertEvent);
+					} else {
+						this.eventEmitter?.emitDataChange(insertEvent);
+					}
 				}
 
-				return { status: 'ok', row: values };
+				return { status: 'ok', row: values, replacedRow: oldRow ?? undefined };
 			}
 
 			case 'update': {

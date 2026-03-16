@@ -173,13 +173,13 @@ export type ConstraintType = 'unique' | 'check' | 'not_null' | 'foreign_key';
  * constraint violations from unexpected errors (network issues, bugs, etc.).
  */
 export type UpdateResult =
-	| { status: 'ok'; row?: Row }
+	| { status: 'ok'; row?: Row; replacedRow?: Row }
 	| { status: 'constraint'; constraint: ConstraintType; message?: string; existingRow?: Row };
 
 /**
  * Type guard to check if an UpdateResult indicates success.
  */
-export function isUpdateOk(result: UpdateResult): result is { status: 'ok'; row?: Row } {
+export function isUpdateOk(result: UpdateResult): result is { status: 'ok'; row?: Row; replacedRow?: Row } {
 	return result.status === 'ok';
 }
 

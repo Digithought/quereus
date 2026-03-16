@@ -351,13 +351,32 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					continue;
 				}
 
-				// Track change (INSERT): record NEW primary key
-				const pkValues = tableSchema.primaryKeyDefinition.map(def => newRow[def.index]);
-				ctx.db._recordInsert(`${tableSchema.schemaName}.${tableSchema.name}`, pkValues);
+				const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`;
+				const replacedRow = result.replacedRow;
 
-				// Emit auto event for modules without native event support
-				if (needsAutoEvents) {
-					emitAutoDataEvent(ctx, tableSchema, 'insert', pkValues, undefined, [...newRow]);
+				if (replacedRow) {
+					// INSERT OR REPLACE replaced an existing row — track as UPDATE
+					const existingKeyValues = pkColumnIndicesInSchema.map(idx => replacedRow[idx]);
+					const newKeyValues = pkColumnIndicesInSchema.map(idx => newRow[idx]);
+					ctx.db._recordUpdate(tableKey, existingKeyValues, newKeyValues);
+
+					if (needsAutoEvents) {
+						const changedColumns: string[] = [];
+						for (let i = 0; i < tableSchema.columns.length; i++) {
+							if (!sqlValuesEqual(replacedRow[i], newRow[i])) {
+								changedColumns.push(tableSchema.columns[i].name);
+							}
+						}
+						emitAutoDataEvent(ctx, tableSchema, 'update', newKeyValues, [...replacedRow], [...newRow], changedColumns);
+					}
+				} else {
+					// Fresh insert
+					const pkValues = tableSchema.primaryKeyDefinition.map(def => newRow[def.index]);
+					ctx.db._recordInsert(tableKey, pkValues);
+
+					if (needsAutoEvents) {
+						emitAutoDataEvent(ctx, tableSchema, 'insert', pkValues, undefined, [...newRow]);
+					}
 				}
 
 				yield flatRow; // make OLD/NEW available downstream (e.g. RETURNING)
