@@ -14,15 +14,13 @@ describe(`Basic query`, () => {
 	});
 
 	it(`should execute a basic query`, async () => {
+		await db.exec('create table basic_t (id integer primary key)');
 		const resultRows: Record<string, any>[] = [];
 		for await (const row of db.eval(`select * from schema()`)) {
 			resultRows.push(row);
 		}
-		// Update expectations based on what schema() actually returns.
-		// For example, it might return more than one row.
-		// This is a placeholder assertion.
 		void expect(resultRows.length).to.be.greaterThan(0);
-		const schemaEntry = resultRows.find(r => r.name === 'upper' && r.type === 'function');
+		const schemaEntry = resultRows.find(r => r.name === 'basic_t' && r.type === 'table');
 		void expect(schemaEntry).to.exist;
 	});
 

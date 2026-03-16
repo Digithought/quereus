@@ -104,16 +104,6 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 						viewSchema.sql
 					] as Row;
 				}
-
-				// Process Functions
-				for (const funcSchema of schemaInstance._getAllFunctions()) {
-					yield [
-						'function',
-						funcSchema.name,
-						funcSchema.name,
-						stringifyCreateFunction(funcSchema)
-					] as Row;
-				}
 			};
 
 			// Process main schema

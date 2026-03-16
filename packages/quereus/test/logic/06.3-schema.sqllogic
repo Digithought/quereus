@@ -16,7 +16,7 @@ SELECT type, name, tbl_name, sql FROM schema() WHERE type = 'index' ORDER BY nam
 
 -- Verify 'index' is in the list of schema object types
 SELECT DISTINCT type FROM schema() ORDER BY type;
-→ [{"type":"function"},{"type":"index"},{"type":"table"}]
+→ [{"type":"index"},{"type":"table"}]
 
 -- Test with composite index
 CREATE TABLE orders (
@@ -53,4 +53,4 @@ SELECT sql FROM schema() WHERE name = 'active_products';
 
 -- Verify 'view' is now in the list of schema object types
 SELECT DISTINCT type FROM schema() ORDER BY type;
-→ [{"type":"function"},{"type":"index"},{"type":"table"},{"type":"view"}]
+→ [{"type":"index"},{"type":"table"},{"type":"view"}]
