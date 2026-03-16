@@ -146,8 +146,8 @@ function extractExistsCorrelation(
 	// Walk through Project nodes to find the core relation
 	let current: RelationalPlanNode = subqueryRoot;
 
-	// Skip Project nodes (EXISTS doesn't care about projection)
-	while (current.nodeType === PlanNodeType.Project) {
+	// Skip Project and Alias nodes (EXISTS doesn't care about projection or aliasing)
+	while (current.nodeType === PlanNodeType.Project || current.nodeType === PlanNodeType.Alias) {
 		const children = current.getChildren();
 		const source = children[0];
 		if (!isRelationalNode(source)) break;
@@ -264,8 +264,8 @@ function extractInCorrelation(
 	// Walk through the subquery to find any additional correlation filters
 	let current: RelationalPlanNode = subqueryRoot;
 
-	// Skip Project nodes
-	while (current.nodeType === PlanNodeType.Project) {
+	// Skip Project and Alias nodes
+	while (current.nodeType === PlanNodeType.Project || current.nodeType === PlanNodeType.Alias) {
 		const children = current.getChildren();
 		const source = children[0];
 		if (!isRelationalNode(source)) break;

@@ -36,6 +36,8 @@ import { PlanNodeType as _PlanNodeType } from '../../nodes/plan-node-type.js';
 import { LiteralNode, BinaryOpNode } from '../../nodes/scalar.js';
 import { collectBindingsInPlan } from '../../analysis/binding-collector.js';
 import type * as AST from '../../../parser/ast.js';
+import { ExistsNode, InNode } from '../../nodes/subquery.js';
+import { isCorrelatedSubquery } from '../../cache/correlation-detector.js';
 
 const log = createLogger('optimizer:rule:grow-retrieve');
 
@@ -153,16 +155,34 @@ export function ruleGrowRetrieve(node: PlanNode, context: OptContext): PlanNode 
 		newPipeline = candidatePipeline as RelationalPlanNode;
 	}
 
+	// If index-style with a residual predicate that contains correlated subqueries,
+	// keep the residual above the Retrieve as a FilterNode so structural rules
+	// (e.g., subquery decorrelation) can still process it. Clear the residual from
+	// the context to avoid double-application in select-access-path.
+	let moduleCtx = assessment.ctx;
+	let residualAbove: ScalarPlanNode | undefined;
+
+	if (isIndexStyleContext(moduleCtx) && moduleCtx.residualPredicate
+		&& predicateContainsCorrelatedSubquery(moduleCtx.residualPredicate as ScalarPlanNode)) {
+		residualAbove = moduleCtx.residualPredicate as ScalarPlanNode;
+		moduleCtx = { ...moduleCtx, residualPredicate: undefined };
+	}
+
 	const grownRetrieve = new RetrieveNode(
 		node.scope,
 		newPipeline,
 		retrieveChild.tableRef,
-		assessment.ctx,
+		moduleCtx,
 		newBindings
 	);
 
 	log('Grew retrieve pipeline for table %s: %s → %s',
 		tableSchema.name, retrieveChild.source.nodeType, candidatePipeline.nodeType);
+
+	if (residualAbove) {
+		log('Keeping residual predicate above grown Retrieve');
+		return new FilterNode(node.scope, grownRetrieve, residualAbove);
+	}
 
 	return grownRetrieve;
 }
@@ -364,4 +384,23 @@ function fallbackIndexSupports(
 		cost: accessPlan.cost,
 		ctx: indexCtx
 	};
+}
+
+/**
+ * Check if a scalar expression tree contains any correlated EXISTS or IN subqueries.
+ * These need to remain in the plan tree for subquery decorrelation to process them.
+ */
+function predicateContainsCorrelatedSubquery(expr: PlanNode): boolean {
+	if (expr instanceof ExistsNode) {
+		return isCorrelatedSubquery(expr.subquery);
+	}
+	if (expr instanceof InNode && expr.source) {
+		return isCorrelatedSubquery(expr.source);
+	}
+	for (const child of expr.getChildren()) {
+		if (predicateContainsCorrelatedSubquery(child)) {
+			return true;
+		}
+	}
+	return false;
 }
