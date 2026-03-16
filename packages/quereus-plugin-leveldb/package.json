@@ -1,6 +1,6 @@
 {
   "name": "@quereus/plugin-leveldb",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "module",
   "description": "LevelDB storage plugin for Quereus - Node.js persistent storage",
   "keywords": [

@@ -1,6 +1,6 @@
 {
   "name": "@quereus/quereus",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "module",
   "description": "Pure TypeScript SQL engine — no WASM, no native bindings. Runs in browsers, Node.js, React Native, edge workers, and anywhere JS runs.",
   "keywords": [
