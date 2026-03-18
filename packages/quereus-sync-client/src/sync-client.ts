@@ -91,6 +91,11 @@ export class SyncClient {
   // Local change listener cleanup
   private localChangeUnsubscribe: (() => void) | null = null;
 
+  // Pending connect() promise settlement — allows handshake_ack / server error
+  // to resolve or reject the promise returned by connect().
+  private _connectResolve: (() => void) | null = null;
+  private _connectReject: ((error: Error) => void) | null = null;
+
   constructor(options: SyncClientOptions) {
     this.syncManager = options.syncManager;
     this.syncEvents = options.syncEvents;
@@ -124,7 +129,8 @@ export class SyncClient {
    * @param url - WebSocket URL of the sync server
    * @param databaseId - Database ID for multi-tenant routing
    * @param token - Optional authentication token
-   * @returns Promise that resolves when connected (not yet synced)
+   * @returns Promise that resolves after handshake is acknowledged, rejects on
+   *          WebSocket failure or server error/rejection.
    */
   async connect(url: string, databaseId: string, token?: string): Promise<void> {
     // Store connection params for reconnection
@@ -136,6 +142,9 @@ export class SyncClient {
     // Clear any pending reconnect timer
     this.clearReconnectTimer();
 
+    // Abandon any prior unsettled connect promise
+    this.settleConnect(new Error('Superseded by new connect() call'));
+
     // Close existing connection
     if (this.ws) {
       this.ws.close();
@@ -145,6 +154,9 @@ export class SyncClient {
     this.setStatus({ status: 'connecting' });
 
     return new Promise((resolve, reject) => {
+      this._connectResolve = resolve;
+      this._connectReject = reject;
+
       try {
         const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
         this.ws = new WebSocket(wsUrl);
@@ -154,12 +166,16 @@ export class SyncClient {
           this.sendHandshake(databaseId, token);
           this.setStatus({ status: 'syncing', progress: 0 });
           this.emitSyncEvent('state-change', 'Connected to sync server, handshake sent');
-          resolve();
+          // Don't resolve yet — wait for handshake_ack (or server error).
         };
 
         this.ws.onclose = () => {
-          this.setStatus({ status: 'disconnected' });
+          const wasError = this._status.status === 'error';
+          if (!wasError) {
+            this.setStatus({ status: 'disconnected' });
+          }
           this.emitSyncEvent('state-change', 'Disconnected from sync server');
+          this.settleConnect(new Error('Connection closed before handshake'));
           this.scheduleReconnect();
         };
 
@@ -167,10 +183,7 @@ export class SyncClient {
           const error = new Error('WebSocket connection failed');
           this.setStatus({ status: 'error', message: error.message });
           this.emitSyncEvent('error', error.message);
-          // Only reject on first attempt
-          if (this.reconnectAttempts === 0) {
-            reject(error);
-          }
+          this.settleConnect(error);
         };
 
         this.ws.onmessage = (event) => {
@@ -182,9 +195,24 @@ export class SyncClient {
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'Connection failed';
         this.setStatus({ status: 'error', message: msg });
-        reject(error);
+        this.settleConnect(error instanceof Error ? error : new Error(msg));
       }
     });
+  }
+
+  /** Settle the pending connect() promise (no-op if already settled). */
+  private settleConnect(error?: Error): void {
+    if (error) {
+      const reject = this._connectReject;
+      this._connectResolve = null;
+      this._connectReject = null;
+      reject?.(error);
+    } else {
+      const resolve = this._connectResolve;
+      this._connectResolve = null;
+      this._connectReject = null;
+      resolve?.();
+    }
   }
 
   /**
@@ -193,6 +221,9 @@ export class SyncClient {
    */
   async disconnect(): Promise<void> {
     this.intentionalDisconnect = true;
+
+    // Reject any pending connect() promise
+    this.settleConnect(new Error('Disconnected'));
 
     // Clear timers
     this.clearReconnectTimer();
@@ -241,6 +272,11 @@ export class SyncClient {
       case 'error':
         this.emitSyncEvent('error', `Server error: ${message.message} (${message.code})`);
         this.options.onError?.(new Error(message.message));
+        // Server explicitly rejected — stop auto-reconnect to avoid tight loops.
+        // The caller's retry mechanism (with its own backoff) will handle retrying.
+        this.intentionalDisconnect = true;
+        this.setStatus({ status: 'error', message: message.message });
+        this.settleConnect(new Error(message.message));
         break;
 
       case 'pong':
@@ -270,6 +306,9 @@ export class SyncClient {
       'state-change',
       `Authenticated with server (connection: ${message.connectionId?.slice(0, 8) ?? 'unknown'})`
     );
+
+    // Handshake accepted — resolve the connect() promise.
+    this.settleConnect();
 
     // Request changes from server since our last sync with this peer
     await this.requestChangesFromServer();

@@ -158,6 +158,7 @@ export function registerWebSocket(
           siteIdRaw: msg.siteId,
           siteId: siteIdFromBase64(msg.siteId),
           socket,
+          request,
         };
         const identity: ClientIdentity = await service.authenticate(authContext);
 
