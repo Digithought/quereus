@@ -21,10 +21,14 @@ export interface ColumnVersion {
 /**
  * Serialize a column version for storage.
  * Format: 26 bytes HLC + JSON value
+ *
+ * Uint8Array values are encoded as `{"__bin":"<base64>"}` so they survive
+ * the JSON round-trip (plain JSON.stringify turns Uint8Array into an object
+ * with numeric keys, which loses type information).
  */
 export function serializeColumnVersion(cv: ColumnVersion): Uint8Array {
   const hlcBytes = serializeHLC(cv.hlc);
-  const valueJson = JSON.stringify(cv.value);
+  const valueJson = JSON.stringify(encodeSqlValue(cv.value));
   const valueBytes = new TextEncoder().encode(valueJson);
 
   const result = new Uint8Array(hlcBytes.length + valueBytes.length);
@@ -39,8 +43,64 @@ export function serializeColumnVersion(cv: ColumnVersion): Uint8Array {
 export function deserializeColumnVersion(buffer: Uint8Array): ColumnVersion {
   const hlc = deserializeHLC(buffer.slice(0, 26));
   const valueJson = new TextDecoder().decode(buffer.slice(26));
-  const value = JSON.parse(valueJson) as SqlValue;
+  const value = decodeSqlValue(JSON.parse(valueJson));
   return { hlc, value };
+}
+
+// ============================================================================
+// SqlValue JSON encoding helpers
+// ============================================================================
+
+/**
+ * Encode a SqlValue for safe JSON serialization.
+ * Uint8Array → `{ __bin: "<base64>" }`, bigint → `{ __bigint: "<string>" }`.
+ */
+export function encodeSqlValue(v: SqlValue): unknown {
+  if (v instanceof Uint8Array) {
+    let binary = '';
+    for (let i = 0; i < v.byteLength; i++) binary += String.fromCharCode(v[i]);
+    return { __bin: btoa(binary) };
+  }
+  if (typeof v === 'bigint') {
+    return { __bigint: v.toString() };
+  }
+  return v;
+}
+
+/**
+ * Decode a SqlValue from JSON, reversing encodeSqlValue.
+ *
+ * Also recovers the legacy corrupted format where Uint8Array was serialized
+ * by plain JSON.stringify as `{"0":65,"1":66,...}` (object with consecutive
+ * integer keys and byte-range values).
+ */
+export function decodeSqlValue(v: unknown): SqlValue {
+  if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+    const obj = v as Record<string, unknown>;
+    if (typeof obj.__bin === 'string') {
+      const binary = atob(obj.__bin);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+    if (typeof obj.__bigint === 'string') {
+      return BigInt(obj.__bigint);
+    }
+    // Legacy recovery: detect Uint8Array corrupted by JSON.stringify → {"0":n,"1":n,...}
+    const keys = Object.keys(obj);
+    if (keys.length > 0 && keys.every((k, i) => k === String(i))) {
+      const allBytes = keys.every(k => {
+        const val = obj[k];
+        return typeof val === 'number' && Number.isInteger(val) && val >= 0 && val <= 255;
+      });
+      if (allBytes) {
+        const bytes = new Uint8Array(keys.length);
+        for (let i = 0; i < keys.length; i++) bytes[i] = obj[String(i)] as number;
+        return bytes;
+      }
+    }
+  }
+  return v as SqlValue;
 }
 
 /**

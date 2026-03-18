@@ -3,6 +3,7 @@
  *
  * - SiteIds use base64url encoding (via siteIdToBase64/siteIdFromBase64)
  * - HLCs use standard base64 encoding (via btoa/atob in browser, Buffer in Node)
+ * - Uint8Array values use `{ __bin: "<base64>" }` tagged encoding
  */
 
 import {
@@ -10,11 +11,15 @@ import {
   deserializeHLC,
   siteIdToBase64,
   siteIdFromBase64,
+  encodeSqlValue,
+  decodeSqlValue,
   type ChangeSet,
   type Change,
+  type ColumnChange,
   type SchemaMigration,
   type HLC,
 } from '@quereus/sync';
+import type { SqlValue } from '@quereus/quereus';
 import type { SerializedChangeSet } from './types.js';
 
 // ============================================================================
@@ -51,6 +56,7 @@ function base64ToBytes(str: string): Uint8Array {
 
 /**
  * Serialize a ChangeSet for JSON transport.
+ * Encodes Uint8Array values in changes and PKs so they survive JSON round-trip.
  *
  * @param cs - The ChangeSet to serialize
  * @returns A JSON-serializable object
@@ -60,10 +66,19 @@ export function serializeChangeSet(cs: ChangeSet): SerializedChangeSet {
     siteId: siteIdToBase64(cs.siteId),
     transactionId: cs.transactionId,
     hlc: bytesToBase64(serializeHLC(cs.hlc)),
-    changes: cs.changes.map(c => ({
-      ...c,
-      hlc: bytesToBase64(serializeHLC(c.hlc)),
-    })),
+    changes: cs.changes.map(c => {
+      const base = {
+        type: c.type,
+        schema: c.schema,
+        table: c.table,
+        pk: c.pk.map(v => encodeSqlValue(v)),
+        hlc: bytesToBase64(serializeHLC(c.hlc)),
+      };
+      if (c.type === 'column') {
+        return { ...base, column: (c as ColumnChange).column, value: encodeSqlValue((c as ColumnChange).value) };
+      }
+      return base;
+    }),
     schemaMigrations: cs.schemaMigrations.map(m => ({
       ...m,
       hlc: bytesToBase64(serializeHLC(m.hlc)),
@@ -73,6 +88,7 @@ export function serializeChangeSet(cs: ChangeSet): SerializedChangeSet {
 
 /**
  * Deserialize a ChangeSet from JSON transport format.
+ * Decodes tagged Uint8Array values in changes and PKs.
  *
  * @param obj - The serialized ChangeSet object
  * @returns The deserialized ChangeSet
@@ -82,10 +98,19 @@ export function deserializeChangeSet(obj: SerializedChangeSet): ChangeSet {
     siteId: siteIdFromBase64(obj.siteId),
     transactionId: obj.transactionId,
     hlc: deserializeHLC(base64ToBytes(obj.hlc)),
-    changes: obj.changes.map(c => ({
-      ...c,
-      hlc: deserializeHLC(base64ToBytes(c.hlc)),
-    })) as Change[],
+    changes: obj.changes.map(c => {
+      const base = {
+        type: c.type,
+        schema: c.schema,
+        table: c.table,
+        pk: (c.pk as unknown[]).map(v => decodeSqlValue(v)),
+        hlc: deserializeHLC(base64ToBytes(c.hlc)),
+      };
+      if (c.type === 'column') {
+        return { ...base, column: c.column!, value: decodeSqlValue(c.value) };
+      }
+      return base;
+    }) as Change[],
     schemaMigrations: obj.schemaMigrations.map(m => ({
       ...m,
       hlc: deserializeHLC(base64ToBytes(m.hlc)),

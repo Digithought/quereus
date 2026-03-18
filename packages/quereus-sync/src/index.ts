@@ -132,6 +132,9 @@ export {
   ColumnVersionStore,
   serializeColumnVersion,
   deserializeColumnVersion,
+  // SqlValue JSON encoding (for Uint8Array/bigint in JSON transport)
+  encodeSqlValue,
+  decodeSqlValue,
   // Tombstones
   type Tombstone,
   TombstoneStore,

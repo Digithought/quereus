@@ -3,6 +3,9 @@
  *
  * Used by both the WebSocket handler and the HTTP routes
  * for consistent wire format.
+ *
+ * Uint8Array values (blobs) are encoded as `{ __bin: "<base64>" }` so they
+ * survive JSON round-trips. See encodeSqlValue / decodeSqlValue in @quereus/sync.
  */
 
 import {
@@ -10,23 +13,35 @@ import {
 	siteIdToBase64,
 	deserializeHLC,
 	serializeHLC,
+	encodeSqlValue,
+	decodeSqlValue,
 	type ChangeSet,
+	type ColumnChange,
 	type SnapshotChunk,
 } from '@quereus/sync';
 
 /**
  * Serialize a ChangeSet for JSON transport.
- * Converts binary fields (siteId, HLCs) to base64 strings.
+ * Converts binary fields (siteId, HLCs) and SqlValue blobs to base64 strings.
  */
 export function serializeChangeSet(cs: ChangeSet): object {
 	return {
 		siteId: siteIdToBase64(cs.siteId),
 		transactionId: cs.transactionId,
 		hlc: Buffer.from(serializeHLC(cs.hlc)).toString('base64'),
-		changes: cs.changes.map(c => ({
-			...c,
-			hlc: Buffer.from(serializeHLC(c.hlc)).toString('base64'),
-		})),
+		changes: cs.changes.map(c => {
+			const base = {
+				type: c.type,
+				schema: c.schema,
+				table: c.table,
+				pk: c.pk.map(v => encodeSqlValue(v)),
+				hlc: Buffer.from(serializeHLC(c.hlc)).toString('base64'),
+			};
+			if (c.type === 'column') {
+				return { ...base, column: (c as ColumnChange).column, value: encodeSqlValue((c as ColumnChange).value) };
+			}
+			return base;
+		}),
 		schemaMigrations: cs.schemaMigrations.map(m => ({
 			...m,
 			hlc: Buffer.from(serializeHLC(m.hlc)).toString('base64'),
@@ -36,7 +51,7 @@ export function serializeChangeSet(cs: ChangeSet): object {
 
 /**
  * Serialize a SnapshotChunk for JSON transport.
- * Converts binary fields (siteId, HLCs) to base64 strings.
+ * Converts binary fields (siteId, HLCs) and SqlValue blobs to base64 strings.
  */
 export function serializeSnapshotChunk(chunk: SnapshotChunk): object {
 	switch (chunk.type) {
@@ -57,7 +72,7 @@ export function serializeSnapshotChunk(chunk: SnapshotChunk): object {
 				entries: chunk.entries.map(([key, hlc, value]) => [
 					key,
 					Buffer.from(serializeHLC(hlc)).toString('base64'),
-					value,
+					encodeSqlValue(value),
 				]),
 			};
 		case 'schema-migration':
@@ -76,7 +91,7 @@ export function serializeSnapshotChunk(chunk: SnapshotChunk): object {
 
 /**
  * Deserialize a SnapshotChunk from JSON transport format.
- * Converts base64 strings back to binary fields (SiteId, HLC).
+ * Converts base64 strings back to binary fields (SiteId, HLC) and decodes SqlValue blobs.
  */
 export function deserializeSnapshotChunk(obj: unknown): SnapshotChunk {
 	const chunk = obj as Record<string, unknown>;
@@ -98,7 +113,7 @@ export function deserializeSnapshotChunk(obj: unknown): SnapshotChunk {
 				entries: (chunk.entries as unknown[][]).map(([key, hlc, value]) => [
 					key as string,
 					deserializeHLC(Buffer.from(hlc as string, 'base64')),
-					value,
+					decodeSqlValue(value),
 				]),
 			} as SnapshotChunk;
 		case 'schema-migration': {
@@ -119,7 +134,7 @@ export function deserializeSnapshotChunk(obj: unknown): SnapshotChunk {
 
 /**
  * Deserialize a ChangeSet from JSON transport format.
- * Converts base64 strings back to binary fields.
+ * Converts base64 strings back to binary fields and decodes SqlValue blobs.
  */
 export function deserializeChangeSet(cs: unknown): ChangeSet {
 	const obj = cs as Record<string, unknown>;
@@ -127,10 +142,19 @@ export function deserializeChangeSet(cs: unknown): ChangeSet {
 		siteId: siteIdFromBase64(obj.siteId as string),
 		transactionId: obj.transactionId as string,
 		hlc: deserializeHLC(Buffer.from(obj.hlc as string, 'base64')),
-		changes: (obj.changes as Record<string, unknown>[]).map(c => ({
-			...c,
-			hlc: deserializeHLC(Buffer.from(c.hlc as string, 'base64')),
-		})),
+		changes: (obj.changes as Record<string, unknown>[]).map(c => {
+			const base = {
+				type: c.type,
+				schema: c.schema,
+				table: c.table,
+				pk: (c.pk as unknown[]).map(v => decodeSqlValue(v)),
+				hlc: deserializeHLC(Buffer.from(c.hlc as string, 'base64')),
+			};
+			if (c.type === 'column') {
+				return { ...base, column: c.column, value: decodeSqlValue(c.value) };
+			}
+			return base;
+		}),
 		schemaMigrations: ((obj.schemaMigrations as Record<string, unknown>[]) || []).map(m => ({
 			...m,
 			hlc: deserializeHLC(Buffer.from(m.hlc as string, 'base64')),

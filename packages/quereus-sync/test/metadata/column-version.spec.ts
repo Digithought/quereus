@@ -3,7 +3,7 @@
  */
 
 import { expect } from 'chai';
-import { ColumnVersionStore, serializeColumnVersion, deserializeColumnVersion, type ColumnVersion } from '../../src/metadata/column-version.js';
+import { ColumnVersionStore, serializeColumnVersion, deserializeColumnVersion, encodeSqlValue, decodeSqlValue, type ColumnVersion } from '../../src/metadata/column-version.js';
 import type { HLC } from '../../src/clock/hlc.js';
 import { generateSiteId } from '../../src/clock/site.js';
 import { InMemoryKVStore } from '@quereus/store';
@@ -49,6 +49,45 @@ describe('ColumnVersion', () => {
       const deserialized = deserializeColumnVersion(serialized);
 
       expect(deserialized.value).to.equal(42.5);
+    });
+
+    it('should round-trip Uint8Array (blob) values', () => {
+      const siteId = generateSiteId();
+      const blob = new Uint8Array([0, 1, 127, 255, 65, 66, 67]);
+      const version: ColumnVersion = {
+        hlc: { wallTime: BigInt(1234567890), counter: 0, siteId },
+        value: blob,
+      };
+
+      const serialized = serializeColumnVersion(version);
+      const deserialized = deserializeColumnVersion(serialized);
+
+      expect(deserialized.value).to.be.instanceOf(Uint8Array);
+      const result = deserialized.value as Uint8Array;
+      expect(result.length).to.equal(blob.length);
+      expect(Array.from(result)).to.deep.equal(Array.from(blob));
+    });
+
+    it('should recover legacy corrupted Uint8Array format', () => {
+      // Simulate old corrupted format: JSON.stringify(Uint8Array) → {"0":65,"1":66,"2":67}
+      const corrupted = { '0': 65, '1': 66, '2': 67 };
+      const recovered = decodeSqlValue(corrupted);
+
+      expect(recovered).to.be.instanceOf(Uint8Array);
+      expect(Array.from(recovered as Uint8Array)).to.deep.equal([65, 66, 67]);
+    });
+
+    it('should not misidentify normal objects as corrupted Uint8Array', () => {
+      // Object with non-consecutive keys
+      expect(decodeSqlValue({ '0': 65, '2': 67 })).to.deep.equal({ '0': 65, '2': 67 });
+      // Object with non-byte values
+      expect(decodeSqlValue({ '0': 300 })).to.deep.equal({ '0': 300 });
+      // Object with string values
+      expect(decodeSqlValue({ '0': 'a' })).to.deep.equal({ '0': 'a' });
+      // Normal string/number values pass through
+      expect(decodeSqlValue('hello')).to.equal('hello');
+      expect(decodeSqlValue(42)).to.equal(42);
+      expect(decodeSqlValue(null)).to.equal(null);
     });
   });
 
