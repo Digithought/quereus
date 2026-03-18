@@ -1,6 +1,6 @@
 {
   "name": "@quereus/sync-coordinator",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "description": "Standalone coordinator backend for Quereus Sync - production-ready sync server",
   "keywords": [

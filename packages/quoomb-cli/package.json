@@ -1,6 +1,6 @@
 {
   "name": "@quereus/quoomb-cli",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "description": "Quoomb CLI - Interactive REPL for Quereus SQL engine",
   "license": "MIT",
