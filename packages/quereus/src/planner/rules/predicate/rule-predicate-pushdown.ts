@@ -21,6 +21,7 @@ import { createLogger } from '../../../common/logger.js';
 import type { PlanNode, RelationalPlanNode } from '../../nodes/plan-node.js';
 import { isRelationalNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
+import type { Scope } from '../../scopes/scope.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
 import { FilterNode } from '../../nodes/filter.js';
 import { SortNode } from '../../nodes/sort.js';
@@ -41,7 +42,7 @@ export function rulePredicatePushdown(node: PlanNode, _context: OptContext): Pla
 	if (node.nodeType !== PlanNodeType.Filter) return null;
 
 	const filter = node as FilterNode;
-  const normalized = normalizePredicate(filter.predicate);
+	const normalized = normalizePredicate(filter.predicate);
 
 	// If no relational child, nothing to do
 	if (!isRelationalNode(filter.source)) return null;
@@ -52,31 +53,31 @@ export function rulePredicatePushdown(node: PlanNode, _context: OptContext): Pla
 	return pushed;
 }
 
-function tryPushDown(child: RelationalPlanNode, predicate: ScalarPlanNode, scope: any): PlanNode | null {
-  // Reach a Retrieve boundary: insert only the supported portion inside pipeline
+function tryPushDown(child: RelationalPlanNode, predicate: ScalarPlanNode, scope: Scope): PlanNode | null {
+	// Reach a Retrieve boundary: insert only the supported portion inside pipeline
 	if (child instanceof RetrieveNode) {
-    log('Pushing predicate into Retrieve pipeline (supported-only)');
-    const tableInfo = createTableInfoFromNode(child.tableRef, `${child.tableRef.tableSchema.name}`);
-    const extraction = extractConstraints(predicate, [tableInfo]);
-    const supported = extraction.supportedPredicateByTable?.get(tableInfo.relationKey);
+		log('Pushing predicate into Retrieve pipeline (supported-only)');
+		const tableInfo = createTableInfoFromNode(child.tableRef, `${child.tableRef.tableSchema.name}`);
+		const extraction = extractConstraints(predicate, [tableInfo]);
+		const supported = extraction.supportedPredicateByTable?.get(tableInfo.relationKey);
 
-    if (!supported) {
-      log('No supported portion for this retrieve; not pushing');
-      return null;
-    }
+		if (!supported) {
+			log('No supported portion for this retrieve; not pushing');
+			return null;
+		}
 
-    const newInner = new FilterNode(child.source.scope, child.source, supported);
-    const newBindings = [
-      ...(child.bindings ?? []),
-      ...collectBindingsInExpr(supported, child.tableRef)
-    ];
-    const updatedRetrieve = child.withPipeline(newInner, child.moduleCtx, newBindings);
+		const newInner = new FilterNode(child.source.scope, child.source, supported);
+		const newBindings = [
+			...(child.bindings ?? []),
+			...collectBindingsInExpr(supported, child.tableRef)
+		];
+		const updatedRetrieve = child.withPipeline(newInner, child.moduleCtx, newBindings);
 
-    // If the supported portion equals the whole filter, remove original filter; else keep residual above
-    if (!extraction.residualPredicate) {
-      return updatedRetrieve;
-    }
-    return new FilterNode(scope, updatedRetrieve as unknown as RelationalPlanNode, extraction.residualPredicate);
+		// If the supported portion equals the whole filter, remove original filter; else keep residual above
+		if (!extraction.residualPredicate) {
+			return updatedRetrieve;
+		}
+		return new FilterNode(scope, updatedRetrieve as unknown as RelationalPlanNode, extraction.residualPredicate);
 	}
 
 	// Across AliasNode (view boundary)
