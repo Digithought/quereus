@@ -79,8 +79,9 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 			deltaRows = newDeltaRows;
 		}
 
-		// Safety check for infinite recursion
-		if (iterationCount >= maxIterations) {
+		// Safety check for infinite recursion — only error if we hit the limit
+		// while there was still work to do (deltaRows not empty)
+		if (maxIterations > 0 && iterationCount >= maxIterations && deltaRows.length > 0) {
 			quereusError(
 				`Recursive CTE '${plan.cteName}' exceeded maximum iteration limit (${maxIterations})`,
 				StatusCode.ERROR
