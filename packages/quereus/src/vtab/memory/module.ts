@@ -15,7 +15,7 @@ import type { ModuleCapabilities } from '../capabilities.js';
 const logger = createMemoryTableLoggers('module');
 
 /**
- * A module that provides in-memory table functionality using digitree.
+ * A module that provides in-memory table functionality using BTree (inheritree).
  * Tables created with this module persist only for the lifetime of the
  * database connection.
  */
