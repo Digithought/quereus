@@ -70,13 +70,13 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 			case 'values':
 				return buildValuesStmt(ctx, stmt as AST.ValuesStmt);
 			case 'declareSchema':
-				return buildDeclareSchemaStmt(ctx, stmt as unknown as AST.DeclareSchemaStmt);
+				return buildDeclareSchemaStmt(ctx, stmt);
 			case 'diffSchema':
-				return buildDiffSchemaStmt(ctx, stmt as unknown as AST.DiffSchemaStmt);
+				return buildDiffSchemaStmt(ctx, stmt);
 			case 'applySchema':
-				return buildApplySchemaStmt(ctx, stmt as unknown as AST.ApplySchemaStmt);
+				return buildApplySchemaStmt(ctx, stmt);
 			case 'explainSchema':
-				return buildExplainSchemaStmt(ctx, stmt as unknown as AST.ExplainSchemaStmt);
+				return buildExplainSchemaStmt(ctx, stmt);
 			default:
 				// Throw an exception for unsupported statement types
 				quereusError(
