@@ -71,7 +71,7 @@ export class RecursiveCTENode extends PlanNode implements CTEPlanNode, CTEScopeN
 		return {
 			typeClass: 'relation',
 			isReadOnly: false,
-			isSet: false, // Recursive CTEs can generate duplicates
+			isSet: !this.isUnionAll, // UNION DISTINCT deduplicates; UNION ALL may have duplicates
 			columns: this.getAttributes().map((attr) => ({
 				name: attr.name,
 				type: attr.type

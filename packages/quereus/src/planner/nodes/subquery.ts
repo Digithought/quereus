@@ -1,10 +1,8 @@
 import { PlanNode, type ScalarPlanNode } from "./plan-node.js";
 import type { ScalarType } from "../../common/datatype.js";
 import type { RelationalPlanNode } from "./plan-node.js";
-import { type CompareFn } from "../../common/types.js";
 import { PlanNodeType } from "./plan-node-type.js";
 import type { Scope } from "../scopes/scope.js";
-import { compareSqlValues } from "../../util/comparison.js";
 import type { Expression } from "../../parser/ast.js";
 import { formatExpression, formatScalarType } from "../../util/plan-formatter.js";
 import { quereusError } from "../../common/errors.js";
@@ -87,8 +85,6 @@ export class ScalarSubqueryNode extends PlanNode implements ScalarPlanNode {
 export class InNode extends PlanNode implements ScalarPlanNode {
 	override readonly nodeType = PlanNodeType.In;
 
-	public readonly comparator: CompareFn;
-
 	constructor(
 		readonly scope: Scope,
 		readonly expression: Expression, // The original InExpr AST node
@@ -97,14 +93,13 @@ export class InNode extends PlanNode implements ScalarPlanNode {
 		readonly values?: ScalarPlanNode[],    // For IN value list
 	) {
 		super(scope);
-		this.comparator = (a, b) => compareSqlValues(a, b);
 	}
 
 	getType(): ScalarType {
 		return {
 			typeClass: 'scalar',
 			logicalType: BOOLEAN_TYPE,
-			nullable: false,
+			nullable: true, // IN with NULLs follows three-valued logic
 			isReadOnly: true,
 		}
 	}
