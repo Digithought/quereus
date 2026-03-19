@@ -36,8 +36,6 @@ export function quoteIdentifier(name: string): string {
 	return name;
 }
 
-// Internal alias for backward compatibility
-const quoteIdentifierIfNeeded = quoteIdentifier;
 
 // Main function to convert any AST node to SQL string
 export function astToString(node: AST.AstNode): string {
@@ -54,6 +52,9 @@ export function astToString(node: AST.AstNode): string {
 		case 'subquery':
 		case 'collate':
 		case 'case':
+		case 'exists':
+		case 'in':
+		case 'between':
 		case 'windowFunction':
 			return expressionToString(node as AST.Expression);
 
@@ -141,19 +142,19 @@ export function expressionToString(expr: AST.Expression): string {
 		}
 
 		case 'identifier': {
-			let identStr = quoteIdentifierIfNeeded(expr.name);
+			let identStr = quoteIdentifier(expr.name);
 			if (expr.schema) {
-				identStr = `${quoteIdentifierIfNeeded(expr.schema)}.${identStr}`;
+				identStr = `${quoteIdentifier(expr.schema)}.${identStr}`;
 			}
 			return identStr;
 		}
 
 		case 'column': {
-			let colStr = quoteIdentifierIfNeeded(expr.name);
+			let colStr = quoteIdentifier(expr.name);
 			if (expr.table) {
-				colStr = `${quoteIdentifierIfNeeded(expr.table)}.${colStr}`;
+				colStr = `${quoteIdentifier(expr.table)}.${colStr}`;
 				if (expr.schema) {
-					colStr = `${quoteIdentifierIfNeeded(expr.schema)}.${colStr}`;
+					colStr = `${quoteIdentifier(expr.schema)}.${colStr}`;
 				}
 			}
 			return colStr;
@@ -353,10 +354,10 @@ export function selectToString(stmt: AST.SelectStmt): string {
 
 	const columns = stmt.columns.map(col => {
 		if (col.type === 'all') {
-			return col.table ? `${quoteIdentifierIfNeeded(col.table)}.*` : '*';
+			return col.table ? `${quoteIdentifier(col.table)}.*` : '*';
 		} else {
 			let colStr = expressionToString(col.expr);
-			if (col.alias) colStr += ` as ${quoteIdentifierIfNeeded(col.alias)}`;
+			if (col.alias) colStr += ` as ${quoteIdentifier(col.alias)}`;
 			return colStr;
 		}
 	});
@@ -411,9 +412,9 @@ function withClauseToString(withClause: AST.WithClause): string {
 	if (withClause.recursive) result += ' recursive';
 
 	const ctes = withClause.ctes.map(cte => {
-		let cteStr = quoteIdentifierIfNeeded(cte.name);
+		let cteStr = quoteIdentifier(cte.name);
 		if (cte.columns && cte.columns.length > 0) {
-			cteStr += ` (${cte.columns.map(quoteIdentifierIfNeeded).join(', ')})`;
+			cteStr += ` (${cte.columns.map(quoteIdentifier).join(', ')})`;
 		}
 		cteStr += ` as (${astToString(cte.query)})`;
 		return cteStr;
@@ -432,11 +433,11 @@ function withClauseToString(withClause: AST.WithClause): string {
 function fromClauseToString(from: AST.FromClause): string {
 	switch (from.type) {
 		case 'table': {
-			let tableStr = quoteIdentifierIfNeeded(from.table.name);
+			let tableStr = quoteIdentifier(from.table.name);
 			if (from.table.schema) {
-				tableStr = `${quoteIdentifierIfNeeded(from.table.schema)}.${tableStr}`;
+				tableStr = `${quoteIdentifier(from.table.schema)}.${tableStr}`;
 			}
-			if (from.alias) tableStr += ` as ${quoteIdentifierIfNeeded(from.alias)}`;
+			if (from.alias) tableStr += ` as ${quoteIdentifier(from.alias)}`;
 			return tableStr;
 		}
 
@@ -452,9 +453,9 @@ function fromClauseToString(from: AST.FromClause): string {
 				subqueryStr = astToString(exhaustiveCheck);
 			}
 
-			let aliasStr = `as ${quoteIdentifierIfNeeded(from.alias)}`;
+			let aliasStr = `as ${quoteIdentifier(from.alias)}`;
 			if (from.columns && from.columns.length > 0) {
-				aliasStr += ` (${from.columns.map(quoteIdentifierIfNeeded).join(', ')})`;
+				aliasStr += ` (${from.columns.map(quoteIdentifier).join(', ')})`;
 			}
 
 			return `(${subqueryStr}) ${aliasStr}`;
@@ -472,7 +473,7 @@ function fromClauseToString(from: AST.FromClause): string {
 				funcName = expressionToString(from.name);
 			}
 			let funcStr = `${funcName}(${args})`;
-			if (from.alias) funcStr += ` as ${quoteIdentifierIfNeeded(from.alias)}`;
+			if (from.alias) funcStr += ` as ${quoteIdentifier(from.alias)}`;
 			return funcStr;
 		}
 
@@ -483,7 +484,7 @@ function fromClauseToString(from: AST.FromClause): string {
 			if (from.condition) {
 				joinStr += ` on ${expressionToString(from.condition)}`;
 			} else if (from.columns) {
-				joinStr += ` using (${from.columns.map(quoteIdentifierIfNeeded).join(', ')})`;
+				joinStr += ` using (${from.columns.map(quoteIdentifier).join(', ')})`;
 			}
 			return joinStr;
 		}
@@ -503,12 +504,12 @@ export function insertToString(stmt: AST.InsertStmt): string {
 	parts.push('insert into', expressionToString(stmt.table));
 
 	if (stmt.columns && stmt.columns.length > 0) {
-		parts.push(`(${stmt.columns.map(quoteIdentifierIfNeeded).join(', ')})`);
+		parts.push(`(${stmt.columns.map(quoteIdentifier).join(', ')})`);
 	}
 
 	if (stmt.contextValues && stmt.contextValues.length > 0) {
 		const contextAssignments = stmt.contextValues.map(assign =>
-			`${quoteIdentifierIfNeeded(assign.name)} = ${expressionToString(assign.value)}`
+			`${quoteIdentifier(assign.name)} = ${expressionToString(assign.value)}`
 		);
 		parts.push('with context', contextAssignments.join(', '));
 	}
@@ -536,10 +537,10 @@ export function insertToString(stmt: AST.InsertStmt): string {
 	if (stmt.returning && stmt.returning.length > 0) {
 		const returning = stmt.returning.map(col => {
 			if (col.type === 'all') {
-				return col.table ? `${quoteIdentifierIfNeeded(col.table)}.*` : '*';
+				return col.table ? `${quoteIdentifier(col.table)}.*` : '*';
 			} else {
 				let colStr = expressionToString(col.expr);
-				if (col.alias) colStr += ` as ${quoteIdentifierIfNeeded(col.alias)}`;
+				if (col.alias) colStr += ` as ${quoteIdentifier(col.alias)}`;
 				return colStr;
 			}
 		});
@@ -556,7 +557,7 @@ function upsertClauseToString(upsert: AST.UpsertClause): string {
 	const parts: string[] = ['on conflict'];
 
 	if (upsert.conflictTarget && upsert.conflictTarget.length > 0) {
-		parts.push(`(${upsert.conflictTarget.map(quoteIdentifierIfNeeded).join(', ')})`);
+		parts.push(`(${upsert.conflictTarget.map(quoteIdentifier).join(', ')})`);
 	}
 
 	if (upsert.action === 'nothing') {
@@ -565,7 +566,7 @@ function upsertClauseToString(upsert: AST.UpsertClause): string {
 		parts.push('do update set');
 		if (upsert.assignments) {
 			const assigns = upsert.assignments.map(a =>
-				`${quoteIdentifierIfNeeded(a.column)} = ${expressionToString(a.value)}`
+				`${quoteIdentifier(a.column)} = ${expressionToString(a.value)}`
 			);
 			parts.push(assigns.join(', '));
 		}
@@ -588,7 +589,7 @@ export function updateToString(stmt: AST.UpdateStmt): string {
 
 	if (stmt.contextValues && stmt.contextValues.length > 0) {
 		const contextAssignments = stmt.contextValues.map(assign =>
-			`${quoteIdentifierIfNeeded(assign.name)} = ${expressionToString(assign.value)}`
+			`${quoteIdentifier(assign.name)} = ${expressionToString(assign.value)}`
 		);
 		parts.push('with context', contextAssignments.join(', '));
 	}
@@ -596,7 +597,7 @@ export function updateToString(stmt: AST.UpdateStmt): string {
 	parts.push('set');
 
 	const assignments = stmt.assignments.map(assign =>
-		`${quoteIdentifierIfNeeded(assign.column)} = ${expressionToString(assign.value)}`
+		`${quoteIdentifier(assign.column)} = ${expressionToString(assign.value)}`
 	);
 	parts.push(assignments.join(', '));
 
@@ -611,10 +612,10 @@ export function updateToString(stmt: AST.UpdateStmt): string {
 	if (stmt.returning && stmt.returning.length > 0) {
 		const returning = stmt.returning.map(col => {
 			if (col.type === 'all') {
-				return col.table ? `${quoteIdentifierIfNeeded(col.table)}.*` : '*';
+				return col.table ? `${quoteIdentifier(col.table)}.*` : '*';
 			} else {
 				let colStr = expressionToString(col.expr);
-				if (col.alias) colStr += ` as ${quoteIdentifierIfNeeded(col.alias)}`;
+				if (col.alias) colStr += ` as ${quoteIdentifier(col.alias)}`;
 				return colStr;
 			}
 		});
@@ -635,7 +636,7 @@ export function deleteToString(stmt: AST.DeleteStmt): string {
 
 	if (stmt.contextValues && stmt.contextValues.length > 0) {
 		const contextAssignments = stmt.contextValues.map(assign =>
-			`${quoteIdentifierIfNeeded(assign.name)} = ${expressionToString(assign.value)}`
+			`${quoteIdentifier(assign.name)} = ${expressionToString(assign.value)}`
 		);
 		parts.push('with context', contextAssignments.join(', '));
 	}
@@ -647,10 +648,10 @@ export function deleteToString(stmt: AST.DeleteStmt): string {
 	if (stmt.returning && stmt.returning.length > 0) {
 		const returning = stmt.returning.map(col => {
 			if (col.type === 'all') {
-				return col.table ? `${quoteIdentifierIfNeeded(col.table)}.*` : '*';
+				return col.table ? `${quoteIdentifier(col.table)}.*` : '*';
 			} else {
 				let colStr = expressionToString(col.expr);
-				if (col.alias) colStr += ` as ${quoteIdentifierIfNeeded(col.alias)}`;
+				if (col.alias) colStr += ` as ${quoteIdentifier(col.alias)}`;
 				return colStr;
 			}
 		});
@@ -677,7 +678,7 @@ export function createIndexToString(stmt: AST.CreateIndexStmt): string {
 
 	const columns = stmt.columns.map(col => {
 		if (col.name) {
-			let colStr = quoteIdentifierIfNeeded(col.name);
+			let colStr = quoteIdentifier(col.name);
 			if (col.collation) colStr += ` collate ${col.collation.toLowerCase()}`;
 			if (col.direction === 'desc') colStr += ' desc';
 			return colStr;
@@ -705,7 +706,7 @@ export function createViewToString(stmt: AST.CreateViewStmt): string {
 	parts.push(expressionToString(stmt.view));
 
 	if (stmt.columns && stmt.columns.length > 0) {
-		parts.push(`(${stmt.columns.map(quoteIdentifierIfNeeded).join(', ')})`);
+		parts.push(`(${stmt.columns.map(quoteIdentifier).join(', ')})`);
 	}
 
 	parts.push('as', selectToString(stmt.select));
@@ -753,7 +754,7 @@ function pragmaToString(stmt: AST.PragmaStmt): string {
 }
 
 function declareSchemaToString(stmt: AST.DeclareSchemaStmt): string {
-	let s = `declare schema ${quoteIdentifierIfNeeded(stmt.schemaName || 'main')}`;
+	let s = `declare schema ${quoteIdentifier(stmt.schemaName || 'main')}`;
 	if (stmt.version) s += ` version '${stmt.version}'`;
 	if (stmt.using && (stmt.using.defaultVtabModule || stmt.using.defaultVtabArgs)) {
 		const opts: string[] = [];
@@ -798,7 +799,7 @@ function conflictToString(res: ConflictResolution | undefined): string {
 function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string {
 	return constraints.map(c => {
 		let s = '';
-		if (c.name) s += `constraint ${quoteIdentifierIfNeeded(c.name)} `;
+		if (c.name) s += `constraint ${quoteIdentifier(c.name)} `;
 		switch (c.type) {
 			case 'primaryKey':
 				s += 'primary key';
@@ -831,9 +832,9 @@ function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string 
 			case 'foreignKey':
 				if (c.foreignKey) {
 					const fk = c.foreignKey;
-					s += `references ${quoteIdentifierIfNeeded(fk.table)}`;
+					s += `references ${quoteIdentifier(fk.table)}`;
 					if (fk.columns && fk.columns.length > 0) {
-						s += `(${fk.columns.map(quoteIdentifierIfNeeded).join(', ')})`;
+						s += `(${fk.columns.map(quoteIdentifier).join(', ')})`;
 					}
 					if (fk.onDelete) s += ` on delete ${foreignKeyActionToString(fk.onDelete)}`;
 					if (fk.onUpdate) s += ` on update ${foreignKeyActionToString(fk.onUpdate)}`;
@@ -853,15 +854,15 @@ function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string 
 function tableConstraintsToString(constraints: AST.TableConstraint[]): string {
 	return constraints.map(c => {
 		let s = '';
-		if (c.name) s += `constraint ${quoteIdentifierIfNeeded(c.name)} `;
+		if (c.name) s += `constraint ${quoteIdentifier(c.name)} `;
 		switch (c.type) {
 			case 'primaryKey':
 				// ASC is default, only specify DESC
-				s += `primary key (${c.columns!.map(col => `${quoteIdentifierIfNeeded(col.name)}${col.direction === 'desc' ? ' desc' : ''}`).join(', ')})`;
+				s += `primary key (${c.columns!.map(col => `${quoteIdentifier(col.name)}${col.direction === 'desc' ? ' desc' : ''}`).join(', ')})`;
 				s += conflictToString(c.onConflict);
 				break;
 			case 'unique':
-				s += `unique (${c.columns!.map(col => quoteIdentifierIfNeeded(col.name)).join(', ')})`;
+				s += `unique (${c.columns!.map(col => quoteIdentifier(col.name)).join(', ')})`;
 				s += conflictToString(c.onConflict);
 				break;
 			case 'check':
@@ -870,9 +871,9 @@ function tableConstraintsToString(constraints: AST.TableConstraint[]): string {
 			case 'foreignKey':
 				if (c.foreignKey) {
 					const fk = c.foreignKey;
-					s += `foreign key (${c.columns!.map(col => quoteIdentifierIfNeeded(col.name)).join(', ')}) references ${quoteIdentifierIfNeeded(fk.table)}`;
+					s += `foreign key (${c.columns!.map(col => quoteIdentifier(col.name)).join(', ')}) references ${quoteIdentifier(fk.table)}`;
 					if (fk.columns && fk.columns.length > 0) {
-						s += `(${fk.columns.map(quoteIdentifierIfNeeded).join(', ')})`;
+						s += `(${fk.columns.map(quoteIdentifier).join(', ')})`;
 					}
 					if (fk.onDelete) s += ` on delete ${foreignKeyActionToString(fk.onDelete)}`;
 					if (fk.onUpdate) s += ` on update ${foreignKeyActionToString(fk.onUpdate)}`;
@@ -894,7 +895,7 @@ function foreignKeyActionToString(action: AST.ForeignKeyAction): string {
 }
 
 export function columnDefToString(col: AST.ColumnDef): string {
-	let colDef = quoteIdentifierIfNeeded(col.name);
+	let colDef = quoteIdentifier(col.name);
 	if (col.dataType) colDef += ` ${col.dataType}`;
 	const constraints = columnConstraintsToString(col.constraints);
 	if (constraints) colDef += ` ${constraints}`;
@@ -907,18 +908,11 @@ export function createTableToString(stmt: AST.CreateTableStmt): string {
 	parts.push('table');
 	if (stmt.ifNotExists) parts.push('if not exists');
 	// Handle schema.table quoting
-	const tableName = quoteIdentifierIfNeeded(stmt.table.name);
-	const schemaName = stmt.table.schema ? quoteIdentifierIfNeeded(stmt.table.schema) : undefined;
+	const tableName = quoteIdentifier(stmt.table.name);
+	const schemaName = stmt.table.schema ? quoteIdentifier(stmt.table.schema) : undefined;
 	parts.push(schemaName ? `${schemaName}.${tableName}` : tableName);
 
-	const definitions: string[] = [];
-	stmt.columns.forEach(col => {
-		let colDef = quoteIdentifierIfNeeded(col.name);
-		if (col.dataType) colDef += ` ${col.dataType}`; // Keep data type casing as is
-		const constraints = columnConstraintsToString(col.constraints);
-		if (constraints) colDef += ` ${constraints}`;
-		definitions.push(colDef);
-	});
+	const definitions: string[] = stmt.columns.map(columnDefToString);
 
 	const tableConstraints = tableConstraintsToString(stmt.constraints);
 	if (tableConstraints) definitions.push(tableConstraints);
@@ -929,7 +923,7 @@ export function createTableToString(stmt: AST.CreateTableStmt): string {
 		parts.push('using', stmt.moduleName);
 		if (stmt.moduleArgs && Object.keys(stmt.moduleArgs).length > 0) {
 			const args = Object.entries(stmt.moduleArgs).map(([key, value]) =>
-				`${quoteIdentifierIfNeeded(key)} = ${JSON.stringify(value)}`
+				`${quoteIdentifier(key)} = ${JSON.stringify(value)}`
 			).join(', ');
 			parts.push(`(${args})`);
 		}
@@ -938,7 +932,7 @@ export function createTableToString(stmt: AST.CreateTableStmt): string {
 	// Add WITH CONTEXT clause if present
 	if (stmt.contextDefinitions && stmt.contextDefinitions.length > 0) {
 		const contextVars = stmt.contextDefinitions.map(varDef => {
-			let def = quoteIdentifierIfNeeded(varDef.name);
+			let def = quoteIdentifier(varDef.name);
 			if (varDef.dataType) def += ` ${varDef.dataType}`;
 			if (varDef.notNull === false) def += ' NULL';
 			return def;
