@@ -5,6 +5,8 @@ import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import type * as AST from '../../parser/ast.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 export interface WindowSpec {
 	partitionBy: AST.Expression[];
@@ -106,7 +108,7 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 			totalFuncArgs;
 
 		if (newChildren.length !== expectedLength) {
-			throw new Error(`WindowNode expects ${expectedLength} children, got ${newChildren.length}`);
+			quereusError(`WindowNode expects ${expectedLength} children, got ${newChildren.length}`, StatusCode.INTERNAL);
 		}
 
 		// First child is the relational *source*.

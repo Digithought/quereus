@@ -7,6 +7,8 @@ import { Cached } from '../../util/cached.js';
 import { formatScalarType } from '../../util/plan-formatter.js';
 import { resolveWindowFunction } from '../../schema/window-function.js';
 import { REAL_TYPE } from '../../types/builtin-types.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 /**
  * Represents a window function call in the query plan.
@@ -52,7 +54,7 @@ export class WindowFunctionCallNode extends PlanNode implements ZeroAryScalarNod
 
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
 		if (newChildren.length !== 0) {
-			throw new Error(`WindowFunctionCallNode expects 0 children, got ${newChildren.length}`);
+			quereusError(`WindowFunctionCallNode expects 0 children, got ${newChildren.length}`, StatusCode.INTERNAL);
 		}
 		return this; // No children, so no change
 	}

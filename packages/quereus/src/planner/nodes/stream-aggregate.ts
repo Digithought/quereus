@@ -32,12 +32,10 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
 
     super(scope, estimatedCostOverride ?? (source.getTotalCost() + streamingCost));
 
-
-
     this.attributesCache = new Cached(() => this.buildAttributes());
   }
 
-          private buildAttributes(): Attribute[] {
+  private buildAttributes(): Attribute[] {
     // If we have preserved attribute IDs, use them directly
     // The optimizer rule now passes both aggregate AND source attributes
     if (this.preserveAttributeIds) {

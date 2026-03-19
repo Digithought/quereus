@@ -7,6 +7,8 @@ import { isAggregateFunctionSchema } from '../../schema/function.js';
 import type * as AST from '../../parser/ast.js';
 import { formatExpressionList, formatScalarType } from '../../util/plan-formatter.js';
 import { NULL_TYPE } from '../../types/builtin-types.js';
+import { quereusError } from '../../common/errors.js';
+import { StatusCode } from '../../common/types.js';
 
 /**
  * Represents an aggregate function call within a SQL query.
@@ -69,13 +71,13 @@ export class AggregateFunctionCallNode extends PlanNode implements ScalarPlanNod
 	withChildren(newChildren: readonly PlanNode[]): PlanNode {
 		const expectedLength = this.args.length + (this.filter ? 1 : 0) + (this.orderBy?.length || 0);
 		if (newChildren.length !== expectedLength) {
-			throw new Error(`AggregateFunctionCallNode expects ${expectedLength} children, got ${newChildren.length}`);
+			quereusError(`AggregateFunctionCallNode expects ${expectedLength} children, got ${newChildren.length}`, StatusCode.INTERNAL);
 		}
 
 		// Type check
 		for (const child of newChildren) {
 			if (!('expression' in child)) {
-				throw new Error('AggregateFunctionCallNode: all children must be ScalarPlanNodes');
+				quereusError('AggregateFunctionCallNode: all children must be ScalarPlanNodes', StatusCode.INTERNAL);
 			}
 		}
 
