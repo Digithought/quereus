@@ -569,26 +569,26 @@ export class Statement {
 				continue;
 			}
 
-		// Get the physical type of the declared logical type
-		const expectedPhysicalType = expectedType.logicalType.physicalType;
+			// Get the physical type of the declared logical type
+			const expectedPhysicalType = expectedType.logicalType.physicalType;
 
-		// Get the physical type directly from the JavaScript value
-		const actualPhysicalType = getPhysicalType(value);
+			// Get the physical type directly from the JavaScript value
+			const actualPhysicalType = getPhysicalType(value);
 
-		// Check if physical types are compatible
-		// INTEGER is compatible with REAL (any integer is a valid real number)
-		const isCompatible =
-			actualPhysicalType === expectedPhysicalType ||
-			(expectedPhysicalType === PhysicalType.REAL && actualPhysicalType === PhysicalType.INTEGER);
+			// Check if physical types are compatible
+			// INTEGER is compatible with REAL (any integer is a valid real number)
+			const isCompatible =
+				actualPhysicalType === expectedPhysicalType ||
+				(expectedPhysicalType === PhysicalType.REAL && actualPhysicalType === PhysicalType.INTEGER);
 
-		if (!isCompatible) {
-			throw new QuereusError(
-				`Parameter type mismatch for ${typeof key === 'number' ? `?${key}` : `:${key}`}: ` +
-				`expected ${expectedType.logicalType.name} (physical: ${physicalTypeName(expectedPhysicalType)}), ` +
-				`got value with physical type ${physicalTypeName(actualPhysicalType)}`,
-				StatusCode.MISMATCH
-			);
-		}
+			if (!isCompatible) {
+				throw new QuereusError(
+					`Parameter type mismatch for ${typeof key === 'number' ? `?${key}` : `:${key}`}: ` +
+					`expected ${expectedType.logicalType.name} (physical: ${physicalTypeName(expectedPhysicalType)}), ` +
+					`got value with physical type ${physicalTypeName(actualPhysicalType)}`,
+					StatusCode.MISMATCH
+				);
+			}
 		}
 	}
 

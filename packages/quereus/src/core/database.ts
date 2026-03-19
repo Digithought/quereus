@@ -331,13 +331,6 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		}
 	}
 
-	/**
-	 * Executes one or more SQL statements directly.
-	 * @param sql The SQL string(s) to execute.
-	 * @param params Optional parameters to bind.
-	 * @returns A Promise resolving when execution completes.
-	 * @throws QuereusError on failure.
-	 */
 	// ============================================================================
 	// Statement Execution - Core Infrastructure
 	// ============================================================================
