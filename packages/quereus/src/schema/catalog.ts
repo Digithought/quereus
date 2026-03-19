@@ -153,12 +153,13 @@ function generateIndexDDL(indexSchema: IndexSchema, tableSchema: TableSchema): s
  * Generates canonical DDL for a table from its schema
  */
 function generateTableDDL(tableSchema: TableSchema): string {
-	const parts: string[] = ['CREATE TABLE'];
+	const parts: string[] = ['CREATE'];
 
 	if (tableSchema.isTemporary) {
 		parts.push('TEMP');
 	}
 
+	parts.push('TABLE');
 	parts.push(`"${tableSchema.name}"`);
 
 	// Generate column definitions

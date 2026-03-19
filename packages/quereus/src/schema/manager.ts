@@ -267,6 +267,7 @@ export class SchemaManager {
 			schema.clearFunctions();
 			schema.clearTables();
 			schema.clearViews();
+			schema.clearAssertions();
 			this.schemas.delete(lowerName);
 			log(`Removed schema '%s'`, name);
 			return true;
@@ -488,6 +489,7 @@ export class SchemaManager {
 			schema.clearTables();
 			schema.clearFunctions();
 			schema.clearViews();
+			schema.clearAssertions();
 		});
 		log("Cleared all schemas.");
 	}

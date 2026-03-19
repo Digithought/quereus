@@ -214,9 +214,16 @@ export class Schema {
 	}
 
 	/**
-	 * Clears all functions, calling destructors if needed
+	 * Clears all functions
 	 */
 	clearFunctions(): void {
 		this.functions.clear();
+	}
+
+	/**
+	 * Clears all assertions
+	 */
+	clearAssertions(): void {
+		this.assertions.clear();
 	}
 }

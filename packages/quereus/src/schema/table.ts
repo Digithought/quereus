@@ -123,11 +123,11 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 				break;
 			case 'unique':
 				break;
-		case 'default':
-			schema.defaultValue = constraint.expr ?? null;
-			break;
-		case 'collate': {
-			schema.collation = constraint.collation ?? 'BINARY';
+			case 'default':
+				schema.defaultValue = constraint.expr ?? null;
+				break;
+			case 'collate': {
+				schema.collation = constraint.collation ?? 'BINARY';
 				if (constraint.collation && logicalType.supportedCollations &&
 					!logicalType.supportedCollations.includes(constraint.collation)) {
 					throw new QuereusError(
@@ -257,7 +257,6 @@ export function createBasicSchema(name: string, columns: { name: string, type: s
 		subqueryAST: undefined,
 		viewDefinition: undefined,
 		tableConstraints: [],
-		primaryKey: pkDef.map(def => columnSchemas[def.index].name),
 	});
 }
 
