@@ -137,8 +137,8 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 		return new FilterNode(this.scope, this.source, newPredicate);
 	}
 
-  // PredicateSourceCapable interface implementation
-  getPredicates(): readonly ScalarPlanNode[] {
-    return [this.predicate];
-  }
+	// PredicateSourceCapable interface implementation
+	getPredicates(): readonly ScalarPlanNode[] {
+		return [this.predicate];
+	}
 }

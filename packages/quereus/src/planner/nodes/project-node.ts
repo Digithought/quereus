@@ -141,9 +141,8 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 					// Always preserve the original attribute ID so that any reference
 					// to the underlying column (e.g., in ORDER BY) remains valid even
 					// after aliasing. The alias is purely a name change, not a new column.
-					const colRef = proj.node as ColumnReferenceNode;
 					return {
-						id: colRef.attributeId,
+						id: proj.node.attributeId,
 						name: outputType.columns[index].name,
 						type: proj.node.getType(),
 						sourceRelation: `${this.nodeType}:${this.id}`,

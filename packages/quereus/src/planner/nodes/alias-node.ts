@@ -10,7 +10,7 @@ import { Cached } from '../../util/cached.js';
  * SELECT * (e.g., SELECT E.*) to work correctly.
  */
 export class AliasNode extends PlanNode implements UnaryRelationalNode {
-	readonly nodeType = PlanNodeType.Alias;
+	override readonly nodeType = PlanNodeType.Alias;
 
 	private attributesCache: Cached<Attribute[]>;
 	private typeCache: Cached<RelationType>;

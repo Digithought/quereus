@@ -87,20 +87,20 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 		return 'virtual';
 	}
 
-  // ColumnBindingProvider implementation
-  getBindingRelationName(): string {
-    return `${this.tableSchema.schemaName}.${this.tableSchema.name}`;
-  }
+	// ColumnBindingProvider implementation
+	getBindingRelationName(): string {
+		return `${this.tableSchema.schemaName}.${this.tableSchema.name}`;
+	}
 
-  getBindingAttributes(): ReadonlyArray<{ id: number; name: string }> {
-    return this.getAttributes().map(a => ({ id: a.id, name: a.name }));
-  }
+	getBindingAttributes(): ReadonlyArray<{ id: number; name: string }> {
+		return this.getAttributes().map(a => ({ id: a.id, name: a.name }));
+	}
 
-  getColumnIndexForAttribute(attributeId: number): number | undefined {
-    const attrs = this.getAttributes();
-    const idx = attrs.findIndex(a => a.id === attributeId);
-    return idx >= 0 ? idx : undefined;
-  }
+	getColumnIndexForAttribute(attributeId: number): number | undefined {
+		const attrs = this.getAttributes();
+		const idx = attrs.findIndex(a => a.id === attributeId);
+		return idx >= 0 ? idx : undefined;
+	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
 		return {
