@@ -179,14 +179,15 @@ describe('Predicate analysis', () => {
 			expect(res.residualPredicate).to.exist;
 		});
 
-		it('treats OR with range predicates on same column as residual (Phase 2)', () => {
+		it('extracts OR with range predicates on same column as OR_RANGE', () => {
 			const c = colRef(401, 'status', 0);
 			// status > 10 OR status < -10
 			const pred = orNode(gtNode(c, lit(10)), ltNode(c, lit(-10)));
 			const res = extractConstraints(pred, [tableInfo]);
-			// Phase 2 will handle this; for now it's residual
-			expect(res.allConstraints).to.have.lengthOf(0);
-			expect(res.residualPredicate).to.exist;
+			// OR range extraction produces an OR_RANGE constraint with ranges
+			expect(res.allConstraints).to.have.lengthOf(1);
+			expect(res.allConstraints[0].op).to.equal('OR_RANGE');
+			expect(res.allConstraints[0].ranges).to.have.lengthOf(2);
 		});
 
 		it('handles OR combined with AND correctly', () => {

@@ -34,7 +34,7 @@ describe('Key propagation and estimatedRows reduction', () => {
 		// Verify uniqueKeys presence in plan properties
 		const rows: Array<Record<string, unknown>> = [];
 		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM t INNER JOIN u ON t.id = u.t_id')")) rows.push(r as Record<string, unknown>);
-		const props = String(rows[0].props as unknown as string);
+		const props = JSON.stringify(rows[0].props);
 		expect(props).to.match(/"uniqueKeys":/);
 	});
 
@@ -45,7 +45,7 @@ describe('Key propagation and estimatedRows reduction', () => {
 		await db.exec("INSERT INTO c VALUES (1,10),(1,99),(2,20)");
 		const rows: Array<Record<string, unknown>> = [];
 		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM c INNER JOIN p ON c.x = p.a AND c.y = p.b')")) rows.push(r as Record<string, unknown>);
-		const props = String(rows[0].props as unknown as string);
+		const props = JSON.stringify(rows[0].props);
 		// Expect uniqueKeys present (at least one side preserved)
 		expect(props).to.match(/"uniqueKeys":/);
 	});
@@ -56,7 +56,7 @@ describe('Key propagation and estimatedRows reduction', () => {
 		await db.exec("INSERT INTO d VALUES (1,1,1),(2,1,1),(3,2,2)");
 		const rows: Array<Record<string, unknown>> = [];
 		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT DISTINCT id, v FROM d')")) rows.push(r as Record<string, unknown>);
-		const props = String(rows[0].props as unknown as string);
+		const props = JSON.stringify(rows[0].props);
 		expect(props).to.match(/"uniqueKeys":\[\[/);
 	});
 
@@ -65,7 +65,7 @@ describe('Key propagation and estimatedRows reduction', () => {
 		await db.exec("INSERT INTO g VALUES (1,1),(1,2),(2,3)");
 		const rows: Array<Record<string, unknown>> = [];
 		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT id, COUNT(*) FROM g GROUP BY id')")) rows.push(r as Record<string, unknown>);
-		const props = String(rows[0].props as unknown as string);
+		const props = JSON.stringify(rows[0].props);
 		expect(props).to.match(/"uniqueKeys":\[\[/);
 	});
 
@@ -77,7 +77,7 @@ describe('Key propagation and estimatedRows reduction', () => {
 		// estimatedRows should be driven by left side (u2 rows = 3), not the heuristic product.
 		const rows: Array<Record<string, unknown>> = [];
 		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM u2 INNER JOIN t ON u2.t_id = t.id')")) rows.push(r as Record<string, unknown>);
-		const props = String(rows[0].props as unknown as string);
+		const props = JSON.stringify(rows[0].props);
 		// Should have estimatedRows set (not the default heuristic product)
 		expect(props).to.match(/"estimatedRows"/);
 		expect(props).to.match(/"uniqueKeys"/);
@@ -91,7 +91,7 @@ describe('Key propagation and estimatedRows reduction', () => {
 		await db.exec("INSERT INTO refs VALUES ('a@b.c'),('d@e.f')");
 		const rows: Array<Record<string, unknown>> = [];
 		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM refs INNER JOIN uc ON refs.r_email = uc.email')")) rows.push(r as Record<string, unknown>);
-		const props = String(rows[0].props as unknown as string);
+		const props = JSON.stringify(rows[0].props);
 		expect(props).to.match(/"uniqueKeys"/);
 	});
 
