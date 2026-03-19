@@ -52,14 +52,14 @@ export interface OptContext {
 
 /** Optimizer diagnostics structure */
 export interface OptimizerDiagnostics {
-  // QuickPick join enumeration
-  quickpick?: {
-    tours?: number;
-    bestCost?: number;
-  };
-  // Extensible for future diagnostics
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [key: string]: any;
+	// QuickPick join enumeration
+	quickpick?: {
+		tours?: number;
+		bestCost?: number;
+	};
+	// Extensible for future diagnostics
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	[key: string]: any;
 }
 
 /**
@@ -69,7 +69,7 @@ export class OptimizationContext implements OptContext {
 	readonly context = new Map<string, unknown>();
 	readonly visitedRules = new Map<string, Set<string>>();
 	readonly optimizedNodes = new Map<string, PlanNode>();
-  readonly diagnostics = {} as OptimizerDiagnostics;
+	readonly diagnostics = {} as OptimizerDiagnostics;
 
 	constructor(
 		public readonly optimizer: Optimizer,

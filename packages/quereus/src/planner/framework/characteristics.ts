@@ -300,7 +300,7 @@ export class CapabilityDetectors {
 
 	static isColumnBindingProvider(node: PlanNode): node is ColumnBindingProvider {
 		return 'getBindingRelationName' in node &&
-			typeof (node as any).getBindingRelationName === 'string' || typeof (node as any).getBindingRelationName === 'function';
+			(typeof (node as any).getBindingRelationName === 'string' || typeof (node as any).getBindingRelationName === 'function');
 	}
 
 	static canProject(node: PlanNode): node is ProjectionCapable {

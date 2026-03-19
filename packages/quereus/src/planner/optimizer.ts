@@ -38,8 +38,6 @@ import { ruleScalarCSE } from './rules/cache/rule-scalar-cse.js';
 // Phase 3 rules
 import { validatePhysicalTree } from './validation/plan-validator.js';
 import { Database } from '../core/database.js';
-import { performConstantFolding } from './analysis/const-pass.js';
-import { createRuntimeExpressionEvaluator, createRuntimeRelationalEvaluator } from './analysis/const-evaluator.js';
 
 const log = createLogger('optimizer');
 
@@ -311,29 +309,13 @@ export class Optimizer {
 		const context = createOptContext(this, this.stats, this.tuning, db);
 		tracePhaseStart('pre-physical-analysis');
 		try {
-			// Execute only structural pass(es) and constant folding
-			const folded = this.performConstantFolding(plan, context);
-			const structuralOnly = this.passManager.executeUpTo(folded, context, PassId.Structural);
+			// Execute constant folding + structural passes (PassManager runs constant folding as its first pass)
+			const structuralOnly = this.passManager.executeUpTo(plan, context, PassId.Structural);
 			this.lastDiagnostics = { ...context.diagnostics };
 			return structuralOnly;
 		} finally {
 			tracePhaseEnd('pre-physical-analysis');
 		}
-	}
-
-	/**
-	 * Perform single-pass constant folding over the entire plan tree
-	 */
-	private performConstantFolding(plan: PlanNode, context: OptContext): PlanNode {
-		// Create runtime evaluators
-		const scalarEvaluator = createRuntimeExpressionEvaluator(context.db);
-		const relationalEvaluator = createRuntimeRelationalEvaluator(context.db);
-
-		// Perform single-pass constant folding
-		const result = performConstantFolding(plan, scalarEvaluator, relationalEvaluator);
-
-		log('Constant folding completed');
-		return result;
 	}
 
 	optimizeNode(node: PlanNode, context: OptContext): PlanNode {
