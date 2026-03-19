@@ -7,7 +7,6 @@ import { ColumnReferenceNode } from '../nodes/reference.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import { AggregateFunctionCallNode as _AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 import { WindowFunctionCallNode } from '../nodes/window-function.js';
 import { type RelationalPlanNode } from '../nodes/plan-node.js';
 import type { Scope } from '../scopes/scope.js';

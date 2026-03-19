@@ -2,10 +2,7 @@ import type { RelationalPlanNode, ScalarPlanNode } from '../nodes/plan-node.js';
 import type { PlanningContext } from '../planning-context.js';
 import { WindowNode, type WindowSpec } from '../nodes/window-node.js';
 import { WindowFunctionCallNode } from '../nodes/window-function.js';
-import { SequencingNode as _SequencingNode } from '../nodes/sequencing-node.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
-import { RegisteredScope as _RegisteredScope } from '../scopes/registered.js';
-import { ColumnReferenceNode as _ColumnReferenceNode } from '../nodes/reference.js';
 import { ArrayIndexNode } from '../nodes/array-index-node.js';
 import { LiteralNode } from '../nodes/scalar.js';
 import { buildExpression } from './expression.js';
@@ -256,5 +253,3 @@ function compareWindowSpecs(originalWindow?: AST.WindowDefinition, funcWindow?: 
 		   originalOrder === funcOrder &&
 		   originalFrame === funcFrame;
 }
-
-

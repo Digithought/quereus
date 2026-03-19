@@ -41,16 +41,11 @@ import { CapabilityDetectors } from '../framework/characteristics.js';
 const logger = createLogger('planner:cte');
 
 /**
- * Creates an initial logical query plan for a SELECT statement.
+ * Creates a logical query plan for a SELECT statement.
  *
- * For this initial version, it only supports simple "SELECT ... FROM one_table" queries,
- * effectively returning a TableReferenceNode for that table.
- *
- * @param stmt The AST.SelectStmt to plan.
- * @param ctx The parent planning context for this SELECT statement.
- * @param parentCTEs A map of parent CTEs for compound statements.
- * @returns A BatchNode representing the plan for the SELECT statement.
- * @throws {QuereusError} If the FROM clause is missing, empty, or contains more than one source.
+ * Handles FROM clauses (tables, subqueries, joins, CTEs, views), WHERE, GROUP BY,
+ * aggregates, HAVING, window functions, projections, DISTINCT, ORDER BY, and LIMIT/OFFSET.
+ * Compound set operations (UNION/INTERSECT/EXCEPT) are delegated to buildCompoundSelect.
  */
 export function buildSelectStmt(
   ctx: PlanningContext,
@@ -156,7 +151,7 @@ export function buildSelectStmt(
 		}
 	}
 
-		// Handle window functions if present
+	// Handle window functions if present
 	if (hasWindowFunctions) {
 		// Check if ORDER BY references columns not in SELECT before applying window functions
 		let preWindowSort = false;
@@ -275,7 +270,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 	if (fromClause.type === 'table') {
 		const tableName = fromClause.table.name.toLowerCase();
 
-				// Check if this is a CTE reference
+		// Check if this is a CTE reference
 		if (cteNodes.has(tableName)) {
 			const cteNode = cteNodes.get(tableName)!;
 

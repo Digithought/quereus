@@ -12,7 +12,7 @@ import { buildFunctionCall } from './function-call.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { CapabilityDetectors } from '../framework/characteristics.js';
-import { Scope } from '../scopes/scope.js';
+import type { Scope } from '../scopes/scope.js';
 import { resolveFunctionSchema } from './schema-resolution.js';
 import { isAggregateFunctionSchema } from '../../schema/function.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
@@ -37,7 +37,7 @@ export function buildAggregatePhase(
 	groupByExpressions?: ScalarPlanNode[];
 	hasHavingOnlyAggregates?: boolean;
 } {
-		const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
+	const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
 
 	// Pre-collect aggregate functions from the HAVING clause that are not already
 	// present in the SELECT list. These need to be added to the AggregateNode so
@@ -195,7 +195,7 @@ function createAggregateOutputScope(
 			new ColumnReferenceNode(s, exp as AST.ColumnExpr, agg.expression.getType(), attr.id, columnIndex));
 	});
 
-			// Register source columns for HAVING clause access
+	// Register source columns for HAVING clause access
 	// Start after GROUP BY and aggregate columns
 	const sourceColumnStartIndex = groupByExpressions.length + aggregates.length;
 	for (let i = sourceColumnStartIndex; i < aggregateAttributes.length; i++) {
