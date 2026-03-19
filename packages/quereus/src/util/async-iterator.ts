@@ -54,7 +54,12 @@ export function wrapAsyncIterator<T>(
 				}
 				return result;
 			} catch (error) {
-				await runCleanup(false);
+				// Run cleanup but prefer the original iterator error
+				try {
+					await runCleanup(false);
+				} catch {
+					// Discard cleanup error; the iterator error is more relevant
+				}
 				throw error;
 			}
 		},

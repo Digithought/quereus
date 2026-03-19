@@ -24,7 +24,7 @@ function tryParseInt(str: string): bigint | number | null {
 
 	// Check if we consumed the entire string (meaning it's a pure integer)
 	const remainingStr = str.substring(numStr.length);
-	if (remainingStr && remainingStr !== '') {
+	if (remainingStr) {
 		// If there are remaining characters (like '.99'), this is not a pure integer
 		return null;
 	}

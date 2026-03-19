@@ -39,8 +39,8 @@ export function simpleLike(pattern: string, text: string): boolean {
  * @returns true if the text matches the pattern, false otherwise
  */
 export function simpleGlob(pattern: string, text: string): boolean {
-	// Escape regex special characters except * and ?
-	const escapedPattern = pattern.replace(/[.*+^${}()|[\]\\]/g, '\\$&');
+	// Escape regex special characters (including * and ? so we can convert them below)
+	const escapedPattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 	// Convert SQL GLOB wildcards to regex equivalents
 	const regexPattern = escapedPattern
 		.replace(/\\\*/g, '.*')
