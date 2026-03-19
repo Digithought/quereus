@@ -419,5 +419,3 @@ export const chooseFunc = createScalarFunction(
 		return args[index];
 	}
 );
-
-// Greatest-of function

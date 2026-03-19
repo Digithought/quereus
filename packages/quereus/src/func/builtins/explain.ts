@@ -383,7 +383,7 @@ export const stackTraceFunc = createIntegratedTableValuedFunction(
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If analysis fails, yield an error frame
-			yield [0, 0, 'error', 'stack_trace', JSON.stringify({ error: error.message })];
+			yield [0, 0, 'error', 'stack_trace', `Failed to analyze: ${error.message}`, null, 0];
 		}
 	}
 );
