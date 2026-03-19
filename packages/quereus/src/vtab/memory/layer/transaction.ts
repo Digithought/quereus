@@ -45,14 +45,6 @@ export class TransactionLayer implements Layer {
 	/** Pending changes for event emission. Null if tracking disabled. */
 	private pendingChanges: PendingChange[] | null = null;
 
-	// Cache for BTree funcs to avoid recalculation
-	private btreeFuncsCacheForKeyExtraction: Map<string | 'primary', {
-		primaryKeyExtractorFromRow: (row: Row) => BTreeKeyForPrimary;
-		indexKeyExtractorFromRow?: (row: Row) => BTreeKeyForIndex;
-		primaryKeyComparator: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number;
-		indexKeyComparator?: (a: BTreeKeyForIndex, b: BTreeKeyForIndex) => number;
-	}> = new Map();
-
 	constructor(parent: Layer) {
 		this.layerId = transactionLayerCounter++;
 		this.parentLayer = parent;

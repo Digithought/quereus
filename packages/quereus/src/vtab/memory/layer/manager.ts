@@ -957,8 +957,8 @@ export class MemoryTableManager {
 				if (connection.pendingTransactionLayer) connection.rollback();
 			}
 			this.connections.clear();
-			this._currentCommittedLayer = this.baseLayer;
 			this.baseLayer = new BaseLayer(this.tableSchema);
+			this._currentCommittedLayer = this.baseLayer;
 			logger.operation('Destroy', this._tableName, 'Manager destroyed and data cleared');
 		} finally {
 			release();

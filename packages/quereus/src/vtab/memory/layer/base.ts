@@ -3,7 +3,6 @@ import type { TableSchema } from '../../../schema/table.js';
 import type { BTreeKeyForPrimary, BTreeKeyForIndex, MemoryIndexEntry } from '../types.js';
 import type { Layer } from './interface.js';
 import { MemoryIndex } from '../index.js';
-import { safeJsonStringify } from '../../../util/serialization.js';
 import type { Row, SqlValue } from '../../../common/types.js';
 import { type ColumnSchema } from '../../../schema/column.js';
 import type { IndexSchema } from '../../../schema/table.js';
@@ -134,43 +133,6 @@ export class BaseLayer implements Layer {
 			primaryKeyExtractorFromRow: this.primaryKeyFunctions.extractFromRow,
 			primaryKeyComparator: this.primaryKeyFunctions.compare
 		};
-	}
-
-	applyChange(
-		primaryKey: BTreeKeyForPrimary,
-		modification: Row,
-		secondaryIndexChanges: Map<string, Array<{op: 'ADD' | 'DELETE', indexKey: BTreeKeyForIndex}>>
-	): void {
-		this.applySecondaryIndexChanges(primaryKey, secondaryIndexChanges);
-		this.applyPrimaryChange(primaryKey, modification);
-	}
-
-	private applySecondaryIndexChanges(
-		primaryKey: BTreeKeyForPrimary,
-		secondaryIndexChanges: Map<string, Array<{op: 'ADD' | 'DELETE', indexKey: BTreeKeyForIndex}>>
-	): void {
-		secondaryIndexChanges.forEach((changes, indexName) => {
-			const memoryIndex = this.secondaryIndexes.get(indexName);
-			if (!memoryIndex) {
-				logger.warn('Apply Change', this.tableSchema.name, 'Secondary index not found', {
-					indexName,
-					primaryKey: safeJsonStringify(primaryKey)
-				});
-				return;
-			}
-
-			changes.forEach(change => {
-				if (change.op === 'DELETE') {
-					memoryIndex.removeEntry(change.indexKey, primaryKey);
-				} else {
-					memoryIndex.addEntry(change.indexKey, primaryKey);
-				}
-			});
-		});
-	}
-
-	private applyPrimaryChange(primaryKey: BTreeKeyForPrimary, modification: Row): void {
-		this.primaryTree.insert(modification);
 	}
 
 	has = (key: BTreeKeyForPrimary): boolean => {
