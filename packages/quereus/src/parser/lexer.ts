@@ -355,8 +355,8 @@ export class Lexer {
 			// Single-character tokens
 			case '(': this.addToken(TokenType.LPAREN); break;
 			case ')': this.addToken(TokenType.RPAREN); break;
-				case '{': this.addToken(TokenType.LBRACE); break;
-				case '}': this.addToken(TokenType.RBRACE); break;
+			case '{': this.addToken(TokenType.LBRACE); break;
+			case '}': this.addToken(TokenType.RBRACE); break;
 			case ',': this.addToken(TokenType.COMMA); break;
 			case '.': this.addToken(TokenType.DOT); break;
 			case ';': this.addToken(TokenType.SEMICOLON); break;

@@ -39,8 +39,16 @@ export function parseAll(sql: string): Statement[] {
  * @throws ParseError if the SQL is invalid or not a SELECT statement
  */
 export function parseSelect(sql: string): SelectStmt {
-	const parser = new Parser();
-	return parser.initialize(sql).selectStatement();
+	const stmt = parse(sql);
+	if (stmt.type !== 'select') {
+		quereusError(
+			`Expected SELECT statement, but got ${stmt.type}`,
+			StatusCode.ERROR,
+			undefined,
+			stmt
+		);
+	}
+	return stmt as SelectStmt;
 }
 
 /**
