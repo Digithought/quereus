@@ -144,22 +144,29 @@ export async function* buffered<T>(
 	// Start initial fill
 	fillPromise = fillBuffer();
 
-	while (true) {
-		// Wait for buffer to have items or source to be done
-		await fillPromise;
+	try {
+		while (true) {
+			// Wait for buffer to have items or source to be done
+			await fillPromise;
 
-		if (buffer.length === 0 && srcDone) {
-			break;
-		}
-
-		if (buffer.length > 0) {
-			const item = buffer.shift()!;
-			yield item;
-
-			// Start refilling buffer if below threshold
-			if (buffer.length < maxBuffer / 2 && !srcDone) {
-				fillPromise = fillBuffer();
+			if (buffer.length === 0 && srcDone) {
+				break;
 			}
+
+			if (buffer.length > 0) {
+				const item = buffer.shift()!;
+				yield item;
+
+				// Start refilling buffer if below threshold
+				if (buffer.length < maxBuffer / 2 && !srcDone) {
+					fillPromise = fillBuffer();
+				}
+			}
+		}
+	} finally {
+		// Clean up source iterator if consumer breaks early
+		if (!srcDone && srcIterator.return) {
+			await srcIterator.return(undefined);
 		}
 	}
 }
