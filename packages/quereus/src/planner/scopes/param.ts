@@ -86,10 +86,4 @@ export class ParameterScope extends BaseScope {
 		return this._parameters;
 	}
 
-	/**
-	 * Gets the next available anonymous parameter index (1-based) for assigning to new ' ? ' params.
-	 */
-	// getNextAnonymousIndex(): number { // This method might be misleading as index is auto-assigned.
-	// 	return this._nextAnonymousIndex;
-	// }
 }

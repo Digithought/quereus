@@ -106,9 +106,9 @@ export class NaiveStatsProvider implements StatsProvider {
 
 	indexSelectivity(table: TableSchema, indexName: string, predicate: ScalarPlanNode): number | undefined {
 		// Index selectivity is generally better than table scan
-		const baseSelecivity = this.selectivity(table, predicate) ?? this.defaultSelectivity;
-		const indexSelectivity = baseSelecivity * 0.8; // 20% improvement with index
-		log('Index %s selectivity: %f (base: %f)', indexName, indexSelectivity, baseSelecivity);
+		const baseSelectivity = this.selectivity(table, predicate) ?? this.defaultSelectivity;
+		const indexSelectivity = baseSelectivity * 0.8; // 20% improvement with index
+		log('Index %s selectivity: %f (base: %f)', indexName, indexSelectivity, baseSelectivity);
 		return indexSelectivity;
 	}
 
