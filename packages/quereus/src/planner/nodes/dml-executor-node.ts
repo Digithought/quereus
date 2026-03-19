@@ -89,7 +89,7 @@ export class DmlExecutorNode extends PlanNode implements RelationalPlanNode {
     // Create new instance
     return new DmlExecutorNode(
       this.scope,
-      newSource as RelationalPlanNode,
+      newSource,
       this.table,
       this.operation,
       this.onConflict,

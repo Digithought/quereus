@@ -4,6 +4,7 @@ import type { Scope } from '../scopes/scope.js';
 import type * as AST from '../../parser/ast.js';
 import { RelationType, type VoidType } from '../../common/datatype.js';
 import { TEXT_TYPE } from '../../types/builtin-types.js';
+import { Cached } from '../../util/cached.js';
 
 /**
  * DECLARE SCHEMA statement plan node
@@ -26,8 +27,11 @@ export class DeclareSchemaNode extends PlanNode implements VoidNode {
 		return [];
 	}
 
-	withChildren(_newChildren: readonly PlanNode[]): PlanNode {
-		return new DeclareSchemaNode(this.scope, this.statementAst);
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`DeclareSchemaNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this;
 	}
 
 	override toString(): string {
@@ -49,11 +53,14 @@ export class DeclareSchemaNode extends PlanNode implements VoidNode {
 export class DiffSchemaNode extends PlanNode implements RelationalPlanNode {
 	override readonly nodeType = PlanNodeType.DiffSchema;
 
+	private attributesCache: Cached<Attribute[]>;
+
 	constructor(
 		scope: Scope,
 		public readonly statementAst: AST.DiffSchemaStmt
 	) {
 		super(scope, 1);
+		this.attributesCache = new Cached(() => this.buildAttributes());
 	}
 
 	getType(): RelationType {
@@ -82,7 +89,7 @@ export class DiffSchemaNode extends PlanNode implements RelationalPlanNode {
 		return 10; // Estimated number of migration statements
 	}
 
-	getAttributes(): Attribute[] {
+	private buildAttributes(): Attribute[] {
 		return this.getType().columns.map((column) => ({
 			id: PlanNode.nextAttrId(),
 			name: column.name,
@@ -91,12 +98,19 @@ export class DiffSchemaNode extends PlanNode implements RelationalPlanNode {
 		}));
 	}
 
+	getAttributes(): Attribute[] {
+		return this.attributesCache.value;
+	}
+
 	getChildren(): PlanNode[] {
 		return [];
 	}
 
-	withChildren(_newChildren: readonly PlanNode[]): PlanNode {
-		return new DiffSchemaNode(this.scope, this.statementAst);
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`DiffSchemaNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this;
 	}
 
 	override toString(): string {
@@ -132,8 +146,11 @@ export class ApplySchemaNode extends PlanNode implements VoidNode {
 		return [];
 	}
 
-	withChildren(_newChildren: readonly PlanNode[]): PlanNode {
-		return new ApplySchemaNode(this.scope, this.statementAst);
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`ApplySchemaNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this;
 	}
 
 	override toString(): string {
@@ -155,11 +172,14 @@ export class ApplySchemaNode extends PlanNode implements VoidNode {
 export class ExplainSchemaNode extends PlanNode implements RelationalPlanNode {
 	override readonly nodeType = PlanNodeType.ExplainSchema;
 
+	private attributesCache: Cached<Attribute[]>;
+
 	constructor(
 		scope: Scope,
 		public readonly statementAst: AST.ExplainSchemaStmt
 	) {
 		super(scope, 1);
+		this.attributesCache = new Cached(() => this.buildAttributes());
 	}
 
 	getType(): RelationType {
@@ -188,7 +208,7 @@ export class ExplainSchemaNode extends PlanNode implements RelationalPlanNode {
 		return 1;
 	}
 
-	getAttributes(): Attribute[] {
+	private buildAttributes(): Attribute[] {
 		return this.getType().columns.map((column) => ({
 			id: PlanNode.nextAttrId(),
 			name: column.name,
@@ -197,12 +217,19 @@ export class ExplainSchemaNode extends PlanNode implements RelationalPlanNode {
 		}));
 	}
 
+	getAttributes(): Attribute[] {
+		return this.attributesCache.value;
+	}
+
 	getChildren(): PlanNode[] {
 		return [];
 	}
 
-	withChildren(_newChildren: readonly PlanNode[]): PlanNode {
-		return new ExplainSchemaNode(this.scope, this.statementAst);
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) {
+			throw new Error(`ExplainSchemaNode expects 0 children, got ${newChildren.length}`);
+		}
+		return this;
 	}
 
 	override toString(): string {
