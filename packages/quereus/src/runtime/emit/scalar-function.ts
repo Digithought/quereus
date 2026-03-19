@@ -39,7 +39,7 @@ export function emitScalarFunctionCallDefault(plan: ScalarFunctionCallNode, ctx:
 	const operandExprs = plan.operands.map(operand => emitPlanNode(operand, ctx));
 
 	return createValidatedInstruction(
-		[...operandExprs],
+		operandExprs,
 		run as InstructionRun,
 		ctx,
 		`${plan.expression.name}(${plan.operands.length})`

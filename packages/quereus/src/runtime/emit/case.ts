@@ -8,10 +8,10 @@ import { isTruthy } from '../../util/comparison.js';
 
 export function emitCaseExpr(plan: CaseExprNode, ctx: EmissionContext): Instruction {
 	// Simple CASE: CASE base_expr WHEN value1 THEN result1 WHEN value2 THEN result2 ... END
-	async function runSimpleCase(
+	function runSimpleCase(
 		runtimeCtx: RuntimeContext,
 		...args: SqlValue[]
-	): Promise<SqlValue> {
+	): SqlValue {
 		let argIndex = 0;
 		const baseValue = args[argIndex++];
 
@@ -37,10 +37,10 @@ export function emitCaseExpr(plan: CaseExprNode, ctx: EmissionContext): Instruct
 	}
 
 	// Searched CASE: CASE WHEN condition1 THEN result1 WHEN condition2 THEN result2 ... END
-	async function runSearchedCase(
+	function runSearchedCase(
 		runtimeCtx: RuntimeContext,
 		...args: SqlValue[]
-	): Promise<SqlValue> {
+	): SqlValue {
 		let argIndex = 0;
 
 		// Evaluate WHEN/THEN clauses
