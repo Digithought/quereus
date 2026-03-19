@@ -262,8 +262,8 @@ export const TIMESPAN_TYPE: LogicalType = {
 
 			return totalA < totalB ? -1 : totalA > totalB ? 1 : 0;
 		} catch {
-			// If parsing fails, fall back to string comparison
-			return (a as string).localeCompare(b as string);
+			// If parsing fails, fall back to binary string comparison
+			return BINARY_COLLATION(a as string, b as string);
 		}
 	},
 

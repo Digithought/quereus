@@ -54,10 +54,8 @@ export const INTEGER_TYPE: LogicalType = {
 		const nullCmp = compareNulls(a, b);
 		if (nullCmp !== undefined) return nullCmp;
 
-		const numA = typeof a === 'bigint' ? Number(a) : a as number;
-		const numB = typeof b === 'bigint' ? Number(b) : b as number;
-
-		return numA < numB ? -1 : numA > numB ? 1 : 0;
+		// Use direct < / > which JS supports across number and bigint without precision loss
+		return (a as number | bigint) < (b as number | bigint) ? -1 : (a as number | bigint) > (b as number | bigint) ? 1 : 0;
 	},
 };
 

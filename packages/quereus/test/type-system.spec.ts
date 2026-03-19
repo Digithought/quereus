@@ -330,10 +330,23 @@ describe('Type System', () => {
 		});
 
 		describe('JSON_TYPE', () => {
-			it('should validate JSON strings', () => {
+			it('should validate native JSON values', () => {
+				// validate checks native JS values — strings are valid JSON scalars
 				expect(JSON_TYPE.validate!('{"a":1}')).to.be.true;
-				expect(JSON_TYPE.validate!('not json')).to.be.false;
+				expect(JSON_TYPE.validate!('any string')).to.be.true; // strings are JSON scalars
 				expect(JSON_TYPE.validate!(null)).to.be.true;
+				expect(JSON_TYPE.validate!(42)).to.be.true;
+				expect(JSON_TYPE.validate!(true)).to.be.true;
+				expect(JSON_TYPE.validate!({ a: 1 })).to.be.true;
+				expect(JSON_TYPE.validate!([1, 2])).to.be.true;
+				expect(JSON_TYPE.validate!(new Uint8Array([1]))).to.be.false; // blobs are not JSON
+			});
+
+			it('should reject invalid JSON syntax in parse', () => {
+				// parse is the JSON syntax gatekeeper — rejects non-JSON strings
+				expect(() => JSON_TYPE.parse!('not json')).to.throw(TypeError);
+				expect(JSON_TYPE.parse!('{"a":1}')).to.deep.equal({ a: 1 });
+				expect(JSON_TYPE.parse!(null)).to.equal(null);
 			});
 		});
 	});
