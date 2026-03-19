@@ -32,10 +32,13 @@ export class UnaryOpNode extends PlanNode implements UnaryScalarNode {
 
 		switch (this.expression.operator) {
 			case 'NOT':
+				logicalType = BOOLEAN_TYPE;
+				// NOT preserves nullability: NOT NULL → NULL
+				break;
 			case 'IS NULL':
 			case 'IS NOT NULL':
 				logicalType = BOOLEAN_TYPE;
-				nullable = false; // Boolean results are never null
+				nullable = false; // IS NULL/IS NOT NULL never return null
 				break;
 			case '-':
 			case '+':
@@ -128,8 +131,15 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 		const rightType = this.right.getType();
 
 		let logicalType = leftType.logicalType;
+		let nullable = leftType.nullable || rightType.nullable;
 
 		switch (this.expression.operator) {
+			case 'IS':
+			case 'IS NOT':
+				// IS/IS NOT are null-safe comparisons, never return NULL
+				logicalType = BOOLEAN_TYPE;
+				nullable = false;
+				break;
 			case 'OR':
 			case 'AND':
 			case '=':
@@ -138,8 +148,6 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 			case '<=':
 			case '>':
 			case '>=':
-			case 'IS':
-			case 'IS NOT':
 			case 'IN':
 				// Comparison and logical operators return boolean
 				logicalType = BOOLEAN_TYPE;
@@ -177,7 +185,7 @@ export class BinaryOpNode extends PlanNode implements BinaryScalarNode {
 		return {
 			typeClass: 'scalar',
 			logicalType,
-			nullable: leftType.nullable || rightType.nullable,
+			nullable,
 			isReadOnly: leftType.isReadOnly || rightType.isReadOnly,
 			collationName,
 		};
@@ -709,11 +717,12 @@ export class BetweenNode extends PlanNode implements TernaryScalarNode {
 	}
 
 	getType(): ScalarType {
-		// BETWEEN always returns BOOLEAN
+		// BETWEEN is equivalent to expr >= lower AND expr <= upper
+		// If any operand is nullable, the result can be NULL
 		return {
 			typeClass: 'scalar',
 			logicalType: BOOLEAN_TYPE,
-			nullable: false,
+			nullable: this.expr.getType().nullable || this.lower.getType().nullable || this.upper.getType().nullable,
 			isReadOnly: true,
 		};
 	}

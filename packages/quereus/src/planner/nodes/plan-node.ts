@@ -9,7 +9,7 @@ import { quereusError } from '../../common/errors.js';
  * Physical properties that execution nodes can provide or require
  */
 export interface PhysicalProperties {
-  /** Ordering of rows. Each element is a column index, negative for DESC */
+  /** Ordering of rows. Each element specifies a column index and sort direction */
   ordering?: { column: number; desc: boolean }[];
 
   /** Estimated number of rows this node will produce */
@@ -471,12 +471,7 @@ export abstract class TernaryScalarBase extends PlanNode implements TernaryScala
   abstract getType(): ScalarType;
   abstract getChildren(): readonly [ScalarPlanNode, ScalarPlanNode, ScalarPlanNode];
 
-  withChildren(newChildren: readonly PlanNode[]): PlanNode {
-    if (newChildren.length !== 3) {
-      quereusError(`${this.nodeType} expects 3 children, got ${newChildren.length}`);
-    }
-    return this;
-  }
+  abstract withChildren(newChildren: readonly PlanNode[]): PlanNode;
 }
 
 /**
