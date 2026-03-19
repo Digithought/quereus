@@ -400,6 +400,11 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		}
 
 		// Check for secondary index usage
+		// Note: query() does not yet implement secondary index scans — it falls
+		// back to a full table scan + matchesFilters.  We still advertise better
+		// cost estimates when a usable index exists (so the planner prefers this
+		// table access) but we must NOT mark filters as handled, otherwise the
+		// engine won't supply them to matchesFilters and rows pass unfiltered.
 		const indexes = tableInfo.indexes || [];
 		for (const index of indexes) {
 			const indexColumns = index.columns.map(c => c.index);
@@ -410,13 +415,10 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 			);
 
 			if (indexFilters.length > 0) {
-				const handledFilters = request.filters.map(f =>
-					indexFilters.some(idf => idf.columnIndex === f.columnIndex && idf.op === f.op)
-				);
 				const matchedRows = Math.max(1, Math.floor(estimatedRows * 0.1));
 				return AccessPlanBuilder
 					.eqMatch(matchedRows, 0.3)
-					.setHandledFilters(handledFilters)
+					.setHandledFilters(new Array(request.filters.length).fill(false))
 					.setExplanation(`Store index scan on ${index.name}`)
 					.build();
 			}

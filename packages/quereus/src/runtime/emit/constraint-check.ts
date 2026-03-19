@@ -103,15 +103,17 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 			evaluatorFunctions = constraintEvalFunctions;
 		}
 
+		// Pre-compute the combined descriptor (constant across rows)
+		const combinedDescriptor = contextDescriptor && contextRow
+			? composeCombinedDescriptor(contextDescriptor, flatRowDescriptor)
+			: flatRowDescriptor;
+
 		try {
 			for await (const inputRow of inputRows) {
 				const flatRow = inputRow;
 
 				// If we have mutation context, compose it with the flat row for constraint evaluation
 				const combinedRow = contextRow ? [...contextRow, ...flatRow] : flatRow;
-				const combinedDescriptor = contextDescriptor && contextRow
-					? composeCombinedDescriptor(contextDescriptor, flatRowDescriptor)
-					: flatRowDescriptor;
 
 				const result = await withAsyncRowContext(rctx, combinedDescriptor, () => combinedRow, async () => {
 					// Check all constraints that apply to this operation
@@ -233,26 +235,19 @@ async function checkCheckConstraints(
 			continue;
 		}
 
-		try {
-			const result = await evaluator(rctx) as SqlValue;
+		const result = await evaluator(rctx) as SqlValue;
 
-			// CHECK constraint passes if result is truthy or NULL
-			// It fails only if result is false or 0 (SQLite-style numeric boolean)
-			if (result === false || result === 0) {
-				// Include constraint expression in error message for better debugging
-				const exprHint = metadata.constraintExpr.length <= 60
-					? ` (${metadata.constraintExpr})`
-					: '';
-				throw new QuereusError(
-					`CHECK constraint failed: ${metadata.constraintName}${exprHint}`,
-					StatusCode.CONSTRAINT
-				);
-			}
-		} catch (error) {
-			if (error instanceof QuereusError && error.message.includes('CHECK constraint failed')) {
-				throw error;
-			}
-			throw error;
+		// CHECK constraint passes if result is truthy or NULL
+		// It fails only if result is false or 0 (SQLite-style numeric boolean)
+		if (result === false || result === 0) {
+			// Include constraint expression in error message for better debugging
+			const exprHint = metadata.constraintExpr.length <= 60
+				? ` (${metadata.constraintExpr})`
+				: '';
+			throw new QuereusError(
+				`CHECK constraint failed: ${metadata.constraintName}${exprHint}`,
+				StatusCode.CONSTRAINT
+			);
 		}
 	}
 }

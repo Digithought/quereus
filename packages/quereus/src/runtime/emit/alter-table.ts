@@ -16,6 +16,9 @@ export function emitAlterTable(plan: AlterTableNode, _ctx: EmissionContext): Ins
 	const action = plan.action;
 
 	async function run(rctx: RuntimeContext): Promise<SqlValue> {
+		// Ensure we're in a transaction before DDL (lazy/JIT transaction start)
+		await rctx.db._ensureTransaction();
+
 		const schemaManager = rctx.db.schemaManager;
 		const schema = schemaManager.getSchemaOrFail(tableSchema.schemaName);
 

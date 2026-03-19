@@ -7,7 +7,7 @@ import type { EmissionContext } from '../emission-context.js';
 export function emitDelete(plan: DeleteNode, ctx: EmissionContext): Instruction {
 	// DELETE node now only handles data transformations and passes flat rows through.
 	// The actual database delete operations are handled by DmlExecutorNode.
-	async function* run(ctx: RuntimeContext, flatRowsIterable: AsyncIterable<Row>): AsyncIterable<Row> {
+	async function* run(_rctx: RuntimeContext, flatRowsIterable: AsyncIterable<Row>): AsyncIterable<Row> {
 		// Simply yield all flat rows from the source (which has already applied filtering, etc.)
 		for await (const flatRow of flatRowsIterable) {
 			yield flatRow;

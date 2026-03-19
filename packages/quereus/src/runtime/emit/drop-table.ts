@@ -26,5 +26,5 @@ export function emitDropTable(plan: DropTableNode, ctx: EmissionContext): Instru
 		return null;
 	}
 
-  return { params: [], run: run as InstructionRun };
+	return { params: [], run: run as InstructionRun, note: `dropTable(${targetSchemaName}.${objectName})` };
 }

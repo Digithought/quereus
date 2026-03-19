@@ -14,5 +14,5 @@ export function emitCreateIndex(plan: CreateIndexNode, _ctx: EmissionContext): I
 		return null; // Explicitly return null for successful void operations
 	}
 
-	return { params: [], run: run as InstructionRun };
+	return { params: [], run: run as InstructionRun, note: `createIndex(${plan.statementAst.index.name})` };
 }

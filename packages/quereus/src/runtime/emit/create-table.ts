@@ -14,5 +14,5 @@ export function emitCreateTable(plan: CreateTableNode, _ctx: EmissionContext): I
 		return null; // Explicitly return null for successful void operations
 	}
 
-	return { params: [], run: run as InstructionRun };
+	return { params: [], run: run as InstructionRun, note: `createTable(${plan.statementAst.table.name})` };
 }
