@@ -3,9 +3,8 @@
  * Provides better type safety, clearer intent, and extensibility for future optimizations
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { quereusError } from '../common/errors.js';
-import { StatusCode, type SqlValue } from '../common/types.js';
+import { StatusCode, type SqlValue, type Row } from '../common/types.js';
 import type { LogicalType } from '../types/logical-type.js';
 
 /**
@@ -78,7 +77,7 @@ export interface BestAccessPlanResult {
 	/** Which filters were handled by the virtual table (parallel to filters array) */
 	handledFilters: readonly boolean[];
 	/** Optional JavaScript filter function for residual predicates */
-	residualFilter?: (row: any) => boolean;
+	residualFilter?: (row: Row) => boolean;
 	/** Estimated cost in arbitrary virtual CPU units */
 	cost: number;
 	/** Estimated number of rows this plan will return */
@@ -201,7 +200,7 @@ export class AccessPlanBuilder {
 	/**
 	 * Set a residual filter function
 	 */
-	setResidualFilter(filter: (row: any) => boolean): this {
+	setResidualFilter(filter: (row: Row) => boolean): this {
 		this.result.residualFilter = filter;
 		return this;
 	}

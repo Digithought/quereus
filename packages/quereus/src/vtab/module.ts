@@ -110,8 +110,6 @@ export interface VirtualTableModule<
 		request: BestAccessPlanRequest
 	): BestAccessPlanResult;
 
-
-
 	/**
 	 * Destroys the underlying persistent representation of the virtual table.
 	 * Called by DROP TABLE.
@@ -190,6 +188,6 @@ export type SchemaChangeInfo =
 /**
  * Type alias for the common usage pattern where specific table and config types are not known.
  * Use this for storage scenarios like the SchemaManager where modules of different types are stored together.
- * eslint-disable-next-line @typescript-eslint/no-explicit-any
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyVirtualTableModule = VirtualTableModule<any, any>;
