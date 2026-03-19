@@ -204,6 +204,15 @@ function createClient(opts?: {
   return { client, syncManager, syncEvents, statusChanges, syncEventsLog, errors };
 }
 
+/** Send a handshake_ack so connect() resolves. Must be called after simulateOpen(). */
+function simulateHandshakeAck(ws: MockWebSocket): void {
+  ws.simulateMessage({
+    type: 'handshake_ack',
+    serverSiteId: siteIdToBase64(generateSiteId()),
+    connectionId: 'conn-123',
+  });
+}
+
 /** Connect a client and simulate the WebSocket opening + handshake ack. */
 async function connectAndHandshake(
   client: SyncClient,
@@ -212,15 +221,16 @@ async function connectAndHandshake(
   const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
   const ws = MockWebSocket.lastInstance!;
   ws.simulateOpen();
-  await connectPromise;
 
-  // Simulate handshake ack
+  // Simulate handshake ack BEFORE awaiting — connect() waits for handshake_ack
   const sId = serverSiteId ?? generateSiteId();
   ws.simulateMessage({
     type: 'handshake_ack',
     serverSiteId: siteIdToBase64(sId),
     connectionId: 'conn-123',
   });
+
+  await connectPromise;
 
   // Let async handlers settle
   await new Promise(r => setTimeout(r, 10));
@@ -272,8 +282,9 @@ describe('SyncClient', () => {
       expect(MockWebSocket.lastInstance).to.not.be.null;
       expect(statusChanges.some(s => s.status === 'connecting')).to.be.true;
 
-      // Simulate open to resolve promise
+      // Simulate open + handshake_ack to resolve promise
       MockWebSocket.lastInstance!.simulateOpen();
+      simulateHandshakeAck(MockWebSocket.lastInstance!);
       await connectPromise;
     });
 
@@ -281,6 +292,7 @@ describe('SyncClient', () => {
       const { client, statusChanges } = createClient();
       const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
       MockWebSocket.lastInstance!.simulateOpen();
+      simulateHandshakeAck(MockWebSocket.lastInstance!);
       await connectPromise;
 
       expect(statusChanges.some(s => s.status === 'syncing')).to.be.true;
@@ -291,6 +303,7 @@ describe('SyncClient', () => {
       const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
       const ws = MockWebSocket.lastInstance!;
       ws.simulateOpen();
+      simulateHandshakeAck(ws);
       await connectPromise;
 
       const messages = ws.getSentMessages();
@@ -307,6 +320,7 @@ describe('SyncClient', () => {
       const ws = MockWebSocket.lastInstance!;
       expect(ws.url).to.include('token=my-token');
       ws.simulateOpen();
+      simulateHandshakeAck(ws);
       await connectPromise;
     });
 
@@ -331,6 +345,7 @@ describe('SyncClient', () => {
       const p1 = client.connect('ws://localhost:8080/sync', 'db1');
       const ws1 = MockWebSocket.lastInstance!;
       ws1.simulateOpen();
+      simulateHandshakeAck(ws1);
       await p1;
 
       // Second connection
@@ -338,6 +353,7 @@ describe('SyncClient', () => {
       expect(ws1.readyState).to.equal(MockWebSocket.CLOSED);
       const ws2 = MockWebSocket.lastInstance!;
       ws2.simulateOpen();
+      simulateHandshakeAck(ws2);
       await p2;
     });
   });
@@ -615,6 +631,7 @@ describe('SyncClient', () => {
       const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
       const ws = MockWebSocket.lastInstance!;
       ws.simulateOpen();
+      simulateHandshakeAck(ws);
       await connectPromise;
 
       const instanceCount = MockWebSocket.instances.length;
@@ -630,6 +647,7 @@ describe('SyncClient', () => {
       const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
       const ws = MockWebSocket.lastInstance!;
       ws.simulateOpen();
+      simulateHandshakeAck(ws);
       await connectPromise;
 
       await client.disconnect();
@@ -644,6 +662,7 @@ describe('SyncClient', () => {
       const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
       const ws = MockWebSocket.lastInstance!;
       ws.simulateOpen();
+      simulateHandshakeAck(ws);
       await connectPromise;
 
       const instanceCount = MockWebSocket.instances.length;
@@ -666,6 +685,7 @@ describe('SyncClient', () => {
       const { client, syncEventsLog } = createClient();
       const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
       MockWebSocket.lastInstance!.simulateOpen();
+      simulateHandshakeAck(MockWebSocket.lastInstance!);
       await connectPromise;
 
       const stateChanges = syncEventsLog.filter(e => e.type === 'state-change');
@@ -678,6 +698,7 @@ describe('SyncClient', () => {
       const before = Date.now();
       const connectPromise = client.connect('ws://localhost:8080/sync', 'test-db');
       MockWebSocket.lastInstance!.simulateOpen();
+      simulateHandshakeAck(MockWebSocket.lastInstance!);
       await connectPromise;
 
       for (const event of syncEventsLog) {
