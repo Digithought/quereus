@@ -84,7 +84,7 @@ export function buildDeleteStmt(
   }
 
   // Create OLD/NEW attributes for DELETE (OLD = actual values being deleted, NEW = all NULL)
-  const oldAttributes = tableReference.tableSchema.columns.map((col: any) => ({
+  const oldAttributes = tableReference.tableSchema.columns.map((col) => ({
     id: PlanNode.nextAttrId(),
     name: col.name,
     type: {
@@ -96,7 +96,7 @@ export function buildDeleteStmt(
     sourceRelation: `OLD.${tableReference.tableSchema.name}`
   }));
 
-  const newAttributes = tableReference.tableSchema.columns.map((col: any) => ({
+  const newAttributes = tableReference.tableSchema.columns.map((col) => ({
     id: PlanNode.nextAttrId(),
     name: col.name,
     type: {
@@ -183,7 +183,7 @@ export function buildDeleteStmt(
     const returningScope = new RegisteredScope(deleteCtx.scope);
 
     // Register OLD.* symbols (actual values being deleted)
-    oldAttributes.forEach((attr: any, columnIndex: any) => {
+    oldAttributes.forEach((attr, columnIndex) => {
       const tableColumn = tableReference.tableSchema.columns[columnIndex];
       returningScope.registerSymbol(`old.${tableColumn.name.toLowerCase()}`, (exp, s) =>
         new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, columnIndex)
@@ -191,7 +191,7 @@ export function buildDeleteStmt(
     });
 
     // Register NEW.* symbols (always NULL for DELETE) and unqualified column names (default to OLD for DELETE)
-    newAttributes.forEach((attr: any, columnIndex: any) => {
+    newAttributes.forEach((attr, columnIndex) => {
       const tableColumn = tableReference.tableSchema.columns[columnIndex];
 
       // NEW.column (always NULL for DELETE)

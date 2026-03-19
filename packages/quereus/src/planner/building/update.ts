@@ -180,14 +180,10 @@ export function buildUpdateStmt(
     // For RETURNING, create coordinated attribute IDs like we do for INSERT
     const returningScope = new RegisteredScope(updateCtx.scope);
 
-    // Create consistent attribute IDs for all table columns (both NEW and OLD)
+    // Create attribute ID index for NEW columns (used for RETURNING projection)
     const newColumnAttributeIds: number[] = [];
-    const oldColumnAttributeIds: number[] = [];
     newAttributes.forEach((attr, columnIndex) => {
       newColumnAttributeIds[columnIndex] = attr.id;
-    });
-    oldAttributes.forEach((attr, columnIndex) => {
-      oldColumnAttributeIds[columnIndex] = attr.id;
     });
 
     tableReference.tableSchema.columns.forEach((tableColumn, columnIndex) => {

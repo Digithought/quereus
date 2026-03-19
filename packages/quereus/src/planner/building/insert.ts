@@ -674,16 +674,16 @@ export function buildInsertStmt(
 			// TODO: Support RETURNING *
 			if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
 
-					// Infer alias from column name if not explicitly provided
-		let alias = rc.alias;
-		if (!alias && rc.expr.type === 'column') {
-			// For qualified column references like NEW.id, normalize to lowercase
-			if (rc.expr.table) {
-				alias = `${rc.expr.table.toLowerCase()}.${rc.expr.name.toLowerCase()}`;
-			} else {
-				alias = rc.expr.name.toLowerCase();
+			// Infer alias from column name if not explicitly provided
+			let alias = rc.alias;
+			if (!alias && rc.expr.type === 'column') {
+				// For qualified column references like NEW.id, normalize to lowercase
+				if (rc.expr.table) {
+					alias = `${rc.expr.table.toLowerCase()}.${rc.expr.name.toLowerCase()}`;
+				} else {
+					alias = rc.expr.name.toLowerCase();
+				}
 			}
-		}
 
 			// Validate that OLD references are not used in INSERT RETURNING
 			validateReturningExpression(rc.expr, 'INSERT');

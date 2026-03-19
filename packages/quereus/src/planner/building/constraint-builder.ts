@@ -1,6 +1,6 @@
 import type { PlanningContext } from '../planning-context.js';
 import type { TableSchema, RowConstraintSchema } from '../../schema/table.js';
-import type { RowOpFlag } from '../../schema/table.js';
+import { RowOpFlag } from '../../schema/table.js';
 import type { Attribute, RowDescriptor } from '../nodes/plan-node.js';
 import type { ConstraintCheck } from '../nodes/constraint-check-node.js';
 import { RegisteredScope } from '../scopes/registered.js';
@@ -96,7 +96,7 @@ export function buildConstraintChecks(
           new ColumnReferenceNode(s, exp as AST.ColumnExpr, newColumnType, newAttrId, tableColIndex));
 
         // For INSERT/UPDATE, unqualified column defaults to NEW
-        if (operation === 1 || operation === 2) { // INSERT or UPDATE
+        if (operation === RowOpFlag.INSERT || operation === RowOpFlag.UPDATE) {
           constraintScope.registerSymbol(colNameLower, (exp, s) =>
             new ColumnReferenceNode(s, exp as AST.ColumnExpr, newColumnType, newAttrId, tableColIndex));
         }
@@ -117,7 +117,7 @@ export function buildConstraintChecks(
           new ColumnReferenceNode(s, exp as AST.ColumnExpr, oldColumnType, oldAttrId, tableColIndex));
 
         // For DELETE, unqualified column defaults to OLD
-        if (operation === 4) { // DELETE
+        if (operation === RowOpFlag.DELETE) {
           constraintScope.registerSymbol(colNameLower, (exp, s) =>
             new ColumnReferenceNode(s, exp as AST.ColumnExpr, oldColumnType, oldAttrId, tableColIndex));
         }
