@@ -4,12 +4,15 @@ import { Attribute, type RelationalPlanNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { PlanNode } from './plan-node.js';
-import { RelationType } from '../../common/datatype.js';
-import { Scope } from '../scopes/scope.js';
+import type { RelationType } from '../../common/datatype.js';
+import type { Scope } from '../scopes/scope.js';
 import { TEXT_TYPE } from '../../types/builtin-types.js';
+import { Cached } from '../../util/cached.js';
 
 export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 	override readonly nodeType = PlanNodeType.Pragma;
+
+	private attributesCache: Cached<Attribute[]>;
 
 	constructor(
 		scope: Scope,
@@ -18,6 +21,7 @@ export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 		public readonly value?: SqlValue
 	) {
 		super(scope, 1); // PRAGMA operations have low cost
+		this.attributesCache = new Cached(() => this.buildAttributes());
 	}
 
 	getType(): RelationType {
@@ -55,15 +59,19 @@ export class PragmaPlanNode extends PlanNode implements RelationalPlanNode {
 		return 1;
 	}
 
-	getAttributes(): Attribute[] {
+	private buildAttributes(): Attribute[] {
 		return this.getType().columns.map((column) => (
 			{
 				id: PlanNode.nextAttrId(),
-				name: column.name, // Use the deduplicated name
+				name: column.name,
 				type: column.type,
 				sourceRelation: `${this.nodeType}:${this.id}`
 			} satisfies Attribute
 		));
+	}
+
+	getAttributes(): Attribute[] {
+		return this.attributesCache.value;
 	}
 
 	getChildren(): PlanNode[] {

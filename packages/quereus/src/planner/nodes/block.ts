@@ -53,24 +53,12 @@ export class BlockNode extends PlanNode {
   }
 
   withChildren(newChildren: readonly PlanNode[]): PlanNode {
-    // Check if statements changed
-    if (newChildren.length !== this.statements.length) {
-      // Create new instance with new statements
-      return new BlockNode(
-        this.scope,
-        [...newChildren],
-        this.parameters
-      );
-    }
-
-    // Check if any individual statement changed
-    const statementsChanged = newChildren.some((child, i) => child !== this.statements[i]);
-
-    if (!statementsChanged) {
+    // Return same instance if nothing changed
+    if (newChildren.length === this.statements.length &&
+        newChildren.every((child, i) => child === this.statements[i])) {
       return this;
     }
 
-    // Create new instance with updated statements
     return new BlockNode(
       this.scope,
       [...newChildren],

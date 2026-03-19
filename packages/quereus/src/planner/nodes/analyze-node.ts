@@ -7,12 +7,15 @@ import type * as AST from '../../parser/ast.js';
 import { Attribute, type RelationalPlanNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode } from './plan-node.js';
-import { RelationType } from '../../common/datatype.js';
-import { Scope } from '../scopes/scope.js';
+import type { RelationType } from '../../common/datatype.js';
+import type { Scope } from '../scopes/scope.js';
 import { TEXT_TYPE, INTEGER_TYPE } from '../../types/builtin-types.js';
+import { Cached } from '../../util/cached.js';
 
 export class AnalyzePlanNode extends PlanNode implements RelationalPlanNode {
 	override readonly nodeType = PlanNodeType.Analyze;
+
+	private attributesCache: Cached<Attribute[]>;
 
 	constructor(
 		scope: Scope,
@@ -21,6 +24,7 @@ export class AnalyzePlanNode extends PlanNode implements RelationalPlanNode {
 		public readonly targetSchemaName?: string,
 	) {
 		super(scope, 1);
+		this.attributesCache = new Cached(() => this.buildAttributes());
 	}
 
 	getType(): RelationType {
@@ -58,13 +62,17 @@ export class AnalyzePlanNode extends PlanNode implements RelationalPlanNode {
 		return this.targetTableName ? 1 : 10; // 1 for single table, ~10 for all tables
 	}
 
-	getAttributes(): Attribute[] {
+	private buildAttributes(): Attribute[] {
 		return this.getType().columns.map((column) => ({
 			id: PlanNode.nextAttrId(),
 			name: column.name,
 			type: column.type,
 			sourceRelation: `${this.nodeType}:${this.id}`
 		} satisfies Attribute));
+	}
+
+	getAttributes(): Attribute[] {
+		return this.attributesCache.value;
 	}
 
 	getChildren(): PlanNode[] {

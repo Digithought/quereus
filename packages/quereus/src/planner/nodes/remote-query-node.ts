@@ -64,7 +64,7 @@ export class RemoteQueryNode extends PlanNode implements UnaryRelationalNode {
 		return `REMOTE QUERY pipeline over ${this.tableRef.tableSchema.name}`;
 	}
 
-	getLogicalProperties(): Record<string, unknown> {
+	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			table: this.tableRef.tableSchema.name,
 			moduleContext: this.moduleCtx,

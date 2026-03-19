@@ -13,8 +13,6 @@ export function emitPragma(plan: PragmaPlanNode, _ctx: EmissionContext): Instruc
 		const pragmaName = plan.pragmaName;
 		const value = plan.value;
 
-
-
 		if (value !== undefined) {
 			// Writing mode: set the pragma value
 			log(`PRAGMA ${pragmaName} = ${value}`);

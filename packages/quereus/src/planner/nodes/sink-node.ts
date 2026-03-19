@@ -38,6 +38,9 @@ export class SinkNode extends PlanNode {
 		if (newChildren.length !== 1) {
 			throw new Error(`SinkNode expects 1 child, got ${newChildren.length}`);
 		}
+		if (newChildren[0] === this.source) {
+			return this;
+		}
 		return new SinkNode(this.scope, newChildren[0] as RelationalPlanNode, this.operation);
 	}
 
