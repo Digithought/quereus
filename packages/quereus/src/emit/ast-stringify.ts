@@ -269,8 +269,13 @@ function needsParens(expr: AST.Expression, parentOp: string, side: 'left' | 'rig
 	if (expr.type !== 'binary') return false;
 
 	const precedence: Record<string, number> = {
-		'OR': 1, 'AND': 2, 'NOT': 3, '=': 4, '!=': 4, '<': 4, '<=': 4, '>': 4, '>=': 4,
-		'LIKE': 4, 'IN': 4, 'IS': 4, '+': 5, '-': 5, '*': 6, '/': 6, '%': 6
+		'OR': 1, 'XOR': 1,
+		'AND': 2,
+		'=': 3, '==': 3, '!=': 3,
+		'<': 4, '<=': 4, '>': 4, '>=': 4, 'LIKE': 4, 'GLOB': 4, 'MATCH': 4, 'REGEXP': 4,
+		'+': 5, '-': 5,
+		'*': 6, '/': 6, '%': 6,
+		'||': 7,
 	};
 
 	const parentPrec = precedence[parentOp.toUpperCase()] || 0;
@@ -283,7 +288,7 @@ function needsParens(expr: AST.Expression, parentOp: string, side: 'left' | 'rig
 }
 
 function isAssociative(op: string): boolean {
-	const associativeOps = ['AND', 'OR', '+', '*'];
+	const associativeOps = ['AND', 'OR', 'XOR', '+', '*', '||'];
 	return associativeOps.includes(op.toUpperCase());
 }
 
