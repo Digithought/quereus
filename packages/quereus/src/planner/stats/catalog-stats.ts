@@ -12,6 +12,8 @@ import type { StatsProvider } from './index.js';
 import { NaiveStatsProvider } from './index.js';
 import { createLogger } from '../../common/logger.js';
 import { selectivityFromHistogram } from './histogram.js';
+import type { BinaryOpNode, LiteralNode, BetweenNode, UnaryOpNode } from '../nodes/scalar.js';
+import type { ColumnReferenceNode } from '../nodes/reference.js';
 
 const log = createLogger('optimizer:stats:catalog');
 
@@ -199,7 +201,7 @@ export class CatalogStatsProvider implements StatsProvider {
 
 		switch (predicate.nodeType) {
 			case 'BinaryOp': {
-				const op = (predicate as { op?: string }).op;
+				const op = (predicate as unknown as BinaryOpNode).expression.operator;
 				if (!op) return undefined;
 
 				// Equality: 1/ndv
@@ -223,14 +225,25 @@ export class CatalogStatsProvider implements StatsProvider {
 					// Uniform assumption: 1/3 for open-ended range
 					return 1 / 3;
 				}
+
+				// LIKE: heuristic pattern matching selectivity
+				if (op === 'LIKE') {
+					return 1 / 3;
+				}
+
 				return undefined;
 			}
 
-			case 'IsNull':
-				return colStats.nullCount / Math.max(rowCount, 1);
-
-			case 'IsNotNull':
-				return 1 - (colStats.nullCount / Math.max(rowCount, 1));
+			case 'UnaryOp': {
+				const op = (predicate as unknown as UnaryOpNode).expression.operator;
+				if (op === 'IS NULL') {
+					return colStats.nullCount / Math.max(rowCount, 1);
+				}
+				if (op === 'IS NOT NULL') {
+					return 1 - (colStats.nullCount / Math.max(rowCount, 1));
+				}
+				return undefined;
+			}
 
 			case 'In': {
 				// IN list: listSize / ndv
@@ -255,9 +268,6 @@ export class CatalogStatsProvider implements StatsProvider {
 				return 1 / 4; // heuristic fallback
 			}
 
-			case 'Like':
-				return 1 / 3; // heuristic: pattern matching is moderately selective
-
 			default:
 				return undefined;
 		}
@@ -269,32 +279,32 @@ export class CatalogStatsProvider implements StatsProvider {
 // They use duck typing consistent with the characteristics-based optimizer conventions.
 
 function extractColumnFromPredicate(predicate: ScalarPlanNode): { columnName: string } | undefined {
-	// BinaryOp, In, Between, IsNull, Like all typically have a column child
+	// BinaryOp, In, Between, UnaryOp all typically have a column child
 	const children = predicate.getChildren();
 	for (const child of children) {
 		if (child.nodeType === 'ColumnReference') {
-			const colRef = child as { columnName?: string; name?: string };
-			const name = colRef.columnName ?? colRef.name;
+			const name = (child as unknown as ColumnReferenceNode).expression.name;
 			if (name) return { columnName: name };
 		}
 	}
 	return undefined;
 }
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 function extractConstantValue(predicate: ScalarPlanNode): SqlValue | undefined {
 	const children = predicate.getChildren();
 	for (const child of children) {
 		if (child.nodeType === 'Literal') {
-			return (child as any).value;
+			const val = (child as unknown as LiteralNode).expression.value;
+			// Predicate literals are always resolved (not promises)
+			if (val instanceof Promise) return undefined;
+			return val;
 		}
 	}
 	return undefined;
 }
 
 function extractInListSize(predicate: ScalarPlanNode): number | undefined {
-	const node = predicate as any;
+	const node = predicate as unknown as { values?: readonly ScalarPlanNode[] };
 	if (Array.isArray(node.values)) return node.values.length;
 	// Some IN nodes store the list in children after the first (column) child
 	const children = predicate.getChildren();
@@ -303,10 +313,13 @@ function extractInListSize(predicate: ScalarPlanNode): number | undefined {
 }
 
 function extractBetweenBounds(predicate: ScalarPlanNode): { low: SqlValue; high: SqlValue } | undefined {
-	const node = predicate as any;
-	if (node.low !== undefined && node.high !== undefined) {
-		const lowVal = node.low.nodeType === 'Literal' ? node.low.value : undefined;
-		const highVal = node.high.nodeType === 'Literal' ? node.high.value : undefined;
+	const node = predicate as unknown as BetweenNode;
+	if (node.lower !== undefined && node.upper !== undefined) {
+		if (node.lower.nodeType !== 'Literal' || node.upper.nodeType !== 'Literal') return undefined;
+		const lowVal = (node.lower as unknown as LiteralNode).expression.value;
+		const highVal = (node.upper as unknown as LiteralNode).expression.value;
+		// Predicate literals are always resolved (not promises)
+		if (lowVal instanceof Promise || highVal instanceof Promise) return undefined;
 		if (lowVal !== undefined && highVal !== undefined) {
 			return { low: lowVal, high: highVal };
 		}
@@ -316,7 +329,7 @@ function extractBetweenBounds(predicate: ScalarPlanNode): { low: SqlValue; high:
 
 function extractEquiJoinColumns(condition: ScalarPlanNode): { left: string; right: string } | undefined {
 	if (condition.nodeType !== 'BinaryOp') return undefined;
-	const op = (condition as any).op;
+	const op = (condition as unknown as BinaryOpNode).expression.operator;
 	if (op !== '=' && op !== '==') return undefined;
 
 	const children = condition.getChildren();
@@ -326,8 +339,8 @@ function extractEquiJoinColumns(condition: ScalarPlanNode): { left: string; righ
 	const right = children[1];
 	if (left.nodeType !== 'ColumnReference' || right.nodeType !== 'ColumnReference') return undefined;
 
-	const leftName = (left as any).columnName ?? (left as any).name;
-	const rightName = (right as any).columnName ?? (right as any).name;
+	const leftName = (left as unknown as ColumnReferenceNode).expression.name;
+	const rightName = (right as unknown as ColumnReferenceNode).expression.name;
 	if (!leftName || !rightName) return undefined;
 
 	return { left: leftName, right: rightName };

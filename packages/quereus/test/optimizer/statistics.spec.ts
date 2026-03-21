@@ -7,6 +7,8 @@ import { buildHistogram, selectivityFromHistogram } from '../../src/planner/stat
 import { CatalogStatsProvider } from '../../src/planner/stats/catalog-stats.js';
 import type { TableStatistics, ColumnStatistics, EquiHeightHistogram } from '../../src/planner/stats/catalog-stats.js';
 import type { TableSchema } from '../../src/schema/table.js';
+import type { ScalarPlanNode } from '../../src/planner/nodes/plan-node.js';
+import type { SqlValue } from '../../src/common/types.js';
 
 // ── Histogram unit tests ───────────────────────────────────────────────────
 
@@ -171,6 +173,233 @@ describe('CatalogStatsProvider', () => {
 		// falls back to naive
 		const result = provider.distinctValues(table, 'nonexistent');
 		expect(result).to.be.a('number');
+	});
+});
+
+// ── CatalogStatsProvider selectivity tests ─────────────────────────────────
+// These verify that the introspection helpers correctly extract properties
+// from plan nodes, so CatalogStatsProvider returns catalog-based selectivity
+// instead of falling through to NaiveStatsProvider heuristics.
+
+describe('CatalogStatsProvider selectivity', () => {
+	// ── Mock plan node factories ────────────────────────────────────────
+	// These produce lightweight objects matching the real node shapes
+	// (nodeType, expression.*, getChildren, etc.)
+
+	function mockColumnRef(name: string): ScalarPlanNode {
+		return {
+			nodeType: 'ColumnReference',
+			expression: { name },
+			getChildren: () => [],
+			getRelations: () => [],
+		} as unknown as ScalarPlanNode;
+	}
+
+	function mockLiteral(value: SqlValue): ScalarPlanNode {
+		return {
+			nodeType: 'Literal',
+			expression: { value },
+			getChildren: () => [],
+			getRelations: () => [],
+		} as unknown as ScalarPlanNode;
+	}
+
+	function mockBinaryOp(operator: string, left: ScalarPlanNode, right: ScalarPlanNode): ScalarPlanNode {
+		return {
+			nodeType: 'BinaryOp',
+			expression: { operator },
+			getChildren: () => [left, right],
+			getRelations: () => [],
+		} as unknown as ScalarPlanNode;
+	}
+
+	function mockUnaryOp(operator: string, operand: ScalarPlanNode): ScalarPlanNode {
+		return {
+			nodeType: 'UnaryOp',
+			expression: { operator },
+			getChildren: () => [operand],
+			getRelations: () => [],
+		} as unknown as ScalarPlanNode;
+	}
+
+	function mockBetween(expr: ScalarPlanNode, lower: ScalarPlanNode, upper: ScalarPlanNode): ScalarPlanNode {
+		return {
+			nodeType: 'Between',
+			expression: {},
+			lower,
+			upper,
+			getChildren: () => [expr, lower, upper],
+			getRelations: () => [],
+		} as unknown as ScalarPlanNode;
+	}
+
+	function makeTableSchema(name: string, stats?: TableStatistics, extra?: Partial<TableSchema>): TableSchema {
+		return {
+			name,
+			statistics: stats,
+			columns: [],
+			...extra,
+		} as unknown as TableSchema;
+	}
+
+	function makeStats(rowCount: number, cols?: Record<string, Partial<ColumnStatistics>>): TableStatistics {
+		const columnStats = new Map<string, ColumnStatistics>();
+		if (cols) {
+			for (const [name, partial] of Object.entries(cols)) {
+				columnStats.set(name.toLowerCase(), {
+					distinctCount: partial.distinctCount ?? 10,
+					nullCount: partial.nullCount ?? 0,
+					minValue: partial.minValue,
+					maxValue: partial.maxValue,
+					histogram: partial.histogram,
+				});
+			}
+		}
+		return { rowCount, columnStats, lastAnalyzed: Date.now() };
+	}
+
+	// ── Equality selectivity ────────────────────────────────────────────
+
+	it('equality selectivity uses 1/NDV from catalog stats', () => {
+		const provider = new CatalogStatsProvider();
+		const table = makeTableSchema('t1', makeStats(100, { age: { distinctCount: 50 } }));
+		const predicate = mockBinaryOp('=', mockColumnRef('age'), mockLiteral(25));
+		const sel = provider.selectivity(table, predicate);
+		expect(sel).to.equal(1 / 50);
+	});
+
+	it('not-equal selectivity uses 1 - 1/NDV', () => {
+		const provider = new CatalogStatsProvider();
+		const table = makeTableSchema('t1', makeStats(100, { age: { distinctCount: 20 } }));
+		const predicate = mockBinaryOp('!=', mockColumnRef('age'), mockLiteral(5));
+		const sel = provider.selectivity(table, predicate);
+		expect(sel).to.equal(1 - 1 / 20);
+	});
+
+	// ── Range selectivity with histogram ────────────────────────────────
+
+	it('range selectivity uses histogram when available', () => {
+		const hist = buildHistogram(Array.from({ length: 100 }, (_, i) => i), 10)!;
+		const provider = new CatalogStatsProvider();
+		const table = makeTableSchema('t1', makeStats(100, {
+			val: { distinctCount: 100, histogram: hist },
+		}));
+		const predicate = mockBinaryOp('>', mockColumnRef('val'), mockLiteral(50));
+		const sel = provider.selectivity(table, predicate);
+		expect(sel).to.not.be.undefined;
+		expect(sel).to.be.a('number');
+		// Histogram should give a selectivity roughly around 0.5 for midpoint
+		expect(sel!).to.be.greaterThan(0);
+		expect(sel!).to.be.lessThan(1);
+	});
+
+	it('range selectivity without histogram uses 1/3 heuristic', () => {
+		const provider = new CatalogStatsProvider();
+		const table = makeTableSchema('t1', makeStats(100, {
+			val: { distinctCount: 100 },
+		}));
+		const predicate = mockBinaryOp('<', mockColumnRef('val'), mockLiteral(50));
+		const sel = provider.selectivity(table, predicate);
+		expect(sel).to.be.closeTo(1 / 3, 0.001);
+	});
+
+	// ── IS NULL / IS NOT NULL selectivity ───────────────────────────────
+
+	it('IS NULL uses nullCount from column stats', () => {
+		const provider = new CatalogStatsProvider();
+		const table = makeTableSchema('t1', makeStats(100, {
+			name: { distinctCount: 80, nullCount: 20 },
+		}));
+		const predicate = mockUnaryOp('IS NULL', mockColumnRef('name'));
+		const sel = provider.selectivity(table, predicate);
+		expect(sel).to.equal(20 / 100);
+	});
+
+	it('IS NOT NULL uses 1 - nullCount/rowCount', () => {
+		const provider = new CatalogStatsProvider();
+		const table = makeTableSchema('t1', makeStats(200, {
+			name: { distinctCount: 150, nullCount: 50 },
+		}));
+		const predicate = mockUnaryOp('IS NOT NULL', mockColumnRef('name'));
+		const sel = provider.selectivity(table, predicate);
+		expect(sel).to.equal(1 - 50 / 200);
+	});
+
+	// ── BETWEEN selectivity ─────────────────────────────────────────────
+
+	it('BETWEEN uses histogram when lower/upper are literals', () => {
+		const hist = buildHistogram(Array.from({ length: 100 }, (_, i) => i), 10)!;
+		const provider = new CatalogStatsProvider();
+		const table = makeTableSchema('t1', makeStats(100, {
+			val: { distinctCount: 100, histogram: hist },
+		}));
+		const predicate = mockBetween(mockColumnRef('val'), mockLiteral(20), mockLiteral(80));
+		const sel = provider.selectivity(table, predicate);
+		expect(sel).to.not.be.undefined;
+		expect(sel!).to.be.greaterThan(0);
+		expect(sel!).to.be.lessThan(1);
+	});
+
+	// ── LIKE selectivity ────────────────────────────────────────────────
+
+	it('LIKE returns heuristic selectivity 1/3', () => {
+		const provider = new CatalogStatsProvider();
+		const table = makeTableSchema('t1', makeStats(100, {
+			name: { distinctCount: 80 },
+		}));
+		const predicate = mockBinaryOp('LIKE', mockColumnRef('name'), mockLiteral('%foo%'));
+		const sel = provider.selectivity(table, predicate);
+		expect(sel).to.be.closeTo(1 / 3, 0.001);
+	});
+
+	// ── Join selectivity with FK→PK ─────────────────────────────────────
+
+	it('join selectivity uses FK→PK when metadata present', () => {
+		const provider = new CatalogStatsProvider();
+
+		// Parent table (PK side): orders.id
+		const parentStats = makeStats(1000, { id: { distinctCount: 1000 } });
+		const parentTable = makeTableSchema('orders', parentStats, {
+			columns: [{ name: 'id' }] as any,
+			columnIndexMap: new Map([['id', 0]]),
+			primaryKeyDefinition: [{ index: 0, desc: false }],
+		});
+
+		// Child table (FK side): items.order_id → orders.id
+		const childStats = makeStats(5000, { order_id: { distinctCount: 800 } });
+		const childTable = makeTableSchema('items', childStats, {
+			columns: [{ name: 'order_id' }] as any,
+			columnIndexMap: new Map([['order_id', 0]]),
+			primaryKeyDefinition: [{ index: 0, desc: false }],
+			foreignKeys: [{
+				columns: [0],
+				referencedTable: 'orders',
+			}],
+		});
+
+		const joinCondition = mockBinaryOp('=',
+			mockColumnRef('order_id'),
+			mockColumnRef('id'),
+		);
+
+		// FK→PK: selectivity = 1/ndv_pk = 1/1000
+		const sel = provider.joinSelectivity(childTable, parentTable, joinCondition);
+		expect(sel).to.equal(1 / 1000);
+	});
+
+	it('join selectivity uses 1/max(ndv_left, ndv_right) without FK metadata', () => {
+		const provider = new CatalogStatsProvider();
+
+		const leftTable = makeTableSchema('t1', makeStats(100, { col: { distinctCount: 50 } }));
+		const rightTable = makeTableSchema('t2', makeStats(200, { col: { distinctCount: 80 } }));
+
+		const joinCondition = mockBinaryOp('=',
+			mockColumnRef('col'),
+			mockColumnRef('col'),
+		);
+
+		const sel = provider.joinSelectivity(leftTable, rightTable, joinCondition);
+		expect(sel).to.equal(1 / 80); // max(50, 80) = 80
 	});
 });
 

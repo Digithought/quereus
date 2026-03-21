@@ -240,10 +240,7 @@ class IndexedDBWriteBatch implements WriteBatch {
   }
 
   async write(): Promise<void> {
-    const db = this.manager.getDatabase();
-    if (!db) {
-      throw new Error('Database not open');
-    }
+    const db = await this.manager.ensureOpen();
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(this.storeName, 'readwrite');
@@ -307,15 +304,11 @@ export class MultiStoreWriteBatch implements WriteBatch {
    * Write all operations atomically across all affected stores.
    */
   async write(): Promise<void> {
-    const db = this.manager.getDatabase();
-    if (!db) {
-      throw new Error('Database not open');
-    }
-
     if (this.ops.length === 0) {
       return;
     }
 
+    const db = await this.manager.ensureOpen();
     const storeNames = Array.from(this.storeNames);
 
     return new Promise((resolve, reject) => {

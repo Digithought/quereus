@@ -264,12 +264,27 @@ export class IndexedDBManager {
    * Delete an object store (table).
    */
   async deleteObjectStore(storeName: string): Promise<void> {
+    // Wait for any ongoing upgrade to complete
+    if (this.upgradePromise) {
+      await this.upgradePromise;
+    }
+
     await this.ensureOpen();
 
     if (!this.objectStores.has(storeName)) {
       return; // Doesn't exist
     }
 
+    // Serialize against concurrent operations via upgradePromise
+    this.upgradePromise = this.doDeleteObjectStore(storeName);
+    try {
+      await this.upgradePromise;
+    } finally {
+      this.upgradePromise = null;
+    }
+  }
+
+  private async doDeleteObjectStore(storeName: string): Promise<void> {
     // Close current connection and reopen with new version
     this.db?.close();
     this.db = null;
