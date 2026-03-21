@@ -302,6 +302,10 @@ export class IndexedDBManager {
         reject(new Error(`Failed to upgrade IndexedDB: ${request.error?.message}`));
       };
 
+      request.onblocked = () => {
+        console.warn(`IndexedDB upgrade to delete '${storeName}' is blocked, waiting for other connections to close...`);
+      };
+
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
         if (db.objectStoreNames.contains(storeName)) {

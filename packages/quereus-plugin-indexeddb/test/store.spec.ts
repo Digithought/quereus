@@ -138,6 +138,39 @@ describe('IndexedDBStore', () => {
       expect(await store.get(new Uint8Array([2]))).to.deep.equal(new Uint8Array([20]));
       expect(await store.get(new Uint8Array([3]))).to.deep.equal(new Uint8Array([30]));
     });
+
+    it('should complete write batch during a concurrent version upgrade', async () => {
+      // This exercises the race condition: ensureObjectStore triggers a version
+      // upgrade that closes this.db and sets it to null.  Before the fix,
+      // WriteBatch.write() called the synchronous getDatabase() which would
+      // return null and throw "Database not open".  After the fix it calls
+      // ensureOpen() which waits for the upgrade to finish.
+      const manager = store.getManager();
+      const batch = store.batch();
+      batch.put(new Uint8Array([10]), new Uint8Array([100]));
+      batch.put(new Uint8Array([11]), new Uint8Array([110]));
+
+      // Start the upgrade — this runs synchronously until its first internal await
+      const upgradePromise = manager.ensureObjectStore('new-table-for-race-test');
+      // Yield one microtask tick so ensureObjectStore progresses past ensureOpen()
+      // into doUpgrade(), which closes the database and sets upgradePromise on
+      // the manager.  This simulates the real scenario where an upgrade is
+      // already in flight when a write batch fires.
+      await Promise.resolve();
+
+      // Now start the batch write while the upgrade is in-flight.
+      // ensureOpen() sees upgradePromise and waits for the upgrade to complete.
+      const writePromise = batch.write();
+
+      await Promise.all([upgradePromise, writePromise]);
+
+      // The write should have succeeded despite the concurrent upgrade
+      expect(await store.get(new Uint8Array([10]))).to.deep.equal(new Uint8Array([100]));
+      expect(await store.get(new Uint8Array([11]))).to.deep.equal(new Uint8Array([110]));
+
+      // The new object store should also exist
+      expect(manager.hasObjectStore('new-table-for-race-test')).to.be.true;
+    });
   });
 });
 
