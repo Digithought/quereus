@@ -14,6 +14,7 @@ import { createLogger } from '../../common/logger.js';
 import { selectivityFromHistogram } from './histogram.js';
 import type { BinaryOpNode, LiteralNode, BetweenNode, UnaryOpNode } from '../nodes/scalar.js';
 import type { ColumnReferenceNode } from '../nodes/reference.js';
+import type { InNode } from '../nodes/subquery.js';
 
 const log = createLogger('optimizer:stats:catalog');
 
@@ -275,8 +276,8 @@ export class CatalogStatsProvider implements StatsProvider {
 }
 
 // ── Predicate introspection helpers ─────────────────────────────────────
-// These extract structural info from plan nodes without importing concrete node types.
-// They use duck typing consistent with the characteristics-based optimizer conventions.
+// These extract structural info from plan nodes using typed imports of the
+// concrete node classes (BinaryOpNode, UnaryOpNode, etc.).
 
 function extractColumnFromPredicate(predicate: ScalarPlanNode): { columnName: string } | undefined {
 	// BinaryOp, In, Between, UnaryOp all typically have a column child
@@ -304,7 +305,7 @@ function extractConstantValue(predicate: ScalarPlanNode): SqlValue | undefined {
 }
 
 function extractInListSize(predicate: ScalarPlanNode): number | undefined {
-	const node = predicate as unknown as { values?: readonly ScalarPlanNode[] };
+	const node = predicate as unknown as InNode;
 	if (Array.isArray(node.values)) return node.values.length;
 	// Some IN nodes store the list in children after the first (column) child
 	const children = predicate.getChildren();
