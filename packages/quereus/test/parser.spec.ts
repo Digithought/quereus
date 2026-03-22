@@ -127,6 +127,33 @@ describe('Parser', () => {
 			const un = expectUnary(expr, '~');
 			expectLiteral(un.expr, 5);
 		});
+
+		it('should parse stacked unary minus: - -1', () => {
+			const expr = parseExpr('- -1');
+			const outer = expectUnary(expr, '-');
+			const inner = expectUnary(outer.expr, '-');
+			expectLiteral(inner.expr, 1);
+		});
+
+		it('should parse NOT NOT x', () => {
+			const expr = parseExpr('NOT NOT 1');
+			const outer = expectUnary(expr, 'NOT');
+			const inner = expectUnary(outer.expr, 'NOT');
+			expectLiteral(inner.expr, 1);
+		});
+
+		it('should parse mixed stacked unary: ~-x', () => {
+			const expr = parseExpr('~-5');
+			const outer = expectUnary(expr, '~');
+			const inner = expectUnary(outer.expr, '-');
+			expectLiteral(inner.expr, 5);
+		});
+
+		it('should parse -a * b as (-a) * b', () => {
+			const expr = parseExpr('-a * b');
+			const mul = expectBinary(expr, '*');
+			expectUnary(mul.left, '-');
+		});
 	});
 
 	describe('IS NULL / IS NOT NULL', () => {

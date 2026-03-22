@@ -1436,18 +1436,23 @@ export class Parser {
 	 * Parse multiplication and division
 	 */
 	private factor(): AST.Expression {
-		// Unary operators bind tighter than multiplicative
-		if (this.match(TokenType.MINUS, TokenType.PLUS, TokenType.TILDE, TokenType.NOT)) {
-			const operatorToken = this.previous();
-			const right = this.concatenation();
-			return { type: 'unary', operator: operatorToken.lexeme, expr: right, loc: _createLoc(operatorToken, this.previous()) };
-		}
-
 		return this.parseBinaryChain(
-			() => this.concatenation(),
+			() => this.unary(),
 			[TokenType.ASTERISK, TokenType.SLASH, TokenType.PERCENT],
 			(t) => t.lexeme,
 		);
+	}
+
+	/**
+	 * Parse unary prefix operators (-, +, ~, NOT). Recurses to support stacked unary (e.g. `- -1`).
+	 */
+	private unary(): AST.Expression {
+		if (this.match(TokenType.MINUS, TokenType.PLUS, TokenType.TILDE, TokenType.NOT)) {
+			const operatorToken = this.previous();
+			const right = this.unary();
+			return { type: 'unary', operator: operatorToken.lexeme, expr: right, loc: _createLoc(operatorToken, this.previous()) };
+		}
+		return this.concatenation();
 	}
 
 	/**
