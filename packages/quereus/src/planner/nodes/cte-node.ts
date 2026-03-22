@@ -1,10 +1,9 @@
 import { PlanNode, type UnaryRelationalNode, type RelationalPlanNode, type Attribute, type TableDescriptor, isRelationalNode } from './plan-node.js';
-import type { RelationType, ScalarType } from '../../common/datatype.js';
+import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import type { CTECapable } from '../framework/characteristics.js';
-import { TEXT_TYPE } from '../../types/builtin-types.js';
 
 /**
  * Narrow contract that any node must satisfy to be placed in the CTE lookup map
@@ -59,30 +58,14 @@ export class CTENode extends PlanNode implements CTEPlanNode, CTEScopeNode, CTEC
 
 	private buildAttributes(): Attribute[] {
 		const queryAttributes = this.source.getAttributes();
-		const queryType = this.source.getType();
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const columnNames = this.columns || queryType.columns.map((c: any) => c.name);
+		const columnNames = this.columns || this.source.getType().columns.map((c) => c.name);
 
-		return columnNames.map((name: string) => {
-			const srcAttr = queryAttributes.find(a => a.name.toLowerCase() === name.toLowerCase());
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			let resolvedType: any = srcAttr?.type;
-			if (!resolvedType) {
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				const colMeta = queryType.columns.find((c: any) => c.name.toLowerCase() === name.toLowerCase());
-				resolvedType = colMeta?.type;
-			}
-			// Fallback: generic TEXT scalar if nothing else is available (should not normally happen)
-			if (!resolvedType) {
-				resolvedType = { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: true, isReadOnly: false } satisfies ScalarType;
-			}
-			return {
-				id: srcAttr?.id ?? PlanNode.nextAttrId(),
-				name,
-				type: resolvedType,
-				sourceRelation: `cte:${this.cteName}`
-			};
-		});
+		return queryAttributes.map((attr, index) => ({
+			id: attr.id,
+			name: columnNames[index] || attr.name,
+			type: attr.type,
+			sourceRelation: `cte:${this.cteName}`
+		}));
 	}
 
 	private buildType(): RelationType {
@@ -91,8 +74,7 @@ export class CTENode extends PlanNode implements CTEPlanNode, CTEScopeNode, CTEC
 			typeClass: 'relation',
 			isReadOnly: false,
 			isSet: queryType.isSet, // CTEs preserve the set/bag nature of their query
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			columns: this.getAttributes().map((attr: any) => ({
+			columns: this.getAttributes().map((attr) => ({
 				name: attr.name,
 				type: attr.type
 			})),

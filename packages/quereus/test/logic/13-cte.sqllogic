@@ -127,5 +127,11 @@ WITH
 SELECT * FROM cte3;
 → [{"name":"Alice"}]
 
+-- Non-recursive CTE with explicit column names that differ from the source query
+-- Verifies that column types are mapped by position, not by name
+WITH cte(x, y) AS (SELECT 1 AS a, 'hello' AS b)
+SELECT typeof(x), typeof(y) FROM cte;
+→ [{"typeof(x)":"integer","typeof(y)":"text"}]
+
 DROP TABLE base_t;
 DROP TABLE hierarchy;
