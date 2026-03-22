@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { EmptyScope } from '../../src/planner/scopes/empty.js';
 import { PlanNodeType } from '../../src/planner/nodes/plan-node-type.js';
-import { BinaryOpNode, LiteralNode, BetweenNode } from '../../src/planner/nodes/scalar.js';
+import { BinaryOpNode, LiteralNode, BetweenNode, UnaryOpNode } from '../../src/planner/nodes/scalar.js';
 import { ColumnReferenceNode } from '../../src/planner/nodes/reference.js';
 import type { ScalarPlanNode } from '../../src/planner/nodes/plan-node.js';
 import type * as AST from '../../src/parser/ast.js';
@@ -41,6 +41,16 @@ describe('Predicate analysis', () => {
 	function eqNode(left: ScalarPlanNode, right: ScalarPlanNode): BinaryOpNode {
 		const ast: AST.BinaryExpr = { type: 'binary', operator: '=', left: (left as any).expression, right: (right as any).expression };
 		return new BinaryOpNode(scope, ast, left, right);
+	}
+
+	function notNode(operand: ScalarPlanNode): UnaryOpNode {
+		const ast: AST.UnaryExpr = { type: 'unary', operator: 'NOT', expr: (operand as any).expression };
+		return new UnaryOpNode(scope, ast, operand);
+	}
+
+	function minusNode(operand: ScalarPlanNode): UnaryOpNode {
+		const ast: AST.UnaryExpr = { type: 'unary', operator: '-', expr: (operand as any).expression };
+		return new UnaryOpNode(scope, ast, operand);
 	}
 
   it('normalizePredicate collapses OR of equalities to IN', () => {
@@ -110,6 +120,31 @@ describe('Predicate analysis', () => {
 	void expect(res.allConstraints.length).to.equal(2);
 	const ops = res.allConstraints.map(cn => cn.op).sort();
 	expect(ops).to.deep.equal(['<=', '>=']);
+	});
+
+	// ---- NOT over non-NOT unary ops ----
+
+	it('normalizePredicate preserves NOT around unary minus', () => {
+		const c = colRef(501, 'val', 0);
+		// NOT(-col) should normalize to NOT(-col), not just -col
+		const expr = notNode(minusNode(c));
+		const normalized = normalizePredicate(expr);
+		expect(normalized.nodeType).to.equal(PlanNodeType.UnaryOp);
+		const outer = normalized as UnaryOpNode;
+		expect(outer.expression.operator).to.equal('NOT');
+		expect(outer.operand.nodeType).to.equal(PlanNodeType.UnaryOp);
+		const inner = outer.operand as UnaryOpNode;
+		expect(inner.expression.operator).to.equal('-');
+	});
+
+	it('normalizePredicate eliminates double NOT around unary minus', () => {
+		const c = colRef(502, 'val', 0);
+		// NOT(NOT(-col)) should normalize to -col via double-negation elimination
+		const expr = notNode(notNode(minusNode(c)));
+		const normalized = normalizePredicate(expr);
+		expect(normalized.nodeType).to.equal(PlanNodeType.UnaryOp);
+		const u = normalized as UnaryOpNode;
+		expect(u.expression.operator).to.equal('-');
 	});
 
 	// ---- OR extraction tests ----

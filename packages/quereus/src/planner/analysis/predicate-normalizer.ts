@@ -82,9 +82,11 @@ function pushNotDown(node: ScalarPlanNode): ScalarPlanNode {
         if (u.expression.operator === 'NOT') {
             return normalize(u.operand);
         }
-        // NOT over other unary ops: leave as residual NOT(op)
+        // NOT over other unary ops: normalize operand, rebuild inner, re-wrap in NOT
         const nOp = normalize(u.operand);
-        return nOp === u.operand ? new UnaryOpNode(u.scope, u.expression, nOp) : new UnaryOpNode(u.scope, u.expression, nOp);
+        const inner = nOp === u.operand ? u : new UnaryOpNode(u.scope, u.expression, nOp);
+        const notAst: AST.UnaryExpr = { type: 'unary', operator: 'NOT', expr: u.expression };
+        return new UnaryOpNode(u.scope, notAst, inner);
     }
 
     if (node.nodeType === PlanNodeType.BinaryOp) {
