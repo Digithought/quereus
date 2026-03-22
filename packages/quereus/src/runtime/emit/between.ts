@@ -6,8 +6,21 @@ import { compareSqlValuesFast } from "../../util/comparison.js";
 import type { EmissionContext } from "../emission-context.js";
 
 export function emitBetween(plan: BetweenNode, ctx: EmissionContext): Instruction {
-	// Pre-resolve collation function for optimal performance (using BINARY as default for BETWEEN)
-	const collationFunc = ctx.resolveCollation('BINARY');
+	// Determine collation from operand types, matching emitComparisonOp behaviour
+	const exprType = plan.expr.getType();
+	const lowerType = plan.lower.getType();
+	const upperType = plan.upper.getType();
+	let collationName = 'BINARY';
+	if (exprType.collationName) {
+		collationName = exprType.collationName;
+	} else if (lowerType.collationName) {
+		collationName = lowerType.collationName;
+	} else if (upperType.collationName) {
+		collationName = upperType.collationName;
+	}
+
+	// Pre-resolve collation function for optimal performance
+	const collationFunc = ctx.resolveCollation(collationName);
 
 	// Cross-category coercion is handled at plan time via explicit CastNodes,
 	// so no runtime coercion is needed here.

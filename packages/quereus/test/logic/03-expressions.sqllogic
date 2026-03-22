@@ -75,6 +75,13 @@ SELECT typeof(1 + 2), typeof(1.5 + 2), typeof('a' || 'b');
 SELECT 3 BETWEEN 2 and 6 AS isbetwixt, 'a' between 'f' and 'z' AS notbetwixt;
 → [{"isbetwixt":true,"notbetwixt":false}]
 
+-- BETWEEN with COLLATE NOCASE
+SELECT 'Hello' COLLATE NOCASE BETWEEN 'a' AND 'z' AS yes1, 'Hello' BETWEEN 'a' AND 'z' AS no1;
+→ [{"yes1":true,"no1":false}]
+
+SELECT 'B' COLLATE NOCASE BETWEEN 'a' AND 'c' AS yes2, 'B' BETWEEN 'a' AND 'c' AS no2;
+→ [{"yes2":true,"no2":false}]
+
 -- Expression evaluation consistency across contexts
 CREATE TABLE expr_context_test (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, c INTEGER NULL);
 INSERT INTO expr_context_test VALUES (1, 5, 3, null), (2, -2, 4, 7), (3, 0, 1, 0);
