@@ -265,9 +265,8 @@ function applyRelativeShift(dt: Temporal.ZonedDateTime, value: number, unit: str
 
 function applyWeekdayAdjustment(dt: Temporal.ZonedDateTime, targetSqlWeekday: number): Temporal.ZonedDateTime {
 	const targetISO = targetSqlWeekday === 0 ? 7 : targetSqlWeekday;
-	const daysToAdd = targetISO - dt.dayOfWeek;
-	if (daysToAdd > 0) return dt.add({ days: daysToAdd - 7 });
-	if (daysToAdd < 0) return dt.add({ days: daysToAdd });
+	const daysToAdd = ((targetISO - dt.dayOfWeek) + 7) % 7;
+	if (daysToAdd > 0) return dt.add({ days: daysToAdd });
 	return dt;
 }
 
