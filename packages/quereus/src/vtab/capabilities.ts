@@ -40,12 +40,13 @@ export interface IsolationCapableTable {
 	comparePrimaryKey(a: SqlValue[], b: SqlValue[]): number;
 
 	/**
-	 * Get a comparator function for a specific index.
+	 * Get per-column comparator functions for a specific index.
 	 * Used when merging index scans from overlay and underlying tables.
+	 * Each comparator incorporates DESC ordering and collation for its column.
 	 * @param indexName The name of the index
-	 * @returns Comparator function, or undefined if index doesn't exist
+	 * @returns Array of per-column comparators, or undefined if index doesn't exist
 	 */
-	getIndexComparator?(indexName: string): CompareFn | undefined;
+	getIndexComparator?(indexName: string): CompareFn[] | undefined;
 
 	/**
 	 * Get the primary key column indices in the row.

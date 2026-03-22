@@ -16,7 +16,7 @@ import type { VirtualTableConnection } from '../connection.js';
 import { MemoryVirtualTableConnection } from './connection.js';
 
 import type { VTableEventEmitter } from '../events.js';
-import { compareSqlValues } from '../../util/comparison.js';
+import { compareSqlValues, resolveCollation, createTypedComparator } from '../../util/comparison.js';
 import type { TableStatistics, ColumnStatistics } from '../../planner/stats/catalog-stats.js';
 import { buildHistogram } from '../../planner/stats/histogram.js';
 
@@ -405,17 +405,26 @@ export class MemoryTable extends VirtualTable {
 	}
 
 	/**
-	 * Get a comparator function for a specific index.
-	 * Used when merging index scans from overlay and underlying tables.
+	 * Get per-column comparator functions for a specific index.
+	 * Each comparator incorporates DESC ordering and collation for its column.
 	 */
-	getIndexComparator(indexName: string): CompareFn | undefined {
+	getIndexComparator(indexName: string): CompareFn[] | undefined {
 		const schema = this.tableSchema;
 		if (!schema) return undefined;
 
 		const index = schema.indexes?.find(idx => idx.name.toLowerCase() === indexName.toLowerCase());
 		if (!index) return undefined;
 
-		return (a: SqlValue, b: SqlValue): number => compareSqlValues(a, b);
+		return index.columns.map(col => {
+			const columnSchema = schema.columns[col.index];
+			const collationFunc = col.collation ? resolveCollation(col.collation) : undefined;
+			const typedComparator = createTypedComparator(columnSchema.logicalType, collationFunc);
+
+			if (col.desc) {
+				return (a: SqlValue, b: SqlValue): number => -typedComparator(a, b);
+			}
+			return typedComparator;
+		});
 	}
 	// --- End Isolation Layer Support ---
 }

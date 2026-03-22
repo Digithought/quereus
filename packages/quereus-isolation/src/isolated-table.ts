@@ -479,9 +479,9 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 			return [...indexKey, ...pk];
 		};
 
-		// Try to use the underlying table's index comparator if available
-		const indexComparator = this.underlyingTable.getIndexComparator?.(indexInfo.indexName);
-		const compareSortKey = this.buildCompareSortKey(indexColIndices.length, comparePK, indexComparator);
+		// Try to use the underlying table's per-column index comparators if available
+		const indexComparators = this.underlyingTable.getIndexComparator?.(indexInfo.indexName);
+		const compareSortKey = this.buildCompareSortKey(indexColIndices.length, comparePK, indexComparators);
 
 		return {
 			extractPK,
@@ -513,17 +513,20 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	/**
 	 * Builds a sort key comparator for secondary index scans.
 	 *
-	 * Compares by index key columns first, then by PK columns.
+	 * Compares by index key columns first (using per-column comparators that
+	 * incorporate DESC ordering and collation), then by PK columns.
 	 */
 	private buildCompareSortKey(
 		indexKeyLength: number,
 		comparePK: (a: SqlValue[], b: SqlValue[]) => number,
-		_indexComparator?: (a: SqlValue, b: SqlValue) => number
+		indexComparators?: ((a: SqlValue, b: SqlValue) => number)[]
 	): (a: SqlValue[], b: SqlValue[]) => number {
 		return (a: SqlValue[], b: SqlValue[]) => {
 			// Compare index key portion first
 			for (let i = 0; i < indexKeyLength; i++) {
-				const cmp = compareSqlValues(a[i], b[i]);
+				const cmp = indexComparators?.[i]
+					? indexComparators[i](a[i], b[i])
+					: compareSqlValues(a[i], b[i]);
 				if (cmp !== 0) return cmp;
 			}
 

@@ -187,7 +187,7 @@ describe('Module Capabilities', () => {
 		expect(table.comparePrimaryKey([null], [null])).to.equal(0);
 	});
 
-	it('getIndexComparator returns a function for existing indexes', async () => {
+	it('getIndexComparator returns per-column comparators for existing indexes', async () => {
 		const schema = createTableSchema(
 			'idx_test',
 			[
@@ -207,13 +207,13 @@ describe('Module Capabilities', () => {
 
 		const table = await module.create(db, schemaWithIndex);
 
-		const comparator = table.getIndexComparator('idx_email');
-		expect(comparator).to.be.a('function');
+		const comparators = table.getIndexComparator('idx_email');
+		expect(comparators).to.be.an('array').with.lengthOf(1);
 
-		// Test the comparator
-		expect(comparator!('alice@test.com', 'bob@test.com')).to.be.lessThan(0);
-		expect(comparator!('bob@test.com', 'alice@test.com')).to.be.greaterThan(0);
-		expect(comparator!('alice@test.com', 'alice@test.com')).to.equal(0);
+		const comparator = comparators![0];
+		expect(comparator('alice@test.com', 'bob@test.com')).to.be.lessThan(0);
+		expect(comparator('bob@test.com', 'alice@test.com')).to.be.greaterThan(0);
+		expect(comparator('alice@test.com', 'alice@test.com')).to.equal(0);
 	});
 
 	it('getIndexComparator returns undefined for non-existent indexes', async () => {
@@ -227,8 +227,101 @@ describe('Module Capabilities', () => {
 
 		const table = await module.create(db, schema);
 
-		const comparator = table.getIndexComparator('non_existent_index');
-		expect(comparator).to.be.undefined;
+		const comparators = table.getIndexComparator('non_existent_index');
+		expect(comparators).to.be.undefined;
+	});
+
+	it('getIndexComparator handles DESC ordering', async () => {
+		const schema = createTableSchema(
+			'desc_test',
+			[
+				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'score', logicalType: INTEGER_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+			],
+			['id']
+		);
+
+		const schemaWithIndex: TableSchema = {
+			...schema,
+			indexes: Object.freeze([
+				{ name: 'idx_score_desc', columns: [{ index: 1, desc: true }] }
+			])
+		};
+
+		const table = await module.create(db, schemaWithIndex);
+
+		const comparators = table.getIndexComparator('idx_score_desc');
+		expect(comparators).to.be.an('array').with.lengthOf(1);
+
+		const comparator = comparators![0];
+		// DESC reverses the ordering: higher values come first
+		expect(comparator(10, 20)).to.be.greaterThan(0);
+		expect(comparator(20, 10)).to.be.lessThan(0);
+		expect(comparator(10, 10)).to.equal(0);
+	});
+
+	it('getIndexComparator handles NOCASE collation', async () => {
+		const schema = createTableSchema(
+			'collation_test',
+			[
+				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'name', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+			],
+			['id']
+		);
+
+		const schemaWithIndex: TableSchema = {
+			...schema,
+			indexes: Object.freeze([
+				{ name: 'idx_name_nocase', columns: [{ index: 1, desc: false, collation: 'NOCASE' }] }
+			])
+		};
+
+		const table = await module.create(db, schemaWithIndex);
+
+		const comparators = table.getIndexComparator('idx_name_nocase');
+		expect(comparators).to.be.an('array').with.lengthOf(1);
+
+		const comparator = comparators![0];
+		// NOCASE collation: 'Alice' and 'alice' should be equal
+		expect(comparator('Alice', 'alice')).to.equal(0);
+		expect(comparator('alice', 'bob')).to.be.lessThan(0);
+		expect(comparator('BOB', 'alice')).to.be.greaterThan(0);
+	});
+
+	it('getIndexComparator handles composite indexes with mixed DESC', async () => {
+		const schema = createTableSchema(
+			'composite_test',
+			[
+				{ name: 'id', logicalType: INTEGER_TYPE, notNull: true, primaryKey: true, pkOrder: 1, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'category', logicalType: TEXT_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false },
+				{ name: 'score', logicalType: INTEGER_TYPE, notNull: false, primaryKey: false, pkOrder: 0, defaultValue: null, collation: 'BINARY', generated: false }
+			],
+			['id']
+		);
+
+		const schemaWithIndex: TableSchema = {
+			...schema,
+			indexes: Object.freeze([
+				{ name: 'idx_cat_score', columns: [
+					{ index: 1, desc: false },        // category ASC
+					{ index: 2, desc: true }           // score DESC
+				] }
+			])
+		};
+
+		const table = await module.create(db, schemaWithIndex);
+
+		const comparators = table.getIndexComparator('idx_cat_score');
+		expect(comparators).to.be.an('array').with.lengthOf(2);
+
+		// First column (category): ASC
+		expect(comparators![0]('alpha', 'beta')).to.be.lessThan(0);
+		expect(comparators![0]('beta', 'alpha')).to.be.greaterThan(0);
+
+		// Second column (score): DESC
+		expect(comparators![1](10, 20)).to.be.greaterThan(0);
+		expect(comparators![1](20, 10)).to.be.lessThan(0);
 	});
 
 	it('module without getCapabilities returns empty object gracefully', () => {
