@@ -23,9 +23,11 @@ export function emitCreateAssertion(plan: CreateAssertionNode, _ctx: EmissionCon
 			const exprSql = expressionToString(plan.checkExpression);
 			violationSql = `select 1 where not (${exprSql})`;
 		} catch (e) {
-			log('Failed to stringify assertion expression: %O', e);
-			// Fallback for complex expressions
-			violationSql = 'select 1 where false'; // Never violates
+			throw new QuereusError(
+				`Cannot create assertion '${plan.name}': failed to convert check expression to SQL`,
+				StatusCode.ERROR,
+				e instanceof Error ? e : undefined
+			);
 		}
 
 		// Create the assertion schema object
