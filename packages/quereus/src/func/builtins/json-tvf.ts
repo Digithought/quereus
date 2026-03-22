@@ -43,63 +43,69 @@ export const jsonEachFunc = createTableValuedFunction(
 			startNode = evaluateJsonPathBasic(startNode, rootPathStr);
 		}
 
-		const localStack: { value: JSONValue; parentPath: string; parentKey: string | number | null; parentId: number; }[] = [];
-		let localElementIdCounter = 0;
-
-		if (startNode !== undefined) {
-			localStack.push({
-				value: startNode,
-				parentPath: '',
-				parentKey: null,
-				parentId: 0,
-			});
+		if (startNode === undefined) {
+			return;
 		}
 
-		while (localStack.length > 0) {
-			const currentState = localStack[localStack.length - 1];
-			localStack.pop();
-			const currentValue = currentState.value;
+		// json_each yields only the immediate children of the root container.
+		// For scalars, yield a single row representing the scalar itself.
+		let elementId = 0;
+		const rootFullkey = '';
 
-			const key = currentState.parentKey;
-			const id = localElementIdCounter++;
-			const path = currentState.parentPath;
-			const fullkey = key !== null ? `${path}${typeof key === 'number' ? `[${key}]` : `.${key}`}` : path;
-			const type = getJsonType(currentValue);
-			const atom: SqlValue = (type === 'object' || type === 'array') ? null : currentValue as SqlValue;
-			const valueForColumn: SqlValue = (type === 'object' || type === 'array') ? jsonStringify(currentValue) : currentValue as SqlValue;
+		if (Array.isArray(startNode)) {
+			for (let i = 0; i < startNode.length; i++) {
+				const childValue = startNode[i];
+				const type = getJsonType(childValue);
+				const isContainer = typeof childValue === 'object' && childValue !== null;
+				const atom: SqlValue = isContainer ? null : childValue as SqlValue;
+				const valueForColumn: SqlValue = isContainer ? jsonStringify(childValue) : childValue as SqlValue;
+				const fullkey = `${rootFullkey}[${i}]`;
 
-			const row: Row = [
-				key,
-				valueForColumn,
-				type,
-				atom,
-				id,
-				currentState.parentId,
-				fullkey,
-				path
-			];
-
-			if (Array.isArray(currentValue)) {
-				for (let i = currentValue.length - 1; i >= 0; i--) {
-					localStack.push({
-						value: currentValue[i],
-						parentPath: fullkey,
-						parentKey: i,
-						parentId: id,
-					});
-				}
-			} else if (typeof currentValue === 'object' && currentValue !== null && !Array.isArray(currentValue)) {
-				const keys = Object.keys(currentValue).sort().reverse();
-				for (const objKey of keys) {
-					localStack.push({
-						value: (currentValue as Record<string, JSONValue>)[objKey],
-						parentPath: fullkey,
-						parentKey: objKey,
-						parentId: id,
-					});
-				}
+				yield [
+					i,              // key
+					valueForColumn, // value
+					type,           // type
+					atom,           // atom
+					elementId++,    // id
+					null,           // parent
+					fullkey,        // fullkey
+					rootFullkey     // path
+				];
 			}
-			yield row;
+		} else if (typeof startNode === 'object' && startNode !== null) {
+			const keys = Object.keys(startNode).sort();
+			for (const objKey of keys) {
+				const childValue = (startNode as Record<string, JSONValue>)[objKey];
+				const type = getJsonType(childValue);
+				const isContainer = typeof childValue === 'object' && childValue !== null;
+				const atom: SqlValue = isContainer ? null : childValue as SqlValue;
+				const valueForColumn: SqlValue = isContainer ? jsonStringify(childValue) : childValue as SqlValue;
+				const fullkey = `${rootFullkey}.${objKey}`;
+
+				yield [
+					objKey,         // key
+					valueForColumn, // value
+					type,           // type
+					atom,           // atom
+					elementId++,    // id
+					null,           // parent
+					fullkey,        // fullkey
+					rootFullkey     // path
+				];
+			}
+		} else {
+			// Scalar input: yield just the scalar itself
+			const type = getJsonType(startNode);
+			yield [
+				null,                    // key
+				startNode as SqlValue,   // value
+				type,                    // type
+				startNode as SqlValue,   // atom
+				elementId++,             // id
+				null,                    // parent
+				rootFullkey,             // fullkey
+				rootFullkey              // path
+			];
 		}
 	}
 );
