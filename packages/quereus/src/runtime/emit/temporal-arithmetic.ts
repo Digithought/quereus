@@ -45,6 +45,97 @@ function isTimespanValue(v: SqlValue): boolean {
 }
 
 /**
+ * Check if a Temporal.Duration contains calendar units (years, months, weeks)
+ * that cannot be converted to a single time unit without a relativeTo reference.
+ */
+function hasCalendarUnits(d: Temporal.Duration): boolean {
+	return d.years !== 0 || d.months !== 0 || d.weeks !== 0;
+}
+
+/**
+ * Scale each field of a duration by a factor.
+ * Works for both calendar and non-calendar durations.
+ */
+function scaleDuration(d: Temporal.Duration, factor: number): Temporal.Duration {
+	return Temporal.Duration.from({
+		years: d.years * factor,
+		months: d.months * factor,
+		weeks: d.weeks * factor,
+		days: d.days * factor,
+		hours: d.hours * factor,
+		minutes: d.minutes * factor,
+		seconds: d.seconds * factor,
+		milliseconds: d.milliseconds * factor,
+		microseconds: d.microseconds * factor,
+		nanoseconds: d.nanoseconds * factor,
+	});
+}
+
+/**
+ * Divide a duration's fields by a divisor, cascading remainders to smaller units.
+ * Cascade chain: years→months(×12), weeks→days(×7), days→hours(×24),
+ * hours→minutes(×60), minutes→seconds(×60), seconds→ms(×1000),
+ * ms→μs(×1000), μs→ns(×1000).
+ * Note: months cannot cascade to days (variable month length).
+ */
+function divideDuration(d: Temporal.Duration, divisor: number): Temporal.Duration {
+	// Cascade pairs: [field, next-field, conversion-factor]
+	const cascade: [string, string, number][] = [
+		['years', 'months', 12],
+		// months→days gap: no fixed conversion
+		['weeks', 'days', 7],
+		['days', 'hours', 24],
+		['hours', 'minutes', 60],
+		['minutes', 'seconds', 60],
+		['seconds', 'milliseconds', 1000],
+		['milliseconds', 'microseconds', 1000],
+		['microseconds', 'nanoseconds', 1000],
+	];
+
+	// Build a mutable map of field values
+	const fields: Record<string, number> = {
+		years: d.years, months: d.months, weeks: d.weeks,
+		days: d.days, hours: d.hours, minutes: d.minutes,
+		seconds: d.seconds, milliseconds: d.milliseconds,
+		microseconds: d.microseconds, nanoseconds: d.nanoseconds,
+	};
+
+	for (const [field, nextField, factor] of cascade) {
+		const value = fields[field];
+		const quotient = Math.trunc(value / divisor);
+		const remainder = value - quotient * divisor;
+		fields[field] = quotient;
+		fields[nextField] += remainder * factor;
+	}
+
+	// Final field (nanoseconds) — just divide, truncate to integer
+	fields['nanoseconds'] = Math.trunc(fields['nanoseconds'] / divisor);
+
+	// Handle months independently (not part of cascade chain above for months→days)
+	// months was already accumulated from years cascade; now divide it
+	const monthQuotient = Math.trunc(fields['months'] / divisor);
+	const monthRemainder = fields['months'] - monthQuotient * divisor;
+	fields['months'] = monthQuotient;
+	// Fractional months can't be converted to days; truncate
+	if (monthRemainder !== 0) {
+		// Best-effort: drop sub-month remainder since we can't convert to days
+	}
+
+	return Temporal.Duration.from({
+		years: fields['years'],
+		months: fields['months'],
+		weeks: fields['weeks'],
+		days: fields['days'],
+		hours: fields['hours'],
+		minutes: fields['minutes'],
+		seconds: fields['seconds'],
+		milliseconds: fields['milliseconds'],
+		microseconds: fields['microseconds'],
+		nanoseconds: fields['nanoseconds'],
+	});
+}
+
+/**
  * Try to perform temporal arithmetic on two values.
  * Returns the result if successful, or undefined if the values are not temporal types.
  * Throws QuereusError if the operation is invalid.
@@ -188,7 +279,9 @@ export function tryTemporalArithmetic(operator: string, v1: SqlValue, v2: SqlVal
 			// TIMESPAN * NUMBER → TIMESPAN
 			if (operator === '*' && isV1Timespan && typeof v2 === 'number') {
 				const duration = Temporal.Duration.from(v1 as string);
-				// Convert to seconds, multiply, convert back
+				if (hasCalendarUnits(duration)) {
+					return scaleDuration(duration, v2).toString();
+				}
 				const totalSeconds = duration.total({ unit: 'seconds' });
 				const newDuration = Temporal.Duration.from({ seconds: totalSeconds * v2 });
 				return newDuration.toString();
@@ -197,6 +290,9 @@ export function tryTemporalArithmetic(operator: string, v1: SqlValue, v2: SqlVal
 			// NUMBER * TIMESPAN → TIMESPAN (commutative)
 			if (operator === '*' && typeof v1 === 'number' && isV2Timespan) {
 				const duration = Temporal.Duration.from(v2 as string);
+				if (hasCalendarUnits(duration)) {
+					return scaleDuration(duration, v1).toString();
+				}
 				const totalSeconds = duration.total({ unit: 'seconds' });
 				const newDuration = Temporal.Duration.from({ seconds: totalSeconds * v1 });
 				return newDuration.toString();
@@ -206,6 +302,9 @@ export function tryTemporalArithmetic(operator: string, v1: SqlValue, v2: SqlVal
 			if (operator === '/' && isV1Timespan && typeof v2 === 'number') {
 				if (v2 === 0) return null;
 				const duration = Temporal.Duration.from(v1 as string);
+				if (hasCalendarUnits(duration)) {
+					return divideDuration(duration, v2).toString();
+				}
 				const totalSeconds = duration.total({ unit: 'seconds' });
 				const newDuration = Temporal.Duration.from({ seconds: totalSeconds / v2 });
 				return newDuration.toString();
@@ -215,6 +314,11 @@ export function tryTemporalArithmetic(operator: string, v1: SqlValue, v2: SqlVal
 			if (operator === '/' && isV1Timespan && isV2Timespan) {
 				const d1 = Temporal.Duration.from(v1 as string);
 				const d2 = Temporal.Duration.from(v2 as string);
+				if (hasCalendarUnits(d1) || hasCalendarUnits(d2)) {
+					// Cannot compute a numeric ratio when calendar units are involved
+					// (months/years have variable lengths without a reference date)
+					return null;
+				}
 				const total1 = d1.total({ unit: 'seconds' });
 				const total2 = d2.total({ unit: 'seconds' });
 				if (total2 === 0) return null;

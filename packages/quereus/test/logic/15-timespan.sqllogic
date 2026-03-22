@@ -110,6 +110,31 @@ SELECT timespan('PT2H') / timespan('PT1H');
 SELECT timespan('PT1H') / timespan('PT30M');
 → [{"timespan('PT1H') / timespan('PT30M')":2}]
 
+-- Test TIMESPAN * NUMBER with calendar units (months, years)
+SELECT timespan('P2M') * 3;
+→ [{"timespan('P2M') * 3":"P6M"}]
+
+SELECT timespan('P1Y6M') * 2;
+→ [{"timespan('P1Y6M') * 2":"P2Y12M"}]
+
+SELECT 4 * timespan('P3M');
+→ [{"4 * timespan('P3M')":"P12M"}]
+
+-- Test TIMESPAN / NUMBER with calendar units
+SELECT timespan('P1Y6M') / 2;
+→ [{"timespan('P1Y6M') / 2":"P9M"}]
+
+SELECT timespan('P6M') / 3;
+→ [{"timespan('P6M') / 3":"P2M"}]
+
+-- Test TIMESPAN * NUMBER with mixed calendar and time units
+SELECT timespan('P1Y2M3DT4H') * 2;
+→ [{"timespan('P1Y2M3DT4H') * 2":"P2Y4M6DT8H"}]
+
+-- Test TIMESPAN / NUMBER with mixed calendar and time units
+SELECT timespan('P2Y4M6DT8H') / 2;
+→ [{"timespan('P2Y4M6DT8H') / 2":"P1Y2M3DT4H"}]
+
 -- Test unary negation of TIMESPAN
 SELECT -timespan('PT1H');
 → [{"-timespan('PT1H')":"-PT1H"}]
