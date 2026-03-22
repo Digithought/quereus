@@ -161,14 +161,12 @@ export abstract class PlanNode {
   getProducingExprs?(): Map<number, ScalarPlanNode>;
 
 	getTotalCost(): number {
-		return (this.estimatedCost + this.getChildren().reduce((acc, child) => acc + child.getTotalCost(), 0))
-			* (this.getRelations().reduce((acc, relation) => acc + relation.getTotalCost(), 0) || 1);
+		return this.estimatedCost + this.getChildren().reduce((acc, child) => acc + child.getTotalCost(), 0);
 	}
 
   visit(visitor: PlanNodeVisitor): void {
     visitor(this);
     this.getChildren().forEach(child => child.visit(visitor));
-		this.getRelations().forEach(relation => relation.visit(visitor));
   }
 
 	toString(): string {
