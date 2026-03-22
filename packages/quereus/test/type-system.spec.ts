@@ -329,6 +329,48 @@ describe('Type System', () => {
 			});
 		});
 
+		describe('TIME_TYPE', () => {
+			it('should validate ISO time strings', () => {
+				expect(TIME_TYPE.validate!('12:30:45')).to.be.true;
+				expect(TIME_TYPE.validate!('not-a-time')).to.be.false;
+				expect(TIME_TYPE.validate!(null)).to.be.true;
+			});
+
+			it('should parse numeric seconds since midnight', () => {
+				expect(TIME_TYPE.parse!(3661)).to.equal('01:01:01');
+				expect(TIME_TYPE.parse!(0)).to.equal('00:00:00');
+				expect(TIME_TYPE.parse!(86399)).to.equal('23:59:59');
+			});
+
+			it('should preserve fractional seconds from numeric input', () => {
+				expect(TIME_TYPE.parse!(3661.5)).to.equal('01:01:01.5');
+				expect(TIME_TYPE.parse!(0.123)).to.equal('00:00:00.123');
+				expect(TIME_TYPE.parse!(59.999)).to.equal('00:00:59.999');
+			});
+
+			it('should handle negative numeric input gracefully', () => {
+				expect(() => TIME_TYPE.parse!(-1)).to.throw(TypeError);
+				expect(() => TIME_TYPE.parse!(-3600)).to.throw(TypeError);
+			});
+
+			it('should parse string time values', () => {
+				expect(TIME_TYPE.parse!('12:30:45')).to.equal('12:30:45');
+				expect(TIME_TYPE.parse!('12:30:45.123')).to.equal('12:30:45.123');
+			});
+
+			it('should return null for null input', () => {
+				expect(TIME_TYPE.parse!(null)).to.equal(null);
+			});
+
+			it('should throw on non-time strings', () => {
+				expect(() => TIME_TYPE.parse!('not-a-time')).to.throw(TypeError);
+			});
+
+			it('should have isTemporal flag', () => {
+				expect(TIME_TYPE.isTemporal).to.be.true;
+			});
+		});
+
 		describe('JSON_TYPE', () => {
 			it('should validate native JSON values', () => {
 				// validate checks native JS values — strings are valid JSON scalars

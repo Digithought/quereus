@@ -76,11 +76,17 @@ export const TIME_TYPE: LogicalType = {
 			}
 		}
 		if (typeof v === 'number') {
+			if (v < 0 || !Number.isFinite(v)) {
+				throw new TypeError(`Cannot convert '${v}' to TIME: value must be a non-negative finite number of seconds`);
+			}
 			// Seconds since midnight
 			const hours = Math.floor(v / 3600) % 24;
 			const minutes = Math.floor((v % 3600) / 60);
-			const seconds = v % 60;
-			const time = new Temporal.PlainTime(hours, minutes, seconds);
+			const totalSeconds = v % 60;
+			const wholeSeconds = Math.floor(totalSeconds);
+			const fractionalMs = Math.round((totalSeconds - wholeSeconds) * 1000);
+			const milliseconds = fractionalMs % 1000;
+			const time = new Temporal.PlainTime(hours, minutes, wholeSeconds, milliseconds);
 			return time.toString();
 		}
 		throw new TypeError(`Cannot convert ${typeof v} to TIME`);
