@@ -1,7 +1,9 @@
 import type { SchemaCatalog } from './catalog.js';
 import type * as AST from '../parser/ast.js';
 import type { SqlValue } from '../common/types.js';
-import { createTableToString, createViewToString, createIndexToString, columnDefToString } from '../emit/ast-stringify.js';
+import { createTableToString, createViewToString, createIndexToString, columnDefToString, quoteIdentifier } from '../emit/ast-stringify.js';
+import { QuereusError } from '../common/errors.js';
+import { StatusCode } from '../common/types.js';
 
 /**
  * Represents the difference between a declared schema and actual database state
@@ -152,9 +154,18 @@ function applyTableDefaults(
 
 	// Apply default vtab module if table doesn't have an explicit one
 	if (!tableStmt.moduleName && defaultVtabModule) {
-		const parsedArgs: Record<string, SqlValue> = defaultVtabArgs
-			? JSON.parse(defaultVtabArgs) as Record<string, SqlValue>
-			: {};
+		let parsedArgs: Record<string, SqlValue> = {};
+		if (defaultVtabArgs) {
+			try {
+				parsedArgs = JSON.parse(defaultVtabArgs) as Record<string, SqlValue>;
+			} catch (e) {
+				throw new QuereusError(
+					`Invalid JSON in schema default vtab args for table '${tableStmt.table.name}': ${(e as Error).message}`,
+					StatusCode.ERROR,
+					e as Error
+				);
+			}
+		}
 		result = {
 			...result,
 			moduleName: defaultVtabModule,
@@ -247,19 +258,19 @@ export function serializeSchemaDiff(diff: SchemaDiff): string {
  */
 export function generateMigrationDDL(diff: SchemaDiff, schemaName?: string): string[] {
 	const statements: string[] = [];
-	const schemaPrefix = (schemaName && schemaName !== 'main') ? `${schemaName}.` : '';
+	const schemaPrefix = (schemaName && schemaName !== 'main') ? `${quoteIdentifier(schemaName)}.` : '';
 
 	// Drop items first (reverse order)
 	for (const tableName of diff.tablesToDrop) {
-		statements.push(`DROP TABLE IF EXISTS ${schemaPrefix}${tableName}`);
+		statements.push(`DROP TABLE IF EXISTS ${schemaPrefix}${quoteIdentifier(tableName)}`);
 	}
 
 	for (const viewName of diff.viewsToDrop) {
-		statements.push(`DROP VIEW IF EXISTS ${schemaPrefix}${viewName}`);
+		statements.push(`DROP VIEW IF EXISTS ${schemaPrefix}${quoteIdentifier(viewName)}`);
 	}
 
 	for (const indexName of diff.indexesToDrop) {
-		statements.push(`DROP INDEX IF EXISTS ${schemaPrefix}${indexName}`);
+		statements.push(`DROP INDEX IF EXISTS ${schemaPrefix}${quoteIdentifier(indexName)}`);
 	}
 
 	// Create new items
@@ -269,11 +280,12 @@ export function generateMigrationDDL(diff: SchemaDiff, schemaName?: string): str
 
 	// Alter existing tables
 	for (const alter of diff.tablesToAlter) {
-		for (const colName of alter.columnsToAdd) {
-			statements.push(`ALTER TABLE ${schemaPrefix}${alter.tableName} ADD COLUMN ${colName}`);
+		const quotedTable = `${schemaPrefix}${quoteIdentifier(alter.tableName)}`;
+		for (const colDef of alter.columnsToAdd) {
+			statements.push(`ALTER TABLE ${quotedTable} ADD COLUMN ${colDef}`);
 		}
 		for (const colName of alter.columnsToDrop) {
-			statements.push(`ALTER TABLE ${schemaPrefix}${alter.tableName} DROP COLUMN ${colName}`);
+			statements.push(`ALTER TABLE ${quotedTable} DROP COLUMN ${quoteIdentifier(colName)}`);
 		}
 	}
 
