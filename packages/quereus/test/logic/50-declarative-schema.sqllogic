@@ -596,3 +596,32 @@ values (1);
 select * from test_context_defaults.orders;
 → [{"id": 1, "amount": 115}]
 
+-- Step 53: Test boolean and blob seed data types
+-- Regression: boolean and Uint8Array values were silently NULLed in seed data interpolation
+declare schema test_seed_types using (default_vtab_module = 'memory') {
+	table typed_data {
+		id INTEGER PRIMARY KEY,
+		flag INTEGER,
+		data BLOB
+	}
+
+	seed typed_data (
+		(1, true, X'cafebabe'),
+		(2, false, X'deadbeef')
+	)
+}
+
+-- run
+
+apply schema test_seed_types with seed;
+
+-- run
+
+-- Verify boolean values were converted to 0/1 (not NULL)
+select id, flag from test_seed_types.typed_data order by id;
+→ [{"id": 1, "flag": 1}, {"id": 2, "flag": 0}]
+
+-- Verify blob values were preserved (not NULL)
+select id, typeof(data), length(data) from test_seed_types.typed_data order by id;
+→ [{"id": 1, "typeof(data)": "blob", "length(data)": 4}, {"id": 2, "typeof(data)": "blob", "length(data)": 4}]
+

@@ -11,6 +11,15 @@ import type { PlanNode } from '../../planner/nodes/plan-node.js';
 
 const log = createLogger('runtime:emit:declare');
 
+/** Cross-platform Uint8Array to hex string (no Node Buffer dependency). */
+function uint8ArrayToHex(bytes: Uint8Array): string {
+	let hex = '';
+	for (let i = 0; i < bytes.length; i++) {
+		hex += bytes[i].toString(16).padStart(2, '0');
+	}
+	return hex;
+}
+
 export function emitDeclareSchema(plan: PlanNode, _ctx: EmissionContext): Instruction {
 	const declareStmt = (plan as unknown as { statementAst: AST.DeclareSchemaStmt }).statementAst;
 
@@ -149,6 +158,8 @@ export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruct
 							v === null ? 'NULL' :
 							typeof v === 'string' ? `'${v.replace(/'/g, "''")}'` :
 							typeof v === 'number' || typeof v === 'bigint' ? String(v) :
+							typeof v === 'boolean' ? (v ? '1' : '0') :
+							v instanceof Uint8Array ? `X'${uint8ArrayToHex(v)}'` :
 							'NULL'
 						).join(', ');
 						return `INSERT INTO ${qualifiedTableName} VALUES (${values})`;
