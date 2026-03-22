@@ -9,6 +9,7 @@ import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { Row } from '../../common/types.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { BaseModuleConfig } from '../../vtab/module.js';
+import type { TableStatistics } from '../../planner/stats/catalog-stats.js';
 import { createLogger } from '../../common/logger.js';
 import { collectStatisticsFromScan } from '../../planner/stats/analyze.js';
 
@@ -54,20 +55,23 @@ export function emitAnalyze(plan: AnalyzePlanNode, _ctx: EmissionContext): Instr
 				);
 
 				try {
-					if (typeof vtab.getStatistics === 'function') {
-						// Module provides its own statistics
-						const stats = await vtab.getStatistics();
-						(tableSchema as { statistics?: typeof stats }).statistics = stats;
-						log('Collected VTab statistics for %s: %d rows', tableSchema.name, stats.rowCount);
+					const stats: TableStatistics | undefined = typeof vtab.getStatistics === 'function'
+						? await vtab.getStatistics()
+						: await collectStatisticsFromScan(vtab, tableSchema) ?? undefined;
+
+					if (stats) {
+						log('Collected statistics for %s: %d rows', tableSchema.name, stats.rowCount);
+						// Create a new schema with statistics (honor immutability of frozen schemas)
+						const updatedTableSchema: TableSchema = { ...tableSchema, statistics: stats };
+						schema.addTable(updatedTableSchema);
+						schemaManager.getChangeNotifier().notifyChange({
+							type: 'table_modified',
+							schemaName: tableSchema.schemaName,
+							objectName: tableSchema.name,
+							oldObject: tableSchema,
+							newObject: updatedTableSchema,
+						});
 						yield [tableSchema.name, stats.rowCount];
-					} else {
-						// Fallback: scan-based statistics collection
-						const stats = await collectStatisticsFromScan(vtab, tableSchema);
-						if (stats) {
-							(tableSchema as { statistics?: typeof stats }).statistics = stats;
-							log('Collected scan statistics for %s: %d rows', tableSchema.name, stats.rowCount);
-							yield [tableSchema.name, stats.rowCount];
-						}
 					}
 				} finally {
 					await vtab.disconnect();

@@ -538,6 +538,54 @@ describe('VTab-supplied statistics', () => {
 		expect(rows[0].rows).to.equal(50);
 	});
 
+	it('ANALYZE persists statistics on the catalog schema (not just in-memory mutation)', async () => {
+		await db.exec(`
+			CREATE TABLE stats_check (id INTEGER PRIMARY KEY, val TEXT) USING memory
+		`);
+		for (let i = 1; i <= 20; i++) {
+			await db.exec(`INSERT INTO stats_check VALUES (${i}, 'v${i}')`);
+		}
+
+		// Run ANALYZE
+		for await (const _ of db.eval('ANALYZE stats_check')) { /* consume */ }
+
+		// Fetch the schema from the catalog and verify statistics are present
+		const tableSchema = db.schemaManager.findTable('stats_check');
+		expect(tableSchema).to.not.be.undefined;
+		expect(tableSchema!.statistics).to.not.be.undefined;
+		expect(tableSchema!.statistics!.rowCount).to.equal(20);
+	});
+
+	it('ANALYZE works on frozen schema objects (e.g. after ALTER TABLE)', async () => {
+		await db.exec(`
+			CREATE TABLE frozen_test (id INTEGER PRIMARY KEY, name TEXT) USING memory
+		`);
+		for (let i = 1; i <= 15; i++) {
+			await db.exec(`INSERT INTO frozen_test VALUES (${i}, 'name${i}')`);
+		}
+
+		// ALTER TABLE ADD COLUMN produces a frozen TableSchema in the catalog
+		await db.exec('ALTER TABLE frozen_test ADD COLUMN extra TEXT DEFAULT null');
+
+		// Verify the schema is frozen (the memory module freezes it)
+		const schemaBeforeAnalyze = db.schemaManager.findTable('frozen_test');
+		expect(Object.isFrozen(schemaBeforeAnalyze)).to.be.true;
+
+		// ANALYZE should succeed and persist statistics despite frozen schema
+		const rows: any[] = [];
+		for await (const r of db.eval('ANALYZE frozen_test')) {
+			rows.push(r);
+		}
+		expect(rows).to.have.lengthOf(1);
+		expect(rows[0].rows).to.equal(15);
+
+		// The updated schema in the catalog should have statistics
+		const schemaAfterAnalyze = db.schemaManager.findTable('frozen_test');
+		expect(schemaAfterAnalyze).to.not.be.undefined;
+		expect(schemaAfterAnalyze!.statistics).to.not.be.undefined;
+		expect(schemaAfterAnalyze!.statistics!.rowCount).to.equal(15);
+	});
+
 	it('statistics improve after data changes and re-ANALYZE', async () => {
 		await db.exec(`
 			CREATE TABLE counters (id INTEGER PRIMARY KEY, n INTEGER) USING memory
