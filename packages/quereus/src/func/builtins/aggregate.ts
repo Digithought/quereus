@@ -150,18 +150,17 @@ interface GroupConcatAccumulator {
 	separator: string;
 }
 export const groupConcatFuncRev = createAggregateFunction(
-	{ name: 'group_concat', numArgs: -1, initialValue: { values: [], separator: ',' } },
+	{ name: 'group_concat', numArgs: -1, initialValue: () => ({ values: [], separator: ',' }) },
 	(acc: GroupConcatAccumulator, value: SqlValue, separator: SqlValue = ','): GroupConcatAccumulator => {
 		const currentSeparator = (separator === undefined || separator === null) ? acc.separator : String(separator);
+		acc.separator = currentSeparator;
 
 		if (value === null) {
-			// Update separator even if value is NULL
-			return { ...acc, separator: currentSeparator };
+			return acc;
 		}
 
-		const strValue = String(value);
-		// Create a new array instead of mutating the existing one
-		return { values: [...acc.values, strValue], separator: currentSeparator };
+		acc.values.push(String(value));
+		return acc;
 	},
 	(acc: GroupConcatAccumulator): string | null => {
 		if (acc.values.length === 0) {

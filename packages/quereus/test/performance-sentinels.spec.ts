@@ -220,6 +220,54 @@ describe('Performance sentinels', function () {
 		});
 	});
 
+	// ------------------------------------ Aggregate accumulator (O(n) not O(n²))
+	describe('Aggregate accumulator spread', () => {
+		let db: Database;
+
+		beforeEach(async () => {
+			db = new Database();
+			await db.exec('create table agg_t (id integer primary key, grp integer, val text)');
+			const values = Array.from({ length: 1000 }, (_, i) =>
+				`(${i + 1}, ${i % 5}, 'v${i}')`
+			).join(', ');
+			await db.exec(`insert into agg_t values ${values}`);
+		});
+
+		afterEach(async () => {
+			await db.close();
+		});
+
+		it('group_concat over 1000 rows under 500 ms', async () => {
+			const elapsed = await timeMs(async () => {
+				const rows = await collect(
+					db.eval("select group_concat(val, ',') from agg_t")
+				);
+				expect(rows).to.have.length(1);
+			});
+			expect(elapsed).to.be.below(500, `group_concat took ${elapsed.toFixed(1)} ms`);
+		});
+
+		it('json_group_array over 1000 rows under 500 ms', async () => {
+			const elapsed = await timeMs(async () => {
+				const rows = await collect(
+					db.eval('select json_group_array(val) from agg_t')
+				);
+				expect(rows).to.have.length(1);
+			});
+			expect(elapsed).to.be.below(500, `json_group_array took ${elapsed.toFixed(1)} ms`);
+		});
+
+		it('json_group_object over 1000 rows under 500 ms', async () => {
+			const elapsed = await timeMs(async () => {
+				const rows = await collect(
+					db.eval("select json_group_object(val, id) from agg_t")
+				);
+				expect(rows).to.have.length(1);
+			});
+			expect(elapsed).to.be.below(500, `json_group_object took ${elapsed.toFixed(1)} ms`);
+		});
+	});
+
 	// ------------------------------------------------- Repeated prepare/execute
 	describe('Statement reuse', () => {
 		let db: Database;

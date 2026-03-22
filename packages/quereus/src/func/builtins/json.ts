@@ -438,8 +438,8 @@ export const jsonRemoveFunc = createScalarFunction(
 export const jsonGroupArrayFunc = createAggregateFunction(
 	{ name: 'json_group_array', numArgs: 1, initialValue: [] },
 	(acc: JSONValue[], value: SqlValue): JSONValue[] => {
-		const preparedValue = prepareJsonValue(value);
-		return [...acc, preparedValue];
+		acc.push(prepareJsonValue(value));
+		return acc;
 	},
 	(acc: JSONValue[]): SqlValue => {
 		return acc.length > 0 ? acc : null;
@@ -453,9 +453,8 @@ export const jsonGroupObjectFunc = createAggregateFunction(
 		if (name === null || name === undefined) {
 			return acc;
 		}
-		const stringKey = String(name);
-		const preparedValue = prepareJsonValue(value);
-		return { ...acc, [stringKey]: preparedValue };
+		acc[String(name)] = prepareJsonValue(value);
+		return acc;
 	},
 	(acc: Record<string, JSONValue>): SqlValue => {
 		return Object.keys(acc).length > 0 ? acc : null;
