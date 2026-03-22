@@ -1,0 +1,44 @@
+-- bigint-mixed-arithmetic.sqllogic - Test mixed bigint/number arithmetic
+-- Regression: mixed bigint + number silently returns null instead of numeric result
+
+-- 9007199254740993 exceeds Number.MAX_SAFE_INTEGER, so it's stored as bigint
+-- Adding a float (1.5) to it should produce float arithmetic, not null
+-- Note: converting bigint to Number loses precision (expected for float ops)
+
+SELECT 9007199254740993 + 1.5;
+→ [{"9007199254740993 + 1.5":9007199254740994}]
+
+-- bigint + integer (number): number promotes to bigint, stays in bigint domain
+SELECT 9007199254740993 + 1;
+→ [{"9007199254740993 + 1":9007199254740994}]
+
+-- bigint - number (float)
+SELECT 9007199254740993 - 0.5;
+→ [{"9007199254740993 - 0.5":9007199254740992}]
+
+-- bigint * number (float)
+SELECT 9007199254740993 * 2.0;
+→ [{"9007199254740993 * 2.0":18014398509481984}]
+
+-- number + bigint (reversed operand order)
+SELECT 1.5 + 9007199254740993;
+→ [{"1.5 + 9007199254740993":9007199254740994}]
+
+-- bigint / number
+SELECT 9007199254740993 / 2.0;
+→ [{"9007199254740993 / 2.0":4503599627370496}]
+
+-- bigint % number
+SELECT 9007199254740993 % 2.0;
+→ [{"9007199254740993 % 2.0":0}]
+
+-- Verify pure bigint + bigint still works
+SELECT 9007199254740993 + 9007199254740993;
+→ [{"9007199254740993 + 9007199254740993":18014398509481986}]
+
+-- Verify typeof results
+SELECT typeof(9007199254740993 + 1.5);
+→ [{"typeof(9007199254740993 + 1.5)":"real"}]
+
+SELECT typeof(9007199254740993 + 1);
+→ [{"typeof(9007199254740993 + 1)":"integer"}]
