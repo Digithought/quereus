@@ -80,8 +80,13 @@ export class DatabaseOptionsManager {
 		this.options.set(canonicalKey, convertedValue);
 		log('Option %s changed: %j → %j', canonicalKey, oldValue, convertedValue);
 
-		// Notify listener if registered
-		this.notifyListener(canonicalKey, oldValue, convertedValue);
+		// Notify listener if registered — roll back on failure
+		try {
+			this.notifyListener(canonicalKey, oldValue, convertedValue);
+		} catch (error) {
+			this.options.set(canonicalKey, oldValue);
+			throw error;
+		}
 	}
 
 	/**
@@ -248,11 +253,7 @@ export class DatabaseOptionsManager {
 		const definition = this.definitions.get(key);
 		if (definition?.onChange) {
 			const event: OptionChangeEvent = { key, oldValue, newValue };
-			try {
-				definition.onChange(event);
-			} catch (error) {
-				log('Error in option change listener for %s: %s', key, error);
-			}
+			definition.onChange(event);
 		}
 	}
 }

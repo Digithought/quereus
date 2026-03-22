@@ -257,6 +257,26 @@ describe('Core API Features', () => {
 				const value = db.getOption('runtime_stats');
 				void expect(value).to.equal(false);
 			});
+
+			it('should reject invalid onChange value and roll back', () => {
+				// default_column_nullability has an onChange that throws for invalid values
+				const before = db.getOption('default_column_nullability');
+				void expect(before).to.equal('not_null');
+
+				void expect(() => {
+					db.setOption('default_column_nullability', 'bogus');
+				}).to.throw(QuereusError);
+
+				// Value must remain unchanged after the rejected set
+				const after = db.getOption('default_column_nullability');
+				void expect(after).to.equal('not_null');
+			});
+
+			it('should accept valid onChange value', () => {
+				db.setOption('default_column_nullability', 'nullable');
+				const value = db.getOption('default_column_nullability');
+				void expect(value).to.equal('nullable');
+			});
 		});
 	});
 
