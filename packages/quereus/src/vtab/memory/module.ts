@@ -379,9 +379,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			if (filter.columnIndex === indexCol.index && filter.usable && filter.op === 'OR_RANGE') {
 				const handledFilters = new Array(filters.length).fill(false);
 				handledFilters[i] = true;
-				// Count ranges from the constraint (cast to extended type)
-				const ranges = (filter as any).ranges as unknown[];
-				const rangeCount = ranges ? ranges.length : 2;
+				const rangeCount = filter.ranges ? filter.ranges.length : 2;
 				return { handledFilters, rangeCount };
 			}
 		}

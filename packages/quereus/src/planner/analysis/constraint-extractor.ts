@@ -13,7 +13,7 @@ import type { Row, SqlValue } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import type * as AST from '../../parser/ast.js';
 import { getSyncLiteral } from '../../parser/utils.js';
-import type { ConstraintOp, PredicateConstraint as VtabPredicateConstraint } from '../../vtab/best-access-plan.js';
+import type { ConstraintOp, PredicateConstraint as VtabPredicateConstraint, RangeSpec as VtabRangeSpec } from '../../vtab/best-access-plan.js';
 import { TableReferenceNode, ColumnReferenceNode as _ColumnRef } from '../nodes/reference.js';
 import { CapabilityDetectors } from '../framework/characteristics.js';
 
@@ -23,9 +23,9 @@ const log = createLogger('planner:analysis:constraint-extractor');
 
 /**
  * A single range specification within an OR_RANGE constraint.
- * Each range has optional lower and upper bounds.
+ * Extends the vtab-level RangeSpec with planner-specific valueExpr fields.
  */
-export interface RangeSpec {
+export interface RangeSpec extends VtabRangeSpec {
 	lower?: { op: '>=' | '>'; value: SqlValue; valueExpr?: ScalarPlanNode };
 	upper?: { op: '<=' | '<'; value: SqlValue; valueExpr?: ScalarPlanNode };
 }

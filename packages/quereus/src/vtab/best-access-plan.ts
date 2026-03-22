@@ -29,6 +29,15 @@ export interface ColumnMeta {
 }
 
 /**
+ * A single range specification within an OR_RANGE constraint.
+ * Each range has optional lower and upper bounds.
+ */
+export interface RangeSpec {
+	lower?: { op: '>=' | '>'; value: SqlValue };
+	upper?: { op: '<=' | '<'; value: SqlValue };
+}
+
+/**
  * A predicate constraint extracted from WHERE clause
  */
 export interface PredicateConstraint {
@@ -40,6 +49,8 @@ export interface PredicateConstraint {
 	value?: SqlValue;
 	/** Whether this constraint can be used by the virtual table */
 	usable: boolean;
+	/** Range specifications for OR_RANGE constraints */
+	ranges?: RangeSpec[];
 }
 
 /**
