@@ -317,6 +317,9 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 									newKeyValues
 								);
 
+								// Execute FK cascading actions (CASCADE, SET NULL, SET DEFAULT)
+								await executeForeignKeyActions(ctx.db, tableSchema, 'update', result.existingRow!, updateResult.updatedRow);
+
 								// Emit auto event for modules without native event support
 								if (needsAutoEvents) {
 									const changedColumns: string[] = [];
@@ -359,6 +362,10 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					const existingKeyValues = pkColumnIndicesInSchema.map(idx => replacedRow[idx]);
 					const newKeyValues = pkColumnIndicesInSchema.map(idx => newRow[idx]);
 					ctx.db._recordUpdate(tableKey, existingKeyValues, newKeyValues);
+
+					// Execute FK cascading actions — REPLACE is semantically delete+insert,
+					// so fire 'delete' actions on the replaced row (CASCADE DELETE, SET NULL, etc.)
+					await executeForeignKeyActions(ctx.db, tableSchema, 'delete', replacedRow);
 
 					if (needsAutoEvents) {
 						const changedColumns: string[] = [];

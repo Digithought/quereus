@@ -495,5 +495,121 @@ SELECT count(*) FROM cycle_b WHERE a_id = 1;
 DROP TABLE cycle_b;
 DROP TABLE cycle_a;
 
+-- ===================================================================
+-- UPSERT DO UPDATE with FK CASCADE on parent table
+-- ===================================================================
+
+-- CASCADE UPDATE via UPSERT DO UPDATE on parent
+
+CREATE TABLE upsert_parent (
+    id INTEGER PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE upsert_child (
+    id INTEGER PRIMARY KEY,
+    parent_id INTEGER,
+    FOREIGN KEY (parent_id) REFERENCES upsert_parent(id) ON UPDATE CASCADE
+);
+
+INSERT INTO upsert_parent VALUES (1, 'Alice'), (2, 'Bob');
+INSERT INTO upsert_child VALUES (10, 1), (20, 1), (30, 2);
+
+-- UPSERT that updates parent PK: child rows should cascade
+INSERT INTO upsert_parent (id, name) VALUES (1, 'Alice_updated')
+ON CONFLICT (id) DO UPDATE SET id = 100, name = NEW.name;
+
+-- Parent row should have new id
+SELECT id, name FROM upsert_parent WHERE id = 100;
+→ [{"id":100,"name":"Alice_updated"}]
+
+-- Child rows should have cascaded to new parent_id
+SELECT id, parent_id FROM upsert_child ORDER BY id;
+→ [{"id":10,"parent_id":100},{"id":20,"parent_id":100},{"id":30,"parent_id":2}]
+
+DROP TABLE upsert_child;
+DROP TABLE upsert_parent;
+
+-- SET NULL via UPSERT DO UPDATE on parent
+
+CREATE TABLE upsert_sn_parent (
+    id INTEGER PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE upsert_sn_child (
+    id INTEGER PRIMARY KEY,
+    parent_id INTEGER NULL,
+    FOREIGN KEY (parent_id) REFERENCES upsert_sn_parent(id) ON UPDATE SET NULL
+);
+
+INSERT INTO upsert_sn_parent VALUES (1, 'X'), (2, 'Y');
+INSERT INTO upsert_sn_child VALUES (1, 1), (2, 1), (3, 2);
+
+-- UPSERT that updates parent PK: child FK columns should become NULL
+INSERT INTO upsert_sn_parent (id, name) VALUES (1, 'X_new')
+ON CONFLICT (id) DO UPDATE SET id = 10, name = NEW.name;
+
+SELECT id, parent_id FROM upsert_sn_child ORDER BY id;
+→ [{"id":1,"parent_id":null},{"id":2,"parent_id":null},{"id":3,"parent_id":2}]
+
+DROP TABLE upsert_sn_child;
+DROP TABLE upsert_sn_parent;
+
+-- ===================================================================
+-- INSERT OR REPLACE with FK CASCADE on parent table
+-- ===================================================================
+
+-- CASCADE DELETE via INSERT OR REPLACE on parent
+
+CREATE TABLE repl_del_parent (
+    id INTEGER PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE repl_del_child (
+    id INTEGER PRIMARY KEY,
+    parent_id INTEGER,
+    FOREIGN KEY (parent_id) REFERENCES repl_del_parent(id) ON DELETE CASCADE
+);
+
+INSERT INTO repl_del_parent VALUES (1, 'Alice'), (2, 'Bob');
+INSERT INTO repl_del_child VALUES (10, 1), (20, 1), (30, 2);
+
+-- REPLACE is semantically delete+insert, so ON DELETE CASCADE should fire
+INSERT OR REPLACE INTO repl_del_parent VALUES (1, 'Alice_replaced');
+
+-- Child rows referencing parent_id=1 should be cascade-deleted
+SELECT id, parent_id FROM repl_del_child ORDER BY id;
+→ [{"id":30,"parent_id":2}]
+
+DROP TABLE repl_del_child;
+DROP TABLE repl_del_parent;
+
+-- SET NULL via INSERT OR REPLACE on parent (ON DELETE SET NULL)
+
+CREATE TABLE repl_sn_parent (
+    id INTEGER PRIMARY KEY,
+    name TEXT
+);
+
+CREATE TABLE repl_sn_child (
+    id INTEGER PRIMARY KEY,
+    parent_id INTEGER NULL,
+    FOREIGN KEY (parent_id) REFERENCES repl_sn_parent(id) ON DELETE SET NULL
+);
+
+INSERT INTO repl_sn_parent VALUES (1, 'X'), (2, 'Y');
+INSERT INTO repl_sn_child VALUES (1, 1), (2, 1), (3, 2);
+
+-- REPLACE parent — child FK columns should become NULL via ON DELETE SET NULL
+INSERT OR REPLACE INTO repl_sn_parent VALUES (1, 'X_replaced');
+
+SELECT id, parent_id FROM repl_sn_child ORDER BY id;
+→ [{"id":1,"parent_id":null},{"id":2,"parent_id":null},{"id":3,"parent_id":2}]
+
+DROP TABLE repl_sn_child;
+DROP TABLE repl_sn_parent;
+
 -- Reset pragma
 PRAGMA foreign_keys = false;
