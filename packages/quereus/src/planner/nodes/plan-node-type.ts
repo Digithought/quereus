@@ -69,6 +69,7 @@ export enum PlanNodeType {
   Like = 'Like',
   ScalarSubquery = 'ScalarSubquery',
   TableFunctionReference = 'TableFunctionReference',
+  FunctionReference = 'FunctionReference',
 
   // Special relational nodes
   Alias = 'Alias',  // Wraps a relation with an alias for relationName

@@ -293,7 +293,7 @@ export class ParameterReferenceNode extends PlanNode implements ZeroAryScalarNod
 }
 
 export class FunctionReferenceNode extends PlanNode {
-	override readonly nodeType = PlanNodeType.TableFunctionReference;
+	override readonly nodeType = PlanNodeType.FunctionReference;
 
 	constructor(
 		scope: Scope,
