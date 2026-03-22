@@ -46,7 +46,7 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 
 	if (callbacks.enterNode) {
 		const result = callbacks.enterNode(node);
-		if (result !== false) return; // Stop if enterNode returns false
+		if (result === false) return; // Stop if enterNode returns false
 	}
 
 	// Call specific visitor if defined
@@ -55,13 +55,14 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const specificVisitor = callbacks[specificVisitorKey] as (n: any) => void | boolean;
 		const result = specificVisitor(node);
-		if (result !== false) return; // Stop if specific visitor returns false
+		if (result === false) return; // Stop if specific visitor returns false
 	}
 
 	// Recursively traverse children based on node type
 	switch (node.type) {
 		case 'select': {
 			const stmt = node as AST.SelectStmt;
+			stmt.withClause?.ctes.forEach(cte => traverseAst(cte.query, callbacks));
 			(stmt.columns ?? []).forEach(c => c.type === 'column' && traverseAst(c.expr, callbacks));
 			(stmt.from ?? []).forEach(f => traverseAst(f, callbacks));
 			traverseAst(stmt.where, callbacks);
@@ -75,6 +76,7 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 		}
 		case 'insert': {
 			const stmt = node as AST.InsertStmt;
+			stmt.withClause?.ctes.forEach(cte => traverseAst(cte.query, callbacks));
 			traverseAst(stmt.table, callbacks);
 			(stmt.values ?? []).forEach(row => row.forEach(v => traverseAst(v, callbacks)));
 			traverseAst(stmt.select, callbacks);
@@ -82,6 +84,7 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 		}
 		case 'update': {
 			const stmt = node as AST.UpdateStmt;
+			stmt.withClause?.ctes.forEach(cte => traverseAst(cte.query, callbacks));
 			traverseAst(stmt.table, callbacks);
 			stmt.assignments.forEach(a => traverseAst(a.value, callbacks));
 			traverseAst(stmt.where, callbacks);
@@ -89,6 +92,7 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 		}
 		case 'delete': {
 			const stmt = node as AST.DeleteStmt;
+			stmt.withClause?.ctes.forEach(cte => traverseAst(cte.query, callbacks));
 			traverseAst(stmt.table, callbacks);
 			traverseAst(stmt.where, callbacks);
 			break;
@@ -154,6 +158,40 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 			// traverseAst(winDef.frame, callbacks); // TODO: Traverse frame bounds if needed
 			break;
 		}
+		case 'case': {
+			const caseExpr = node as AST.CaseExpr;
+			traverseAst(caseExpr.baseExpr, callbacks);
+			caseExpr.whenThenClauses.forEach(wt => {
+				traverseAst(wt.when, callbacks);
+				traverseAst(wt.then, callbacks);
+			});
+			traverseAst(caseExpr.elseExpr, callbacks);
+			break;
+		}
+		case 'in': {
+			const inExpr = node as AST.InExpr;
+			traverseAst(inExpr.expr, callbacks);
+			(inExpr.values ?? []).forEach(v => traverseAst(v, callbacks));
+			traverseAst(inExpr.subquery, callbacks);
+			break;
+		}
+		case 'exists': {
+			const existsExpr = node as AST.ExistsExpr;
+			traverseAst(existsExpr.subquery, callbacks);
+			break;
+		}
+		case 'between': {
+			const betweenExpr = node as AST.BetweenExpr;
+			traverseAst(betweenExpr.expr, callbacks);
+			traverseAst(betweenExpr.lower, callbacks);
+			traverseAst(betweenExpr.upper, callbacks);
+			break;
+		}
+		case 'mutatingSubquerySource': {
+			const mutSrc = node as AST.MutatingSubquerySource;
+			traverseAst(mutSrc.stmt, callbacks);
+			break;
+		}
 		// Leaf nodes (literal, identifier, column, parameter) are handled by specific visitors or enterNode
 		case 'literal':
 		case 'identifier':
@@ -173,6 +211,8 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 		case 'savepoint':
 		case 'release':
 		case 'pragma':
+		case 'analyze':
+		case 'declareSchema':
 		case 'with': // Usually handled separately before main traversal
 		case 'commonTableExpr': // Usually handled separately
 			break;
