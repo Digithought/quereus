@@ -5,6 +5,7 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { RemoteQueryNode } from '../../planner/nodes/remote-query-node.js';
 import type { AnyVirtualTableModule } from '../../vtab/module.js';
+import { disconnectVTable } from '../utils.js';
 
 /**
  * Emitter for RemoteQueryNode.
@@ -36,7 +37,13 @@ export function emitRemoteQuery(plan: RemoteQueryNode, _ctx: EmissionContext): I
 			);
 		}
 
-		yield* table.executePlan(rctx.db, plan.source, plan.moduleCtx);
+		try {
+			for await (const row of table.executePlan(rctx.db, plan.source, plan.moduleCtx)) {
+				yield row;
+			}
+		} finally {
+			await disconnectVTable(rctx, table);
+		}
 	}
 
 	return {

@@ -18,6 +18,8 @@ import { FilterInfo } from '../../src/vtab/filter-info.js';
  * to test the retrieve/push-down infrastructure.
  */
 export class TestQueryModule implements VirtualTableModule<TestQueryTable, BaseModuleConfig> {
+	/** Last table instance created by connect(), for test assertions */
+	lastConnectedTable: TestQueryTable | undefined;
 
 	async create(db: Database, tableSchema: TableSchema): Promise<TestQueryTable> {
 		// Create test query table
@@ -38,7 +40,9 @@ export class TestQueryModule implements VirtualTableModule<TestQueryTable, BaseM
 		if (!tableSchema) {
 			throw new Error(`Table ${schemaName}.${tableName} not found`);
 		}
-		return new TestQueryTable(db, tableSchema);
+		const table = new TestQueryTable(db, tableSchema);
+		this.lastConnectedTable = table;
+		return table;
 	}
 
 	/**
@@ -103,8 +107,20 @@ destroy(
  * Test virtual table that implements executePlan
  */
 export class TestQueryTable extends VirtualTable {
-	private data: Row[] = [];
+	private static sharedData = new Map<string, Row[]>();
 	private static testModule: TestQueryModule;
+	/** Track disconnect calls for test assertions */
+	disconnectCount = 0;
+
+	private get data(): Row[] {
+		const key = `${this.tableSchema.schemaName}.${this.tableSchema.name}`;
+		let rows = TestQueryTable.sharedData.get(key);
+		if (!rows) {
+			rows = [];
+			TestQueryTable.sharedData.set(key, rows);
+		}
+		return rows;
+	}
 
 	constructor(db: Database, tableSchema: TableSchema) {
 		// Create a module reference if needed
@@ -117,7 +133,7 @@ export class TestQueryTable extends VirtualTable {
 
 	// Required disconnect method
 	async disconnect(): Promise<void> {
-		// Nothing to clean up
+		this.disconnectCount++;
 	}
 
 	// Required update method
