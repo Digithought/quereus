@@ -56,6 +56,47 @@ describe('Hash Utilities', () => {
 			expect(result.length).to.equal(8);
 		});
 
+		it('should correctly propagate carry from low-word multiplication', () => {
+			// The FNV-1a 64-bit hash of "a" can be computed by hand:
+			// offset basis = 0xcbf29ce484222325
+			// XOR with 0x61: hash = 0xcbf29ce484222344
+			// Multiply by FNV prime 0x00000100000001b3:
+			//   aLow = 0x84222344, aHigh = 0xcbf29ce4
+			//   fullLow = aLow * 0x1b3 = 0x84222344 * 0x1b3
+			//   This product exceeds 2^32 so carry must propagate to high word.
+			//
+			// Reference FNV-1a 64-bit for "a": 0xaf63dc4c8601ec8c
+			const hash = fnv1aHash('a');
+			const hashHex = Array.from(hash).map(b => b.toString(16).padStart(2, '0')).join('');
+
+			// Compute reference hash with correct carry propagation
+			let refHigh = 0xcbf29ce4;
+			let refLow = 0x84222325;
+			const fnvPrimeHigh = 0x00000100;
+			const fnvPrimeLow = 0x000001b3;
+
+			// XOR with 'a' (0x61)
+			refLow ^= 0x61;
+
+			// Multiply with correct carry
+			const aHigh = refHigh;
+			const aLow = refLow;
+			const fullLow = aLow * fnvPrimeLow; // precise for values < 2^53
+			refLow = fullLow >>> 0;
+			const carry = Math.floor(fullLow / 0x100000000);
+			refHigh = (aHigh * fnvPrimeLow + aLow * fnvPrimeHigh + carry) >>> 0;
+
+			const refHex = [refHigh, refLow]
+				.map(w => w.toString(16).padStart(8, '0'))
+				.join('');
+
+			// With the carry bug, the current implementation will produce a different
+			// high word than the correct reference. This test will fail until the
+			// carry propagation is fixed.
+			expect(hashHex).to.equal(refHex,
+				'fnv1aHash should correctly propagate carry from low-word multiplication');
+		});
+
 		it('should produce well-distributed hashes', () => {
 			// Test that small changes produce different hashes
 			const hashes = new Set<string>();
