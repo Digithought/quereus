@@ -147,6 +147,23 @@ export interface VirtualTableModule<
 	): Promise<void>;
 
 	/**
+	 * Drops an index from a virtual table.
+	 * Called by DROP INDEX.
+	 *
+	 * @param db The database connection
+	 * @param schemaName The name of the database schema
+	 * @param tableName The name of the virtual table that owns the index
+	 * @param indexName The name of the index to drop
+	 * @throws QuereusError on failure
+	 */
+	dropIndex?(
+		db: Database,
+		schemaName: string,
+		tableName: string,
+		indexName: string
+	): Promise<void>;
+
+	/**
 	 * Checks for shadow table name conflicts
 	 * @param name The name to check
 	 * @returns true if the name would conflict

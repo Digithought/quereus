@@ -544,4 +544,23 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			columns: indexSchema.columns.map(col => `${col.index}${col.desc ? ' DESC' : ''}`)
 		});
 	}
+
+	/**
+	 * Drops an index from a memory table
+	 */
+	async dropIndex(_db: Database, schemaName: string, tableName: string, indexName: string): Promise<void> {
+		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
+		const manager = this.tables.get(tableKey);
+
+		if (!manager) {
+			throw new QuereusError(`Memory table '${tableName}' not found in schema '${schemaName}'. Cannot drop index.`, StatusCode.ERROR);
+		}
+
+		await manager.dropIndex(indexName);
+
+		logger.operation('Drop Index', indexName, {
+			table: tableName,
+			schema: schemaName,
+		});
+	}
 }

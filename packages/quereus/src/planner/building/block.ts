@@ -10,6 +10,7 @@ import { buildCreateViewStmt } from './create-view.js';
 import { buildDropViewStmt } from './drop-view.js';
 import { buildCreateAssertionStmt } from './create-assertion.js';
 import { buildDropAssertionStmt } from './drop-assertion.js';
+import { buildDropIndexStmt } from './drop-index.js';
 import { buildInsertStmt } from './insert.js';
 import { buildUpdateStmt } from './update.js';
 import { buildDeleteStmt } from './delete.js';
@@ -36,15 +37,26 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildCreateViewStmt(ctx, stmt as AST.CreateViewStmt);
 			case 'createAssertion':
 				return buildCreateAssertionStmt(ctx, stmt as AST.CreateAssertionStmt);
-			case 'drop':
-				if (stmt.objectType === 'table') {
-					return buildDropTableStmt(ctx, stmt as AST.DropStmt);
-				} else if (stmt.objectType === 'view') {
-					return buildDropViewStmt(ctx, stmt as AST.DropStmt);
-				} else if (stmt.objectType === 'assertion') {
-					return buildDropAssertionStmt(ctx, stmt as AST.DropStmt);
+			case 'drop': {
+				const dropStmt = stmt as AST.DropStmt;
+				if (dropStmt.objectType === 'table') {
+					return buildDropTableStmt(ctx, dropStmt);
+				} else if (dropStmt.objectType === 'view') {
+					return buildDropViewStmt(ctx, dropStmt);
+				} else if (dropStmt.objectType === 'assertion') {
+					return buildDropAssertionStmt(ctx, dropStmt);
+				} else if (dropStmt.objectType === 'index') {
+					return buildDropIndexStmt(ctx, dropStmt);
+				} else if (dropStmt.objectType === 'trigger') {
+					quereusError(
+						`DROP TRIGGER is not supported`,
+						StatusCode.UNSUPPORTED,
+						undefined,
+						dropStmt
+					);
 				}
 				break;
+			}
 			case 'insert':
 				return buildInsertStmt(ctx, stmt as AST.InsertStmt);
 			case 'update':
@@ -92,5 +104,3 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
     // Its scope is batchParameterScope, and it contains all successfully planned statements.
 	return new BlockNode(ctx.scope, plannedStatements, { ...ctx.parameters });
 }
-
-

@@ -975,6 +975,82 @@ export class SchemaManager {
 	}
 
 	/**
+	 * Drops a secondary index from the table that owns it.
+	 * Searches all tables in the target schema to find the owning table.
+	 *
+	 * @param schemaName The schema to search in (e.g., "main")
+	 * @param indexName The name of the index to drop
+	 * @param ifExists If true, silently return if the index is not found
+	 */
+	async dropIndex(schemaName: string, indexName: string, ifExists: boolean = false): Promise<void> {
+		const schema = this.getSchema(schemaName);
+		if (!schema) {
+			if (ifExists) return;
+			throw new QuereusError(`Schema not found: ${schemaName}`, StatusCode.ERROR);
+		}
+
+		// Find which table owns this index
+		const lowerIndexName = indexName.toLowerCase();
+		let ownerTable: TableSchema | undefined;
+		for (const table of schema.getAllTables()) {
+			if (table.indexes?.some(idx => idx.name.toLowerCase() === lowerIndexName)) {
+				ownerTable = table;
+				break;
+			}
+		}
+
+		if (!ownerTable) {
+			if (ifExists) {
+				log(`Index %s.%s not found, but IF EXISTS specified`, schemaName, indexName);
+				return;
+			}
+			throw new QuereusError(`no such index: ${indexName}`, StatusCode.ERROR);
+		}
+
+		// Call module.dropIndex if the module supports it
+		const moduleReg = ownerTable.vtabModuleName ? this.getModule(ownerTable.vtabModuleName) : undefined;
+		if (moduleReg?.module?.dropIndex) {
+			try {
+				await moduleReg.module.dropIndex(this.db, schemaName, ownerTable.name, indexName);
+			} catch (e: unknown) {
+				const message = e instanceof Error ? e.message : String(e);
+				const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
+				throw new QuereusError(
+					`dropIndex failed for index '${indexName}' on table '${ownerTable.name}': ${message}`,
+					code, e instanceof Error ? e : undefined
+				);
+			}
+		}
+
+		// Remove the index from the table schema
+		const updatedIndexes = (ownerTable.indexes || []).filter(
+			idx => idx.name.toLowerCase() !== lowerIndexName
+		);
+		const updatedTableSchema: TableSchema = {
+			...ownerTable,
+			indexes: Object.freeze(updatedIndexes),
+		};
+		schema.addTable(updatedTableSchema);
+
+		this.changeNotifier.notifyChange({
+			type: 'table_modified',
+			schemaName,
+			objectName: ownerTable.name,
+			oldObject: ownerTable,
+			newObject: updatedTableSchema
+		});
+
+		this.emitAutoSchemaEventIfNeeded(ownerTable.vtabModuleName, {
+			type: 'drop',
+			objectType: 'index',
+			schemaName,
+			objectName: indexName,
+		});
+
+		log(`Successfully dropped index %s from table %s.%s`, indexName, schemaName, ownerTable.name);
+	}
+
+	/**
 	 * Emits an auto schema event for modules that don't have native event support,
 	 * if any schema listeners are registered.
 	 */

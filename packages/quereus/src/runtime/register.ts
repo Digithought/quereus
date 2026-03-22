@@ -10,6 +10,7 @@ import { emitParameterReference } from './emit/parameter.js';
 import { emitCreateTable } from './emit/create-table.js';
 import { emitCreateIndex } from './emit/create-index.js';
 import { emitDropTable } from './emit/drop-table.js';
+import { emitDropIndex } from './emit/drop-index.js';
 import { emitCreateView } from './emit/create-view.js';
 import { emitDropView } from './emit/drop-view.js';
 import { emitCreateAssertion } from './emit/create-assertion.js';
@@ -123,6 +124,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.CreateTable, emitCreateTable as EmitterFunc);
 	registerEmitter(PlanNodeType.CreateIndex, emitCreateIndex as EmitterFunc);
 	registerEmitter(PlanNodeType.DropTable, emitDropTable as EmitterFunc);
+	registerEmitter(PlanNodeType.DropIndex, emitDropIndex as EmitterFunc);
 	registerEmitter(PlanNodeType.CreateView, emitCreateView as EmitterFunc);
 	registerEmitter(PlanNodeType.DropView, emitDropView as EmitterFunc);
 	registerEmitter(PlanNodeType.CreateAssertion, emitCreateAssertion as EmitterFunc);

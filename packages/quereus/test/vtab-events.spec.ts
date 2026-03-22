@@ -293,8 +293,7 @@ describe('VTable Event Hooks', () => {
 			assert.equal(schemaEvents[0].objectName, 'idx_name');
 		});
 
-	it.skip('should emit DROP INDEX event', async () => {
-		// Note: DROP INDEX is not yet implemented in the planner
+	it('should emit DROP INDEX event', async () => {
 		await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
 		await db.exec('CREATE INDEX idx_name ON users(name)');
 		schemaEvents = [];

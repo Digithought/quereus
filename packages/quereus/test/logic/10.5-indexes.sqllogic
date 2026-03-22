@@ -113,6 +113,48 @@ CREATE INDEX idx_bad_col ON idx_test (non_existent_column);
 CREATE INDEX idx_name ON idx_test (name);
 -- error: Index idx_name already exists
 
+-- ========================================
+-- DROP INDEX tests
+-- ========================================
+
+-- DROP INDEX: basic drop
+CREATE TABLE drop_idx_test (id INTEGER PRIMARY KEY, name TEXT, age INTEGER);
+INSERT INTO drop_idx_test VALUES (1, 'Alice', 30), (2, 'Bob', 25);
+
+CREATE INDEX idx_drop_name ON drop_idx_test (name);
+
+-- Verify index works
+SELECT name FROM drop_idx_test WHERE name = 'Alice';
+→ [{"name":"Alice"}]
+
+-- Drop the index
+DROP INDEX idx_drop_name;
+
+-- Queries should still work after dropping index
+SELECT name FROM drop_idx_test WHERE name = 'Alice';
+→ [{"name":"Alice"}]
+
+-- Re-creating the same index should succeed after drop
+CREATE INDEX idx_drop_name ON drop_idx_test (name);
+DROP INDEX idx_drop_name;
+
+-- DROP INDEX IF EXISTS: index exists
+CREATE INDEX idx_drop_age ON drop_idx_test (age);
+DROP INDEX IF EXISTS idx_drop_age;
+
+-- DROP INDEX IF EXISTS: index does not exist (should be no-op)
+DROP INDEX IF EXISTS idx_nonexistent;
+
+-- DROP INDEX: error when index does not exist (no IF EXISTS)
+DROP INDEX idx_nonexistent;
+-- error: no such index
+
+-- DROP TRIGGER: parser rejects (not a supported object type)
+DROP TRIGGER some_trigger;
+-- error: Expected TABLE, VIEW, INDEX, or ASSERTION after DROP
+
+DROP TABLE drop_idx_test;
+
 -- Clean up
 DROP TABLE departments;
 DROP TABLE null_test;
