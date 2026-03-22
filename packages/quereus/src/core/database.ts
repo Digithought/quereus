@@ -1214,13 +1214,11 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 			if (stmt.astBatch.length > 1) {
 				// Multi-statement batch: execute all but the last statement,
 				// then yield results from the last statement
-				const batch = this._parseSql(sql);
-
-				for (let i = 0; i < batch.length - 1; i++) {
-					await this._executeSingleStatement(batch[i], params);
+				for (let i = 0; i < stmt.astBatch.length - 1; i++) {
+					await this._executeSingleStatement(stmt.astBatch[i], params);
 				}
 
-				const lastStmt = new Statement(this, [batch[batch.length - 1]]);
+				const lastStmt = new Statement(this, [stmt.astBatch[stmt.astBatch.length - 1]]);
 				this.statements.add(lastStmt);
 				try {
 					const names = lastStmt.getColumnNames();
