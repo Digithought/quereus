@@ -473,7 +473,7 @@ function findColumnPKDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyA
 
 	return Object.freeze(pkCols.map(col => ({
 		index: col.originalIndex,
-		desc: col.logicalType.name === 'INTEGER' && col.pkDirection === 'desc',
+		desc: col.pkDirection === 'desc',
 		autoIncrement: col.logicalType.name === 'INTEGER',
 		collation: col.collation || 'BINARY'
 	})));
