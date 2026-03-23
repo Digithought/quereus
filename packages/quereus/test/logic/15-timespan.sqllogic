@@ -135,6 +135,10 @@ SELECT timespan('P1Y2M3DT4H') * 2;
 SELECT timespan('P2Y4M6DT8H') / 2;
 → [{"timespan('P2Y4M6DT8H') / 2":"P1Y2M3DT4H"}]
 
+-- Test TIMESPAN / TIMESPAN ratio with calendar units returns null
+SELECT timespan('P6M') / timespan('P2M');
+→ [{"timespan('P6M') / timespan('P2M')":null}]
+
 -- Test unary negation of TIMESPAN
 SELECT -timespan('PT1H');
 → [{"-timespan('PT1H')":"-PT1H"}]
