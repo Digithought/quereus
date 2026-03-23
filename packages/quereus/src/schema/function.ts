@@ -129,22 +129,12 @@ export interface AggregateFunctionSchema extends BaseFunctionSchema {
 }
 
 /**
- * Schema for window functions (for future use).
- */
-export interface WindowFunctionSchema extends BaseFunctionSchema {
-	returnType: ScalarType;
-	/** Window function implementation */
-	implementation: (...args: SqlValue[]) => SqlValue;
-}
-
-/**
  * Union type representing all possible function schemas.
  */
 export type FunctionSchema =
 	| ScalarFunctionSchema
 	| TableValuedFunctionSchema
-	| AggregateFunctionSchema
-	| WindowFunctionSchema;
+	| AggregateFunctionSchema;
 
 /**
  * Type guards for function schema types.
@@ -159,10 +149,6 @@ export function isTableValuedFunctionSchema(schema: FunctionSchema): schema is T
 
 export function isAggregateFunctionSchema(schema: FunctionSchema): schema is AggregateFunctionSchema {
 	return 'stepFunction' in schema && 'finalizeFunction' in schema;
-}
-
-export function isWindowFunctionSchema(schema: FunctionSchema): schema is WindowFunctionSchema {
-	return 'implementation' in schema && schema.returnType.typeClass === 'scalar' && !isScalarFunctionSchema(schema) && !isAggregateFunctionSchema(schema);
 }
 
 /**

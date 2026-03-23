@@ -3,7 +3,6 @@ import {
 	isScalarFunctionSchema,
 	isTableValuedFunctionSchema,
 	isAggregateFunctionSchema,
-	isWindowFunctionSchema,
 } from '../src/schema/function.js';
 import { FunctionFlags } from '../src/common/constants.js';
 import type {
@@ -11,7 +10,6 @@ import type {
 	ScalarFunctionSchema,
 	AggregateFunctionSchema,
 	TableValuedFunctionSchema,
-	WindowFunctionSchema,
 } from '../src/schema/function.js';
 
 describe('Function type guards', () => {
@@ -41,14 +39,6 @@ describe('Function type guards', () => {
 		initialValue: 0,
 	};
 
-	const windowFunc: WindowFunctionSchema = {
-		name: 'test_window',
-		numArgs: 0,
-		flags: 0,
-		returnType: { typeClass: 'scalar', affinity: 'INTEGER' },
-		implementation: () => 0,
-	};
-
 	it('isScalarFunctionSchema correctly identifies scalar functions', () => {
 		expect(isScalarFunctionSchema(scalarFunc)).to.equal(true);
 		expect(isScalarFunctionSchema(tvfFunc)).to.equal(false);
@@ -58,18 +48,22 @@ describe('Function type guards', () => {
 	it('isTableValuedFunctionSchema correctly identifies TVFs', () => {
 		expect(isTableValuedFunctionSchema(tvfFunc)).to.equal(true);
 		expect(isTableValuedFunctionSchema(scalarFunc)).to.equal(false);
+		expect(isTableValuedFunctionSchema(aggFunc)).to.equal(false);
 	});
 
 	it('isAggregateFunctionSchema correctly identifies aggregates', () => {
 		expect(isAggregateFunctionSchema(aggFunc)).to.equal(true);
 		expect(isAggregateFunctionSchema(scalarFunc)).to.equal(false);
+		expect(isAggregateFunctionSchema(tvfFunc)).to.equal(false);
 	});
 
-	it('BUG: isWindowFunctionSchema cannot distinguish window from scalar', () => {
-		// This test documents the bug: WindowFunctionSchema from function.ts
-		// is runtime-indistinguishable from ScalarFunctionSchema, so the
-		// type guard always returns false.
-		expect(isScalarFunctionSchema(windowFunc as FunctionSchema)).to.equal(true); // misclassified!
-		expect(isWindowFunctionSchema(windowFunc as FunctionSchema)).to.equal(false); // broken!
+	it('each function matches exactly one type guard', () => {
+		const functions: FunctionSchema[] = [scalarFunc, tvfFunc, aggFunc];
+		const guards = [isScalarFunctionSchema, isTableValuedFunctionSchema, isAggregateFunctionSchema];
+
+		for (const func of functions) {
+			const matches = guards.filter(g => g(func));
+			expect(matches).to.have.length(1, `${func.name} should match exactly one type guard, matched ${matches.length}`);
+		}
 	});
 });

@@ -5,7 +5,7 @@ import { QuereusError } from "../../common/errors.js";
 import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import type { FunctionSchema } from "../../schema/function.js";
-import { isScalarFunctionSchema, isTableValuedFunctionSchema, isAggregateFunctionSchema, isWindowFunctionSchema } from "../../schema/function.js";
+import { isScalarFunctionSchema, isTableValuedFunctionSchema, isAggregateFunctionSchema } from "../../schema/function.js";
 import { Schema } from "../../schema/schema.js";
 import { INTEGER_TYPE, TEXT_TYPE } from "../../types/builtin-types.js";
 import { ColumnSchema } from "../../schema/column.js";
@@ -188,7 +188,6 @@ function classifyFunction(funcSchema: FunctionSchema): string {
 	if (isScalarFunctionSchema(funcSchema)) return 'scalar';
 	if (isTableValuedFunctionSchema(funcSchema)) return 'table';
 	if (isAggregateFunctionSchema(funcSchema)) return 'aggregate';
-	if (isWindowFunctionSchema(funcSchema)) return 'window';
 	return 'unknown';
 }
 
