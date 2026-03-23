@@ -41,7 +41,6 @@ const BARE_NODE_MODULES = [
  * Key: path relative to src/ (forward slashes).  Value: rationale.
  */
 const PROCESS_EXCEPTIONS: Record<string, string> = {
-	'runtime/scheduler.ts': 'process.hrtime.bigint() in optional metrics-only code path',
 };
 
 interface Violation {

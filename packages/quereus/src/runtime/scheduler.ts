@@ -1,6 +1,7 @@
 import type { Instruction, RuntimeContext, InstructionRuntimeStats } from "./types.js";
 import type { OutputValue, RuntimeValue, Row } from "../common/types.js";
 import { isAsyncIterable } from "./utils.js";
+import { hrtimeNs } from "../util/hrtime.js";
 import { createLogger } from "../common/logger.js";
 import { DefaultContextTracker } from './types.js';
 
@@ -388,7 +389,7 @@ export class Scheduler {
 
 	private runInstructionWithMetrics(instruction: Instruction, ctx: RuntimeContext, args: RuntimeValue[]): OutputValue {
 		const stats = instruction.runtimeStats!;
-		const start = process.hrtime.bigint();
+		const start = hrtimeNs();
 
 		stats.executions++;
 		stats.in += this.countInputs(args);
@@ -400,27 +401,27 @@ export class Scheduler {
 				// Handle async results separately
 				return result.then(resolved => {
 					stats.out += this.countOutputs(resolved);
-					stats.elapsedNs += process.hrtime.bigint() - start;
+					stats.elapsedNs += hrtimeNs() - start;
 					return resolved;
 				}).catch(error => {
-					stats.elapsedNs += process.hrtime.bigint() - start;
+					stats.elapsedNs += hrtimeNs() - start;
 					throw error;
 				});
 			}
 
 			stats.out += this.countOutputs(result);
-			stats.elapsedNs += process.hrtime.bigint() - start;
+			stats.elapsedNs += hrtimeNs() - start;
 
 			return result;
 		} catch (error) {
-			stats.elapsedNs += process.hrtime.bigint() - start;
+			stats.elapsedNs += hrtimeNs() - start;
 			throw error;
 		}
 	}
 
 	private async runInstructionWithMetricsAsync(instruction: Instruction, ctx: RuntimeContext, args: RuntimeValue[]): Promise<OutputValue> {
 		const stats = instruction.runtimeStats!;
-		const start = process.hrtime.bigint();
+		const start = hrtimeNs();
 
 		stats.executions++;
 		stats.in += this.countInputs(args);
@@ -428,10 +429,10 @@ export class Scheduler {
 		try {
 			const result = await instruction.run(ctx, ...args);
 			stats.out += this.countOutputs(result);
-			stats.elapsedNs += process.hrtime.bigint() - start;
+			stats.elapsedNs += hrtimeNs() - start;
 			return result;
 		} catch (error) {
-			stats.elapsedNs += process.hrtime.bigint() - start;
+			stats.elapsedNs += hrtimeNs() - start;
 			throw error;
 		}
 	}
