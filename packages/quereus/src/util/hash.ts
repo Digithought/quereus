@@ -28,18 +28,18 @@ export function fnv1aHash(str: string): Uint8Array {
 		const aHigh = hashHigh;
 		const aLow = hashLow;
 		
-		hashLow = (aLow * fnvPrimeLow) >>> 0;
-		hashHigh = (aHigh * fnvPrimeLow + aLow * fnvPrimeHigh + (hashLow / 0x100000000)) >>> 0;
-		hashLow = hashLow >>> 0;
+		const fullLow = aLow * fnvPrimeLow;
+		hashLow = fullLow >>> 0;
+		hashHigh = (aHigh * fnvPrimeLow + aLow * fnvPrimeHigh + Math.floor(fullLow / 0x100000000)) >>> 0;
 		
 		// Handle high byte of character if present
 		if (charCode > 0xff) {
 			hashLow ^= (charCode >>> 8) & 0xff;
 			const bHigh = hashHigh;
 			const bLow = hashLow;
-			hashLow = (bLow * fnvPrimeLow) >>> 0;
-			hashHigh = (bHigh * fnvPrimeLow + bLow * fnvPrimeHigh + (hashLow / 0x100000000)) >>> 0;
-			hashLow = hashLow >>> 0;
+			const fullLow2 = bLow * fnvPrimeLow;
+			hashLow = fullLow2 >>> 0;
+			hashHigh = (bHigh * fnvPrimeLow + bLow * fnvPrimeHigh + Math.floor(fullLow2 / 0x100000000)) >>> 0;
 		}
 	}
 
