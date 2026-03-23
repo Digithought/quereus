@@ -65,7 +65,7 @@ export function buildUpdateStmt(
   }
 
   // Plan the source of rows to update. This is typically the table itself, potentially filtered.
-  let sourceNode: RelationalPlanNode = buildTableReference({ type: 'table', table: stmt.table }, ctx);
+  let sourceNode: RelationalPlanNode = buildTableReference({ type: 'table', table: stmt.table }, contextWithSchemaPath);
 
   // Create a new scope with the table columns registered for column resolution
   const tableScope = new RegisteredScope(ctx.scope);
@@ -77,7 +77,7 @@ export function buildUpdateStmt(
   });
 
   // Create a new planning context with the updated scope for WHERE clause resolution
-  const updateCtx = { ...ctx, scope: tableScope };
+  const updateCtx = { ...contextWithSchemaPath, scope: tableScope };
 
   // IMPORTANT: Build assignments FIRST to ensure parameter indices match SQL text order.
   // SQL: UPDATE t SET col = ?1 WHERE id = ?2

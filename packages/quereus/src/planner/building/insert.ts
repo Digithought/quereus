@@ -525,7 +525,7 @@ export function buildInsertStmt(
 	}
 
 	// ORTHOGONAL ROW EXPANSION: Apply uniform row expansion to map any source to table structure with defaults
-	const expandedSourceNode = createRowExpansionProjection(ctx, sourceNode, targetColumns, tableReference, contextScope);
+	const expandedSourceNode = createRowExpansionProjection(contextWithSchemaPath, sourceNode, targetColumns, tableReference, contextScope);
 
 	// Update targetColumns to reflect all table columns since we've expanded the source
 	const finalTargetColumns = tableReference.tableSchema.columns.map(col => columnSchemaToDef(col.name, col));

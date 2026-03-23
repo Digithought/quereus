@@ -76,7 +76,7 @@ export function buildDeleteStmt(
   });
 
   // Create a new planning context with the updated scope for WHERE clause resolution
-  const deleteCtx = { ...ctx, scope: tableScope };
+  const deleteCtx = { ...contextWithSchemaPath, scope: tableScope };
 
   if (stmt.where) {
     const filterExpression = buildExpression(deleteCtx, stmt.where);
