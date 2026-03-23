@@ -58,7 +58,7 @@ SELECT count(*) as cnt FROM s2.items;
 
 -- DELETE from s1.items that IS referenced should fail (RESTRICT)
 DELETE FROM s1.items WHERE id = 1;
--- error
+-- error: constraint failed
 
 -- Verify s1.items unchanged
 SELECT count(*) as cnt FROM s1.items;

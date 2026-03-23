@@ -248,6 +248,9 @@ export function buildParentSideFKChecks(
 			for (const fk of childTable.foreignKeys) {
 				if (fk.referencedTable.toLowerCase() !== tableSchema.name.toLowerCase()) continue;
 
+				const targetSchema = fk.referencedSchema ?? childTable.schemaName;
+if (targetSchema.toLowerCase() !== tableSchema.schemaName.toLowerCase()) continue;
+
 				const action = operation === RowOpFlag.DELETE ? fk.onDelete : fk.onUpdate;
 
 				// Only RESTRICT and NO ACTION generate parent-side checks

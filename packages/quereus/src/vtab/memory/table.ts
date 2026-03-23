@@ -79,11 +79,12 @@ export class MemoryTable extends VirtualTable {
 				logger.debugLog(`ensureConnection: Created unregistered committed-snapshot connection ${this.connection.connectionId} for table ${this.tableName}`);
 			} else {
 				// Check if there's already an active connection for this table in the database
-				const existingConnections = this.db.getConnectionsForTable(this.tableName);
+				const qualifiedName = `${this.schemaName}.${this.tableName}`;
+				const existingConnections = this.db.getConnectionsForTable(qualifiedName);
 				const existingMemConn = existingConnections.length > 0 && existingConnections[0] instanceof MemoryVirtualTableConnection
 					? (existingConnections[0] as MemoryVirtualTableConnection).getMemoryConnection()
 					: null;
-				if (existingMemConn) {
+				if (existingMemConn && existingMemConn.tableManager === this.manager) {
 					this.connection = existingMemConn;
 					// Sync readLayer with the manager's current committed state.
 					// The connection may have been disconnected from the manager
@@ -92,16 +93,14 @@ export class MemoryTable extends VirtualTable {
 					// schema changes like ALTER TABLE ADD COLUMN,
 					// ensureSchemaChangeSafety only updates connections still in the
 					// manager's map, so this connection may point to an outdated layer.
-					if (this.connection.tableManager === this.manager) {
-						this.connection.readLayer = this.manager.currentCommittedLayer;
-					}
+					this.connection.readLayer = this.manager.currentCommittedLayer;
 					logger.debugLog(`ensureConnection: Reused existing connection ${this.connection.connectionId} for table ${this.tableName}`);
 				} else {
 					// Establish connection state with the manager upon first use
 					this.connection = this.manager.connect();
 
 					// Create a VirtualTableConnection wrapper and register it with the database
-					const vtabConnection = new MemoryVirtualTableConnection(this.tableName, this.connection);
+					const vtabConnection = new MemoryVirtualTableConnection(qualifiedName, this.connection);
 					await this.db.registerConnection(vtabConnection);
 
 					logger.debugLog(`ensureConnection: Created and registered new connection ${this.connection.connectionId} for table ${this.tableName}`);
@@ -120,7 +119,8 @@ export class MemoryTable extends VirtualTable {
 	/** Creates a new VirtualTableConnection for transaction support */
 	createConnection(): VirtualTableConnection {
 		const memoryConnection = this.manager.connect();
-		return new MemoryVirtualTableConnection(this.tableName, memoryConnection);
+		const qualifiedName = `${this.schemaName}.${this.tableName}`;
+		return new MemoryVirtualTableConnection(qualifiedName, memoryConnection);
 	}
 
 	/** Gets the current connection if this table maintains one internally */
@@ -129,7 +129,7 @@ export class MemoryTable extends VirtualTable {
 			return undefined;
 		}
 		if (!this.cachedVtabConnection || this.cachedVtabConnection.getMemoryConnection() !== this.connection) {
-			this.cachedVtabConnection = new MemoryVirtualTableConnection(this.tableName, this.connection);
+			this.cachedVtabConnection = new MemoryVirtualTableConnection(`${this.schemaName}.${this.tableName}`, this.connection);
 		}
 		return this.cachedVtabConnection;
 	}

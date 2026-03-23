@@ -49,6 +49,9 @@ export async function executeForeignKeyActions(
 				for (const fk of childTable.foreignKeys) {
 					if (fk.referencedTable.toLowerCase() !== parentTable.name.toLowerCase()) continue;
 
+					const targetSchema = fk.referencedSchema ?? childTable.schemaName;
+					if (targetSchema.toLowerCase() !== parentTable.schemaName.toLowerCase()) continue;
+
 					const action = operation === 'delete' ? fk.onDelete : fk.onUpdate;
 
 					// RESTRICT and NO ACTION are handled by constraint checks, not actions

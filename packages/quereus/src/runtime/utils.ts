@@ -71,7 +71,7 @@ export async function asyncIterableToArray<T>(iterable: AsyncIterable<T>): Promi
  * This ensures transaction consistency by reusing connections within the same context.
  */
 export async function getVTableConnection(ctx: RuntimeContext, tableSchema: TableSchema): Promise<VirtualTableConnection> {
-	const tableName = tableSchema.name; // Use just the table name, not fully qualified
+	const tableName = `${tableSchema.schemaName}.${tableSchema.name}`;
 
 	// Check if we already have an active connection for this table
 	const existingConnections = ctx.db.getConnectionsForTable(tableName);
@@ -134,14 +134,14 @@ export async function getVTable(ctx: RuntimeContext, tableSchema: TableSchema): 
 	const vtabInstance = await module.connect(ctx.db, moduleInfo.auxData, tableSchema.vtabModuleName, tableSchema.schemaName, tableSchema.name, vtabArgs, tableSchema);
 
 	// If we have an active connection for this table, inject it into the VirtualTable
-	const tableName = tableSchema.name;
-	const existingConnections = ctx.db.getConnectionsForTable(tableName);
+	const qualifiedName = `${tableSchema.schemaName}.${tableSchema.name}`;
+	const existingConnections = ctx.db.getConnectionsForTable(qualifiedName);
 	if (existingConnections.length > 0 && tableSchema.vtabModuleName === 'memory') {
 		const memoryConnection = existingConnections[0] as MemoryVirtualTableConnection;
 		const memoryTable = vtabInstance as MemoryTable;
 		if (memoryConnection.getMemoryConnection && memoryTable.setConnection) {
 			memoryTable.setConnection(memoryConnection.getMemoryConnection());
-			log(`Injected existing connection into VirtualTable for table ${tableName}`);
+			log(`Injected existing connection into VirtualTable for table ${qualifiedName}`);
 		}
 	}
 
