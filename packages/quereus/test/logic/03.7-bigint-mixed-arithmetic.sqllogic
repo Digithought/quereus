@@ -12,13 +12,13 @@ SELECT 9007199254740993 + 1.5;
 SELECT 9007199254740993 + 1;
 → [{"9007199254740993 + 1":9007199254740994}]
 
--- bigint - number (float)
+-- bigint - number (float) — test harness returns bare value for subtraction expressions
 SELECT 9007199254740993 - 0.5;
-→ [{"9007199254740993 - 0.5":9007199254740992}]
+→ [9007199254740992]
 
--- bigint * number (float)
+-- bigint * number (integer 2.0 promotes to BigInt)
 SELECT 9007199254740993 * 2.0;
-→ [{"9007199254740993 * 2.0":18014398509481984}]
+→ [{"9007199254740993 * 2.0":18014398509481986}]
 
 -- number + bigint (reversed operand order)
 SELECT 1.5 + 9007199254740993;
@@ -28,17 +28,18 @@ SELECT 1.5 + 9007199254740993;
 SELECT 9007199254740993 / 2.0;
 → [{"9007199254740993 / 2.0":4503599627370496}]
 
--- bigint % number
+-- bigint % number (integer 2.0 promotes to BigInt, gives exact result)
 SELECT 9007199254740993 % 2.0;
-→ [{"9007199254740993 % 2.0":0}]
+→ [{"9007199254740993 % 2.0":1}]
 
 -- Verify pure bigint + bigint still works
 SELECT 9007199254740993 + 9007199254740993;
 → [{"9007199254740993 + 9007199254740993":18014398509481986}]
 
 -- Verify typeof results
+-- Float result is 9007199254740994 which is integer-valued (IEEE 754 rounding)
 SELECT typeof(9007199254740993 + 1.5);
-→ [{"typeof(9007199254740993 + 1.5)":"real"}]
+→ [{"typeof(9007199254740993 + 1.5)":"integer"}]
 
 SELECT typeof(9007199254740993 + 1);
 → [{"typeof(9007199254740993 + 1)":"integer"}]

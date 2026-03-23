@@ -13,6 +13,21 @@ import { formatPlanTree, formatPlanSummary, type PlanDisplayOptions } from '../s
 config.truncateThreshold = 1000;
 config.includeStack = true;
 
+/** Normalize BigInt values to Number for comparison with JSON-parsed expected results.
+ *  JSON has no BigInt representation, so engine BigInt results must be compared as Numbers. */
+function normalizeBigInts(obj: any): any {
+	if (typeof obj === 'bigint') return Number(obj);
+	if (Array.isArray(obj)) return obj.map(normalizeBigInts);
+	if (obj !== null && typeof obj === 'object') {
+		const result: Record<string, any> = {};
+		for (const [key, value] of Object.entries(obj)) {
+			result[key] = normalizeBigInts(value);
+		}
+		return result;
+	}
+	return obj;
+}
+
 // ESM equivalent for __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -620,7 +635,7 @@ describe('SQL Logic Tests' + (USE_STORE_MODULE ? ' (Store Mode)' : ''), () => {
 					// Compare each row
 					for (let i = 0; i < actualResult.length; i++) {
 						try {
-							expect(actualResult[i]).to.deep.equal(expectedResult[i], `[${file}:${lineNum}] row ${i} mismatch.\nActual: ${safeJsonStringify(actualResult[i])}\nExpected: ${safeJsonStringify(expectedResult[i])}\nBlock:\n${sqlBlock}`);
+							expect(normalizeBigInts(actualResult[i])).to.deep.equal(expectedResult[i], `[${file}:${lineNum}] row ${i} mismatch.\nActual: ${safeJsonStringify(actualResult[i])}\nExpected: ${safeJsonStringify(expectedResult[i])}\nBlock:\n${sqlBlock}`);
 						} catch (matchError: any) {
 							const error = matchError instanceof Error ? matchError : new Error(String(matchError));
 							const diagnostics = generateDiagnostics(db, sqlBlock, error);

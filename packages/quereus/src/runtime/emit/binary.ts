@@ -45,6 +45,43 @@ export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruct
 	}
 }
 
+/** Handle arithmetic when at least one operand is bigint.
+ *  Both bigint → use bigint arithmetic directly.
+ *  Mixed (one bigint, one number):
+ *    - integer number → promote to BigInt, stay in bigint domain
+ *    - fractional number → demote bigint to Number, use float arithmetic */
+function mixedBigIntArithmetic(
+	v1: SqlValue, v2: SqlValue,
+	inner: (v1: number, v2: number) => number,
+	innerBigInt: (v1: bigint, v2: bigint) => bigint
+): SqlValue {
+	if (typeof v1 === 'bigint' && typeof v2 === 'bigint') {
+		try {
+			return innerBigInt(v1, v2);
+		} catch {
+			return null;
+		}
+	}
+	// Mixed: one bigint, one number
+	const num = typeof v1 === 'bigint' ? v2 as number : v1 as number;
+	if (Number.isInteger(num)) {
+		try {
+			return innerBigInt(
+				typeof v1 === 'bigint' ? v1 : BigInt(v1 as number),
+				typeof v2 === 'bigint' ? v2 : BigInt(v2 as number)
+			);
+		} catch {
+			// Fall through to float path (e.g., division by zero)
+		}
+	}
+	// Float path: convert bigint → Number, use float arithmetic
+	const n1 = typeof v1 === 'bigint' ? Number(v1) : v1 as number;
+	const n2 = typeof v2 === 'bigint' ? Number(v2) : v2 as number;
+	const result = inner(n1, n2);
+	if (!Number.isFinite(result)) return null;
+	return result;
+}
+
 export function emitNumericOp(plan: BinaryOpNode, ctx: EmissionContext): Instruction {
 	let inner: (v1: number, v2: number) => number;
 	let innerBigInt: (v1: bigint, v2: bigint) => bigint;
@@ -91,11 +128,7 @@ export function emitNumericOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 
 			if (v1 !== null && v2 !== null) {
 				if (typeof v1 === 'bigint' || typeof v2 === 'bigint') {
-					try {
-						return innerBigInt(v1 as bigint, v2 as bigint);
-					} catch {
-						return null;
-					}
+					return mixedBigIntArithmetic(v1, v2, inner, innerBigInt);
 				} else {
 					const n1 = coerceToNumberForArithmetic(v1);
 					const n2 = coerceToNumberForArithmetic(v2);
@@ -116,11 +149,7 @@ export function emitNumericOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 		run = function runNumericOnly(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {
 			if (v1 !== null && v2 !== null) {
 				if (typeof v1 === 'bigint' || typeof v2 === 'bigint') {
-					try {
-						return innerBigInt(v1 as bigint, v2 as bigint);
-					} catch {
-						return null;
-					}
+					return mixedBigIntArithmetic(v1, v2, inner, innerBigInt);
 				} else {
 					try {
 						const result = inner(v1 as number, v2 as number);
@@ -144,11 +173,7 @@ export function emitNumericOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 
 			if (v1 !== null && v2 !== null) {
 				if (typeof v1 === 'bigint' || typeof v2 === 'bigint') {
-					try {
-						return innerBigInt(v1 as bigint, v2 as bigint);
-					} catch {
-						return null;
-					}
+					return mixedBigIntArithmetic(v1, v2, inner, innerBigInt);
 				} else {
 					const n1 = coerceToNumberForArithmetic(v1);
 					const n2 = coerceToNumberForArithmetic(v2);
