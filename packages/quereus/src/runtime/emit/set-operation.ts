@@ -114,11 +114,20 @@ export function emitSetOperation(plan: SetOperationNode, ctx: EmissionContext): 
       rightTree.insert(createOutputRow(row));
     }
 
+    // Track already-yielded rows to deduplicate (EXCEPT returns distinct rows)
+    const yielded = new BTree<Row, Row>(
+      (row: Row) => row,
+      collationRowComparator
+    );
+
     // Yield left rows that are not in right set
     for (const outputRow of leftRowsArray) {
       const rightPath = rightTree.find(outputRow);
       if (!rightPath.on) {
-        yield outputRow; // Let SortNode handle row context
+        const yieldedPath = yielded.insert(outputRow);
+        if (yieldedPath.on) {
+          yield outputRow; // Let SortNode handle row context
+        }
       }
     }
   }

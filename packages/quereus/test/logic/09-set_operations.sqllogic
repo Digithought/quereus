@@ -228,3 +228,17 @@ INTERSECT
 SELECT a, b FROM (VALUES (true, 'x'), (false, 'y')) AS t2(a, b)
 ORDER BY a, b;
 → [{"a":0,"b":"y"},{"a":1,"b":"x"}]
+
+-- EXCEPT with duplicate left-side rows expects deduplication
+SELECT value FROM (VALUES (1), (1), (2)) AS t1(value)
+EXCEPT
+SELECT value FROM (VALUES (2)) AS t2(value)
+ORDER BY value;
+→ [{"value":1}]
+
+-- EXCEPT with multiple duplicates
+SELECT value FROM (VALUES ('a'), ('a'), ('a'), ('b'), ('c')) AS t1(value)
+EXCEPT
+SELECT value FROM (VALUES ('b')) AS t2(value)
+ORDER BY value;
+→ [{"value":"a"},{"value":"c"}]

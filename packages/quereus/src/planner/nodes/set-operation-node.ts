@@ -41,7 +41,7 @@ export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
 
   getType(): RelationType {
     const leftType = this.left.getType();
-    return { ...leftType, isSet: true } as RelationType;
+    return { ...leftType, isSet: this.op !== 'unionAll' } as RelationType;
   }
 
   getChildren(): readonly PlanNode[] {
