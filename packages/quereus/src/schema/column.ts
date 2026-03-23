@@ -28,6 +28,8 @@ export interface ColumnSchema {
 	generatedStored?: boolean;
 	/** Sort direction for primary key ('asc' | 'desc') */
 	pkDirection?: 'asc' | 'desc';
+	/** Whether the column has AUTOINCREMENT (only valid for INTEGER PRIMARY KEY) */
+	autoIncrement?: boolean;
 }
 
 /**

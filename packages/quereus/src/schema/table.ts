@@ -114,6 +114,7 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 			case 'primaryKey':
 				schema.primaryKey = true;
 				schema.pkDirection = constraint.direction;
+				schema.autoIncrement = constraint.autoincrement || false;
 				break;
 			case 'notNull':
 				schema.notNull = true;
@@ -474,7 +475,7 @@ function findColumnPKDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyA
 	return Object.freeze(pkCols.map(col => ({
 		index: col.originalIndex,
 		desc: col.pkDirection === 'desc',
-		autoIncrement: col.logicalType.name === 'INTEGER',
+		autoIncrement: col.autoIncrement || false,
 		collation: col.collation || 'BINARY'
 	})));
 }
