@@ -348,6 +348,11 @@ describe('Type System', () => {
 				expect(TIME_TYPE.parse!(59.999)).to.equal('00:00:59.999');
 			});
 
+			it('should carry fractional seconds that round to the next second', () => {
+				expect(TIME_TYPE.parse!(59.9999)).to.equal('00:01:00');
+				expect(TIME_TYPE.parse!(3599.9999)).to.equal('01:00:00');
+			});
+
 			it('should handle negative numeric input gracefully', () => {
 				expect(() => TIME_TYPE.parse!(-1)).to.throw(TypeError);
 				expect(() => TIME_TYPE.parse!(-3600)).to.throw(TypeError);
