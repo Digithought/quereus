@@ -78,7 +78,6 @@ export class DatabaseOptionsManager {
 		}
 
 		this.options.set(canonicalKey, convertedValue);
-		log('Option %s changed: %j → %j', canonicalKey, oldValue, convertedValue);
 
 		// Notify listener if registered — roll back on failure
 		try {
@@ -87,6 +86,8 @@ export class DatabaseOptionsManager {
 			this.options.set(canonicalKey, oldValue);
 			throw error;
 		}
+
+		log('Option %s changed: %j → %j', canonicalKey, oldValue, convertedValue);
 	}
 
 	/**
