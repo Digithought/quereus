@@ -1,32 +1,32 @@
-description: Removed dead WindowFunctionSchema from function.ts FunctionSchema union and broken isWindowFunctionSchema type guard
+description: Removed dead WindowFunctionSchema from function.ts union, fixed classifyFunction to use window registry
 dependencies: none
 files:
   packages/quereus/src/schema/function.ts
+  packages/quereus/src/schema/window-function.ts
   packages/quereus/src/func/builtins/schema.ts
   packages/quereus/test/function-type-guards.spec.ts
 ----
 ## Summary
 
-The `WindowFunctionSchema` interface in `function.ts` was marked "for future use" and was runtime-indistinguishable from `ScalarFunctionSchema` (both have `implementation: function` and `returnType.typeClass === 'scalar'`). This made the `isWindowFunctionSchema` type guard always return `false`.
-
-A separate, actively-used `WindowFunctionSchema` in `window-function.ts` (with `kind`, `step`, `final`, `argCount` fields) serves the actual window function system — it was never part of the `FunctionSchema` union and was unaffected.
+The `WindowFunctionSchema` interface in `function.ts` was runtime-indistinguishable from `ScalarFunctionSchema` (both have `implementation: function` and `returnType.typeClass === 'scalar'`), making `isWindowFunctionSchema` always return `false`. A separate, actively-used `WindowFunctionSchema` in `window-function.ts` serves the actual window function system via a global registry.
 
 ## Changes
 
-- **Removed** the unused `WindowFunctionSchema` interface from `function.ts`
-- **Removed** it from the `FunctionSchema` union (now: `ScalarFunctionSchema | TableValuedFunctionSchema | AggregateFunctionSchema`)
-- **Removed** the broken `isWindowFunctionSchema` type guard
-- **Updated** `schema.ts` builtins `classifyFunction` to remove the dead `isWindowFunctionSchema` call
-- **Updated** `function-type-guards.spec.ts` — removed the bug-documenting test, added an "each function matches exactly one type guard" coverage test
+- **Removed** (prior pass) the unused `WindowFunctionSchema` interface, its union membership, and broken `isWindowFunctionSchema` type guard from `function.ts`
+- **Added** `isWindowFunction` import from `window-function.ts` to `func/builtins/schema.ts`
+- **Fixed** `classifyFunction` to check the window function registry first: `if (isWindowFunction(funcSchema.name)) return 'window'`
+- **Exported** `classifyFunction` for testability
+- **Added** `classifyFunction` tests verifying scalar, TVF, aggregate, and window classification (window test registers a function in the window registry and confirms it's classified as `'window'`)
 
 ## Testing notes
 
-- `function-type-guards.spec.ts`: 4 passing tests verifying each type guard correctly identifies its type and no cross-matches occur
-- Full test suite: 182 passing (1 pre-existing unrelated failure in `emit-missing-types.spec.ts`)
-- Build passes clean
+- `function-type-guards.spec.ts`: 8 passing tests — 4 type guard tests + 4 classifyFunction tests
+- TypeScript type check passes clean
+- Full test suite: 329 passing (1 pre-existing unrelated failure in `10.1-ddl-lifecycle.sqllogic`)
 
 ## Use cases for validation
 
-- Create each function schema type (scalar, TVF, aggregate) and verify the correct type guard returns true
-- Verify no function matches more than one type guard
-- The `window-function.ts` `WindowFunctionSchema` (the real one) continues to work via its own `resolveWindowFunction`/`isWindowFunction` registry — completely independent of the `FunctionSchema` union
+- Create each function schema type (scalar, TVF, aggregate) and verify `classifyFunction` returns the correct string
+- Register a function name in the window registry and verify `classifyFunction` returns `'window'` even when the schema is scalar-shaped
+- Verify each type guard matches exactly one function type (no cross-matches)
+- The `window-function.ts` registry (`resolveWindowFunction`/`isWindowFunction`) is unaffected

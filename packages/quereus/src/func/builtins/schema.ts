@@ -6,6 +6,7 @@ import { StatusCode } from "../../common/types.js";
 import type { Database } from "../../core/database.js";
 import type { FunctionSchema } from "../../schema/function.js";
 import { isScalarFunctionSchema, isTableValuedFunctionSchema, isAggregateFunctionSchema } from "../../schema/function.js";
+import { isWindowFunction } from "../../schema/window-function.js";
 import { Schema } from "../../schema/schema.js";
 import { INTEGER_TYPE, TEXT_TYPE } from "../../types/builtin-types.js";
 import { ColumnSchema } from "../../schema/column.js";
@@ -184,7 +185,8 @@ export const tableInfoFunc = createIntegratedTableValuedFunction(
 	}
 );
 
-function classifyFunction(funcSchema: FunctionSchema): string {
+export function classifyFunction(funcSchema: FunctionSchema): string {
+	if (isWindowFunction(funcSchema.name)) return 'window';
 	if (isScalarFunctionSchema(funcSchema)) return 'scalar';
 	if (isTableValuedFunctionSchema(funcSchema)) return 'table';
 	if (isAggregateFunctionSchema(funcSchema)) return 'aggregate';
