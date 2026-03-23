@@ -293,18 +293,18 @@ describe('VTable Event Hooks', () => {
 			assert.equal(schemaEvents[0].objectName, 'idx_name');
 		});
 
-	it('should emit DROP INDEX event', async () => {
-		await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
-		await db.exec('CREATE INDEX idx_name ON users(name)');
-		schemaEvents = [];
+		it('should emit DROP INDEX event', async () => {
+			await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
+			await db.exec('CREATE INDEX idx_name ON users(name)');
+			schemaEvents = [];
 
-		await db.exec('DROP INDEX idx_name');
+			await db.exec('DROP INDEX idx_name');
 
-		assert.equal(schemaEvents.length, 1);
-		assert.equal(schemaEvents[0].type, 'drop');
-		assert.equal(schemaEvents[0].objectType, 'index');
-		assert.equal(schemaEvents[0].objectName, 'idx_name');
-	});
+			assert.equal(schemaEvents.length, 1);
+			assert.equal(schemaEvents[0].type, 'drop');
+			assert.equal(schemaEvents[0].objectType, 'index');
+			assert.equal(schemaEvents[0].objectName, 'idx_name');
+		});
 	});
 
 describe.skip('getEventEmitter API', () => {
