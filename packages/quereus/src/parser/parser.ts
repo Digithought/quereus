@@ -2595,6 +2595,9 @@ export class Parser {
 			} else if (this.peekKeyword('SEED')) {
 				this.advance();
 				items.push(this.declareSeedItem());
+			} else if (this.peekKeyword('ASSERTION')) {
+				this.advance();
+				items.push(this.declareAssertionItem());
 			} else {
 				// Fallback: ignore unrecognized item (domain, collation, import)
 				const start = this.peek();
@@ -2783,6 +2786,16 @@ export class Parser {
 		this.consume(TokenType.RPAREN, "Expected ')' after seed rows.");
 
 		return { type: 'declaredSeed', tableName, columns, seedData: rows };
+	}
+
+	private declareAssertionItem(): AST.DeclaredAssertion {
+		const startToken = this.previous();
+		const assertionStmt = this.createAssertionStatement(startToken);
+		return {
+			type: 'declaredAssertion',
+			assertionStmt,
+			loc: assertionStmt.loc,
+		};
 	}
 
 	private diffSchemaStatement(startToken: Token): AST.DiffSchemaStmt {

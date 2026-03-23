@@ -625,3 +625,128 @@ select id, flag from test_seed_types.typed_data order by id;
 select id, typeof(data), length(data) from test_seed_types.typed_data order by id;
 → [{"id": 1, "typeof(data)": "blob", "length(data)": 4}, {"id": 2, "typeof(data)": "blob", "length(data)": 4}]
 
+-- Step 54: Test assertions in declarative schema (using main since assertions live in main)
+-- First clean up: redeclare main as empty to clear leftover tables
+declare schema main {
+	table assert_accounts {
+		id INTEGER PRIMARY KEY,
+		balance INTEGER NOT NULL
+	}
+
+	assertion positive_balance check (not exists (select 1 from assert_accounts where balance < 0))
+
+	seed assert_accounts (
+		(1, 100),
+		(2, 200)
+	)
+}
+
+-- run
+
+-- Step 55: Diff should show drops for old main objects plus CREATE TABLE and CREATE ASSERTION
+diff schema main;
+→ [{"ddl": "DROP TABLE IF EXISTS products_with_indexes"}, {"ddl": "DROP INDEX IF EXISTS idx_products_name"}, {"ddl": "create table assert_accounts (id INTEGER primary key, balance INTEGER not null)"}, {"ddl": "create assertion positive_balance check (not exists (select 1 from assert_accounts where balance < 0))"}]
+
+-- Step 56: Apply creates the table and assertion
+apply schema main with seed;
+
+-- run
+
+-- Step 57: Verify seed data
+select * from assert_accounts order by id;
+→ [{"id": 1, "balance": 100}, {"id": 2, "balance": 200}]
+
+-- Step 58: Diff should be empty now
+diff schema main;
+→ []
+
+-- Step 59: Assertion is enforced — commit with violation fails
+begin;
+insert into assert_accounts values (3, -50);
+commit;
+-- error: Integrity assertion failed: positive_balance
+
+-- Step 60: Verify state unchanged
+select count(*) from assert_accounts;
+→ [{"count(*)": 2}]
+
+-- Step 61: Valid insert works
+begin;
+insert into assert_accounts values (3, 50);
+commit;
+
+-- run
+
+select count(*) from assert_accounts;
+→ [{"count(*)": 3}]
+
+-- Step 62: Redeclare schema without the assertion — diff shows DROP ASSERTION
+declare schema main {
+	table assert_accounts {
+		id INTEGER PRIMARY KEY,
+		balance INTEGER NOT NULL
+	}
+}
+
+-- run
+
+diff schema main;
+→ [{"ddl": "DROP ASSERTION IF EXISTS positive_balance"}]
+
+-- Step 63: Apply removes the assertion
+apply schema main;
+
+-- run
+
+-- Step 64: Violation no longer fails (assertion removed)
+begin;
+insert into assert_accounts values (4, -99);
+commit;
+
+-- run
+
+select count(*) from assert_accounts;
+→ [{"count(*)": 4}]
+
+-- Step 65: Multiple assertions in one declaration
+declare schema main {
+	table assert_items {
+		id INTEGER PRIMARY KEY,
+		qty INTEGER NOT NULL,
+		price INTEGER NOT NULL
+	}
+
+	assertion qty_positive check (not exists (select 1 from assert_items where qty < 0))
+	assertion price_positive check (not exists (select 1 from assert_items where price < 0))
+}
+
+-- run
+
+diff schema main;
+→ [{"ddl": "DROP TABLE IF EXISTS assert_accounts"}, {"ddl": "create table assert_items (id INTEGER primary key, qty INTEGER not null, price INTEGER not null)"}, {"ddl": "create assertion qty_positive check (not exists (select 1 from assert_items where qty < 0))"}, {"ddl": "create assertion price_positive check (not exists (select 1 from assert_items where price < 0))"}]
+
+apply schema main;
+
+-- run
+
+-- Both assertions enforced
+begin;
+insert into assert_items values (1, -1, 10);
+commit;
+-- error: Integrity assertion failed: qty_positive
+
+begin;
+insert into assert_items values (1, 1, -10);
+commit;
+-- error: Integrity assertion failed: price_positive
+
+-- Valid insert
+begin;
+insert into assert_items values (1, 5, 10);
+commit;
+
+-- run
+
+select * from assert_items;
+→ [{"id": 1, "qty": 5, "price": 10}]
+

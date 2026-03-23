@@ -15,7 +15,7 @@ export interface AstNode {
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
 		| 'subquerySource' | 'mutatingSubquerySource' | 'case' | 'in' | 'exists' | 'values' | 'between'
 		| 'declareSchema' | 'diffSchema' | 'applySchema' | 'explainSchema'
-		| 'declaredTable' | 'declaredIndex' | 'declaredView' | 'declaredSeed' | 'declareIgnored' | 'upsert'
+		| 'declaredTable' | 'declaredIndex' | 'declaredView' | 'declaredSeed' | 'declaredAssertion' | 'declareIgnored' | 'upsert'
 		| 'analyze';
 	loc?: {
 		start: { line: number, column: number, offset: number };
@@ -562,7 +562,7 @@ export interface DeclareSchemaStmt extends AstNode {
 	items: readonly DeclareItem[];
 }
 
-export type DeclareItem = DeclaredTable | DeclaredIndex | DeclaredView | DeclaredSeed | DeclareIgnoredItem;
+export type DeclareItem = DeclaredTable | DeclaredIndex | DeclaredView | DeclaredSeed | DeclaredAssertion | DeclareIgnoredItem;
 
 export interface DeclaredTable extends AstNode {
 	type: 'declaredTable';
@@ -584,6 +584,11 @@ export interface DeclaredSeed extends AstNode {
 	tableName: string;
 	columns?: readonly string[];
 	seedData?: readonly SqlValue[][];
+}
+
+export interface DeclaredAssertion extends AstNode {
+	type: 'declaredAssertion';
+	assertionStmt: CreateAssertionStmt;
 }
 
 /** Placeholder for domain/collation/import items to keep parser forward-compatible */

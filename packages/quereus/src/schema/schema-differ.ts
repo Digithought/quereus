@@ -1,7 +1,7 @@
 import type { SchemaCatalog } from './catalog.js';
 import type * as AST from '../parser/ast.js';
 import type { SqlValue } from '../common/types.js';
-import { createTableToString, createViewToString, createIndexToString, columnDefToString, quoteIdentifier } from '../emit/ast-stringify.js';
+import { createTableToString, createViewToString, createIndexToString, createAssertionToString, columnDefToString, quoteIdentifier } from '../emit/ast-stringify.js';
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 
@@ -55,6 +55,7 @@ export function computeSchemaDiff(
 	const declaredTables = new Map<string, AST.DeclaredTable>();
 	const declaredViews = new Map<string, AST.DeclaredView>();
 	const declaredIndexes = new Map<string, AST.DeclaredIndex>();
+	const declaredAssertions = new Map<string, AST.DeclaredAssertion>();
 
 	for (const item of declaredSchema.items) {
 		switch (item.type) {
@@ -66,6 +67,9 @@ export function computeSchemaDiff(
 				break;
 			case 'declaredIndex':
 				declaredIndexes.set(item.indexStmt.index.name.toLowerCase(), item);
+				break;
+			case 'declaredAssertion':
+				declaredAssertions.set(item.assertionStmt.name.toLowerCase(), item);
 				break;
 		}
 	}
@@ -124,6 +128,21 @@ export function computeSchemaDiff(
 	for (const [name] of actualIndexes) {
 		if (!declaredIndexes.has(name)) {
 			diff.indexesToDrop.push(name);
+		}
+	}
+
+	// Find assertions to create/drop
+	const actualAssertions = new Map(actualCatalog.assertions.map(a => [a.name.toLowerCase(), a]));
+
+	for (const [name, declaredAssertion] of declaredAssertions) {
+		if (!actualAssertions.has(name)) {
+			diff.assertionsToCreate.push(createAssertionToString(declaredAssertion.assertionStmt));
+		}
+	}
+
+	for (const [name] of actualAssertions) {
+		if (!declaredAssertions.has(name)) {
+			diff.assertionsToDrop.push(name);
 		}
 	}
 
@@ -260,7 +279,12 @@ export function generateMigrationDDL(diff: SchemaDiff, schemaName?: string): str
 	const statements: string[] = [];
 	const schemaPrefix = (schemaName && schemaName !== 'main') ? `${quoteIdentifier(schemaName)}.` : '';
 
-	// Drop items first (reverse order)
+	// Drop assertions first (they may reference tables)
+	for (const name of diff.assertionsToDrop) {
+		statements.push(`DROP ASSERTION IF EXISTS ${schemaPrefix}${quoteIdentifier(name)}`);
+	}
+
+	// Drop items (reverse order)
 	for (const tableName of diff.tablesToDrop) {
 		statements.push(`DROP TABLE IF EXISTS ${schemaPrefix}${quoteIdentifier(tableName)}`);
 	}
@@ -277,6 +301,7 @@ export function generateMigrationDDL(diff: SchemaDiff, schemaName?: string): str
 	statements.push(...diff.tablesToCreate);
 	statements.push(...diff.viewsToCreate);
 	statements.push(...diff.indexesToCreate);
+	statements.push(...diff.assertionsToCreate);
 
 	// Alter existing tables
 	for (const alter of diff.tablesToAlter) {

@@ -75,6 +75,8 @@ export function astToString(node: AST.AstNode): string {
 			return createIndexToString(node as AST.CreateIndexStmt);
 		case 'createView':
 			return createViewToString(node as AST.CreateViewStmt);
+		case 'createAssertion':
+			return createAssertionToString(node as AST.CreateAssertionStmt);
 		case 'drop':
 			return dropToString(node as AST.DropStmt);
 		case 'begin':
@@ -719,6 +721,10 @@ export function createViewToString(stmt: AST.CreateViewStmt): string {
 	return parts.join(' ');
 }
 
+export function createAssertionToString(stmt: AST.CreateAssertionStmt): string {
+	return `create assertion ${quoteIdentifier(stmt.name)} check (${expressionToString(stmt.check)})`;
+}
+
 function dropToString(stmt: AST.DropStmt): string {
 	const parts: string[] = ['drop', stmt.objectType.toLowerCase()];
 	if (stmt.ifExists) parts.push('if exists');
@@ -788,6 +794,9 @@ function declareItemToString(it: AST.DeclareItem): string {
 	if (it.type === 'declaredSeed') {
 		const rowsStr = it.seedData?.map(r => `(${r.map(v => JSON.stringify(v)).join(', ')})`).join(', ') || '';
 		return `seed ${it.tableName} (${rowsStr})`;
+	}
+	if (it.type === 'declaredAssertion') {
+		return `assertion ${quoteIdentifier(it.assertionStmt.name)} check (...)`;
 	}
 	return (it as unknown as AST.DeclareIgnoredItem).text || '-- ignored';
 }
