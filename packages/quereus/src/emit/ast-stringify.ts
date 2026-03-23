@@ -77,6 +77,10 @@ export function astToString(node: AST.AstNode): string {
 			return createViewToString(node as AST.CreateViewStmt);
 		case 'createAssertion':
 			return createAssertionToString(node as AST.CreateAssertionStmt);
+		case 'alterTable':
+			return alterTableToString(node as AST.AlterTableStmt);
+		case 'analyze':
+			return analyzeToString(node as AST.AnalyzeStmt);
 		case 'drop':
 			return dropToString(node as AST.DropStmt);
 		case 'begin':
@@ -496,6 +500,15 @@ function fromClauseToString(from: AST.FromClause): string {
 			return joinStr;
 		}
 
+		case 'mutatingSubquerySource': {
+			const stmtStr = astToString(from.stmt);
+			let aliasStr = `as ${quoteIdentifier(from.alias)}`;
+			if (from.columns && from.columns.length > 0) {
+				aliasStr += ` (${from.columns.map(quoteIdentifier).join(', ')})`;
+			}
+			return `(${stmtStr}) ${aliasStr}`;
+		}
+
 		default:
 			return '[unknown_from]';
 	}
@@ -723,6 +736,29 @@ export function createViewToString(stmt: AST.CreateViewStmt): string {
 
 export function createAssertionToString(stmt: AST.CreateAssertionStmt): string {
 	return `create assertion ${quoteIdentifier(stmt.name)} check (${expressionToString(stmt.check)})`;
+}
+
+function alterTableToString(stmt: AST.AlterTableStmt): string {
+	const table = expressionToString(stmt.table);
+	switch (stmt.action.type) {
+		case 'renameTable':
+			return `alter table ${table} rename to ${quoteIdentifier(stmt.action.newName)}`;
+		case 'renameColumn':
+			return `alter table ${table} rename column ${quoteIdentifier(stmt.action.oldName)} to ${quoteIdentifier(stmt.action.newName)}`;
+		case 'addColumn':
+			return `alter table ${table} add column ${columnDefToString(stmt.action.column)}`;
+		case 'dropColumn':
+			return `alter table ${table} drop column ${quoteIdentifier(stmt.action.name)}`;
+		case 'addConstraint':
+			return `alter table ${table} add ${tableConstraintsToString([stmt.action.constraint])}`;
+	}
+}
+
+function analyzeToString(stmt: AST.AnalyzeStmt): string {
+	if (stmt.schemaName && stmt.tableName) return `analyze ${quoteIdentifier(stmt.schemaName)}.${quoteIdentifier(stmt.tableName)}`;
+	if (stmt.tableName) return `analyze ${quoteIdentifier(stmt.tableName)}`;
+	if (stmt.schemaName) return `analyze ${quoteIdentifier(stmt.schemaName)}`;
+	return 'analyze';
 }
 
 function dropToString(stmt: AST.DropStmt): string {
