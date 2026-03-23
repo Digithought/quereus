@@ -211,11 +211,11 @@ function extractRangeBoundsForColumn(
 
 	const applyBound = (op: IndexConstraintOp, value: SqlValue) => {
 		if (isLowerBoundOp(op)) {
-			if (!lowerBound || op > lowerBound.op) {
+			if (!lowerBound || op === ActualIndexConstraintOp.GT) {
 				lowerBound = { value, op };
 			}
 		} else if (isUpperBoundOp(op)) {
-			if (!upperBound || op < upperBound.op) {
+			if (!upperBound || op === ActualIndexConstraintOp.LT) {
 				upperBound = { value, op };
 			}
 		}
