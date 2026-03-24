@@ -231,7 +231,7 @@ Errors include source location (`line`, `column`) when available from the AST no
 
 The `declare schema` / `diff schema` / `apply schema` workflow provides order-independent, end-state schema declarations. The engine computes diffs against the current catalog (`computeSchemaDiff`) and generates migration DDL (`generateMigrationDDL`). Key diff types:
 
-- `SchemaDiff` — tables/views/indexes to create, drop, or alter
+- `SchemaDiff` — tables/views/indexes/assertions to create, drop, or alter
 - `TableAlterDiff` — columns to add or drop within an existing table
 
 Destructive changes (drops) require explicit acknowledgement. See the [SQL Reference](sql.md#20-declarative-schema-optional-order-independent) for full syntax and examples.

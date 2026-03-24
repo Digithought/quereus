@@ -94,6 +94,9 @@ declare schema schema_name
     (1, 'admin@example.com', 'Admin'),
     (2, 'viewer@example.com', 'Viewer');
 
+  -- Assertions: enforced at commit time
+  assertion positive_balance check (not exists (select 1 from users where balance < 0))
+
   -- Future: domains, collations, and imports
   -- domain email_address as text check (like(value, '%@%'));
   -- collation nocase = nocase();
