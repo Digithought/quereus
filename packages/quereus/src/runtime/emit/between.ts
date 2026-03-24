@@ -43,6 +43,6 @@ export function emitBetween(plan: BetweenNode, ctx: EmissionContext): Instructio
 	return {
 		params: [valueExpr, lowerExpr, upperExpr],
 		run: run as InstructionRun,
-		note: `${notPrefix}BETWEEN`
+		note: `${notPrefix}BETWEEN${collationName !== 'BINARY' ? ` ${collationName}` : ''}`
 	};
 }

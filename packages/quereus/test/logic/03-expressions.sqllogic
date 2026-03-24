@@ -90,6 +90,18 @@ SELECT 'Hello' COLLATE NOCASE BETWEEN 'a' AND 'z' AS yes1, 'Hello' BETWEEN 'a' A
 SELECT 'B' COLLATE NOCASE BETWEEN 'a' AND 'c' AS yes2, 'B' BETWEEN 'a' AND 'c' AS no2;
 → [{"yes2":true,"no2":false}]
 
+-- NOT BETWEEN with COLLATE NOCASE
+SELECT 'Hello' COLLATE NOCASE NOT BETWEEN 'a' AND 'z' AS no3, 'Hello' NOT BETWEEN 'a' AND 'z' AS yes3;
+→ [{"no3":false,"yes3":true}]
+
+-- COLLATE on lower bound propagates to BETWEEN
+SELECT 'hello' BETWEEN 'A' COLLATE NOCASE AND 'Z' AS yes4, 'hello' BETWEEN 'A' AND 'Z' AS no4;
+→ [{"yes4":true,"no4":false}]
+
+-- BETWEEN with NULL operands still returns NULL under COLLATE
+SELECT null COLLATE NOCASE BETWEEN 'a' AND 'z' AS r1, 'b' COLLATE NOCASE BETWEEN null AND 'z' AS r2;
+→ [{"r1":null,"r2":null}]
+
 -- Expression evaluation consistency across contexts
 CREATE TABLE expr_context_test (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER, c INTEGER NULL);
 INSERT INTO expr_context_test VALUES (1, 5, 3, null), (2, -2, 4, 7), (3, 0, 1, 0);
