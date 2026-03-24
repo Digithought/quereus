@@ -16,7 +16,10 @@ Removed the unreachable `emitWindowFunctionCall` standalone emitter. `WindowFunc
 
 ## Testing / Validation
 
-- Build passes
-- 329 tests pass (1 pre-existing unrelated failure in `10.1-ddl-lifecycle.sqllogic:248`)
-- Window function tests all pass — verify that ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTILE, PERCENT_RANK, CUME_DIST, and frame clauses still work correctly
+- Build passes cleanly
+- Full test suite: 1013 passing, 2 pending, 0 failures
+- Window planner tests pass (`test/planner/window-function-types.spec.ts`)
+- All sqllogic window tests pass (`test/logic/07.5-window.sqllogic`)
+- No references to `emitWindowFunctionCall` remain in codebase
+- Verify that ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTILE, PERCENT_RANK, CUME_DIST, and frame clauses still work correctly
 - Confirm no runtime path attempts to emit `WindowFunctionCallNode` independently (grep for `PlanNodeType.WindowFunctionCall` in emit code — should only appear in `window.ts` inline handling)
