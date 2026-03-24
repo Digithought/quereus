@@ -249,7 +249,7 @@ export function buildParentSideFKChecks(
 				if (fk.referencedTable.toLowerCase() !== tableSchema.name.toLowerCase()) continue;
 
 				const targetSchema = fk.referencedSchema ?? childTable.schemaName;
-if (targetSchema.toLowerCase() !== tableSchema.schemaName.toLowerCase()) continue;
+				if (targetSchema.toLowerCase() !== tableSchema.schemaName.toLowerCase()) continue;
 
 				const action = operation === RowOpFlag.DELETE ? fk.onDelete : fk.onUpdate;
 
