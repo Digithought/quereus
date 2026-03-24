@@ -3234,9 +3234,10 @@ export class Parser {
 			if (direction) endToken = this.previous();
 			const onConflict = this.parseConflictClause();
 			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
-			const autoincrement = this.match(TokenType.AUTOINCREMENT);
-			if (autoincrement) endToken = this.previous();
-			return { type: 'primaryKey', name, onConflict, autoincrement, direction, loc: _createLoc(startToken, endToken) };
+			if (this.check(TokenType.AUTOINCREMENT)) {
+				throw this.error(this.peek(), 'AUTOINCREMENT is not supported. Quereus uses key-based addressing without implicit side-effects.');
+			}
+			return { type: 'primaryKey', name, onConflict, direction, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.NOT)) {
 			this.consume(TokenType.NULL, "Expected NULL after NOT.");
 			endToken = this.previous();

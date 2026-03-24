@@ -856,7 +856,6 @@ function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string 
 				// ASC is default, only specify DESC
 				if (c.direction === 'desc') s += ` desc`;
 				s += conflictToString(c.onConflict);
-				if (c.autoincrement) s += ' autoincrement';
 				break;
 			case 'notNull':
 				s += 'not null';

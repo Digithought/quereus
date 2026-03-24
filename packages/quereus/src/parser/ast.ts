@@ -417,7 +417,6 @@ export interface ColumnConstraint extends AstNode {
 	expr?: Expression;          // For CHECK or DEFAULT
 	operations?: RowOp[];       // ADDED: For CHECK ON (...)
 	collation?: string;         // For COLLATE
-	autoincrement?: boolean;    // For PRIMARY KEY AUTOINCREMENT
 	direction?: 'asc' | 'desc'; // ADDED: For PRIMARY KEY ASC/DESC
 	onConflict?: ConflictResolution;
 	foreignKey?: ForeignKeyClause;

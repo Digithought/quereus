@@ -1411,6 +1411,21 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	}
 
 	/**
+	 * @internal Removes all active connections for a specific table.
+	 * Unlike unregisterConnection, this bypasses the implicit transaction deferral
+	 * because the table is being dropped and its connections are definitively stale.
+	 */
+	removeConnectionsForTable(schemaName: string, tableName: string): void {
+		const qualifiedName = `${schemaName}.${tableName}`.toLowerCase();
+		for (const [id, conn] of this.activeConnections) {
+			if (conn.tableName.toLowerCase() === qualifiedName) {
+				this.activeConnections.delete(id);
+				log(`Removed stale connection ${id} for dropped table ${qualifiedName}`);
+			}
+		}
+	}
+
+	/**
 	 * @internal Gets all active connections for a specific table.
 	 * @param tableName The name of the table
 	 * @returns Array of connections for the table

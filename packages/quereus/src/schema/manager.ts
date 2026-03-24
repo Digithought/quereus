@@ -409,6 +409,11 @@ export class SchemaManager {
 			throw new QuereusError(`Table ${tableName} not found in schema ${schemaName}`, StatusCode.NOTFOUND);
 		}
 
+		// Remove any active connections for this table before destroying the module.
+		// Connections become stale once the table is dropped and must not be reused
+		// if the table is later recreated with the same name.
+		this.db.removeConnectionsForTable(schemaName, tableName);
+
 		let destroyPromise: Promise<void> | null = null;
 
 		// Call destroy on the module, providing table details
