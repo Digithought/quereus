@@ -1,12 +1,13 @@
 import { expect } from 'chai';
 import { Database } from '../../src/core/database.js';
-import { TestQueryModule } from './test-query-module.js';
+import { TestQueryModule, TestQueryTable } from './test-query-module.js';
 
 describe('RemoteQuery vtable disconnect', () => {
 	let db: Database;
 	let mod: TestQueryModule;
 
 	beforeEach(async () => {
+		TestQueryTable.resetSharedData();
 		db = new Database();
 		mod = new TestQueryModule();
 		db.registerModule('query_test', mod);

@@ -4,11 +4,13 @@ import type { VirtualTableModule, BaseModuleConfig, SupportAssessment } from '..
 import type { TableSchema } from '../../src/schema/table.js';
 import type { PlanNode } from '../../src/planner/nodes/plan-node.js';
 import { PlanNodeType } from '../../src/planner/nodes/plan-node-type.js';
-import type { Row, RowOp } from '../../src/common/types.js';
-import type { ConflictResolution } from '../../src/common/constants.js';
+import type { Row } from '../../src/common/types.js';
 import { StatusCode } from '../../src/common/types.js';
 import { IndexInfo } from '../../src/vtab/index-info.js';
 import { FilterInfo } from '../../src/vtab/filter-info.js';
+import { createLogger } from '../../src/common/logger.js';
+
+const log = createLogger('test:query-module');
 
 /**
  * Test virtual table module that implements supports() method
@@ -86,12 +88,12 @@ export class TestQueryModule implements VirtualTableModule<TestQueryTable, BaseM
 	}
 
 	// Required xBestIndex method (not used for query-based modules but required by interface)
-xBestIndex(_db: Database, _tableInfo: TableSchema, _indexInfo: IndexInfo): number {
+	xBestIndex(_db: Database, _tableInfo: TableSchema, _indexInfo: IndexInfo): number {
 		// Not implemented for query-based modules
 		return StatusCode.ERROR;
 	}
 
-destroy(
+	destroy(
 		_db: Database,
 		_pAux: unknown,
 		_moduleName: string,
@@ -109,6 +111,11 @@ destroy(
 export class TestQueryTable extends VirtualTable {
 	private static sharedData = new Map<string, Row[]>();
 	private static testModule: TestQueryModule;
+
+	/** Clear shared state between tests to prevent data pollution */
+	static resetSharedData(): void {
+		TestQueryTable.sharedData.clear();
+	}
 	/** Track disconnect calls for test assertions */
 	disconnectCount = 0;
 
@@ -127,8 +134,8 @@ export class TestQueryTable extends VirtualTable {
 		if (!TestQueryTable.testModule) {
 			TestQueryTable.testModule = new TestQueryModule();
 		}
-    super(db, TestQueryTable.testModule, tableSchema.schemaName, tableSchema.name);
-    this.tableSchema = tableSchema;
+		super(db, TestQueryTable.testModule, tableSchema.schemaName, tableSchema.name);
+		this.tableSchema = tableSchema;
 	}
 
 	// Required disconnect method
@@ -184,7 +191,7 @@ export class TestQueryTable extends VirtualTable {
 
 	// Test implementation of executePlan - for now, simulate by logging and returning test data
 	async *executePlan(db: Database, plan: PlanNode, ctx?: unknown): AsyncIterable<Row> {
-		console.log(`[TestQueryTable] Executing pushed-down plan: ${plan.nodeType}, ctx: ${JSON.stringify(ctx)}`);
+		log(`Executing pushed-down plan: ${plan.nodeType}, ctx: ${JSON.stringify(ctx)}`);
 		// Simulate execution - in real module, would translate plan to module-specific query
 		// For test, return simple test data
 		yield* this.query!({
