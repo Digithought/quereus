@@ -7,11 +7,11 @@ files:
   packages/quereus/test/util/hrtime.spec.ts                (new — unit tests)
 ----
 
-## Summary
+## What was built
 
-Created `src/util/hrtime.ts` exporting `hrtimeNs(): bigint` — a cross-platform high-resolution
-timer that returns nanoseconds as a bigint. Detection runs once at import time with zero
-branching on subsequent calls:
+`src/util/hrtime.ts` exports `hrtimeNs(): bigint` — a cross-platform high-resolution timer
+that returns nanoseconds as a bigint. Detection runs once at import time with zero branching
+on subsequent calls:
 
 1. `process.hrtime.bigint()` — nanosecond precision (Node)
 2. `performance.now()` → bigint ns — microsecond precision (browsers, RN)
@@ -20,8 +20,6 @@ branching on subsequent calls:
 All 8 `process.hrtime.bigint()` calls in `scheduler.ts` were replaced with `hrtimeNs()`.
 The scheduler no longer references `process` directly, so the `PROCESS_EXCEPTIONS` entry
 in `env-compat.spec.ts` was removed.
-
-The `typeof process` guard in `hrtime.ts` satisfies the env-compat audit's guard-pattern check.
 
 ## API preservation
 
@@ -32,7 +30,14 @@ The `typeof process` guard in `hrtime.ts` satisfies the env-compat audit's guard
 
 ## Testing
 
-- `test/util/hrtime.spec.ts`: returns bigint, non-decreasing, ~100ms elapsed in ballpark
+- `test/util/hrtime.spec.ts`: returns bigint, non-decreasing, ~100ms elapsed in ballpark (3 tests)
 - `test/cross-platform/env-compat.spec.ts`: passes with exception removed
 - Existing `runtime-scheduler-modes.spec.ts` metrics tests still pass
-- Build passes, all 298 passing tests pass (1 pre-existing unrelated failure in bigint-mixed-arithmetic)
+- Build passes, all 1013 tests pass (2 pending, pre-existing)
+
+## Review notes
+
+- Code is clean, DRY, and well-structured
+- No stale `process.hrtime` references remain outside `hrtime.ts`
+- `typeof process` guard satisfies the env-compat audit pattern
+- No public API changes — internal utility only
