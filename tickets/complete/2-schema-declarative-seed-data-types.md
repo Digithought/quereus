@@ -11,10 +11,10 @@ Fixed `emitApplySchema` seed data value interpolation which silently mapped `boo
 
 ## Changes
 
-**schema-declarative.ts (lines 14-21, 157-163):**
+**schema-declarative.ts:**
 - Added `uint8ArrayToHex()` cross-platform helper (no Node `Buffer` dependency)
-- Added `typeof v === 'boolean' ? (v ? '1' : '0')` branch — booleans map to SQL integers
-- Added `v instanceof Uint8Array ? X'${uint8ArrayToHex(v)}'` branch — blobs map to hex literals
+- Added `typeof v === 'boolean'` branch — booleans map to SQL integers `1`/`0`
+- Added `v instanceof Uint8Array` branch — blobs map to `X'hex'` literals
 
 ## Testing
 
@@ -25,4 +25,4 @@ Fixed `emitApplySchema` seed data value interpolation which silently mapped `boo
 
 ## Validation
 - Build passes
-- 329 tests passing, 1 pre-existing failure (unrelated DDL lifecycle/alterTable reuse bug in 10.1-ddl-lifecycle.sqllogic:248)
+- 1013 tests passing, 2 pending, 0 failures
