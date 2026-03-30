@@ -9,7 +9,7 @@ files:
 
 ViewReferenceNode was dead code — never imported, instantiated, emitted, or exported. The three
 original defects (wrong nodeType, TEXT defaults, isReadOnly=false) existed only in the dead code
-path and never affected runtime behavior.
+path and never affected runtime behavior. The file was deleted.
 
 The actual view handling in `select.ts` inlines the view's SELECT AST via `buildSelectStmt()`,
 which correctly inherits column types from underlying tables. `relationTypeFromTableSchema()` in
@@ -19,15 +19,10 @@ which correctly inherits column types from underlying tables. `relationTypeFromT
 
 - Deleted `packages/quereus/src/planner/nodes/view-reference-node.ts`
 
-## Testing notes
+## Review results
 
+- No remaining imports or references to ViewReferenceNode in the codebase
+- View handling in `select.ts:343-396` is the sole and correct code path
+- `type-utils.ts:47` correctly sets `isReadOnly` for views
 - Build passes
-- All 329 tests pass (1 pre-existing failure in `10.1-ddl-lifecycle.sqllogic` unrelated to views)
-- View tests (`08-views.sqllogic`) pass
-- No references to `ViewReferenceNode` or `view-reference-node` remain in the codebase
-
-## Review checklist
-
-- Confirm no remaining imports or references to the deleted file
-- Confirm view queries still function correctly (types, isReadOnly)
-- Verify `select.ts` view handling is the sole and correct code path
+- All 1013 tests pass (12 view-specific tests pass)
