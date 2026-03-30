@@ -83,7 +83,7 @@
     "clean": "rimraf dist",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "cd ../.. && node --import ./packages/quereus-plugin-nativescript-sqlite/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-plugin-nativescript-sqlite/test/**/*.spec.ts\" --colors"
+    "test": "cd ../.. && node --import ./packages/quereus-plugin-nativescript-sqlite/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-plugin-nativescript-sqlite/test/**/*.spec.ts\" --reporter min --colors"
   },
   "devDependencies": {
     "@quereus/isolation": "*",

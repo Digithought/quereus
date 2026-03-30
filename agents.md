@@ -77,6 +77,7 @@ Task workflow in `tickets/` folder (see `tickets/AGENTS.md`).
 ## Docs
 - Main docs in `docs/` folder (runtime.md, types.md, sql.md, optimizer.md, schema.md, usage.md, etc.)
 - Package README at `packages/quereus/README.md`
+
 ----
 
 For all but the most trivial asks, read and maintain the relevant docs along with the work.

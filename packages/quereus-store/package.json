@@ -36,7 +36,7 @@
     "clean": "rimraf dist",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "cd ../.. && node --import ./packages/quereus-store/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-store/test/**/*.spec.ts\" --colors",
+    "test": "cd ../.. && node --import ./packages/quereus-store/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus-store/test/**/*.spec.ts\" --reporter min --colors",
     "test:single": "cd ../.. && node --import ./packages/quereus-store/register.mjs node_modules/mocha/bin/mocha.js --bail"
   },
   "peerDependencies": {
