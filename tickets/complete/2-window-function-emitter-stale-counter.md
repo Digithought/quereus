@@ -1,4 +1,4 @@
-description: Removed dead standalone window function emitter (Option A)
+description: Removed dead standalone window function emitter
 dependencies: none
 files:
   packages/quereus/src/runtime/emit/window-function.ts (deleted)
@@ -14,12 +14,11 @@ Removed the unreachable `emitWindowFunctionCall` standalone emitter. `WindowFunc
 - **Removed** import and `registerEmitter(PlanNodeType.WindowFunctionCall, ...)` from `register.ts`
 - **Kept** `PlanNodeType.WindowFunctionCall` enum value and `WindowFunctionCallNode` class (used by planner, characteristics detector, and `emitWindow`)
 
-## Testing / Validation
+## Review Verification
 
 - Build passes cleanly
 - Full test suite: 1013 passing, 2 pending, 0 failures
-- Window planner tests pass (`test/planner/window-function-types.spec.ts`)
-- All sqllogic window tests pass (`test/logic/07.5-window.sqllogic`)
 - No references to `emitWindowFunctionCall` remain in codebase
-- Verify that ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTILE, PERCENT_RANK, CUME_DIST, and frame clauses still work correctly
-- Confirm no runtime path attempts to emit `WindowFunctionCallNode` independently (grep for `PlanNodeType.WindowFunctionCall` in emit code — should only appear in `window.ts` inline handling)
+- No runtime emit code references `PlanNodeType.WindowFunctionCall` — confirmed dead code
+- `emitWindow` in `window.ts` handles all window function types inline (ranking, aggregate, navigation, value) through `WindowNode.functions`
+- All window functions (ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTILE, PERCENT_RANK, CUME_DIST) and frame clauses covered by existing sqllogic and planner tests
