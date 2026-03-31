@@ -170,7 +170,8 @@ The planner automatically groups window functions with identical specifications:
 
 ### Efficient Execution
 
-- **Non-partitioned functions**: Use streaming execution with constant memory
+- **O(n) ranking pre-computation**: After sorting each partition, a single linear pass (`precomputeRankings`) detects peer group boundaries and computes RANK, DENSE_RANK, PERCENT_RANK, and CUME_DIST for all rows at once. Per-row ranking lookups are then O(1).
+- **Pre-evaluated ORDER BY values**: Sort keys are evaluated once and cached in `orderByValues`, reused for sorting, peer detection, and frame bounds — no re-evaluation of expressions.
 - **Partitioned functions**: Buffer only current partition
 - **Frame-bounded aggregates**: Process only necessary frame data
 
