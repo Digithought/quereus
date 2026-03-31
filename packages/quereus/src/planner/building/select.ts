@@ -248,6 +248,26 @@ export function buildValuesStmt(
 }
 
 /**
+ * Registers each column of a relational node as a symbol in a new scope,
+ * wrapped with an AliasedScope for qualified name resolution.
+ */
+function registerColumnScope(
+	parentScope: Scope,
+	node: RelationalPlanNode,
+	scopeName: string,
+	alias: string,
+): Scope {
+	const registered = new RegisteredScope(parentScope);
+	const attributes = node.getAttributes();
+	node.getType().columns.forEach((c, i) => {
+		const attr = attributes[i];
+		registered.registerSymbol(c.name.toLowerCase(), (exp, s) =>
+			new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
+	});
+	return new AliasedScope(registered, scopeName, alias);
+}
+
+/**
  * Processes a FROM clause item into a relational plan node.
  *
  * Handles different types of FROM items:
@@ -283,20 +303,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				}
 				fromTable = internalRefNode;
 
-				// Create scope for internal recursive CTE columns
-				const internalScope = new RegisteredScope(parentContext.scope);
-				const internalAttributes = fromTable.getAttributes();
-				fromTable.getType().columns.forEach((c, i) => {
-					const attr = internalAttributes[i];
-					internalScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-						new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
-				});
-
-				if (fromClause.alias) {
-					columnScope = new AliasedScope(internalScope, tableName, fromClause.alias.toLowerCase());
-				} else {
-					columnScope = new AliasedScope(internalScope, tableName, tableName);
-				}
+				columnScope = registerColumnScope(parentContext.scope, fromTable, tableName, fromClause.alias?.toLowerCase() ?? tableName);
 			} else {
 				// Regular CTE reference - cache by CTE name + alias to ensure consistent attribute IDs
 				const cacheKey = `${tableName}:${fromClause.alias || tableName}`;
@@ -318,24 +325,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 					logger(`Created new CTE reference ${cacheKey}, attrs=[${attrs.map(a => a.id).join(',')}]`);
 				}
 
-				// Create scope for CTE columns using attributes from the reference node
-				// CRITICAL: Use a closure to capture the reference node's attributes
-				// This ensures all column references use the same attribute IDs
-				const cteScope = new RegisteredScope(parentContext.scope);
-				const refAttrs = cteRefNode.getAttributes();
-				cteRefNode.getType().columns.forEach((c, i) => {
-					const attr = refAttrs[i];
-					cteScope.registerSymbol(c.name.toLowerCase(), (exp, s) => {
-						// Always use the cached reference node's attribute ID
-						return new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i);
-					});
-				});
-
-				if (fromClause.alias) {
-					columnScope = new AliasedScope(cteScope, tableName, fromClause.alias.toLowerCase());
-				} else {
-					columnScope = new AliasedScope(cteScope, tableName, tableName);
-				}
+				columnScope = registerColumnScope(parentContext.scope, cteRefNode, tableName, fromClause.alias?.toLowerCase() ?? tableName);
 
 				fromTable = cteRefNode;
 			}
@@ -381,20 +371,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 					fromTable = viewSelectNode;
 				}
 
-				// Create scope for view columns
-				const viewScope = new RegisteredScope(parentContext.scope);
-				const viewAttributes = fromTable.getAttributes();
-				fromTable.getType().columns.forEach((c, i) => {
-					const attr = viewAttributes[i];
-					viewScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-						new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
-				});
-
-				if (fromClause.alias) {
-					columnScope = new AliasedScope(viewScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
-				} else {
-					columnScope = new AliasedScope(viewScope, fromClause.table.name.toLowerCase(), fromClause.table.name.toLowerCase());
-				}
+				columnScope = registerColumnScope(parentContext.scope, fromTable, fromClause.table.name.toLowerCase(), fromClause.alias?.toLowerCase() ?? fromClause.table.name.toLowerCase());
 			} else {
 				// Regular table
 				let tableNode: RelationalPlanNode = buildTableReference(fromClause, parentContext);
@@ -406,20 +383,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 
 				fromTable = tableNode;
 
-				// Create scope for table columns
-				const tableScope = new RegisteredScope(parentContext.scope);
-				const tableAttributes = fromTable.getAttributes();
-				fromTable.getType().columns.forEach((c, i) => {
-					const attr = tableAttributes[i];
-					tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-						new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
-				});
-
-				if (fromClause.alias) {
-					columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.alias.toLowerCase());
-				} else {
-					columnScope = new AliasedScope(tableScope, fromClause.table.name.toLowerCase(), fromClause.table.name.toLowerCase());
-				}
+				columnScope = registerColumnScope(parentContext.scope, fromTable, fromClause.table.name.toLowerCase(), fromClause.alias?.toLowerCase() ?? fromClause.table.name.toLowerCase());
 			}
 		}
 
@@ -432,22 +396,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		}
 		fromTable = funcNode;
 
-		// Create scope for function columns
-		const functionScope = new RegisteredScope(parentContext.scope);
-		const functionAttributes = fromTable.getAttributes();
-		fromTable.getType().columns.forEach((c, i) => {
-			const attr = functionAttributes[i];
-			functionScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
-		});
-
-		if (fromClause.alias) {
-			// Use the alias as the table name
-			columnScope = new AliasedScope(functionScope, '', fromClause.alias.toLowerCase());
-		} else {
-			// Use the function name as the table name
-			columnScope = new AliasedScope(functionScope, '', fromClause.name.name.toLowerCase());
-		}
+		columnScope = registerColumnScope(parentContext.scope, fromTable, '', fromClause.alias?.toLowerCase() ?? fromClause.name.name.toLowerCase());
 
 	} else if (fromClause.type === 'subquerySource') {
 		// Build the subquery
