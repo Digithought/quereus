@@ -420,19 +420,21 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 				}
 
 				// Build updated schema: remove column and reindex PK/indexes
+				// Filter by original index BEFORE remapping to avoid incorrectly
+				// removing columns that remap to the dropped column's position.
 				const updatedColumns = oldSchema.columns.filter((_, idx) => idx !== colIndex);
 				const updatedPkDef = oldSchema.primaryKeyDefinition
+					.filter(def => def.index !== colIndex)
 					.map(def => ({
 						...def,
 						index: def.index > colIndex ? def.index - 1 : def.index,
-					}))
-					.filter(def => def.index !== colIndex);
+					}));
 				const updatedIndexes = (oldSchema.indexes || [])
 					.map(idx => ({
 						...idx,
 						columns: idx.columns
-							.map(ic => ({ ...ic, index: ic.index > colIndex ? ic.index - 1 : ic.index }))
-							.filter(ic => ic.index !== colIndex),
+							.filter(ic => ic.index !== colIndex)
+							.map(ic => ({ ...ic, index: ic.index > colIndex ? ic.index - 1 : ic.index })),
 					}))
 					.filter(idx => idx.columns.length > 0);
 

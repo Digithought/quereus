@@ -195,6 +195,32 @@ describe('Store ALTER TABLE', () => {
 			const row = await db.get('select * from items where id = 1');
 			expect(row).to.deep.equal({ id: 1, a: 'x', c: 'z' });
 		});
+
+		it('preserves PK when dropping a column before the PK', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					label TEXT,
+					id INTEGER,
+					extra TEXT,
+					PRIMARY KEY(id)
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES ('Widget', 1, 'x')`);
+			await db.exec(`INSERT INTO items VALUES ('Gadget', 2, 'y')`);
+
+			await db.exec(`ALTER TABLE items DROP COLUMN label`);
+
+			const rows = await asyncIterableToArray(db.eval('select * from items order by id'));
+			expect(rows).to.have.lengthOf(2);
+			expect(rows[0]).to.deep.equal({ id: 1, extra: 'x' });
+			expect(rows[1]).to.deep.equal({ id: 2, extra: 'y' });
+
+			// Inserts after drop must use the PK correctly (not overwrite each other)
+			await db.exec(`INSERT INTO items VALUES (3, 'z')`);
+			await db.exec(`INSERT INTO items VALUES (4, 'w')`);
+			const allRows = await asyncIterableToArray(db.eval('select * from items order by id'));
+			expect(allRows).to.have.lengthOf(4);
+		});
 	});
 
 	describe('RENAME COLUMN', () => {
