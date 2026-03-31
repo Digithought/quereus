@@ -1,0 +1,311 @@
+/**
+ * Tests for ALTER TABLE operations on store-backed tables.
+ *
+ * Validates eager row migration for ADD/DROP COLUMN and
+ * schema-only updates for RENAME COLUMN.
+ */
+
+import { describe, it, beforeEach, afterEach } from 'mocha';
+import { expect } from 'chai';
+import { Database, asyncIterableToArray } from '@quereus/quereus';
+import {
+	StoreModule,
+	InMemoryKVStore,
+	type KVStoreProvider,
+} from '../src/index.js';
+
+function createInMemoryProvider(): KVStoreProvider {
+	const stores = new Map<string, InMemoryKVStore>();
+
+	return {
+		async getStore(schemaName: string, tableName: string) {
+			const key = `${schemaName}.${tableName}`;
+			if (!stores.has(key)) {
+				stores.set(key, new InMemoryKVStore());
+			}
+			return stores.get(key)!;
+		},
+		async getIndexStore(schemaName: string, tableName: string, indexName: string) {
+			const key = `${schemaName}.${tableName}_idx_${indexName}`;
+			if (!stores.has(key)) {
+				stores.set(key, new InMemoryKVStore());
+			}
+			return stores.get(key)!;
+		},
+		async getStatsStore(schemaName: string, tableName: string) {
+			const key = `${schemaName}.${tableName}.__stats__`;
+			if (!stores.has(key)) {
+				stores.set(key, new InMemoryKVStore());
+			}
+			return stores.get(key)!;
+		},
+		async getCatalogStore() {
+			const key = '__catalog__';
+			if (!stores.has(key)) {
+				stores.set(key, new InMemoryKVStore());
+			}
+			return stores.get(key)!;
+		},
+		async closeStore(_schemaName: string, _tableName: string) {
+			// No-op for in-memory stores
+		},
+		async closeIndexStore(_schemaName: string, _tableName: string, _indexName: string) {
+			// No-op for in-memory stores
+		},
+		async closeAll() {
+			for (const store of stores.values()) {
+				await store.close();
+			}
+			stores.clear();
+		},
+	};
+}
+
+describe('Store ALTER TABLE', () => {
+	let db: Database;
+	let provider: KVStoreProvider;
+
+	beforeEach(async () => {
+		db = new Database();
+		provider = createInMemoryProvider();
+		const storeModule = new StoreModule(provider);
+		db.registerModule('store', storeModule);
+	});
+
+	afterEach(async () => {
+		await provider.closeAll();
+	});
+
+	describe('ADD COLUMN', () => {
+		it('adds a column to a populated table with null default', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Widget')`);
+			await db.exec(`INSERT INTO items VALUES (2, 'Gadget')`);
+
+			await db.exec(`ALTER TABLE items ADD COLUMN price REAL`);
+
+			const rows = await asyncIterableToArray(db.eval('select id, name, price from items order by id'));
+			expect(rows).to.have.lengthOf(2);
+			expect(rows[0]).to.deep.equal({ id: 1, name: 'Widget', price: null });
+			expect(rows[1]).to.deep.equal({ id: 2, name: 'Gadget', price: null });
+		});
+
+		it('adds a column with a DEFAULT value', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Widget')`);
+
+			await db.exec(`ALTER TABLE items ADD COLUMN active INTEGER DEFAULT 1`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row?.active).to.equal(1);
+		});
+
+		it('new inserts include the added column', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Old')`);
+
+			await db.exec(`ALTER TABLE items ADD COLUMN color TEXT`);
+			await db.exec(`INSERT INTO items VALUES (2, 'New', 'red')`);
+
+			const rows = await asyncIterableToArray(db.eval('select * from items order by id'));
+			expect(rows[0]).to.deep.equal({ id: 1, name: 'Old', color: null });
+			expect(rows[1]).to.deep.equal({ id: 2, name: 'New', color: 'red' });
+		});
+
+		it('adds a column to an empty table', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+
+			await db.exec(`ALTER TABLE items ADD COLUMN extra TEXT`);
+			await db.exec(`INSERT INTO items VALUES (1, 'test', 'val')`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, name: 'test', extra: 'val' });
+		});
+	});
+
+	describe('DROP COLUMN', () => {
+		it('drops a non-PK column from a populated table', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT,
+					description TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Widget', 'A fine widget')`);
+			await db.exec(`INSERT INTO items VALUES (2, 'Gadget', 'A cool gadget')`);
+
+			await db.exec(`ALTER TABLE items DROP COLUMN description`);
+
+			const rows = await asyncIterableToArray(db.eval('select * from items order by id'));
+			expect(rows).to.have.lengthOf(2);
+			expect(rows[0]).to.deep.equal({ id: 1, name: 'Widget' });
+			expect(rows[1]).to.deep.equal({ id: 2, name: 'Gadget' });
+		});
+
+		it('drops a column from an empty table', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT,
+					extra TEXT
+				) USING store
+			`);
+
+			await db.exec(`ALTER TABLE items DROP COLUMN extra`);
+			await db.exec(`INSERT INTO items VALUES (1, 'test')`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, name: 'test' });
+		});
+
+		it('preserves PK lookups after dropping a column', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					a TEXT,
+					b TEXT,
+					c TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'x', 'y', 'z')`);
+
+			await db.exec(`ALTER TABLE items DROP COLUMN b`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, a: 'x', c: 'z' });
+		});
+	});
+
+	describe('RENAME COLUMN', () => {
+		it('renames a column preserving data', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Widget')`);
+
+			await db.exec(`ALTER TABLE items RENAME COLUMN name TO title`);
+
+			const row = await db.get('select id, title from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, title: 'Widget' });
+		});
+
+		it('allows inserts using the new column name', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+
+			await db.exec(`ALTER TABLE items RENAME COLUMN name TO title`);
+			await db.exec(`INSERT INTO items (id, title) VALUES (1, 'Test')`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, title: 'Test' });
+		});
+	});
+
+	describe('sequential ALTER TABLE operations', () => {
+		it('handles add, rename, then drop in sequence', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Widget')`);
+
+			// Add a column
+			await db.exec(`ALTER TABLE items ADD COLUMN color TEXT`);
+			let row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, name: 'Widget', color: null });
+
+			// Rename the original column
+			await db.exec(`ALTER TABLE items RENAME COLUMN name TO title`);
+			row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, title: 'Widget', color: null });
+
+			// Drop the added column
+			await db.exec(`ALTER TABLE items DROP COLUMN color`);
+			row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, title: 'Widget' });
+		});
+
+		it('handles multiple add columns sequentially', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1)`);
+
+			await db.exec(`ALTER TABLE items ADD COLUMN a TEXT`);
+			await db.exec(`ALTER TABLE items ADD COLUMN b INTEGER DEFAULT 42`);
+			await db.exec(`ALTER TABLE items ADD COLUMN c TEXT`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, a: null, b: 42, c: null });
+		});
+
+		it('handles add then drop of the same column', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Widget')`);
+
+			await db.exec(`ALTER TABLE items ADD COLUMN scratch TEXT`);
+			await db.exec(`ALTER TABLE items DROP COLUMN scratch`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, name: 'Widget' });
+		});
+	});
+
+	describe('DDL persistence', () => {
+		it('persists updated DDL after ADD COLUMN', async () => {
+			const storeModule = new StoreModule(provider);
+			db.registerModule('store2', storeModule);
+
+			await db.exec(`
+				CREATE TABLE items2 (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store2
+			`);
+			await db.exec(`INSERT INTO items2 VALUES (1, 'Widget')`);
+			await db.exec(`ALTER TABLE items2 ADD COLUMN color TEXT`);
+
+			// Load DDL and verify it reflects the new schema
+			const ddlStatements = await storeModule.loadAllDDL();
+			expect(ddlStatements).to.have.lengthOf(1);
+			expect(ddlStatements[0]).to.include('color');
+		});
+	});
+});

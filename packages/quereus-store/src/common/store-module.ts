@@ -23,8 +23,10 @@ import type {
 	BestAccessPlanResult,
 	SqlValue,
 	ModuleCapabilities,
+	SchemaChangeInfo,
+	ColumnSchema,
 } from '@quereus/quereus';
-import { AccessPlanBuilder, QuereusError, StatusCode } from '@quereus/quereus';
+import { AccessPlanBuilder, QuereusError, StatusCode, buildColumnIndexMap, columnDefToSchema } from '@quereus/quereus';
 
 import type { KVStore, KVStoreProvider } from './kv-store.js';
 import type { StoreEventEmitter } from './events.js';
@@ -348,6 +350,165 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 	}
 
 	/**
+	 * Alters an existing store table's structure (ADD/DROP/RENAME COLUMN).
+	 * Performs eager row migration for ADD and DROP, schema-only update for RENAME.
+	 * Returns the updated TableSchema for the engine to register.
+	 */
+	async alterTable(
+		_db: Database,
+		schemaName: string,
+		tableName: string,
+		change: SchemaChangeInfo,
+	): Promise<TableSchema> {
+		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
+		const table = this.tables.get(tableKey);
+
+		if (!table) {
+			throw new QuereusError(
+				`Store table '${tableName}' not found in schema '${schemaName}'. Cannot alter.`,
+				StatusCode.ERROR,
+			);
+		}
+
+		const oldSchema = table.getSchema();
+
+		switch (change.type) {
+			case 'addColumn': {
+				const newColSchema = columnDefToSchema(change.columnDef, false);
+
+				// Extract default value from column def constraints
+				let defaultValue: SqlValue = null;
+				const defaultConstraint = change.columnDef.constraints?.find(c => c.type === 'default');
+				if (defaultConstraint && defaultConstraint.expr && defaultConstraint.expr.type === 'literal') {
+					defaultValue = (defaultConstraint.expr as { value: SqlValue }).value;
+				}
+
+				// Build updated schema: append new column
+				const updatedColumns: ReadonlyArray<ColumnSchema> = Object.freeze([...oldSchema.columns, newColSchema]);
+				const updatedSchema: TableSchema = {
+					...oldSchema,
+					columns: updatedColumns,
+					columnIndexMap: buildColumnIndexMap(updatedColumns),
+				};
+
+				// Migrate rows: append default value to each row
+				const remap = buildColumnRemap(
+					oldSchema.columns.map(c => c.name),
+					updatedColumns.map(c => c.name),
+				);
+				await table.migrateRows(remap, defaultValue);
+
+				// Update table schema and persist DDL
+				table.updateSchema(updatedSchema);
+				await this.saveTableDDL(updatedSchema);
+
+				this.eventEmitter?.emitSchemaChange({
+					type: 'alter',
+					objectType: 'table',
+					schemaName,
+					objectName: tableName,
+				});
+
+				return updatedSchema;
+			}
+
+			case 'dropColumn': {
+				const colNameLower = change.columnName.toLowerCase();
+				const colIndex = oldSchema.columns.findIndex(c => c.name.toLowerCase() === colNameLower);
+				if (colIndex === -1) {
+					throw new QuereusError(`Column '${change.columnName}' not found.`, StatusCode.ERROR);
+				}
+
+				// Build updated schema: remove column and reindex PK/indexes
+				const updatedColumns = oldSchema.columns.filter((_, idx) => idx !== colIndex);
+				const updatedPkDef = oldSchema.primaryKeyDefinition
+					.map(def => ({
+						...def,
+						index: def.index > colIndex ? def.index - 1 : def.index,
+					}))
+					.filter(def => def.index !== colIndex);
+				const updatedIndexes = (oldSchema.indexes || [])
+					.map(idx => ({
+						...idx,
+						columns: idx.columns
+							.map(ic => ({ ...ic, index: ic.index > colIndex ? ic.index - 1 : ic.index }))
+							.filter(ic => ic.index !== colIndex),
+					}))
+					.filter(idx => idx.columns.length > 0);
+
+				const updatedSchema: TableSchema = {
+					...oldSchema,
+					columns: Object.freeze(updatedColumns),
+					columnIndexMap: buildColumnIndexMap(updatedColumns),
+					primaryKeyDefinition: Object.freeze(updatedPkDef),
+					indexes: Object.freeze(updatedIndexes),
+				};
+
+				// Migrate rows: remove the dropped column slot
+				const remap = buildColumnRemap(
+					oldSchema.columns.map(c => c.name),
+					updatedColumns.map(c => c.name),
+				);
+				await table.migrateRows(remap, null);
+
+				// Update table schema and persist DDL
+				table.updateSchema(updatedSchema);
+				await this.saveTableDDL(updatedSchema);
+
+				this.eventEmitter?.emitSchemaChange({
+					type: 'alter',
+					objectType: 'table',
+					schemaName,
+					objectName: tableName,
+				});
+
+				return updatedSchema;
+			}
+
+			case 'renameColumn': {
+				if (!change.newColumnDefAst) {
+					throw new QuereusError('RENAME COLUMN requires a new column definition AST', StatusCode.INTERNAL);
+				}
+
+				const oldNameLower = change.oldName.toLowerCase();
+				const colIndex = oldSchema.columns.findIndex(c => c.name.toLowerCase() === oldNameLower);
+				if (colIndex === -1) {
+					throw new QuereusError(`Column '${change.oldName}' not found.`, StatusCode.ERROR);
+				}
+
+				const newColSchema = columnDefToSchema(change.newColumnDefAst, false);
+				const updatedColumns = oldSchema.columns.map((c, i) => i === colIndex ? newColSchema : c);
+				const updatedIndexes = (oldSchema.indexes || []).map(idx => ({
+					...idx,
+					columns: idx.columns.map(ic =>
+						ic.index === colIndex ? { ...ic, name: change.newName } : ic
+					),
+				}));
+
+				const updatedSchema: TableSchema = {
+					...oldSchema,
+					columns: Object.freeze(updatedColumns),
+					columnIndexMap: buildColumnIndexMap(updatedColumns),
+					indexes: Object.freeze(updatedIndexes),
+				};
+
+				// Rename is schema-only — no row migration needed
+				table.updateSchema(updatedSchema);
+				await this.saveTableDDL(updatedSchema);
+
+				this.eventEmitter?.emitSchemaChange({
+					type: 'alter',
+					objectType: 'table',
+					schemaName,
+					objectName: tableName,
+				});
+
+				return updatedSchema;
+			}
+		}
+	}
+
+	/**
 	 * Modern access planning interface.
 	 */
 	getBestAccessPlan(
@@ -549,4 +710,20 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 		return this.tables.get(tableKey);
 	}
+}
+
+/**
+ * Build a column remap array: newColumnIndex -> oldColumnIndex | -1.
+ * Maps each column in the new layout to its position in the old layout.
+ * -1 means the column is new (fill with default).
+ */
+function buildColumnRemap(oldColumnNames: string[], newColumnNames: string[]): number[] {
+	const oldIndexByName = new Map<string, number>();
+	for (let i = 0; i < oldColumnNames.length; i++) {
+		oldIndexByName.set(oldColumnNames[i].toLowerCase(), i);
+	}
+	return newColumnNames.map(name => {
+		const oldIdx = oldIndexByName.get(name.toLowerCase());
+		return oldIdx !== undefined ? oldIdx : -1;
+	});
 }

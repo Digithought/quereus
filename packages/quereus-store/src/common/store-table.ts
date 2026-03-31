@@ -131,6 +131,33 @@ export class StoreTable extends VirtualTable {
 		return this.tableSchema!;
 	}
 
+	/** Update the table schema after an ALTER TABLE operation. */
+	updateSchema(newSchema: TableSchema): void {
+		this.tableSchema = newSchema;
+	}
+
+	/**
+	 * Migrate all stored rows from the old column layout to a new one.
+	 * The remap array maps newColumnIndex -> oldColumnIndex | -1.
+	 * -1 means the column is new (fill with defaultValue).
+	 */
+	async migrateRows(remap: number[], defaultValue: SqlValue): Promise<void> {
+		const store = await this.ensureStore();
+		const bounds = buildFullScanBounds();
+		const batch = store.batch();
+
+		for await (const entry of store.iterate(bounds)) {
+			const oldRow = deserializeRow(entry.value);
+			const newRow: Row = new Array(remap.length);
+			for (let i = 0; i < remap.length; i++) {
+				newRow[i] = remap[i] === -1 ? defaultValue : oldRow[remap[i]];
+			}
+			batch.put(entry.key, serializeRow(newRow));
+		}
+
+		await batch.write();
+	}
+
 	/**
 	 * Ensure the data store is open and DDL is persisted.
 	 * Uses a promise-based singleton pattern to prevent race conditions

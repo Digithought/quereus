@@ -129,6 +129,7 @@ export { ParseError } from './parser/parser.js';
 
 // Schema management
 export { SchemaManager } from './schema/manager.js';
+export { buildColumnIndexMap, columnDefToSchema } from './schema/table.js';
 export type { TableSchema, IndexSchema as TableIndexSchema } from './schema/table.js';
 export type { ColumnSchema } from './schema/column.js';
 
