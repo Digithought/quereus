@@ -1044,7 +1044,7 @@ export class MemoryTableManager {
 		await this.baseLayer.rebuildAllSecondaryIndexes();
 	}
 
-	// New method to abstract layer scanning
+	/** Scans a layer according to the given plan, yielding matching rows. */
 	public async* scanLayer(layer: Layer, plan: ScanPlan): AsyncIterable<Row> {
 		yield* scanLayerImpl(layer, plan);
 	}
