@@ -68,11 +68,6 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 		resolveKeyNormalizer(exprPlan.getType().collationName)
 	);
 
-	// Pre-resolve collation normalizers for ORDER BY key serialization (dense_rank dedup)
-	const orderByKeyNormalizers = plan.orderByExpressions.map(exprPlan =>
-		resolveKeyNormalizer(exprPlan.getType().collationName)
-	);
-
 	async function* run(
 		rctx: RuntimeContext,
 		source: AsyncIterable<Row>,
@@ -109,7 +104,7 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 					allRows, plan, functionSchemas, rctx,
 					sourceRowDescriptor,
 					partitionCallbackList, orderByCallbackList, funcArgCallbackGroups,
-					sourceSlot, orderByComparators, orderByEqualityComparators, orderByKeyNormalizers
+					sourceSlot, orderByComparators, orderByEqualityComparators
 				);
 			} else {
 				// With partitioning - group by partition keys
@@ -122,7 +117,7 @@ export function emitWindow(plan: WindowNode, ctx: EmissionContext): Instruction 
 						partitionRows, plan, functionSchemas, rctx,
 						sourceRowDescriptor,
 						partitionCallbackList, orderByCallbackList, funcArgCallbackGroups,
-						sourceSlot, orderByComparators, orderByEqualityComparators, orderByKeyNormalizers
+						sourceSlot, orderByComparators, orderByEqualityComparators
 					);
 				}
 			}
@@ -177,14 +172,13 @@ async function* processPartition(
 	plan: WindowNode,
 	functionSchemas: WindowFunctionSchema[],
 	rctx: RuntimeContext,
-	sourceRowDescriptor: RowDescriptor,
-	partitionCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
+	_sourceRowDescriptor: RowDescriptor,
+	_partitionCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	orderByCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
 	funcArgCallbackGroups: Array<Array<(ctx: RuntimeContext) => OutputValue>>,
 	sourceSlot: RowSlot,
 	preResolvedOrderByComparators: Array<(a: SqlValue, b: SqlValue) => number>,
-	preResolvedEqualityComparators: Array<(a: SqlValue, b: SqlValue) => number>,
-	orderByKeyNormalizers: readonly ((s: string) => string)[]
+	preResolvedEqualityComparators: Array<(a: SqlValue, b: SqlValue) => number>
 ): AsyncIterable<Row> {
 	// Sort rows according to ORDER BY specification
 	const sorted = await sortRows(
@@ -195,6 +189,9 @@ async function* processPartition(
 	const orderByValues = sorted.orderByValues;
 
 	const partitionSize = sortedRows.length;
+
+	// Pre-compute ranking values in a single O(n) pass using cached orderByValues
+	const rankings = precomputeRankings(partitionSize, orderByValues, preResolvedEqualityComparators);
 
 	// Process each row in the sorted partition
 	for (let currentIndex = 0; currentIndex < sortedRows.length; currentIndex++) {
@@ -215,9 +212,8 @@ async function* processPartition(
 
 			if (schema.kind === 'ranking') {
 				value = await computeRankingFunction(
-					func.functionName, sortedRows, currentIndex, partitionSize,
-					argCallbacks, orderByCallbacks, rctx, sourceSlot,
-					preResolvedEqualityComparators, orderByKeyNormalizers
+					func.functionName, currentIndex, partitionSize,
+					rankings, argCallbacks, rctx
 				);
 			} else if (schema.kind === 'aggregate') {
 				value = await computeAggregateFunction(
@@ -315,47 +311,76 @@ async function sortRows(
 	};
 }
 
+/** Pre-computed ranking values for all rows in a partition (O(n) single pass) */
+interface PrecomputedRankings {
+	rank: number[];
+	denseRank: number[];
+	percentRank: number[];
+	cumeDist: number[];
+}
+
+/** Single O(n) pass over sorted rows to compute all ranking values */
+function precomputeRankings(
+	partitionSize: number,
+	orderByValues: SqlValue[][],
+	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>
+): PrecomputedRankings {
+	const rank = new Array<number>(partitionSize);
+	const denseRank = new Array<number>(partitionSize);
+	const percentRank = new Array<number>(partitionSize);
+	const cumeDist = new Array<number>(partitionSize);
+
+	let denseRankCounter = 0;
+	let i = 0;
+
+	while (i < partitionSize) {
+		// Find the end of the current peer group
+		let j = i;
+		while (j + 1 < partitionSize && arePeerRows(orderByValues[j + 1], orderByValues[i], equalityComparators)) {
+			j++;
+		}
+
+		denseRankCounter++;
+		const rankValue = i + 1;
+		const cumeDistValue = (j + 1) / partitionSize;
+		const percentRankValue = partitionSize <= 1 ? 0 : (rankValue - 1) / (partitionSize - 1);
+
+		for (let k = i; k <= j; k++) {
+			rank[k] = rankValue;
+			denseRank[k] = denseRankCounter;
+			percentRank[k] = percentRankValue;
+			cumeDist[k] = cumeDistValue;
+		}
+
+		i = j + 1;
+	}
+
+	return { rank, denseRank, percentRank, cumeDist };
+}
+
 async function computeRankingFunction(
 	functionName: string,
-	sortedRows: Row[],
 	currentIndex: number,
 	partitionSize: number,
+	rankings: PrecomputedRankings,
 	argCallbacks: Array<(ctx: RuntimeContext) => OutputValue>,
-	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
-	rctx: RuntimeContext,
-	sourceSlot: RowSlot,
-	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>,
-	orderByKeyNormalizers: readonly ((s: string) => string)[]
+	rctx: RuntimeContext
 ): Promise<number> {
 	switch (functionName.toLowerCase()) {
 		case 'row_number':
 			return currentIndex + 1;
 
-		case 'rank': {
-			return computeRank(sortedRows, currentIndex, orderByCallbacks, rctx, sourceSlot, equalityComparators);
-		}
+		case 'rank':
+			return rankings.rank[currentIndex];
 
-		case 'dense_rank': {
-			// Count distinct values that come before this one
-			let denseRank = 1;
-			const currentRow = sortedRows[currentIndex];
-			const seenValues = new Set<string>();
+		case 'dense_rank':
+			return rankings.denseRank[currentIndex];
 
-			for (let i = 0; i < currentIndex; i++) {
-				const prevRow = sortedRows[i];
-				if (!(await areRowsEqualInOrderBy(
-					prevRow, currentRow, orderByCallbacks, rctx, sourceSlot, equalityComparators
-				))) {
-					// Create a key for this distinct set of ORDER BY values
-					const key = await getOrderByKey(prevRow, orderByCallbacks, rctx, sourceSlot, orderByKeyNormalizers);
-					if (!seenValues.has(key)) {
-						seenValues.add(key);
-						denseRank++;
-					}
-				}
-			}
-			return denseRank;
-		}
+		case 'percent_rank':
+			return rankings.percentRank[currentIndex];
+
+		case 'cume_dist':
+			return rankings.cumeDist[currentIndex];
 
 		case 'ntile': {
 			// Evaluate the bucket count argument
@@ -376,57 +401,12 @@ async function computeRankingFunction(
 			}
 		}
 
-		case 'percent_rank': {
-			if (partitionSize <= 1) return 0;
-			const rank = await computeRank(sortedRows, currentIndex, orderByCallbacks, rctx, sourceSlot, equalityComparators);
-			return (rank - 1) / (partitionSize - 1);
-		}
-
-		case 'cume_dist': {
-			// CUME_DIST = (number of rows <= current row) / partitionSize
-			// = (index of last peer + 1) / partitionSize
-			const currentRow = sortedRows[currentIndex];
-			let lastPeerIndex = currentIndex;
-			for (let i = currentIndex + 1; i < partitionSize; i++) {
-				if (await areRowsEqualInOrderBy(
-					sortedRows[i], currentRow, orderByCallbacks, rctx, sourceSlot, equalityComparators
-				)) {
-					lastPeerIndex = i;
-				} else {
-					break;
-				}
-			}
-			return (lastPeerIndex + 1) / partitionSize;
-		}
-
 		default:
 			throw new QuereusError(
 				`Ranking function ${functionName} not implemented`,
 				StatusCode.UNSUPPORTED
 			);
 	}
-}
-
-/** Compute RANK() value — extracted for reuse by PERCENT_RANK */
-async function computeRank(
-	sortedRows: Row[],
-	currentIndex: number,
-	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
-	rctx: RuntimeContext,
-	sourceSlot: RowSlot,
-	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>
-): Promise<number> {
-	let rank = 1;
-	const currentRow = sortedRows[currentIndex];
-	for (let i = 0; i < currentIndex; i++) {
-		const prevRow = sortedRows[i];
-		if (!(await areRowsEqualInOrderBy(
-			prevRow, currentRow, orderByCallbacks, rctx, sourceSlot, equalityComparators
-		))) {
-			rank = i + 2; // Rank is 1-based and accounts for ties
-		}
-	}
-	return rank;
 }
 
 async function computeNavigationFunction(
@@ -763,43 +743,3 @@ function tryExtractNumericLiteral(expr: AST.Expression): number | undefined {
 	return undefined;
 }
 
-async function areRowsEqualInOrderBy(
-	rowA: Row,
-	rowB: Row,
-	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
-	rctx: RuntimeContext,
-	sourceSlot: RowSlot,
-	equalityComparators: Array<(a: SqlValue, b: SqlValue) => number>
-): Promise<boolean> {
-	for (let i = 0; i < orderByCallbacks.length; i++) {
-		const callback = orderByCallbacks[i];
-		// Get value for row A
-		sourceSlot.set(rowA);
-		const valueA = await Promise.resolve(callback(rctx));
-
-		// Get value for row B
-		sourceSlot.set(rowB);
-		const valueB = await Promise.resolve(callback(rctx));
-
-		// If any ORDER BY expression differs, rows are not equal (using pre-resolved typed comparator)
-		if (equalityComparators[i](valueA, valueB) !== 0) {
-			return false;
-		}
-	}
-
-	return true; // All ORDER BY expressions are equal
-}
-
-async function getOrderByKey(
-	row: Row,
-	orderByCallbacks: Array<(ctx: RuntimeContext) => any>,
-	rctx: RuntimeContext,
-	sourceSlot: RowSlot,
-	keyNormalizers: readonly ((s: string) => string)[]
-): Promise<string> {
-	sourceSlot.set(row);
-	const values = await Promise.all(orderByCallbacks.map(callback =>
-		Promise.resolve(callback(rctx))
-	));
-	return serializeKeyNullGrouping(values as SqlValue[], keyNormalizers);
-}
