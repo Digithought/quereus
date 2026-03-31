@@ -1,0 +1,563 @@
+import { expect } from 'chai';
+import { parse, parseAll } from '../src/parser/index.js';
+import { astToString, expressionToString, quoteIdentifier } from '../src/emit/index.js';
+import type { SelectStmt } from '../src/parser/index.js';
+
+/** Round-trip a full statement: parse → stringify → parse → stringify, compare strings */
+function roundTripStmt(sql: string): string {
+	const ast1 = parse(sql);
+	const str1 = astToString(ast1);
+	const ast2 = parse(str1);
+	const str2 = astToString(ast2);
+	expect(str2, `statement round-trip mismatch for: ${sql}`).to.equal(str1);
+	return str1;
+}
+
+/** Round-trip an expression via SELECT wrapper */
+function roundTripExpr(exprSql: string): string {
+	const stmt = parse(`select ${exprSql}`) as SelectStmt;
+	const col = stmt.columns[0];
+	if (col.type !== 'column') throw new Error('Expected column result');
+	const str1 = expressionToString(col.expr);
+	const stmt2 = parse(`select ${str1}`) as SelectStmt;
+	const col2 = stmt2.columns[0];
+	if (col2.type !== 'column') throw new Error('Expected column result');
+	const str2 = expressionToString(col2.expr);
+	expect(str2, `expression round-trip mismatch for: ${exprSql}`).to.equal(str1);
+	return str1;
+}
+
+describe('Emit: statement round-trips', () => {
+
+	describe('SELECT', () => {
+		it('basic columns', () => {
+			roundTripStmt('select a, b, c from t');
+		});
+
+		it('WHERE clause', () => {
+			roundTripStmt('select x from t where x > 10');
+		});
+
+		it('ORDER BY', () => {
+			roundTripStmt('select x from t order by x desc');
+		});
+
+		it('LIMIT and OFFSET', () => {
+			roundTripStmt('select x from t limit 10 offset 5');
+		});
+
+		it('GROUP BY and HAVING', () => {
+			roundTripStmt('select a, count(*) from t group by a having count(*) > 1');
+		});
+
+		it('DISTINCT', () => {
+			roundTripStmt('select distinct a, b from t');
+		});
+
+		it('compound UNION ALL', () => {
+			roundTripStmt('select 1 union all select 2');
+		});
+
+		it('compound UNION', () => {
+			roundTripStmt('select a from t1 union select b from t2');
+		});
+
+		it('compound INTERSECT', () => {
+			roundTripStmt('select a from t1 intersect select b from t2');
+		});
+
+		it('compound EXCEPT', () => {
+			roundTripStmt('select a from t1 except select b from t2');
+		});
+
+		it('subquery in FROM', () => {
+			roundTripStmt('select x from (select 1 as x) as sub');
+		});
+
+		it('INNER JOIN', () => {
+			roundTripStmt('select a.x, b.y from a inner join b on a.id = b.id');
+		});
+
+		it('LEFT JOIN', () => {
+			roundTripStmt('select a.x from a left join b on a.id = b.id');
+		});
+
+		it('CROSS JOIN', () => {
+			roundTripStmt('select a.x from a cross join b');
+		});
+
+		it('WITH CTE', () => {
+			roundTripStmt('with cte as (select 1 as x) select x from cte');
+		});
+
+		it('WITH RECURSIVE', () => {
+			roundTripStmt('with recursive r(n) as (select 1 union all select n + 1 from r where n < 10) select n from r');
+		});
+	});
+
+	describe('INSERT', () => {
+		it('INSERT INTO ... VALUES', () => {
+			roundTripStmt("insert into t values (1, 'hello', null)");
+		});
+
+		it('INSERT INTO ... SELECT', () => {
+			roundTripStmt('insert into t select * from s');
+		});
+
+		it('INSERT with column list', () => {
+			roundTripStmt("insert into t (a, b) values (1, 2)");
+		});
+
+		it('INSERT with RETURNING', () => {
+			roundTripStmt("insert into t (a) values (1) returning *");
+		});
+
+		it('INSERT with ON CONFLICT DO NOTHING', () => {
+			roundTripStmt("insert into t (a) values (1) on conflict do nothing");
+		});
+
+		it('INSERT with ON CONFLICT DO UPDATE (upsert)', () => {
+			roundTripStmt("insert into t (a, b) values (1, 2) on conflict (a) do update set b = 3");
+		});
+	});
+
+	describe('UPDATE', () => {
+		it('basic SET', () => {
+			roundTripStmt('update t set a = 1');
+		});
+
+		it('with WHERE', () => {
+			roundTripStmt('update t set a = 1 where b > 0');
+		});
+
+		it('with RETURNING', () => {
+			roundTripStmt('update t set a = 1 returning *');
+		});
+	});
+
+	describe('DELETE', () => {
+		it('basic', () => {
+			roundTripStmt('delete from t');
+		});
+
+		it('with WHERE', () => {
+			roundTripStmt('delete from t where id = 1');
+		});
+
+		it('with RETURNING', () => {
+			roundTripStmt('delete from t where id = 1 returning *');
+		});
+	});
+
+	describe('VALUES', () => {
+		it('standalone VALUES clause', () => {
+			roundTripStmt('values (1, 2), (3, 4)');
+		});
+	});
+
+	describe('CREATE TABLE', () => {
+		it('basic columns with types', () => {
+			roundTripStmt('create table t (a integer, b text)');
+		});
+
+		it('PRIMARY KEY constraint', () => {
+			roundTripStmt('create table t (id integer primary key, name text)');
+		});
+
+		it('NOT NULL and UNIQUE', () => {
+			roundTripStmt('create table t (id integer not null unique)');
+		});
+
+		it('DEFAULT value', () => {
+			roundTripStmt('create table t (a integer default 0)');
+		});
+
+		it('CHECK constraint', () => {
+			roundTripStmt('create table t (a integer check (a > 0))');
+		});
+
+		it('FOREIGN KEY column constraint', () => {
+			roundTripStmt('create table orders (user_id integer references users(id))');
+		});
+
+		it('IF NOT EXISTS', () => {
+			roundTripStmt('create table if not exists t (a integer)');
+		});
+
+		it('table-level PRIMARY KEY', () => {
+			roundTripStmt('create table t (a integer, b integer, primary key (a, b))');
+		});
+
+		it('table-level FOREIGN KEY', () => {
+			roundTripStmt('create table orders (user_id integer, foreign key (user_id) references users(id))');
+		});
+
+		it('GENERATED column', () => {
+			roundTripStmt('create table t (a integer, b integer generated always as (a * 2))');
+		});
+	});
+
+	describe('CREATE INDEX', () => {
+		it('basic', () => {
+			roundTripStmt('create index idx on t (a)');
+		});
+
+		it('UNIQUE', () => {
+			roundTripStmt('create unique index idx on t (a)');
+		});
+
+		it('IF NOT EXISTS', () => {
+			roundTripStmt('create index if not exists idx on t (a)');
+		});
+
+		it('partial index with WHERE', () => {
+			roundTripStmt('create index idx on t (a) where a > 0');
+		});
+	});
+
+	describe('CREATE VIEW', () => {
+		it('basic', () => {
+			roundTripStmt('create view v as select * from t');
+		});
+
+		it('IF NOT EXISTS', () => {
+			roundTripStmt('create view if not exists v as select * from t');
+		});
+
+		it('with column list', () => {
+			roundTripStmt('create view v (x, y) as select a, b from t');
+		});
+	});
+
+	describe('DROP', () => {
+		it('DROP TABLE', () => {
+			roundTripStmt('drop table t');
+		});
+
+		it('DROP INDEX', () => {
+			roundTripStmt('drop index idx');
+		});
+
+		it('DROP VIEW', () => {
+			roundTripStmt('drop view v');
+		});
+
+		it('DROP TABLE IF EXISTS', () => {
+			roundTripStmt('drop table if exists t');
+		});
+	});
+
+	describe('ALTER TABLE', () => {
+		it('RENAME TO', () => {
+			roundTripStmt('alter table t rename to t2');
+		});
+
+		it('RENAME COLUMN', () => {
+			roundTripStmt('alter table t rename column a to b');
+		});
+
+		it('ADD COLUMN', () => {
+			roundTripStmt('alter table t add column c integer');
+		});
+
+		it('DROP COLUMN', () => {
+			roundTripStmt('alter table t drop column c');
+		});
+	});
+
+	describe('Transaction', () => {
+		it('BEGIN', () => {
+			roundTripStmt('begin');
+		});
+
+		it('COMMIT', () => {
+			roundTripStmt('commit');
+		});
+
+		it('ROLLBACK', () => {
+			roundTripStmt('rollback');
+		});
+
+		it('SAVEPOINT', () => {
+			roundTripStmt('savepoint sp1');
+		});
+
+		it('RELEASE', () => {
+			roundTripStmt('release sp1');
+		});
+
+		it('ROLLBACK TO', () => {
+			roundTripStmt('rollback to sp1');
+		});
+	});
+
+	describe('PRAGMA', () => {
+		it('bare pragma', () => {
+			roundTripStmt('pragma table_info');
+		});
+
+		it('pragma = value', () => {
+			roundTripStmt('pragma cache_size = 1000');
+		});
+	});
+
+	describe('ANALYZE', () => {
+		it('bare', () => {
+			roundTripStmt('analyze');
+		});
+
+		it('with table name', () => {
+			roundTripStmt('analyze users');
+		});
+	});
+});
+
+describe('Emit: expression round-trips', () => {
+
+	describe('Literals', () => {
+		it('integer', () => {
+			roundTripExpr('42');
+		});
+
+		it('float', () => {
+			roundTripExpr('3.14');
+		});
+
+		it('negative number', () => {
+			roundTripExpr('-1');
+		});
+
+		it('string', () => {
+			roundTripExpr("'hello'");
+		});
+
+		it('NULL', () => {
+			roundTripExpr('null');
+		});
+
+		it('blob literal', () => {
+			roundTripExpr("x'ABCD'");
+		});
+	});
+
+	describe('Column references', () => {
+		it('simple column', () => {
+			roundTripExpr('a');
+		});
+
+		it('table.column', () => {
+			roundTripExpr('t.a');
+		});
+	});
+
+	describe('Unary operators', () => {
+		it('NOT expr', () => {
+			roundTripExpr('not a');
+		});
+
+		it('-expr', () => {
+			roundTripExpr('-a');
+		});
+
+		it('expr IS NULL', () => {
+			roundTripExpr('a is null');
+		});
+
+		it('expr IS NOT NULL', () => {
+			roundTripExpr('a is not null');
+		});
+	});
+
+	describe('Function calls', () => {
+		it('simple function', () => {
+			roundTripExpr('length(x)');
+		});
+
+		it('multi-arg function', () => {
+			roundTripExpr('substr(x, 1, 3)');
+		});
+
+		it('count(*)', () => {
+			roundTripExpr('count(*)');
+		});
+
+		it('count(distinct x)', () => {
+			roundTripExpr('count(distinct x)');
+		});
+	});
+
+	describe('CAST', () => {
+		it('cast to integer', () => {
+			roundTripExpr('cast(x as integer)');
+		});
+
+		it('cast to text', () => {
+			roundTripExpr('cast(x as text)');
+		});
+	});
+
+	describe('CASE', () => {
+		it('simple CASE x WHEN', () => {
+			roundTripExpr("case x when 1 then 'a' when 2 then 'b' end");
+		});
+
+		it('searched CASE WHEN', () => {
+			roundTripExpr("case when x > 0 then 'pos' when x < 0 then 'neg' end");
+		});
+
+		it('CASE with ELSE', () => {
+			roundTripExpr("case when x > 0 then 'pos' else 'other' end");
+		});
+	});
+
+	describe('Subquery expression', () => {
+		it('scalar subquery', () => {
+			roundTripExpr('(select 1)');
+		});
+	});
+
+	describe('EXISTS', () => {
+		it('exists subquery', () => {
+			roundTripExpr('exists (select 1 from t)');
+		});
+	});
+
+	describe('IN', () => {
+		it('in value list', () => {
+			roundTripExpr('x in (1, 2, 3)');
+		});
+
+		it('in subquery', () => {
+			roundTripExpr('x in (select id from t)');
+		});
+	});
+
+	describe('BETWEEN', () => {
+		it('x between 1 and 10', () => {
+			roundTripExpr('x between 1 and 10');
+		});
+
+		it('x not between 1 and 10', () => {
+			roundTripExpr('x not between 1 and 10');
+		});
+	});
+
+	describe('COLLATE', () => {
+		it('collate nocase', () => {
+			roundTripExpr('x collate nocase');
+		});
+	});
+
+	describe('Window functions', () => {
+		it('row_number() over (order by x)', () => {
+			roundTripExpr('row_number() over (order by x)');
+		});
+
+		it('sum with partition by', () => {
+			roundTripExpr('sum(x) over (partition by y order by z)');
+		});
+
+		it('with frame spec', () => {
+			roundTripExpr('sum(x) over (order by y rows between unbounded preceding and current row)');
+		});
+	});
+
+	describe('Nested/compound', () => {
+		it('function of arithmetic', () => {
+			roundTripExpr('abs(a + b * c)');
+		});
+
+		it('CASE with IN', () => {
+			roundTripExpr("case when x in (1, 2) then 'a' else 'b' end");
+		});
+	});
+});
+
+describe('Emit: identifier quoting', () => {
+	it('normal identifier is not quoted', () => {
+		expect(quoteIdentifier('users')).to.equal('users');
+	});
+
+	it('reserved keyword "select" is quoted', () => {
+		expect(quoteIdentifier('select')).to.equal('"select"');
+	});
+
+	it('reserved keyword "from" is quoted', () => {
+		expect(quoteIdentifier('from')).to.equal('"from"');
+	});
+
+	it('reserved keyword "table" is quoted', () => {
+		expect(quoteIdentifier('table')).to.equal('"table"');
+	});
+
+	it('identifier with spaces is quoted', () => {
+		expect(quoteIdentifier('my table')).to.equal('"my table"');
+	});
+
+	it('identifier starting with digit is quoted', () => {
+		expect(quoteIdentifier('1abc')).to.equal('"1abc"');
+	});
+
+	it('embedded double quotes are escaped', () => {
+		expect(quoteIdentifier('a"b')).to.equal('"a""b"');
+	});
+
+	it('underscore-prefixed identifier is not quoted', () => {
+		expect(quoteIdentifier('_private')).to.equal('_private');
+	});
+});
+
+describe('Emit: string literal escaping', () => {
+	it('simple string', () => {
+		const result = roundTripExpr("'hello'");
+		expect(result).to.equal("'hello'");
+	});
+
+	it('string with embedded single quote', () => {
+		const result = roundTripExpr("'it''s'");
+		expect(result).to.equal("'it''s'");
+	});
+
+	it('empty string', () => {
+		const result = roundTripExpr("''");
+		expect(result).to.equal("''");
+	});
+
+	it('string with multiple quotes', () => {
+		const result = roundTripExpr("'a''b''c'");
+		expect(result).to.equal("'a''b''c'");
+	});
+});
+
+describe('Emit: edge cases', () => {
+	it('NULL literal round-trip', () => {
+		roundTripStmt('select null');
+	});
+
+	it('aliased expression', () => {
+		roundTripStmt('select 1 as x');
+	});
+
+	it('star expression', () => {
+		roundTripStmt('select *');
+	});
+
+	it('table.star', () => {
+		roundTripStmt('select t.* from t');
+	});
+
+	it('schema-qualified table in FROM', () => {
+		roundTripStmt('select * from main.t');
+	});
+
+	it('multiple statements via parseAll', () => {
+		const stmts = parseAll('select 1; select 2');
+		expect(stmts).to.have.length(2);
+		for (const stmt of stmts) {
+			const str1 = astToString(stmt);
+			const ast2 = parse(str1);
+			const str2 = astToString(ast2);
+			expect(str2).to.equal(str1);
+		}
+	});
+});
