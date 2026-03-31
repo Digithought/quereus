@@ -1,15 +1,15 @@
-import { PlanNode, type VoidNode, type RelationalPlanNode, Attribute } from './plan-node.js';
+import { PlanNode, VoidNode, type RelationalPlanNode, Attribute } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import type * as AST from '../../parser/ast.js';
-import { RelationType, type VoidType } from '../../common/datatype.js';
+import { RelationType } from '../../common/datatype.js';
 import { TEXT_TYPE } from '../../types/builtin-types.js';
 import { Cached } from '../../util/cached.js';
 
 /**
  * DECLARE SCHEMA statement plan node
  */
-export class DeclareSchemaNode extends PlanNode implements VoidNode {
+export class DeclareSchemaNode extends VoidNode {
 	override readonly nodeType = PlanNodeType.DeclareSchema;
 
 	constructor(
@@ -17,21 +17,6 @@ export class DeclareSchemaNode extends PlanNode implements VoidNode {
 		public readonly statementAst: AST.DeclareSchemaStmt
 	) {
 		super(scope, 1);
-	}
-
-	getType(): VoidType {
-		return { typeClass: 'void' };
-	}
-
-	getChildren(): PlanNode[] {
-		return [];
-	}
-
-	withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		if (newChildren.length !== 0) {
-			throw new Error(`DeclareSchemaNode expects 0 children, got ${newChildren.length}`);
-		}
-		return this;
 	}
 
 	override toString(): string {
@@ -128,7 +113,7 @@ export class DiffSchemaNode extends PlanNode implements RelationalPlanNode {
 /**
  * APPLY SCHEMA statement plan node
  */
-export class ApplySchemaNode extends PlanNode implements VoidNode {
+export class ApplySchemaNode extends VoidNode {
 	override readonly nodeType = PlanNodeType.ApplySchema;
 
 	constructor(
@@ -136,21 +121,6 @@ export class ApplySchemaNode extends PlanNode implements VoidNode {
 		public readonly statementAst: AST.ApplySchemaStmt
 	) {
 		super(scope, 1);
-	}
-
-	getType(): VoidType {
-		return { typeClass: 'void' };
-	}
-
-	getChildren(): PlanNode[] {
-		return [];
-	}
-
-	withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		if (newChildren.length !== 0) {
-			throw new Error(`ApplySchemaNode expects 0 children, got ${newChildren.length}`);
-		}
-		return this;
 	}
 
 	override toString(): string {

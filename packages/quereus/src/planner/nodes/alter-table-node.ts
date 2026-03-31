@@ -1,8 +1,7 @@
 import type { Scope } from '../scopes/scope.js';
-import { PhysicalProperties, PlanNode, type VoidNode } from './plan-node.js';
+import { VoidNode, type PhysicalProperties } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
-import type { VoidType } from '../../common/datatype.js';
 import type * as AST from '../../parser/ast.js';
 
 /**
@@ -19,7 +18,7 @@ export type AlterTableAction =
  * Plan node for ALTER TABLE operations (rename table/column, add/drop column).
  * Constraint additions are handled by the separate AddConstraintNode.
  */
-export class AlterTableNode extends PlanNode implements VoidNode {
+export class AlterTableNode extends VoidNode {
 	override readonly nodeType = PlanNodeType.AlterTable;
 
 	constructor(
@@ -30,23 +29,8 @@ export class AlterTableNode extends PlanNode implements VoidNode {
 		super(scope);
 	}
 
-	getType(): VoidType {
-		return { typeClass: 'void' };
-	}
-
-	getRelations(): readonly [TableReferenceNode] {
+	override getRelations(): readonly [TableReferenceNode] {
 		return [this.table];
-	}
-
-	getChildren(): readonly PlanNode[] {
-		return [];
-	}
-
-	withChildren(newChildren: readonly PlanNode[]): PlanNode {
-		if (newChildren.length !== 0) {
-			throw new Error(`AlterTableNode expects 0 children, got ${newChildren.length}`);
-		}
-		return this;
 	}
 
 	override toString(): string {

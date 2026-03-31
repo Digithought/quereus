@@ -1,14 +1,13 @@
 import type { Scope } from '../scopes/scope.js';
-import { PlanNode, type VoidNode, type PhysicalProperties } from './plan-node.js';
+import { VoidNode, type PhysicalProperties } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
-import type { VoidType } from '../../common/datatype.js';
 import type * as AST from '../../parser/ast.js';
 
 /**
  * Represents creating a global integrity assertion.
  * This is a DDL operation that adds an assertion to the schema.
  */
-export class CreateAssertionNode extends PlanNode implements VoidNode {
+export class CreateAssertionNode extends VoidNode {
   override readonly nodeType = PlanNodeType.CreateAssertion;
 
   constructor(
@@ -17,21 +16,6 @@ export class CreateAssertionNode extends PlanNode implements VoidNode {
     public readonly checkExpression: AST.Expression,
   ) {
     super(scope);
-  }
-
-  getType(): VoidType {
-    return { typeClass: 'void' };
-  }
-
-  getChildren(): readonly PlanNode[] {
-    return [];
-  }
-
-  withChildren(newChildren: readonly PlanNode[]): PlanNode {
-    if (newChildren.length !== 0) {
-      throw new Error(`CreateAssertionNode expects 0 children, got ${newChildren.length}`);
-    }
-    return this; // No children, so no change
   }
 
   override toString(): string {

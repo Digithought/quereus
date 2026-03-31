@@ -1,15 +1,14 @@
 import type { Scope } from '../scopes/scope.js';
-import { PhysicalProperties, PlanNode, type VoidNode } from './plan-node.js';
+import { VoidNode, type PhysicalProperties } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableReferenceNode } from './reference.js';
-import type { VoidType } from '../../common/datatype.js';
 import type * as AST from '../../parser/ast.js';
 
 /**
  * Represents adding a constraint to an existing table.
  * This is a DDL operation that modifies the table schema at runtime.
  */
-export class AddConstraintNode extends PlanNode implements VoidNode {
+export class AddConstraintNode extends VoidNode {
   override readonly nodeType = PlanNodeType.AddConstraint;
 
   constructor(
@@ -20,23 +19,8 @@ export class AddConstraintNode extends PlanNode implements VoidNode {
     super(scope);
   }
 
-  getType(): VoidType {
-    return { typeClass: 'void' };
-  }
-
-  getRelations(): readonly [TableReferenceNode] {
+  override getRelations(): readonly [TableReferenceNode] {
     return [this.table];
-  }
-
-  getChildren(): readonly PlanNode[] {
-    return [];
-  }
-
-  withChildren(newChildren: readonly PlanNode[]): PlanNode {
-    if (newChildren.length !== 0) {
-      throw new Error(`AddConstraintNode expects 0 children, got ${newChildren.length}`);
-    }
-    return this; // No children, so no change
   }
 
   override toString(): string {
