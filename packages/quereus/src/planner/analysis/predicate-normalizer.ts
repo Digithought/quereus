@@ -1,4 +1,5 @@
 import type { ScalarPlanNode } from '../nodes/plan-node.js';
+import type { Scope } from '../scopes/scope.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { BinaryOpNode, UnaryOpNode, LiteralNode, BetweenNode } from '../nodes/scalar.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
@@ -130,8 +131,8 @@ function pushNotDown(node: ScalarPlanNode): ScalarPlanNode {
     }
 
     // Generic fallback: NOT(expr) as unary
-    const notAst: AST.UnaryExpr = { type: 'unary', operator: 'NOT', expr: (node as any).expression };
-    return new UnaryOpNode((node as any).scope, notAst, normalize(node));
+    const notAst: AST.UnaryExpr = { type: 'unary', operator: 'NOT', expr: node.expression };
+    return new UnaryOpNode(node.scope, notAst, normalize(node));
 }
 
 function collectAssociative(op: string, parts: ScalarPlanNode[]): ScalarPlanNode[] {
@@ -149,7 +150,7 @@ function collectAssociative(op: string, parts: ScalarPlanNode[]): ScalarPlanNode
     return result;
 }
 
-function rebuildAssociative(scope: any, op: string, parts: ScalarPlanNode[], baseExpr: AST.BinaryExpr): ScalarPlanNode {
+function rebuildAssociative(scope: Scope, op: string, parts: ScalarPlanNode[], baseExpr: AST.BinaryExpr): ScalarPlanNode {
     if (parts.length === 0) {
         // Degenerate; shouldn't happen
         return new LiteralNode(scope, { type: 'literal', value: 1 });
@@ -161,7 +162,7 @@ function rebuildAssociative(scope: any, op: string, parts: ScalarPlanNode[], bas
     let acc = parts[0];
     for (let i = 1; i < parts.length; i++) {
         const right = parts[i];
-        const newAst: AST.BinaryExpr = { type: 'binary', operator: op, left: (acc as any).expression ?? baseExpr.left, right: (right as any).expression ?? baseExpr.right };
+        const newAst: AST.BinaryExpr = { type: 'binary', operator: op, left: acc.expression ?? baseExpr.left, right: right.expression ?? baseExpr.right };
         acc = new BinaryOpNode(scope, newAst, acc, right);
     }
     return acc;
@@ -192,7 +193,7 @@ function flipComparison(op: string): string | null {
 // - All disjuncts are of the form (col = literal)
 // - The same column is used
 // - Literal list is small (<= 32) to avoid large INs
-function tryCollapseOrToIn(scope: any, disjuncts: ScalarPlanNode[]): ScalarPlanNode | null {
+function tryCollapseOrToIn(scope: Scope, disjuncts: ScalarPlanNode[]): ScalarPlanNode | null {
     const values: LiteralNode[] = [];
     let column: ColumnReferenceNode | null = null;
 
@@ -229,10 +230,10 @@ function tryCollapseOrToIn(scope: any, disjuncts: ScalarPlanNode[]): ScalarPlanN
     // Build an InNode with constant values
     const ast: AST.InExpr = {
         type: 'in',
-        expr: (column as any).expression,
-        values: values.map(v => (v as any).expression)
+        expr: column.expression,
+        values: values.map(v => v.expression)
     };
-    const inNode = new InNode((column as any).scope, ast, column, undefined, values);
+    const inNode = new InNode(column.scope, ast, column, undefined, values);
     return inNode;
 }
 

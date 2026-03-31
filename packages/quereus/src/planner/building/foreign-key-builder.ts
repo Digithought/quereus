@@ -156,7 +156,7 @@ export function buildChildSideFKChecks(
 			if (contextVarIndex < (tableSchema.mutationContext?.length || 0)) {
 				const contextVar = tableSchema.mutationContext![contextVarIndex];
 				const varNameLower = contextVar.name.toLowerCase();
-				constraintScope.subscribeFactory(varNameLower, (exp, s) =>
+				constraintScope.registerSymbol(varNameLower, (exp, s) =>
 					new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, contextVarIndex)
 				);
 			}
@@ -281,7 +281,7 @@ export function buildParentSideFKChecks(
 				contextAttributes.forEach((attr, contextVarIndex) => {
 					if (contextVarIndex < (tableSchema.mutationContext?.length || 0)) {
 						const contextVar = tableSchema.mutationContext![contextVarIndex];
-						constraintScope.subscribeFactory(contextVar.name.toLowerCase(), (exp, s) =>
+						constraintScope.registerSymbol(contextVar.name.toLowerCase(), (exp, s) =>
 							new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, contextVarIndex)
 						);
 					}

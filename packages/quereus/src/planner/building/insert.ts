@@ -445,10 +445,10 @@ export function buildInsertStmt(
 			const varNameLower = contextVar.name.toLowerCase();
 
 			// Register both unqualified and qualified names
-			contextScope!.subscribeFactory(varNameLower, (exp, s) =>
+			contextScope!.registerSymbol(varNameLower, (exp, s) =>
 				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, index)
 			);
-			contextScope!.subscribeFactory(`context.${varNameLower}`, (exp, s) =>
+			contextScope!.registerSymbol(`context.${varNameLower}`, (exp, s) =>
 				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, index)
 			);
 		});

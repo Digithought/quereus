@@ -96,7 +96,8 @@ export function buildHistogram(
 		// Count distinct values within this bucket
 		const distinct = new Set<string>();
 		for (let j = start; j <= upperIdx; j++) {
-			distinct.add(String(sortedValues[j]));
+			const val = sortedValues[j];
+			distinct.add(typeof val + ':' + String(val));
 		}
 
 		buckets.push({

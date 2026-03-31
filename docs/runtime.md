@@ -696,10 +696,10 @@ contextAttributes.forEach((attr, contextVarIndex) => {
   const varNameLower = contextVar.name.toLowerCase();
 
   // Register both unqualified and qualified names
-  constraintScope.subscribeFactory(varNameLower, (exp, s) =>
+  constraintScope.registerSymbol(varNameLower, (exp, s) =>
     new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, contextVarIndex)
   );
-  constraintScope.subscribeFactory(`context.${varNameLower}`, (exp, s) =>
+  constraintScope.registerSymbol(`context.${varNameLower}`, (exp, s) =>
     new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, contextVarIndex)
   );
 });

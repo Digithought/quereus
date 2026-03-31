@@ -5,8 +5,14 @@ import * as AST from "../../parser/ast.js";
 import { FunctionReferenceNode, TableReferenceNode } from "../nodes/reference.js";
 import { Ambiguous } from "./scope.js";
 import type { ScalarType } from "../../common/datatype.js";
-import { isScalarFunctionSchema } from "../../schema/function.js";
+import { type FunctionSchema, isScalarFunctionSchema } from "../../schema/function.js";
 import { REAL_TYPE } from "../../types/builtin-types.js";
+
+function getFunctionScalarType(func: FunctionSchema): ScalarType {
+	return isScalarFunctionSchema(func)
+		? func.returnType
+		: { typeClass: 'scalar', logicalType: REAL_TYPE, nullable: true, isReadOnly: true };
+}
 
 export class GlobalScope extends BaseScope {
 	constructor(public readonly manager: SchemaManager) {
@@ -22,12 +28,7 @@ export class GlobalScope extends BaseScope {
 				return undefined;
 			}
 
-			// Get the proper scalar type from the function schema
-			const scalarType: ScalarType = isScalarFunctionSchema(func)
-				? func.returnType
-				: { typeClass: 'scalar', logicalType: REAL_TYPE, nullable: true, isReadOnly: true };
-
-			return new FunctionReferenceNode(this, func, scalarType);
+			return new FunctionReferenceNode(this, func, getFunctionScalarType(func));
 		}
 		// Table: [schema.]table
 		const [first, second] = symbolKey.split('.');
@@ -51,12 +52,7 @@ export class GlobalScope extends BaseScope {
 		// Check for zero-argument functions first
 		const func = this.manager.findFunction(name, 0);
 		if (func) {
-			// Get the proper scalar type from the function schema
-			const scalarType: ScalarType = isScalarFunctionSchema(func)
-				? func.returnType
-				: { typeClass: 'scalar', logicalType: REAL_TYPE, nullable: true, isReadOnly: true };
-
-			return new FunctionReferenceNode(this, func, scalarType);
+			return new FunctionReferenceNode(this, func, getFunctionScalarType(func));
 		}
 		// Table: [schema.]table
 		const table = this.manager.findTable(name);
