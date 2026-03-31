@@ -27,7 +27,8 @@ export function buildAggregatePhase(
 	selectContext: PlanningContext,
 	aggregates: { expression: ScalarPlanNode; alias: string }[],
 	hasAggregates: boolean,
-	projections: Projection[]
+	projections: Projection[],
+	hasWrappedAggregates: boolean = false
 ): {
 	output: RelationalPlanNode;
 	aggregateScope?: RegisteredScope;
@@ -111,7 +112,7 @@ export function buildAggregatePhase(
 	// Determine if final projection is needed.
 	// Force a final projection when HAVING-only aggregates were added, to
 	// strip them from the output (they exist only for the HAVING filter).
-	const needsFinalProjection = hasHavingOnlyAggregates || checkNeedsFinalProjection(projections);
+	const needsFinalProjection = hasHavingOnlyAggregates || hasWrappedAggregates || checkNeedsFinalProjection(projections);
 
 	return {
 		output: currentInput,

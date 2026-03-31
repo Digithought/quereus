@@ -111,7 +111,8 @@ export function buildSelectStmt(
 		aggregates,
 		windowFunctions,
 		hasAggregates,
-		hasWindowFunctions
+		hasWindowFunctions,
+		hasWrappedAggregates
 	} = analyzeSelectColumns(stmt.columns, selectContext);
 
 	// Handle SELECT * separately
@@ -126,7 +127,7 @@ export function buildSelectStmt(
 	projections.push(...columnProjections);
 
 	// Process aggregates if present
-	const aggregateResult = buildAggregatePhase(input, stmt, selectContext, aggregates, hasAggregates, projections);
+	const aggregateResult = buildAggregatePhase(input, stmt, selectContext, aggregates, hasAggregates, projections, hasWrappedAggregates);
 	input = aggregateResult.output;
 	let preAggregateSort = aggregateResult.preAggregateSort;
 

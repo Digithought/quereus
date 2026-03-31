@@ -11,6 +11,7 @@ import { WindowFunctionCallNode } from '../nodes/window-function.js';
 import { type RelationalPlanNode } from '../nodes/plan-node.js';
 import type { Scope } from '../scopes/scope.js';
 import { CapabilityDetectors } from '../framework/characteristics.js';
+import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
 
 /**
  * Checks if an expression contains aggregate functions
@@ -97,6 +98,35 @@ export function buildStarProjections(
 }
 
 /**
+ * Collects all inner AggregateFunctionCallNode instances from a scalar expression tree.
+ * Used when a scalar function wraps aggregates (e.g. coalesce(max(val), 0)).
+ * Does not recurse into aggregate arguments (aggregates can't nest).
+ */
+function collectInnerAggregates(
+	node: ScalarPlanNode,
+	aggregates: { expression: ScalarPlanNode; alias: string }[]
+): void {
+	if (CapabilityDetectors.isAggregateFunction(node)) {
+		const funcNode = node as AggregateFunctionCallNode;
+		const key = expressionToString(funcNode.expression).toLowerCase();
+		// Deduplicate against existing entries
+		if (!aggregates.some(a => a.alias.toLowerCase() === key)) {
+			aggregates.push({
+				expression: funcNode,
+				alias: expressionToString(funcNode.expression)
+			});
+		}
+		return; // Don't recurse into aggregate arguments
+	}
+
+	for (const child of node.getChildren()) {
+		if ('expression' in child) {
+			collectInnerAggregates(child as ScalarPlanNode, aggregates);
+		}
+	}
+}
+
+/**
  * Analyzes SELECT columns and categorizes them into different types
  */
 export function analyzeSelectColumns(
@@ -108,12 +138,14 @@ export function analyzeSelectColumns(
 	windowFunctions: { func: WindowFunctionCallNode; alias?: string }[];
 	hasAggregates: boolean;
 	hasWindowFunctions: boolean;
+	hasWrappedAggregates: boolean;
 } {
 	const projections: Projection[] = [];
 	const aggregates: { expression: ScalarPlanNode; alias: string }[] = [];
 	const windowFunctions: { func: WindowFunctionCallNode; alias?: string }[] = [];
 	let hasAggregates = false;
 	let hasWindowFunctions = false;
+	let hasWrappedAggregates = false;
 
 	for (const column of columns) {
 		if (column.type === 'all') {
@@ -131,10 +163,17 @@ export function analyzeSelectColumns(
 				});
 			} else if (isAggregateExpression(scalarNode)) {
 				hasAggregates = true;
-				aggregates.push({
-					expression: scalarNode,
-					alias: column.alias || expressionToString(column.expr)
-				});
+				if (CapabilityDetectors.isAggregateFunction(scalarNode)) {
+					// Direct aggregate — add as-is (existing behavior)
+					aggregates.push({
+						expression: scalarNode,
+						alias: column.alias || expressionToString(column.expr)
+					});
+				} else {
+					// Scalar wrapping aggregate(s) — extract only the inner aggregate(s)
+					collectInnerAggregates(scalarNode, aggregates);
+					hasWrappedAggregates = true;
+				}
 			} else {
 				projections.push({
 					node: scalarNode,
@@ -149,7 +188,8 @@ export function analyzeSelectColumns(
 		aggregates,
 		windowFunctions,
 		hasAggregates,
-		hasWindowFunctions
+		hasWindowFunctions,
+		hasWrappedAggregates
 	};
 }
 
