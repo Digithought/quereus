@@ -135,26 +135,27 @@ export class SortNode extends PlanNode implements UnaryRelationalNode, SortCapab
 	}
 
 	// SortCapable interface implementation
-	getSortKeys(): readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc' }[] {
+	getSortKeys(): readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc'; nulls?: 'first' | 'last' }[] {
 		return this.sortKeys.map(key => ({
 			expression: key.expression,
-			direction: key.direction
+			direction: key.direction,
+			nulls: key.nulls
 		}));
 	}
 
-	withSortKeys(keys: readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc' }[]): PlanNode {
-		// Convert to internal SortKey format with nulls handling
-		const newSortKeys = keys.map(key => ({
+	withSortKeys(keys: readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc'; nulls?: 'first' | 'last' }[]): PlanNode {
+		const newSortKeys: SortKey[] = keys.map(key => ({
 			expression: key.expression,
 			direction: key.direction,
-			nulls: undefined as 'first' | 'last' | undefined
+			nulls: key.nulls
 		}));
 
 		// Check if anything changed
 		const changed = newSortKeys.length !== this.sortKeys.length ||
 			newSortKeys.some((key, i) =>
 				key.expression !== this.sortKeys[i].expression ||
-				key.direction !== this.sortKeys[i].direction
+				key.direction !== this.sortKeys[i].direction ||
+				key.nulls !== this.sortKeys[i].nulls
 			);
 
 		if (!changed) {

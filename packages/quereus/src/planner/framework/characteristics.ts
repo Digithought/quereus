@@ -151,8 +151,8 @@ export interface AggregationCapable extends RelationalPlanNode {
  * Interface for sorting operations
  */
 export interface SortCapable extends PlanNode {
-	getSortKeys(): readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc' }[];
-	withSortKeys(keys: readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc' }[]): PlanNode;
+	getSortKeys(): readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc'; nulls?: 'first' | 'last' }[];
+	withSortKeys(keys: readonly { expression: ScalarPlanNode; direction: 'asc' | 'desc'; nulls?: 'first' | 'last' }[]): PlanNode;
 }
 
 /**
