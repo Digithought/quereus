@@ -1,33 +1,29 @@
-description: Property-based tests for planner and optimizer correctness
-dependencies: fast-check (already in use)
-files: test/property.spec.ts, packages/quereus/src/planner/framework/, packages/quereus/src/planner/rules/
+description: Property-based tests targeting planner and optimizer correctness invariants
+dependencies: fast-check (already in devDependencies)
+files: test/property.spec.ts, src/planner/framework/registry.ts, src/planner/rules/
 ----
 
-Expand the existing property-based test suite (currently focused on parser, values, collation) to cover the planner and optimizer — the richest bug surface in Quereus.
+Existing property tests (test/property.spec.ts) cover parser robustness, value round-trips, collation, and comparison invariants.  The planner and optimizer — the most complex subsystems — have no property-based coverage.
 
-### Key properties to test
+This ticket adds property-based tests that exercise planner/optimizer invariants across randomly generated queries and data:
 
-**Optimizer rule equivalence**: For each optimizer rule, generate random queries, run them with the rule enabled vs disabled, and assert identical result sets (order-insensitive). This verifies that no rule silently changes semantics. Requires a mechanism to selectively disable individual rules during a test run.
+**Semantic equivalence under optimizer rules**
+For each optimizer rule (or combination), run a query with the rule enabled and disabled, and assert identical result sets (order-insensitive).  This requires a mechanism to selectively disable individual rules — either a test-only flag on the optimizer registry or a Database option.  If one doesn't exist, add a minimal one.
 
-**Optimizer idempotency**: Optimizing an already-optimized plan should produce the same plan. Run the optimizer twice and compare plan structures.
+**Optimizer idempotency**
+Optimizing an already-optimized plan a second time should produce the same plan structure.
 
-**Join commutativity**: `A JOIN B ON ...` and `B JOIN A ON ...` should produce the same result set (order-insensitive). Generate random two-table schemas with data, join them both ways, compare.
+**Join commutativity**
+`A JOIN B ON ...` and `B JOIN A ON ...` should produce the same result set (modulo column order).
 
-**Predicate pushdown correctness**: A query with a WHERE clause applied before vs after a join should produce the same results. Generate joins with filterable predicates, compare pushed-down vs non-pushed-down execution.
+**Monotonicity of WHERE**
+Adding a WHERE clause to a query should never increase the number of result rows compared to the same query without it.
 
-**NULL propagation invariants**: Verify known NULL algebra rules hold across random expressions — e.g., `X AND NULL` when X is false should be false, `NULL = NULL` is NULL, aggregate functions skip NULLs (except COUNT(*)), etc.
+**NULL algebra**
+Verify known NULL invariants: `NULL = NULL` is not true, `NULL IN (...)` behavior, `COALESCE` semantics, `IS NULL`/`IS NOT NULL` consistency, aggregate skipping of NULLs (except `count(*)`).
 
-**Monotonicity**: Adding a WHERE clause to a query should never increase the result count. Adding an additional JOIN condition should never increase the result count for INNER joins.
+**Aggregate invariants**
+`count(*)` >= `count(col)`.  `min(col)` <= `max(col)` when both non-NULL.  `sum` of a single row equals the value.  `avg` is between `min` and `max`.
 
-**Projection invariance**: Selecting a subset of columns should not change the number of rows returned (unless DISTINCT is involved).
-
-### Approach
-
-Use fast-check's `letrec` or custom arbitraries to generate:
-- Random table schemas (1-5 columns, varied types)
-- Random data sets (0-20 rows per table)
-- Random queries over those schemas (start simple: SELECT/WHERE/JOIN/GROUP BY)
-
-Each generated scenario creates a fresh Database, inserts the data, runs the query variants, and compares results.
-
-Start with simple queries and expand complexity over time. The generator itself will be a reusable asset for other testing strategies (grammar fuzzing, differential testing).
+**Approach**
+Use fast-check to generate random schemas (1-3 tables, 2-5 columns of mixed types), populate with random data (0-50 rows), and generate queries that exercise the properties above.  Start simple (single-table, then two-table joins) and expand.
