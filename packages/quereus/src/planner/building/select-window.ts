@@ -164,11 +164,13 @@ function buildWindowProjections(
 
 	for (const column of stmt.columns) {
 		if (column.type === 'column') {
-			if (isWindowExpression(buildExpression(selectContext, column.expr, true))) {
+			// Build each column expression once and reuse for both classification and projection
+			const builtExpr = buildExpression(selectContext, column.expr, true);
+
+			if (isWindowExpression(builtExpr)) {
 				// For window functions, use ArrayIndexNode to access the value by direct index
 				const windowColumnIndex = findWindowFunctionIndex(
-					column,
-					selectContext,
+					builtExpr,
 					windowFunctions,
 					sourceColumnCount
 				);
@@ -188,11 +190,9 @@ function buildWindowProjections(
 					});
 				}
 			} else {
-				// For regular columns, use the original expression built with proper column references
-				const scalarNode = buildExpression(selectContext, column.expr, true);
-
+				// For regular columns, use the already-built expression
 				windowProjections.push({
-					node: scalarNode,
+					node: builtExpr,
 					alias: column.alias
 				});
 			}
@@ -206,13 +206,10 @@ function buildWindowProjections(
  * Finds the index of a window function in the window output
  */
 function findWindowFunctionIndex(
-	column: AST.ResultColumnExpr,
-	selectContext: PlanningContext,
+	originalExpr: ScalarPlanNode,
 	windowFunctions: { func: WindowFunctionCallNode; alias?: string }[],
 	sourceColumnCount: number
 ): number {
-	const originalExpr = buildExpression(selectContext, column.expr, true);
-
 	const matchingWindowFuncIndex = windowFunctions.findIndex(({ func }) => {
 		// Match based on function name, parameters, and window specification
 		if (!CapabilityDetectors.isWindowFunction(originalExpr) ||
