@@ -8,6 +8,7 @@ import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { createRowSlot } from '../context-helpers.js';
 import { compareSqlValuesFast, BINARY_COLLATION } from '../../util/comparison.js';
 import type { CollationFunction } from '../../util/comparison.js';
+import { joinOutputRow } from './join-output.js';
 
 const log = createLogger('runtime:emit:merge-join');
 
@@ -147,16 +148,8 @@ export function emitMergeJoin(plan: MergeJoinNode, ctx: EmissionContext): Instru
 					}
 				}
 
-				if (isSemiOrAnti) {
-					if ((plan.joinType === 'semi' && matched) || (plan.joinType === 'anti' && !matched)) {
-						yield leftRow;
-					}
-				} else if (!matched && plan.joinType === 'left') {
-					// LEFT JOIN: emit null-padded row for unmatched left rows
-					const nullPadding = new Array(rightColCount).fill(null) as Row;
-					rightSlot.set(nullPadding);
-					yield [...leftRow, ...nullPadding] as Row;
-				}
+				const postRow = joinOutputRow(plan.joinType, matched, isSemiOrAnti, leftRow, rightColCount, rightSlot);
+				if (postRow) yield postRow;
 			}
 		} finally {
 			leftSlot.close();

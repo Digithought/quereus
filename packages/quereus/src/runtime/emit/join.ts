@@ -10,6 +10,7 @@ import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { createRowSlot } from '../context-helpers.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
+import { joinOutputRow } from './join-output.js';
 
 const log = createLogger('runtime:emit:join');
 
@@ -93,21 +94,8 @@ export function emitLoopJoin(plan: JoinNode, ctx: EmissionContext): Instruction 
 					}
 				}
 
-				if (isSemiOrAnti) {
-					// Semi: emit left row only if matched
-					// Anti: emit left row only if NOT matched
-					if ((joinType === 'semi' && leftMatched) || (joinType === 'anti' && !leftMatched)) {
-						yield leftRow;
-					}
-				} else if (!leftMatched && joinType === 'left') {
-					// Handle outer join semantics - null padding for unmatched left rows
-					const nullPadding = new Array(rightAttributes.length).fill(null) as Row;
-					// Update the right slot so downstream resolveAttribute sees
-					// nulls instead of stale data from a previous inner iteration.
-					rightSlot.set(nullPadding);
-					const outputRow = [...leftRow, ...nullPadding] as Row;
-					yield outputRow;
-				}
+				const postRow = joinOutputRow(joinType, leftMatched, isSemiOrAnti, leftRow, rightAttributes.length, rightSlot);
+				if (postRow) yield postRow;
 			}
 
 		} finally {

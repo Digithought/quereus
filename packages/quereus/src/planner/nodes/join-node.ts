@@ -12,6 +12,7 @@ import { normalizePredicate } from '../analysis/predicate-normalizer.js';
 import { combineJoinKeys, analyzeJoinKeyCoverage } from '../util/key-utils.js';
 import { BinaryOpNode } from './scalar.js';
 import { ColumnReferenceNode } from './reference.js';
+import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows } from './join-utils.js';
 
 export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross' | 'semi' | 'anti';
 
@@ -115,40 +116,7 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 	}
 
 	private buildAttributes(): Attribute[] {
-		const leftAttrs = this.left.getAttributes();
-
-		// Semi/anti joins produce only left-side attributes
-		if (this.joinType === 'semi' || this.joinType === 'anti') {
-			return leftAttrs.slice() as Attribute[];
-		}
-
-		const rightAttrs = this.right.getAttributes();
-
-		// For JOINs, concatenate left and right attributes
-		// For OUTER joins, mark attributes from the nullable side as nullable
-		const attributes: Attribute[] = [];
-
-		// Add left attributes
-		for (const attr of leftAttrs) {
-			const isNullable = this.joinType === 'right' || this.joinType === 'full';
-			attributes.push({
-				...attr,
-				// For right/full outer joins, left side can be null
-				type: isNullable ? { ...attr.type, nullable: true } : attr.type
-			});
-		}
-
-		// Add right attributes
-		for (const attr of rightAttrs) {
-			const isNullable = this.joinType === 'left' || this.joinType === 'full';
-			attributes.push({
-				...attr,
-				// For left/full outer joins, right side can be null
-				type: isNullable ? { ...attr.type, nullable: true } : attr.type
-			});
-		}
-
-		return attributes;
+		return buildJoinAttributes(this.left.getAttributes(), this.right.getAttributes(), this.joinType);
 	}
 
 	getAttributes(): Attribute[] {
@@ -157,56 +125,9 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 
 	getType(): RelationType {
 		const leftType = this.left.getType();
-
-		// Semi/anti joins produce only left-side columns and preserve left keys
-		if (this.joinType === 'semi' || this.joinType === 'anti') {
-			return {
-				typeClass: 'relation',
-				columns: leftType.columns,
-				isSet: leftType.isSet,
-				isReadOnly: leftType.isReadOnly,
-				keys: leftType.keys,
-				rowConstraints: leftType.rowConstraints
-			};
-		}
-
 		const rightType = this.right.getType();
-
-		// Combine column types from both sides
-		const leftColumns = leftType.columns;
-		const rightColumns = rightType.columns;
-
-		// For outer joins, mark columns as nullable appropriately
-		const combinedColumns = [
-			...leftColumns.map(col => {
-				const isNullable = this.joinType === 'right' || this.joinType === 'full';
-				return isNullable ? { ...col, type: { ...col.type, nullable: true } } : col;
-			}),
-			...rightColumns.map(col => {
-				const isNullable = this.joinType === 'left' || this.joinType === 'full';
-				return isNullable ? { ...col, type: { ...col.type, nullable: true } } : col;
-			})
-		];
-
-		// Join result is a set only if both inputs are sets and it's an inner/cross join
-		// Outer joins can introduce duplicates due to null padding
-		const isSet = (this.joinType === 'inner' || this.joinType === 'cross') &&
-			         leftType.isSet && rightType.isSet;
-
-		// Combine keys conservatively
-		const combinedKeys = combineJoinKeys(leftType.keys, rightType.keys, this.joinType, leftType.columns.length);
-
-		// Combine row constraints from both sides
-		const combinedRowConstraints = [...leftType.rowConstraints, ...rightType.rowConstraints];
-
-		return {
-			typeClass: 'relation',
-			columns: combinedColumns,
-			isSet,
-			isReadOnly: leftType.isReadOnly && rightType.isReadOnly,
-			keys: combinedKeys,
-			rowConstraints: combinedRowConstraints
-		};
+		const keys = combineJoinKeys(leftType.keys, rightType.keys, this.joinType, leftType.columns.length);
+		return buildJoinRelationType(leftType, rightType, this.joinType, keys);
 	}
 
 	getChildren(): readonly PlanNode[] {
@@ -257,38 +178,7 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 	}
 
 	get estimatedRows(): number | undefined {
-		const leftRows = this.left.estimatedRows;
-		const rightRows = this.right.estimatedRows;
-
-		if (leftRows === undefined || rightRows === undefined) {
-			return undefined;
-		}
-
-		// Simple heuristics for different join types
-		switch (this.joinType) {
-			case 'cross':
-				return leftRows * rightRows;
-			case 'inner':
-				// Assume 10% selectivity for inner joins
-				return Math.max(1, leftRows * rightRows * 0.1);
-			case 'left':
-				// Left joins preserve all left rows
-				return leftRows;
-			case 'right':
-				// Right joins preserve all right rows
-				return rightRows;
-			case 'full':
-				// Full outer joins can have at most left + right rows
-				return leftRows + rightRows;
-			case 'semi':
-				// Semi joins produce at most left rows (assume 50% match)
-				return Math.max(1, Math.floor(leftRows * 0.5));
-			case 'anti':
-				// Anti joins produce at most left rows (assume 50% don't match)
-				return Math.max(1, Math.floor(leftRows * 0.5));
-			default:
-				return leftRows * rightRows * 0.1;
-		}
+		return estimateJoinRows(this.left.estimatedRows, this.right.estimatedRows, this.joinType);
 	}
 
 	override toString(): string {

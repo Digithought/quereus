@@ -8,7 +8,7 @@ import { quereusError } from '../../common/errors.js';
 import type { JoinCapable, PredicateSourceCapable } from '../framework/characteristics.js';
 import { mergeJoinCost } from '../cost/index.js';
 import type { JoinType } from './join-node.js';
-import type { EquiJoinPair } from './bloom-join-node.js';
+import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, type EquiJoinPair } from './join-utils.js';
 import { analyzeJoinKeyCoverage } from '../util/key-utils.js';
 
 /**
@@ -49,31 +49,10 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	}
 
 	private buildAttributes(): Attribute[] {
-		if (this.preserveAttributeIds) {
-			return this.preserveAttributeIds.slice() as Attribute[];
-		}
-
-		const leftAttrs = this.left.getAttributes();
-
-		// Semi/anti joins produce only left-side attributes
-		if (this.joinType === 'semi' || this.joinType === 'anti') {
-			return leftAttrs.slice() as Attribute[];
-		}
-
-		// Combine left + right attributes
-		const rightAttrs = this.right.getAttributes();
-		const attributes: Attribute[] = [];
-
-		for (const attr of leftAttrs) {
-			const isNullable = this.joinType === 'right' || this.joinType === 'full';
-			attributes.push(isNullable ? { ...attr, type: { ...attr.type, nullable: true } } : attr);
-		}
-		for (const attr of rightAttrs) {
-			const isNullable = this.joinType === 'left' || this.joinType === 'full';
-			attributes.push(isNullable ? { ...attr, type: { ...attr.type, nullable: true } } : attr);
-		}
-
-		return attributes;
+		return buildJoinAttributes(
+			this.left.getAttributes(), this.right.getAttributes(),
+			this.joinType, this.preserveAttributeIds,
+		);
 	}
 
 	getAttributes(): Attribute[] {
@@ -81,44 +60,7 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	}
 
 	getType(): RelationType {
-		const leftType = this.left.getType();
-
-		// Semi/anti joins produce only left-side columns
-		if (this.joinType === 'semi' || this.joinType === 'anti') {
-			return {
-				typeClass: 'relation',
-				columns: leftType.columns,
-				isSet: leftType.isSet,
-				isReadOnly: leftType.isReadOnly,
-				keys: leftType.keys,
-				rowConstraints: leftType.rowConstraints
-			};
-		}
-
-		const rightType = this.right.getType();
-
-		const combinedColumns = [
-			...leftType.columns.map(col => {
-				const isNullable = this.joinType === 'right' || this.joinType === 'full';
-				return isNullable ? { ...col, type: { ...col.type, nullable: true } } : col;
-			}),
-			...rightType.columns.map(col => {
-				const isNullable = this.joinType === 'left' || this.joinType === 'full';
-				return isNullable ? { ...col, type: { ...col.type, nullable: true } } : col;
-			})
-		];
-
-		const isSet = (this.joinType === 'inner' || this.joinType === 'cross') &&
-			leftType.isSet && rightType.isSet;
-
-		return {
-			typeClass: 'relation',
-			columns: combinedColumns,
-			isSet,
-			isReadOnly: leftType.isReadOnly && rightType.isReadOnly,
-			keys: [],
-			rowConstraints: [...leftType.rowConstraints, ...rightType.rowConstraints]
-		};
+		return buildJoinRelationType(this.left.getType(), this.right.getType(), this.joinType, []);
 	}
 
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
@@ -153,23 +95,7 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	}
 
 	get estimatedRows(): number | undefined {
-		const leftRows = this.left.estimatedRows;
-		const rightRows = this.right.estimatedRows;
-		if (leftRows === undefined || rightRows === undefined) return undefined;
-
-		switch (this.joinType) {
-			case 'cross':
-				return leftRows * rightRows;
-			case 'inner':
-				return Math.max(1, leftRows * rightRows * 0.1);
-			case 'left':
-				return leftRows;
-			case 'semi':
-			case 'anti':
-				return Math.max(1, Math.floor(leftRows * 0.5));
-			default:
-				return leftRows * rightRows * 0.1;
-		}
+		return estimateJoinRows(this.left.estimatedRows, this.right.estimatedRows, this.joinType);
 	}
 
 	getChildren(): readonly PlanNode[] {
