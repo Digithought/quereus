@@ -1,6 +1,6 @@
 import type { Database } from '../../../core/database.js';
 import { type TableSchema, type IndexSchema, buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js';
-import { type BTreeKey, type BTreeKeyForPrimary } from '../types.js';
+import { type BTreeKeyForPrimary } from '../types.js';
 import { StatusCode, type SqlValue, type Row, type UpdateResult } from '../../../common/types.js';
 import { BaseLayer } from './base.js';
 import { TransactionLayer } from './transaction.js';
@@ -8,13 +8,12 @@ import type { Layer } from './interface.js';
 import { MemoryTableConnection } from './connection.js';
 import { Latches } from '../../../util/latches.js';
 import { QuereusError } from '../../../common/errors.js';
-import { ConflictResolution, IndexConstraintOp } from '../../../common/constants.js';
+import { ConflictResolution } from '../../../common/constants.js';
 import type { ColumnDef as ASTColumnDef, LiteralExpr } from '../../../parser/ast.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import type { ScanPlan } from './scan-plan.js';
 import type { ColumnSchema } from '../../../schema/column.js';
-import { scanBaseLayer } from './base-cursor.js';
-import { scanTransactionLayer } from './transaction-cursor.js';
+import { scanLayer as scanLayerImpl } from './scan-layer.js';
 import { createPrimaryKeyFunctions, buildPrimaryKeyFromValues, type PrimaryKeyFunctions } from '../utils/primary-key.js';
 import { createMemoryTableLoggers } from '../utils/logging.js';
 import { getSyncLiteral } from '../../../parser/utils.js';
@@ -929,26 +928,6 @@ export class MemoryTableManager {
 		}
 	}
 
-	public planAppliesToKey(
-		plan: ScanPlan,
-		key: BTreeKey,
-		keyComparator: (a: BTreeKey, b: BTreeKey) => number
-	): boolean {
-		if (plan.equalityKey !== undefined) {
-			return keyComparator(key, plan.equalityKey) === 0;
-		}
-		const keyForBoundComparison = Array.isArray(key) ? key[0] : key;
-		if (plan.lowerBound && (keyForBoundComparison !== undefined && keyForBoundComparison !== null)) {
-			const cmp = compareSqlValues(keyForBoundComparison, plan.lowerBound.value);
-			if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) return false;
-		}
-		if (plan.upperBound && (keyForBoundComparison !== undefined && keyForBoundComparison !== null)) {
-			const cmp = compareSqlValues(keyForBoundComparison, plan.upperBound.value);
-			if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) return false;
-		}
-		return true;
-	}
-
 	public async destroy(): Promise<void> {
 		const lockKey = `MemoryTable.Destroy:${this.schemaName}.${this._tableName}`;
 		const release = await Latches.acquire(lockKey);
@@ -1067,18 +1046,6 @@ export class MemoryTableManager {
 
 	// New method to abstract layer scanning
 	public async* scanLayer(layer: Layer, plan: ScanPlan): AsyncIterable<Row> {
-		if (layer instanceof TransactionLayer) {
-			const parentLayer = layer.getParent();
-			if (!parentLayer) {
-				throw new QuereusError("TransactionLayer encountered without a parent layer during scan.", StatusCode.INTERNAL);
-			}
-			// With inherited BTrees, scanning is much simpler - we just scan the layer's BTrees directly
-			// The inheritance is handled automatically by the BTree
-			yield* scanTransactionLayer(layer, plan, this.scanLayer(parentLayer, plan));
-		} else if (layer instanceof BaseLayer) {
-			yield* scanBaseLayer(layer, plan);
-		} else {
-			throw new QuereusError("Encountered an unknown layer type during scanLayer operation.", StatusCode.INTERNAL);
-		}
+		yield* scanLayerImpl(layer, plan);
 	}
 }

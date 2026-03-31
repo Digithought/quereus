@@ -1,21 +1,26 @@
 import type { ScanPlan } from './scan-plan.js';
-import type { BaseLayer } from './base.js';
-import type { BTreeKey, BTreeKeyForPrimary, BTreeKeyForIndex } from '../types.js';
+import type { Layer } from './interface.js';
+import type { BTreeKeyForPrimary, BTreeKeyForIndex } from '../types.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import { StatusCode, type Row } from '../../../common/types.js';
 import { safeIterate } from './safe-iterate.js';
 import { QuereusError } from '../../../common/errors.js';
+import { planAppliesToKey } from './plan-filter.js';
 
-export async function* scanBaseLayer(
-	layer: BaseLayer,
+/**
+ * Scans a layer (base or transaction) according to a ScanPlan, yielding matching rows.
+ * Operates on the Layer interface — the inherited BTrees handle data inheritance transparently.
+ */
+export async function* scanLayer(
+	layer: Layer,
 	plan: ScanPlan
 ): AsyncIterable<Row> {
 	// Multi-seek: iterate over multiple equality keys
 	if (plan.equalityKeys && plan.equalityKeys.length > 0) {
 		for (const key of plan.equalityKeys) {
 			const singlePlan: ScanPlan = { ...plan, equalityKey: key, equalityKeys: undefined };
-			yield* scanBaseLayer(layer, singlePlan);
+			yield* scanLayer(layer, singlePlan);
 		}
 		return;
 	}
@@ -29,60 +34,21 @@ export async function* scanBaseLayer(
 				lowerBound: range.lowerBound,
 				upperBound: range.upperBound,
 			};
-			yield* scanBaseLayer(layer, singlePlan);
+			yield* scanLayer(layer, singlePlan);
 		}
 		return;
 	}
 
-	const { primaryKeyExtractorFromRow: keyFromEntry, primaryKeyComparator } = layer.getPkExtractorsAndComparators(layer.getSchema());
-	const isEqPlan = plan.equalityKey !== undefined;
-
-	const planAppliesToKey = (key: BTreeKey, keyIsIndexKey: boolean): boolean => {
-		const comparator = keyIsIndexKey
-			? layer.secondaryIndexes.get(plan.indexName)?.compareKeys
-			: primaryKeyComparator;
-		if (!comparator) return true;
-
-		if (plan.equalityKey !== undefined) return comparator(key, plan.equalityKey) === 0;
-
-		// Prefix-range: check prefix equality + trailing column bounds
-		if (plan.equalityPrefix) {
-			const keyArr = Array.isArray(key) ? key : [key];
-			for (let i = 0; i < plan.equalityPrefix.length; i++) {
-				if (compareSqlValues(keyArr[i], plan.equalityPrefix[i]) !== 0) return false;
-			}
-			const trailingValue = keyArr[plan.equalityPrefix.length];
-			if (trailingValue !== undefined && trailingValue !== null) {
-				if (plan.lowerBound) {
-					const cmp = compareSqlValues(trailingValue, plan.lowerBound.value);
-					if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) return false;
-				}
-				if (plan.upperBound) {
-					const cmp = compareSqlValues(trailingValue, plan.upperBound.value);
-					if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) return false;
-				}
-			}
-			return true;
-		}
-
-		const keyForBoundComparison = Array.isArray(key) ? key[0] : key;
-		if (plan.lowerBound && (keyForBoundComparison !== undefined && keyForBoundComparison !== null)) {
-			const cmp = compareSqlValues(keyForBoundComparison, plan.lowerBound.value);
-			if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) return false;
-		}
-		if (plan.upperBound && (keyForBoundComparison !== undefined && keyForBoundComparison !== null)) {
-			const cmp = compareSqlValues(keyForBoundComparison, plan.upperBound.value);
-			if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) return false;
-		}
-		return true;
-	};
+	const schema = layer.getSchema();
+	const { primaryKeyExtractorFromRow, primaryKeyComparator } = layer.getPkExtractorsAndComparators(schema);
 
 	if (plan.indexName === 'primary') {
-		const tree = layer.primaryTree; // BTree<BTreeKeyForPrimary, PrimaryModificationValue> from inheritree
+		const tree = layer.getModificationTree('primary');
+		if (!tree) return;
 
-		if (isEqPlan && plan.equalityKey !== undefined) {
+		if (plan.equalityKey != null) {
 			const value = tree.get(plan.equalityKey as BTreeKeyForPrimary);
-			if (value && planAppliesToKey(plan.equalityKey as BTreeKeyForPrimary, false)) {
+			if (value) {
 				yield value as Row;
 			}
 			return;
@@ -91,7 +57,6 @@ export async function* scanBaseLayer(
 		// Determine start key for range scans
 		let startKey: { value: BTreeKeyForPrimary } | undefined;
 		if (plan.equalityPrefix) {
-			// Prefix-range: start at [prefix..., lowerBound] or just [prefix...]
 			const compositeStart = [...plan.equalityPrefix];
 			if (plan.lowerBound) compositeStart.push(plan.lowerBound.value);
 			startKey = { value: compositeStart as BTreeKeyForPrimary };
@@ -99,11 +64,10 @@ export async function* scanBaseLayer(
 			startKey = { value: plan.lowerBound.value as BTreeKeyForPrimary };
 		}
 
-		// Create mutation-safe iterator with range support
 		for await (const value of safeIterate(tree, !plan.descending, startKey)) {
 			const row = value as Row;
-			const primaryKey = keyFromEntry(row);
-			if (!planAppliesToKey(primaryKey, false)) {
+			const primaryKey = primaryKeyExtractorFromRow(row);
+			if (!planAppliesToKey(plan, primaryKey, primaryKeyComparator)) {
 				// Early termination for prefix-range: break when prefix no longer matches
 				if (plan.equalityPrefix) {
 					const keyArr = Array.isArray(primaryKey) ? primaryKey : [primaryKey];
@@ -116,7 +80,7 @@ export async function* scanBaseLayer(
 					}
 					if (prefixMismatch) break;
 				}
-				// If we're doing an ascending scan and we've passed the upper bound, we can break early
+				// Ascending scan past upper bound — early exit
 				if (!plan.descending && plan.upperBound && !plan.equalityPrefix) {
 					const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
 					const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
@@ -128,17 +92,18 @@ export async function* scanBaseLayer(
 			}
 			yield row;
 		}
-	} else { // Secondary Index Scan
-		const secondaryIndex = layer.secondaryIndexes.get(plan.indexName);
-		if (!secondaryIndex) throw new QuereusError(`Secondary index '${plan.indexName}' not found in BaseLayer.`, StatusCode.INTERNAL);
+	} else {
+		// Secondary Index Scan
+		const indexTree = layer.getSecondaryIndexTree(plan.indexName);
+		if (!indexTree) throw new QuereusError(`Secondary index '${plan.indexName}' not found.`, StatusCode.INTERNAL);
 
-		const indexTree = secondaryIndex.data; // BTree<BTreeKeyForIndex, MemoryIndexEntry> from inheritree
+		const primaryTree = layer.getModificationTree('primary');
 
-		if (isEqPlan && plan.equalityKey !== undefined) {
+		if (plan.equalityKey != null) {
 			const indexEntry = indexTree.get(plan.equalityKey as BTreeKeyForIndex);
-			if (indexEntry && planAppliesToKey(indexEntry.indexKey, true)) {
+			if (indexEntry && primaryTree) {
 				for (const pk of indexEntry.primaryKeys) {
-					const value = layer.primaryTree.get(pk);
+					const value = primaryTree.get(pk);
 					if (value) {
 						yield value as Row;
 					}
@@ -147,14 +112,13 @@ export async function* scanBaseLayer(
 			return;
 		}
 
-		// Use mutation-safe iterator for secondary index iteration with range support
 		const isAscending = !plan.descending;
-		const isDescFirstColumn = secondaryIndex.specColumns[0]?.desc === true;
+		const indexDef = schema.indexes?.find(idx => idx.name === plan.indexName);
+		const isDescFirstColumn = indexDef?.columns[0]?.desc === true;
 
 		// Determine start key
 		let startKey: { value: BTreeKeyForIndex } | undefined;
 		if (plan.equalityPrefix) {
-			// Prefix-range: start at [prefix..., lowerBound] or just [prefix...]
 			const compositeStart = [...plan.equalityPrefix];
 			if (plan.lowerBound) compositeStart.push(plan.lowerBound.value);
 			startKey = { value: compositeStart as BTreeKeyForIndex };
@@ -169,7 +133,7 @@ export async function* scanBaseLayer(
 		}
 
 		for await (const indexEntry of safeIterate(indexTree, isAscending, startKey)) {
-			if (!planAppliesToKey(indexEntry.indexKey, true)) {
+			if (!planAppliesToKey(plan, indexEntry.indexKey, primaryKeyComparator)) {
 				// Early termination for prefix-range: break when prefix no longer matches
 				if (plan.equalityPrefix) {
 					const keyArr = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey : [indexEntry.indexKey];
@@ -181,11 +145,9 @@ export async function* scanBaseLayer(
 						}
 					}
 					if (prefixMismatch) break;
-					// Within prefix, still check trailing upper bound for early termination
 					continue;
 				}
-				// Early termination: for ASC indexes break when past upper bound,
-				// for DESC indexes break when past lower bound (since values decrease in tree order)
+				// Early termination: for ASC indexes break when past the relevant bound
 				if (isAscending) {
 					if (isDescFirstColumn && plan.lowerBound) {
 						const keyForComparison = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey[0] : indexEntry.indexKey;
@@ -203,8 +165,9 @@ export async function* scanBaseLayer(
 				}
 				continue;
 			}
+			if (!primaryTree) continue;
 			for (const pk of indexEntry.primaryKeys) {
-				const value = layer.primaryTree.get(pk);
+				const value = primaryTree.get(pk);
 				if (value) {
 					yield value as Row;
 				}
@@ -212,8 +175,3 @@ export async function* scanBaseLayer(
 		}
 	}
 }
-
-// LayerCursorInternal interface is removed as this file now exports an async generator.
-// If TransactionLayerCursorInternal needs a common interface with this for its parentCursor,
-// that interface would describe an AsyncIterable<Row> with perhaps getCurrentPrimaryKey() if still needed.
-// For now, let parentCursor in TransactionLayerCursorInternal be AsyncIterable<Row>.

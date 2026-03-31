@@ -35,7 +35,7 @@ export interface Layer {
 	isCommitted(): boolean;
 
 	/** Helper to get the specific BTree for a secondary index's underlying data */
-	getSecondaryIndexTree?(indexName: string): BTree<BTreeKeyForIndex, MemoryIndexEntry> | null;
+	getSecondaryIndexTree(indexName: string): BTree<BTreeKeyForIndex, MemoryIndexEntry> | null;
 
 	/**
 	 * This method provides PK extractor and comparator based on a given schema (usually its own)
