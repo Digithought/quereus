@@ -22,6 +22,9 @@ This directory contains SQL logic tests for the Quereus database engine. Tests a
 - `11-joins.sqllogic` - JOIN operations (INNER, LEFT, CROSS, multiple JOINs)
 - `12-empty-primary-key.sqllogic` - Empty PRIMARY KEY () support (Third Manifesto singleton tables)
 - `44-orthogonality-minimal.sqllogic` - Relational orthogonality with mutating subqueries (INSERT/UPDATE/DELETE ... RETURNING as table sources)
+- `07.8-correlated-subquery-edges.sqllogic` - Correlated subquery edge cases (empty correlation, multi-level, EXISTS/IN equivalence, NOT IN with NULLs)
+- `13.3-cte-edge-cases.sqllogic` - CTE edge cases (multi-reference, chaining, recursive boundary conditions, set operations)
+- `23-self-joins-duplicates.sqllogic` - Self-joins and duplicate value edge cases (hierarchy queries, cartesian products, GROUP BY/DISTINCT with duplicates)
 
 ### ⚠️ In progress
 - (No tests currently in progress)

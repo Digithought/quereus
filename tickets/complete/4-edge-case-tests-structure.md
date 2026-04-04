@@ -4,11 +4,12 @@ files:
   - packages/quereus/test/logic/23-self-joins-duplicates.sqllogic
   - packages/quereus/test/logic/07.8-correlated-subquery-edges.sqllogic
   - packages/quereus/test/logic/13.3-cte-edge-cases.sqllogic
+  - packages/quereus/test/logic/README.md
 ----
 
-Three new sqllogic test files covering query-structure edge cases. All tests pass.
+## Summary
 
-## What was built
+Three sqllogic test files covering query-structure edge cases. All tests pass. README updated with entries for the new files.
 
 ### 23-self-joins-duplicates.sqllogic
 - Self-joins: basic with aliases, LEFT join for null manager, aggregation (count direct reports), correlated subquery on same table, multi-level (grandparent) join
@@ -31,14 +32,9 @@ Three new sqllogic test files covering query-structure edge cases. All tests pas
 - CTE in UPDATE/DELETE (documented as not yet supported — expect errors)
 - CTE with set operations (UNION, INTERSECT)
 
-## Testing notes
-- All 3 files pass (`yarn test` — 0 failures)
-- CTE-in-UPDATE and CTE-in-DELETE are not yet supported; tests expect errors and verify no side effects
-- The `-- run` directive is used to separate setup statements from error-expected statements in the CTE file
-
-## Key validation scenarios
-- NULL handling in self-joins, correlated subqueries, and NOT IN
-- Cartesian products from many-to-many joins
-- Correct row counts with duplicate values
-- Aggregation returning NULL vs 0 for empty correlation sets
-- Recursive CTE boundary conditions (0 and 1 iterations)
+## Review notes
+- All expected values verified correct
+- Proper table setup and cleanup (CREATE/DROP) in each file
+- Deterministic ordering with ORDER BY on all multi-row queries
+- File numbering follows existing conventions (07.8, 13.3, 23)
+- No overlap with existing test coverage
