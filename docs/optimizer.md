@@ -779,6 +779,8 @@ markRuleApplied(nodeId: string, ruleId: string, context: OptContext): void {
 }
 ```
 
+Individual rules can also be disabled via `OptimizerTuning.disabledRules` (a `ReadonlySet<string>` of rule IDs). Both the pass-based and registry-based rule application paths skip disabled rules. This is primarily intended for testing (e.g., verifying semantic equivalence with/without a specific rewrite).
+
 ### Multi-Pass Optimization Support
 
 The architecture supports multi-pass optimization strategies via:
