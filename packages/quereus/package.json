@@ -57,7 +57,7 @@
     "lint": "eslint 'src/**/*.ts' 'test/**/*.ts'",
     "test:all": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus/test/**/*.spec.ts\" --colors",
     "test": "node test-runner.mjs",
-    "test:coverage": "c8 --exclude 'test/**' --exclude 'bench/**' --reporter text --reporter html node test-runner.mjs",
+    "test:coverage": "c8 --exclude 'test/**' --exclude 'bench/**' --exclude 'dist/**' --reporter text --reporter html node test-runner.mjs",
     "test:single": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js --bail",
     "test:plans": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus/test/plan/**/*.spec.ts\" --colors",
     "prepublishOnly": "npm run build",
