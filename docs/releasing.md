@@ -10,8 +10,17 @@ Tags use the `v` prefix (e.g. `v1.0.0`).
 - All CI checks pass on `main`
 - `yarn build` succeeds
 - `yarn test` passes
+- Clean working tree (`git status` shows no uncommitted changes)
 
-## Steps
+## Quick Release
+
+```bash
+yarn release
+```
+
+This runs `yarn bump` (interactive version prompt, commits, tags, pushes) then `yarn pub` (clean + build + publish each package).
+
+## Step by Step
 
 ### 1. Ensure a clean working tree
 
@@ -20,9 +29,7 @@ git status          # no uncommitted changes
 git pull origin main
 ```
 
-### 2. Bump versions
-
-`bumpp` updates all `package.json` files, tags, and pushes. You commit manually first.
+### 2. Bump, commit, tag, and push
 
 ```bash
 # Interactive — prompts for version type (major / minor / patch / prerelease)
@@ -36,41 +43,31 @@ yarn bump --release major
 
 `bumpp` will:
 1. Update `version` in all `package.json` files (recursive)
-2. Create an annotated tag: `v{version}`
-3. Push the commit and tag to `origin`
+2. Commit the changes
+3. Create an annotated tag: `v{version}`
+4. Push the commit and tag to `origin`
 
-It will **not** commit — you do that yourself before running bump:
-
-### 3. Commit
-
-Commit all pending changes (including any work beyond the version bump) before running `yarn bump`:
+### 3. Publish to npm
 
 ```bash
-git add -A
-git commit -m "v{version}"
+# Publish all public packages (clean + build + publish each)
+yarn pub
 ```
 
-Then `yarn bump` will tag and push.
-
-### 4. Publish to npm
+Or publish individually:
 
 ```bash
-# Dry-run first
-yarn workspaces foreach -A --no-private npm publish --dry-run
-
-# Publish for real
-yarn workspaces foreach -A --no-private npm publish --access public
+yarn pub:quereus
+yarn pub:store
+yarn pub:sync
+# etc.
 ```
 
-Only public (non-private) packages are published. Private packages (workspace root, internal tools) are skipped automatically.
-
-### 5. Create a GitHub release (optional)
+### 4. Create a GitHub release (optional)
 
 ```bash
 gh release create v{version} --generate-notes
 ```
-
-This auto-generates release notes from commits since the previous tag.
 
 ## Prerelease / RC
 
@@ -82,7 +79,7 @@ yarn bump --release prerelease --preid beta  # e.g. 1.1.0-beta.0
 Publish prereleases with a dist-tag so they don't become `latest`:
 
 ```bash
-yarn workspaces foreach -A --no-private npm publish --access public --tag next
+# Manually publish each package with --tag next
 ```
 
 ## Hotfix
@@ -90,7 +87,7 @@ yarn workspaces foreach -A --no-private npm publish --access public --tag next
 1. Branch from the release tag: `git checkout -b hotfix/v1.0.1 v1.0.0`
 2. Apply the fix, commit
 3. Bump: `yarn bump --release patch`
-4. Publish
+4. Publish: `yarn pub`
 5. Merge back into `main`
 
 ## Version Alignment
@@ -102,7 +99,6 @@ All packages in the monorepo share the same version number. The `--recursive` fl
 - [ ] CI green on `main`
 - [ ] `yarn build` succeeds
 - [ ] `yarn test` passes
-- [ ] Commit: `git add -A && git commit -m "v{version}"`
-- [ ] `yarn bump` (interactive version selection — tags and pushes)
-- [ ] `npm publish` (with dry-run first)
+- [ ] Clean working tree
+- [ ] `yarn release` (or `yarn bump` + `yarn pub` separately)
 - [ ] GitHub release created

@@ -12,3 +12,6 @@ tasks/.logs/
 
 # Benchmark results
 packages/quereus/bench/results/
+
+# Code coverage
+coverage/

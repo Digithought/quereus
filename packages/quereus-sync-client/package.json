@@ -53,9 +53,9 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },
-	"dependencies": {
-		"@quereus/quereus": "workspace:^"
-	},
+  "dependencies": {
+    "@quereus/quereus": "workspace:^"
+  },
   "quereus": {
     "provides": {
       "sync-client": true
