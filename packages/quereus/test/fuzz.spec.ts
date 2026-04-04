@@ -149,14 +149,8 @@ const LOGICAL_OPS = ['and', 'or'];
 const STRING_OPS = ['||'];
 const ALL_BIN_OPS = [...ARITH_OPS, ...CMP_OPS, ...LOGICAL_OPS, ...STRING_OPS];
 
-const SCALAR_FUNCS = [
-	'abs', 'coalesce', 'ifnull', 'nullif', 'typeof', 'length',
-	'upper', 'lower', 'trim', 'hex', 'quote',
-	'unicode', 'char', 'min', 'max',
-];
 const SINGLE_ARG_FUNCS = ['abs', 'typeof', 'length', 'upper', 'lower', 'trim', 'hex', 'quote', 'unicode', 'char'];
 const DOUBLE_ARG_FUNCS = ['coalesce', 'ifnull', 'nullif', 'min', 'max', 'substr', 'replace', 'instr', 'iif'];
-const AGG_FUNCS = ['count', 'sum', 'avg', 'min', 'max', 'group_concat', 'total'];
 const WINDOW_FUNCS = ['row_number', 'rank', 'dense_rank', 'ntile', 'lag', 'lead', 'first_value', 'last_value'];
 
 function allColumns(schema: SchemaInfo): string[] {
@@ -504,14 +498,6 @@ describe('Grammar-Based SQL Fuzzing', function () {
 
 	let db: Database;
 
-	beforeEach(() => {
-		db = new Database();
-	});
-
-	afterEach(async () => {
-		await db.close();
-	});
-
 	async function setupSchema(schema: SchemaInfo, rowsPerTable: number): Promise<void> {
 		await createSchema(db, schema);
 		for (const table of schema.tables) {
@@ -526,13 +512,16 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				fc.integer({ min: 0, max: 15 }),
 				async (schema, rowCount) => {
 					db = new Database();
-					await setupSchema(schema, rowCount);
-					const arbs = buildSqlArbitraries(schema);
-					const sqls = fc.sample(arbs.select as fc.Arbitrary<string>, 5);
-					for (const sql of sqls) {
-						await evalAndDrain(db, sql);
+					try {
+						await setupSchema(schema, rowCount);
+						const arbs = buildSqlArbitraries(schema);
+						const sqls = fc.sample(arbs.select as fc.Arbitrary<string>, 5);
+						for (const sql of sqls) {
+							await evalAndDrain(db, sql);
+						}
+					} finally {
+						await db.close();
 					}
-					await db.close();
 				}
 			),
 			{ numRuns: 200, endOnFailure: true }
@@ -546,13 +535,16 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				fc.integer({ min: 0, max: 10 }),
 				async (schema, rowCount) => {
 					db = new Database();
-					await setupSchema(schema, rowCount);
-					const arbs = buildSqlArbitraries(schema);
-					const sqls = fc.sample(arbs.dml as fc.Arbitrary<string>, 3);
-					for (const sql of sqls) {
-						await execAndDrain(db, sql);
+					try {
+						await setupSchema(schema, rowCount);
+						const arbs = buildSqlArbitraries(schema);
+						const sqls = fc.sample(arbs.dml as fc.Arbitrary<string>, 3);
+						for (const sql of sqls) {
+							await execAndDrain(db, sql);
+						}
+					} finally {
+						await db.close();
 					}
-					await db.close();
 				}
 			),
 			{ numRuns: 100, endOnFailure: true }
@@ -566,14 +558,17 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				fc.integer({ min: 1, max: 10 }),
 				async (schema, rowCount) => {
 					db = new Database();
-					await setupSchema(schema, rowCount);
-					const arbs = buildSqlArbitraries(schema);
-					const ctes = fc.sample(arbs.cte as fc.Arbitrary<string>, 2);
-					const compounds = fc.sample(arbs.select as fc.Arbitrary<string>, 2);
-					for (const sql of [...ctes, ...compounds]) {
-						await evalAndDrain(db, sql);
+					try {
+						await setupSchema(schema, rowCount);
+						const arbs = buildSqlArbitraries(schema);
+						const ctes = fc.sample(arbs.cte as fc.Arbitrary<string>, 2);
+						const compounds = fc.sample(arbs.select as fc.Arbitrary<string>, 2);
+						for (const sql of [...ctes, ...compounds]) {
+							await evalAndDrain(db, sql);
+						}
+					} finally {
+						await db.close();
 					}
-					await db.close();
 				}
 			),
 			{ numRuns: 100, endOnFailure: true }
@@ -587,13 +582,16 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				fc.integer({ min: 1, max: 10 }),
 				async (schema, rowCount) => {
 					db = new Database();
-					await setupSchema(schema, rowCount);
-					const arbs = buildSqlArbitraries(schema);
-					const sqls = fc.sample(arbs.windowSelect as fc.Arbitrary<string>, 3);
-					for (const sql of sqls) {
-						await evalAndDrain(db, sql);
+					try {
+						await setupSchema(schema, rowCount);
+						const arbs = buildSqlArbitraries(schema);
+						const sqls = fc.sample(arbs.windowSelect as fc.Arbitrary<string>, 3);
+						for (const sql of sqls) {
+							await evalAndDrain(db, sql);
+						}
+					} finally {
+						await db.close();
 					}
-					await db.close();
 				}
 			),
 			{ numRuns: 100, endOnFailure: true }
@@ -607,19 +605,22 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				fc.integer({ min: 0, max: 15 }),
 				async (schema, rowCount) => {
 					db = new Database();
-					await setupSchema(schema, rowCount);
-					const arbs = buildSqlArbitraries(schema);
-					const sqls = fc.sample(arbs.statement as fc.Arbitrary<string>, 5);
-					for (const sql of sqls) {
-						// Use eval for SELECT-like, exec for DML
-						const trimmed = sql.trimStart().toLowerCase();
-						if (trimmed.startsWith('insert') || trimmed.startsWith('update') || trimmed.startsWith('delete')) {
-							await execAndDrain(db, sql);
-						} else {
-							await evalAndDrain(db, sql);
+					try {
+						await setupSchema(schema, rowCount);
+						const arbs = buildSqlArbitraries(schema);
+						const sqls = fc.sample(arbs.statement as fc.Arbitrary<string>, 5);
+						for (const sql of sqls) {
+							// Use eval for SELECT-like, exec for DML
+							const trimmed = sql.trimStart().toLowerCase();
+							if (trimmed.startsWith('insert') || trimmed.startsWith('update') || trimmed.startsWith('delete')) {
+								await execAndDrain(db, sql);
+							} else {
+								await evalAndDrain(db, sql);
+							}
 						}
+					} finally {
+						await db.close();
 					}
-					await db.close();
 				}
 			),
 			{ numRuns: 200, endOnFailure: true }
