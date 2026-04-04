@@ -377,6 +377,7 @@ export class PassManager {
 
 			for (const rule of pass.rules) {
 				if (rule.nodeType !== currentNode.nodeType) continue;
+				if (context.tuning.disabledRules?.has(rule.id)) continue;
 				if (hasRuleBeenApplied(currentNode.id, rule.id, context)) continue;
 
 				const result = rule.fn(currentNode, context);

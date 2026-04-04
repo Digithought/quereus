@@ -48,6 +48,9 @@ export interface OptimizerTuning {
 		readonly spillEnabled: boolean;
 	};
 
+	/** Set of rule IDs to skip during optimization (test/debug use) */
+	readonly disabledRules?: ReadonlySet<string>;
+
 	/** Development and debugging options */
 	readonly debug: {
 		/** Whether to validate physical plans before emission */

@@ -194,6 +194,8 @@ export function applyRules(node: PlanNode, context: OptContext): PlanNode {
 	let appliedAnyRule = false;
 
 	for (const rule of applicableRules) {
+		// Skip if rule is disabled
+		if (context.tuning.disabledRules?.has(rule.id)) continue;
 		// Skip if rule already applied to this node
 		if (hasRuleBeenApplied(currentNode.id, rule.id, context)) {
 			log('Skipping rule %s for node %s (already applied)', rule.id, currentNode.id);
