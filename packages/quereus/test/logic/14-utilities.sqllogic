@@ -32,9 +32,9 @@ select v from null_sort_t order by v desc;
 select v from null_sort_t order by v nulls last;
 → [{"v":1},{"v":2},{"v":3},{"v":null},{"v":null}]
 
--- NULLS FIRST in DESC keeps nulls at the start (same as default DESC)
+-- NULLS FIRST in DESC keeps nulls at the start
 select v from null_sort_t order by v desc nulls first;
-→ [{"v":3},{"v":2},{"v":1},{"v":null},{"v":null}]
+→ [{"v":null},{"v":null},{"v":3},{"v":2},{"v":1}]
 
 DROP TABLE null_sort_t;
 

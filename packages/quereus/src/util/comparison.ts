@@ -289,24 +289,17 @@ export function compareWithOrderByFast(
 	} else if (a === null && b === null) {
 		comparison = 0;
 	} else if (a === null) {
-		// Handle NULL ordering with numeric flags (faster than string comparison)
-		if (nullsOrdering === NullsOrdering.LAST) {
-			comparison = 1; // nulls last
-		} else if (nullsOrdering === NullsOrdering.FIRST) {
-			comparison = -1; // nulls first
-		} else {
-			// Default behavior: nulls first for ASC, nulls last for DESC
-			comparison = direction === SortDirection.DESC ? 1 : -1;
-		}
+		// Explicit NULLS ordering is absolute — not affected by ASC/DESC
+		if (nullsOrdering === NullsOrdering.FIRST) return -1;
+		if (nullsOrdering === NullsOrdering.LAST) return 1;
+		// Default behavior: nulls first for ASC, nulls last for DESC
+		comparison = direction === SortDirection.DESC ? 1 : -1;
 	} else { // b === null
-		if (nullsOrdering === NullsOrdering.LAST) {
-			comparison = -1; // nulls last (b is null, so a comes first)
-		} else if (nullsOrdering === NullsOrdering.FIRST) {
-			comparison = 1; // nulls first (b is null, so b comes first)
-		} else {
-			// Default behavior: nulls first for ASC, nulls last for DESC
-			comparison = direction === SortDirection.DESC ? -1 : 1;
-		}
+		// Explicit NULLS ordering is absolute — not affected by ASC/DESC
+		if (nullsOrdering === NullsOrdering.FIRST) return 1;
+		if (nullsOrdering === NullsOrdering.LAST) return -1;
+		// Default behavior: nulls first for ASC, nulls last for DESC
+		comparison = direction === SortDirection.DESC ? -1 : 1;
 	}
 
 	// Apply DESC direction (branchless when direction is ASC)

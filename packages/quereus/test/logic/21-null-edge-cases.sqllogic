@@ -54,7 +54,7 @@ select id, val from n1 order by val nulls last, id;
 
 -- DESC with NULLS FIRST on text column
 select id, txt from n1 order by txt desc nulls first, id;
-→ [{"id":2,"txt":"b"},{"id":1,"txt":"a"},{"id":3,"txt":null},{"id":4,"txt":null}]
+→ [{"id":3,"txt":null},{"id":4,"txt":null},{"id":2,"txt":"b"},{"id":1,"txt":"a"}]
 
 -- =============================================================================
 -- NULL in CASE WHEN
