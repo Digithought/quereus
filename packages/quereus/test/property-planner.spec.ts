@@ -117,6 +117,38 @@ function withDisabledRule(db: Database, ruleId: string, fn: () => Promise<void>)
 	});
 }
 
+function skewedDataArb(spec: TableSpec, count: number): fc.Arbitrary<SqlValue[][]> {
+	return fc.constantFrom<'high-cardinality' | 'clustered-nulls' | 'monotonic'>('high-cardinality', 'clustered-nulls', 'monotonic').chain(skewType => {
+		return fc.array(rowArb(spec), { minLength: count, maxLength: count }).map(baseRows => {
+			return baseRows.map((row, i) => {
+				const newRow = [...row];
+				// Column index 1 is the first non-id column
+				if (spec.columns.length > 1) {
+					switch (skewType) {
+						case 'high-cardinality':
+							// 80% of rows get the same value
+							if (Math.random() < 0.8) {
+								newRow[1] = spec.columns[1].type === 'TEXT' ? 'skewed' : 42;
+							}
+							break;
+						case 'clustered-nulls':
+							// 90% null in first non-id column
+							if (Math.random() < 0.9) {
+								newRow[1] = null;
+							}
+							break;
+						case 'monotonic':
+							// Monotonically increasing values
+							newRow[1] = spec.columns[1].type === 'TEXT' ? `val_${String(i).padStart(4, '0')}` : i + 1;
+							break;
+					}
+				}
+				return newRow;
+			});
+		});
+	});
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -135,7 +167,7 @@ describe('Property-Based Planner/Optimizer Tests', () => {
 		);
 
 		function singleTableDataArb(spec: TableSpec): fc.Arbitrary<SqlValue[][]> {
-			return fc.array(rowArb(spec), { minLength: 5, maxLength: 20 });
+			return fc.array(rowArb(spec), { minLength: 20, maxLength: 100 });
 		}
 
 		interface RuleDef {
@@ -244,6 +276,9 @@ describe('Property-Based Planner/Optimizer Tests', () => {
 
 		for (const ruleDef of [...singleTableRules, ...twoTableRules]) {
 			it(`result set unchanged when '${ruleDef.id}' is disabled`, async () => {
+				let ruleFireCount = 0;
+				const numRuns = 30;
+
 				await fc.assert(fc.asyncProperty(
 					ruleDef.specArb.chain(specs => {
 						return ruleDef.dataArb(specs).map(data => ({ specs, data }));
@@ -256,19 +291,84 @@ describe('Property-Based Planner/Optimizer Tests', () => {
 
 							// Run with all rules enabled
 							const resultEnabled = await collectResultSet(db, query);
+							const planEnabled = await collectPlan(db, query);
 
 							// Run with this rule disabled
+							let resultDisabled: Record<string, SqlValue>[];
+							let planDisabled: Record<string, SqlValue>[];
+							await withDisabledRule(db, ruleDef.id, async () => {
+								resultDisabled = await collectResultSet(db, query);
+								planDisabled = await collectPlan(db, query);
+							});
+
+							assertSameResultSet(resultEnabled, resultDisabled!);
+
+							// Track whether the rule actually fired (plans differ)
+							const planEnabledStr = JSON.stringify(planEnabled);
+							const planDisabledStr = JSON.stringify(planDisabled!);
+							if (planEnabledStr !== planDisabledStr) {
+								ruleFireCount++;
+							}
+						} finally {
+							await db.close();
+						}
+					}
+				), { numRuns });
+
+				// Warn if the rule never fired across all runs — the test isn't exercising it
+				if (ruleFireCount === 0) {
+					console.warn(`[property-planner] Rule '${ruleDef.id}' never fired across ${numRuns} runs`);
+				}
+			});
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// Property 1b: Semantic equivalence with skewed data
+	// -----------------------------------------------------------------------
+	describe('Semantic equivalence with skewed data', () => {
+		const skewedRules: Array<{ id: string; specArb: fc.Arbitrary<TableSpec[]>; queryFn: (specs: TableSpec[]) => string }> = [
+			{
+				id: 'predicate-pushdown',
+				specArb: tableSpecArb('t1', { min: 2, max: 4 }).map(s => [s]),
+				queryFn: (specs) => {
+					const cols = specs[0].columns.filter(c => c.name !== 'id');
+					const c1 = cols[0]?.name ?? 'a';
+					return `SELECT * FROM t1 WHERE ${c1} IS NOT NULL AND id > 0`;
+				},
+			},
+			{
+				id: 'distinct-elimination',
+				specArb: tableSpecArb('t1', { min: 2, max: 4 }).map(s => [s]),
+				queryFn: () => `SELECT DISTINCT id FROM t1`,
+			},
+		];
+
+		for (const ruleDef of skewedRules) {
+			it(`result set unchanged when '${ruleDef.id}' is disabled (skewed data)`, async () => {
+				await fc.assert(fc.asyncProperty(
+					ruleDef.specArb.chain(specs => {
+						return skewedDataArb(specs[0], 50).map(rows => ({
+							specs,
+							data: new Map([['t1', rows]])
+						}));
+					}),
+					async ({ specs, data }) => {
+						const db = new Database();
+						try {
+							await setupSchema(db, specs, data);
+							const query = ruleDef.queryFn(specs);
+							const resultEnabled = await collectResultSet(db, query);
 							let resultDisabled: Record<string, SqlValue>[];
 							await withDisabledRule(db, ruleDef.id, async () => {
 								resultDisabled = await collectResultSet(db, query);
 							});
-
 							assertSameResultSet(resultEnabled, resultDisabled!);
 						} finally {
 							await db.close();
 						}
 					}
-				), { numRuns: 30 });
+				), { numRuns: 20 });
 			});
 		}
 	});
@@ -349,6 +449,99 @@ describe('Property-Based Planner/Optimizer Tests', () => {
 				}
 			), { numRuns: 30 });
 		});
+
+		it('A JOIN B JOIN C preserves results under reordering', async () => {
+			const threeTables = fc.tuple(
+				tableSpecArb('t1', { min: 1, max: 3 }),
+				tableSpecArb('t2', { min: 1, max: 3 }),
+				tableSpecArb('t3', { min: 1, max: 3 })
+			);
+
+			await fc.assert(fc.asyncProperty(
+				threeTables.chain(([s1, s2, s3]) => {
+					return fc.tuple(
+						fc.array(rowArb(s1), { minLength: 5, maxLength: 30 }),
+						fc.array(rowArb(s2), { minLength: 5, maxLength: 30 }),
+						fc.array(rowArb(s3), { minLength: 5, maxLength: 30 })
+					).map(([r1, r2, r3]) => ({
+						specs: [s1, s2, s3],
+						rows: new Map([['t1', r1], ['t2', r2], ['t3', r3]])
+					}));
+				}),
+				async ({ specs, rows }) => {
+					const db = new Database();
+					try {
+						await setupSchema(db, specs, rows);
+
+						const cols2 = specs[1].columns.filter(c => c.name !== 'id');
+						const cols3 = specs[2].columns.filter(c => c.name !== 'id');
+						const joinCol2 = cols2[0]?.name ?? 'a';
+						const joinCol3 = cols3[0]?.name ?? 'a';
+
+						// Build explicit column lists with aliases
+						const t1Cols = specs[0].columns.map(c => `t1.${c.name} AS t1_${c.name}`).join(', ');
+						const t2Cols = specs[1].columns.map(c => `t2.${c.name} AS t2_${c.name}`).join(', ');
+						const t3Cols = specs[2].columns.map(c => `t3.${c.name} AS t3_${c.name}`).join(', ');
+						const selectCols = `${t1Cols}, ${t2Cols}, ${t3Cols}`;
+
+						const queryABC = `SELECT ${selectCols} FROM t1 JOIN t2 ON t1.id = t2.${joinCol2} JOIN t3 ON t2.id = t3.${joinCol3}`;
+						const queryCBA = `SELECT ${selectCols} FROM t3 JOIN t2 ON t3.${joinCol3} = t2.id JOIN t1 ON t2.${joinCol2} = t1.id`;
+
+						const resultABC = await collectResultSet(db, queryABC);
+						const resultCBA = await collectResultSet(db, queryCBA);
+
+						assertSameResultSet(resultABC, resultCBA);
+					} finally {
+						await db.close();
+					}
+				}
+			), { numRuns: 20 });
+		});
+
+		it('multi-column join conditions preserve results', async () => {
+			const twoTables = fc.tuple(
+				tableSpecArb('t1', { min: 2, max: 4 }),
+				tableSpecArb('t2', { min: 2, max: 4 })
+			);
+
+			await fc.assert(fc.asyncProperty(
+				twoTables.chain(([s1, s2]) => {
+					return fc.tuple(
+						fc.array(rowArb(s1), { minLength: 5, maxLength: 30 }),
+						fc.array(rowArb(s2), { minLength: 5, maxLength: 30 })
+					).map(([r1, r2]) => ({ specs: [s1, s2], rows: new Map([['t1', r1], ['t2', r2]]) }));
+				}),
+				async ({ specs, rows }) => {
+					const db = new Database();
+					try {
+						await setupSchema(db, specs, rows);
+
+						const cols1 = specs[0].columns.filter(c => c.name !== 'id');
+						const cols2 = specs[1].columns.filter(c => c.name !== 'id');
+						if (cols1.length < 2 || cols2.length < 2) return; // need at least 2 non-id cols
+
+						const c1a = cols1[0].name;
+						const c1b = cols1[1].name;
+						const c2a = cols2[0].name;
+						const c2b = cols2[1].name;
+
+						const t1Cols = specs[0].columns.map(c => `t1.${c.name} AS t1_${c.name}`).join(', ');
+						const t2Cols = specs[1].columns.map(c => `t2.${c.name} AS t2_${c.name}`).join(', ');
+						const selectCols = `${t1Cols}, ${t2Cols}`;
+
+						const queryAB = `SELECT ${selectCols} FROM t1 JOIN t2 ON t1.${c1a} = t2.${c2a} AND t1.${c1b} = t2.${c2b}`;
+						const queryBA = `SELECT ${selectCols} FROM t2 JOIN t1 ON t2.${c2a} = t1.${c1a} AND t2.${c2b} = t1.${c1b}`;
+
+						const resultAB = await collectResultSet(db, queryAB);
+						const resultBA = await collectResultSet(db, queryBA);
+
+						assertSameResultSet(resultAB, resultBA);
+					} finally {
+						await db.close();
+					}
+				}
+			), { numRuns: 20 });
+		});
 	});
 
 	// -----------------------------------------------------------------------
@@ -400,17 +593,26 @@ describe('Property-Based Planner/Optimizer Tests', () => {
 			expect(rows[0].result).to.not.equal(1);
 		});
 
-		it('NULL IN (1, 2, NULL) yields NULL', async () => {
-			const rows = await collectResultSet(db, `SELECT (null IN (1, 2, null)) AS result`);
-			// Result should be NULL (not 1, not 0)
-			expect(rows[0].result).to.be.null;
+		it('NULL IN (..., NULL, ...) yields NULL', async () => {
+			await fc.assert(fc.asyncProperty(
+				fc.array(fc.integer({ min: -100, max: 100 }), { minLength: 1, maxLength: 5 }),
+				fc.integer({ min: 0, max: 5 }),  // position to insert null
+				async (values, nullPos) => {
+					const items = [...values.map(v => String(v))];
+					const insertAt = Math.min(nullPos, items.length);
+					items.splice(insertAt, 0, 'null');
+					const rows = await collectResultSet(db, `SELECT (null IN (${items.join(', ')})) AS result`);
+					expect(rows[0].result).to.be.null;
+				}
+			), { numRuns: 30 });
 		});
 
 		it('COALESCE(NULL, v) = v for any non-null v', async () => {
 			await fc.assert(fc.asyncProperty(
 				fc.oneof(
 					fc.integer({ min: -1000, max: 1000 }),
-					fc.constantFrom('alpha', 'beta', 'gamma')
+					fc.float({ min: -100, max: 100, noNaN: true, noDefaultInfinity: true }),
+					fc.constantFrom('alpha', 'beta', 'gamma', 'delta', '')
 				),
 				async (v) => {
 					const results: Record<string, SqlValue>[] = [];
@@ -419,7 +621,7 @@ describe('Property-Based Planner/Optimizer Tests', () => {
 					}
 					expect(results[0].result).to.equal(v);
 				}
-			), { numRuns: 30 });
+			), { numRuns: 50 });
 		});
 
 		it('IS NULL / IS NOT NULL are complementary', async () => {
@@ -427,7 +629,8 @@ describe('Property-Based Planner/Optimizer Tests', () => {
 				fc.oneof(
 					fc.constant(null as SqlValue),
 					fc.integer({ min: -100, max: 100 }) as fc.Arbitrary<SqlValue>,
-					fc.constantFrom<SqlValue>('alpha', 'beta', '')
+					fc.float({ min: -100, max: 100, noNaN: true, noDefaultInfinity: true }) as fc.Arbitrary<SqlValue>,
+					fc.constantFrom<SqlValue>('alpha', 'beta', '', 'gamma')
 				),
 				async (v) => {
 					await db.exec(`CREATE TABLE IF NOT EXISTS null_test (id INTEGER PRIMARY KEY, v ANY null) USING memory`);
@@ -448,7 +651,7 @@ describe('Property-Based Planner/Optimizer Tests', () => {
 					// Exactly one should be true (1)
 					expect((isNull as number) + (isNotNull as number)).to.equal(1);
 				}
-			), { numRuns: 30 });
+			), { numRuns: 50 });
 		});
 
 		it('count(col) with NULLs <= count(*)', async () => {
@@ -582,6 +785,122 @@ describe('Property-Based Planner/Optimizer Tests', () => {
 					}
 				}
 			), { numRuns: 50 });
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// Property 7: Large-scale stress tests
+	// -----------------------------------------------------------------------
+	describe('Large-scale stress tests', function () {
+		this.timeout(120_000);
+
+		function largeDataArb(spec: TableSpec): fc.Arbitrary<SqlValue[][]> {
+			return fc.array(rowArb(spec), { minLength: 500, maxLength: 1000 });
+		}
+
+		it('join commutativity holds at scale', async () => {
+			const twoTables = fc.tuple(
+				tableSpecArb('t1', { min: 1, max: 3 }),
+				tableSpecArb('t2', { min: 1, max: 3 })
+			);
+
+			await fc.assert(fc.asyncProperty(
+				twoTables.chain(([s1, s2]) => {
+					return fc.tuple(
+						largeDataArb(s1),
+						largeDataArb(s2)
+					).map(([r1, r2]) => ({ specs: [s1, s2], rows: new Map([['t1', r1], ['t2', r2]]) }));
+				}),
+				async ({ specs, rows }) => {
+					const db = new Database();
+					try {
+						await setupSchema(db, specs, rows);
+
+						const cols2 = specs[1].columns.filter(c => c.name !== 'id');
+						const joinCol = cols2[0]?.name ?? 'a';
+
+						const t1Cols = specs[0].columns.map(c => `t1.${c.name} AS t1_${c.name}`).join(', ');
+						const t2Cols = specs[1].columns.map(c => `t2.${c.name} AS t2_${c.name}`).join(', ');
+						const selectCols = `${t1Cols}, ${t2Cols}`;
+
+						const queryAB = `SELECT ${selectCols} FROM t1 JOIN t2 ON t1.id = t2.${joinCol}`;
+						const queryBA = `SELECT ${selectCols} FROM t2 JOIN t1 ON t2.${joinCol} = t1.id`;
+
+						const resultAB = await collectResultSet(db, queryAB);
+						const resultBA = await collectResultSet(db, queryBA);
+
+						assertSameResultSet(resultAB, resultBA);
+					} finally {
+						await db.close();
+					}
+				}
+			), { numRuns: 5 });
+		});
+
+		it('aggregate invariants hold at scale', async () => {
+			const schemaArb = tableSpecArb('t1', { min: 2, max: 4 });
+
+			await fc.assert(fc.asyncProperty(
+				schemaArb.chain(spec => {
+					return largeDataArb(spec).map(rows => ({ spec, rows }));
+				}),
+				async ({ spec, rows }) => {
+					const db = new Database();
+					try {
+						await setupSchema(db, [spec], new Map([['t1', rows]]));
+
+						const countStar = await collectResultSet(db, `SELECT count(*) AS cnt FROM t1`);
+						const total = countStar[0].cnt as number;
+						expect(total).to.be.at.least(500);
+
+						const col = spec.columns.find(c => c.name !== 'id')?.name ?? 'a';
+						const countCol = await collectResultSet(db, `SELECT count(${col}) AS cnt FROM t1`);
+						expect(countCol[0].cnt as number).to.be.at.most(total);
+
+						const result = await collectResultSet(db,
+							`SELECT avg(id) AS av, min(id) AS mn, max(id) AS mx FROM t1`
+						);
+						const av = result[0].av as number;
+						const mn = result[0].mn as number;
+						const mx = result[0].mx as number;
+						expect(av).to.be.at.least(mn);
+						expect(av).to.be.at.most(mx);
+					} finally {
+						await db.close();
+					}
+				}
+			), { numRuns: 5 });
+		});
+
+		it('semantic equivalence holds at scale', async () => {
+			const schemaArb = tableSpecArb('t1', { min: 2, max: 4 });
+
+			await fc.assert(fc.asyncProperty(
+				schemaArb.chain(spec => {
+					return largeDataArb(spec).map(rows => ({ spec, rows }));
+				}),
+				async ({ spec, rows }) => {
+					const db = new Database();
+					try {
+						await setupSchema(db, [spec], new Map([['t1', rows]]));
+
+						const cols = spec.columns.filter(c => c.name !== 'id');
+						const c1 = cols[0]?.name ?? 'a';
+						const query = `SELECT * FROM t1 WHERE ${c1} IS NOT NULL AND id > 0`;
+
+						const resultEnabled = await collectResultSet(db, query);
+
+						let resultDisabled: Record<string, SqlValue>[];
+						await withDisabledRule(db, 'predicate-pushdown', async () => {
+							resultDisabled = await collectResultSet(db, query);
+						});
+
+						assertSameResultSet(resultEnabled, resultDisabled!);
+					} finally {
+						await db.close();
+					}
+				}
+			), { numRuns: 5 });
 		});
 	});
 });

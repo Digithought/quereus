@@ -149,7 +149,7 @@ const LOGICAL_OPS = ['and', 'or'];
 const STRING_OPS = ['||'];
 const ALL_BIN_OPS = [...ARITH_OPS, ...CMP_OPS, ...LOGICAL_OPS, ...STRING_OPS];
 
-const SINGLE_ARG_FUNCS = ['abs', 'typeof', 'length', 'upper', 'lower', 'trim', 'hex', 'quote', 'unicode', 'char'];
+const SINGLE_ARG_FUNCS = ['abs', 'typeof', 'length', 'upper', 'lower', 'trim', 'hex', 'quote', 'unicode', 'char', 'total', 'group_concat'];
 const DOUBLE_ARG_FUNCS = ['coalesce', 'ifnull', 'nullif', 'min', 'max', 'substr', 'replace', 'instr', 'iif'];
 const WINDOW_FUNCS = ['row_number', 'rank', 'dense_rank', 'ntile', 'lag', 'lead', 'first_value', 'last_value'];
 
@@ -209,7 +209,7 @@ function buildSqlArbitraries(schema: SchemaInfo) {
 				tie('expr'),
 			).map(([fn, a, b]) => {
 				if (fn === 'iif') return `iif(${a}, ${b}, null)`;
-				if (fn === 'substr') return `substr(${a}, 1, ${b})`;
+				if (fn === 'substr') return `substr(${a}, ${b}, 3)`;
 				if (fn === 'replace') return `replace(${a}, 'a', ${b})`;
 				if (fn === 'instr') return `instr(${a}, ${b})`;
 				return `${fn}(${a}, ${b})`;
@@ -240,8 +240,35 @@ function buildSqlArbitraries(schema: SchemaInfo) {
 
 		subquery: tie('subSelect').map((s: string) => `(${s})`),
 
+		correlatedSubquery: tableNames.length >= 2
+			? fc.tuple(
+				fc.constantFrom(...tableNames),
+				fc.constantFrom(...tableNames),
+			).filter(([t1, t2]) => t1 !== t2)
+				.chain(([outer, inner]) => {
+					const outerCols = schema.tables.find(t => t.name === outer)?.columns ?? [];
+					const innerCols = schema.tables.find(t => t.name === inner)?.columns ?? [];
+					const outerCol = outerCols.length > 1 ? outerCols[1].name : outerCols[0]?.name ?? 'id';
+					const innerCol = innerCols.length > 1 ? innerCols[1].name : innerCols[0]?.name ?? 'id';
+					return fc.constant(`${outerCol} in (select ${innerCol} from ${inner} where ${outer}.${outerCol} = ${inner}.${innerCol})`);
+				})
+			: fc.constant('1 = 1'),
+
+		likeExpr: fc.tuple(
+			tie('column') as fc.Arbitrary<string>,
+			fc.constantFrom('like', 'glob'),
+			fc.constantFrom("'%test%'", "'hello%'", "'_ello'", "'%'", "'[a-z]%'"),
+		).map(([col, op, pattern]) => `${col} ${op} ${pattern}`),
+
+		recursiveCte: fc.tuple(
+			fc.integer({ min: 1, max: 20 }),
+			fc.constantFrom(...tableNames),
+		).map(([maxDepth, _tbl]) =>
+			`with recursive cnt(x) as (select 1 union all select x + 1 from cnt where x < ${maxDepth}) select cnt.x from cnt limit 50`
+		),
+
 		expr: fc.oneof(
-			{ depthIdentifier: depthId, maxDepth: 3, depthSize: 'small' },
+			{ depthIdentifier: depthId, maxDepth: 5, depthSize: 'small' },
 			tie('literal'),
 			tie('column'),
 			tie('binExpr'),
@@ -251,6 +278,8 @@ function buildSqlArbitraries(schema: SchemaInfo) {
 			tie('castExpr'),
 			tie('inExpr'),
 			tie('betweenExpr'),
+			tie('likeExpr'),
+			tie('correlatedSubquery'),
 		),
 
 		// — SELECT —
@@ -455,6 +484,7 @@ function buildSqlArbitraries(schema: SchemaInfo) {
 			tie('dml'),
 			tie('cte'),
 			tie('windowSelect'),
+			tie('recursiveCte'),
 		),
 	}));
 
@@ -493,6 +523,25 @@ async function evalAndDrain(db: Database, sql: string): Promise<void> {
 	}
 }
 
+/** Run a SELECT and collect all rows */
+async function collectRows(db: Database, sql: string): Promise<Record<string, unknown>[]> {
+	const rows: Record<string, unknown>[] = [];
+	for await (const row of db.eval(sql)) {
+		rows.push(row as Record<string, unknown>);
+	}
+	return rows;
+}
+
+/** Run a SELECT, tolerating QuereusError. Returns null if query errors. */
+async function tryCollectRows(db: Database, sql: string): Promise<Record<string, unknown>[] | null> {
+	try {
+		return await collectRows(db, sql);
+	} catch (err) {
+		if (err instanceof QuereusError) return null;
+		throw err;
+	}
+}
+
 describe('Grammar-Based SQL Fuzzing', function () {
 	this.timeout(120_000);
 
@@ -515,7 +564,8 @@ describe('Grammar-Based SQL Fuzzing', function () {
 					try {
 						await setupSchema(schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sqls = fc.sample(arbs.select as fc.Arbitrary<string>, 5);
+						const sampleCount = 3 + Math.floor(Math.random() * 8); // 3-10
+						const sqls = fc.sample(arbs.select as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							await evalAndDrain(db, sql);
 						}
@@ -538,7 +588,8 @@ describe('Grammar-Based SQL Fuzzing', function () {
 					try {
 						await setupSchema(schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sqls = fc.sample(arbs.dml as fc.Arbitrary<string>, 3);
+						const sampleCount = 2 + Math.floor(Math.random() * 5); // 2-6
+						const sqls = fc.sample(arbs.dml as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							await execAndDrain(db, sql);
 						}
@@ -561,8 +612,10 @@ describe('Grammar-Based SQL Fuzzing', function () {
 					try {
 						await setupSchema(schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const ctes = fc.sample(arbs.cte as fc.Arbitrary<string>, 2);
-						const compounds = fc.sample(arbs.select as fc.Arbitrary<string>, 2);
+						const cteSampleCount = 1 + Math.floor(Math.random() * 4); // 1-4
+						const compoundSampleCount = 1 + Math.floor(Math.random() * 4); // 1-4
+						const ctes = fc.sample(arbs.cte as fc.Arbitrary<string>, cteSampleCount);
+						const compounds = fc.sample(arbs.select as fc.Arbitrary<string>, compoundSampleCount);
 						for (const sql of [...ctes, ...compounds]) {
 							await evalAndDrain(db, sql);
 						}
@@ -585,7 +638,8 @@ describe('Grammar-Based SQL Fuzzing', function () {
 					try {
 						await setupSchema(schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sqls = fc.sample(arbs.windowSelect as fc.Arbitrary<string>, 3);
+						const sampleCount = 2 + Math.floor(Math.random() * 5); // 2-6
+						const sqls = fc.sample(arbs.windowSelect as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							await evalAndDrain(db, sql);
 						}
@@ -608,7 +662,8 @@ describe('Grammar-Based SQL Fuzzing', function () {
 					try {
 						await setupSchema(schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sqls = fc.sample(arbs.statement as fc.Arbitrary<string>, 5);
+						const sampleCount = 3 + Math.floor(Math.random() * 8); // 3-10
+						const sqls = fc.sample(arbs.statement as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							// Use eval for SELECT-like, exec for DML
 							const trimmed = sql.trimStart().toLowerCase();
@@ -624,6 +679,140 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				}
 			),
 			{ numRuns: 200, endOnFailure: true }
+		);
+	});
+
+	it('SELECT results are deterministic', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 1, max: 15 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(schema, rowCount);
+						const arbs = buildSqlArbitraries(schema);
+						const sqls = fc.sample(arbs.select as fc.Arbitrary<string>, 5);
+						for (const sql of sqls) {
+							const r1 = await tryCollectRows(db, sql);
+							if (r1 === null) continue; // query errored, skip
+							const r2 = await tryCollectRows(db, sql);
+							if (r2 === null) throw new Error(`Query succeeded first time but failed second time\nSQL: ${sql}`);
+							const s1 = r1.map(r => JSON.stringify(r));
+							const s2 = r2.map(r => JSON.stringify(r));
+							if (s1.length !== s2.length) {
+								throw new Error(`Determinism violation: row count ${s1.length} vs ${s2.length}\nSQL: ${sql}`);
+							}
+							for (let i = 0; i < s1.length; i++) {
+								if (s1[i] !== s2[i]) {
+									throw new Error(`Determinism violation at row ${i}\nSQL: ${sql}`);
+								}
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+
+	it('COUNT(*) is non-negative', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 0, max: 15 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(schema, rowCount);
+						for (const table of schema.tables) {
+							const rows = await tryCollectRows(db, `select count(*) as cnt from ${table.name}`);
+							if (rows === null) continue;
+							const cnt = rows[0].cnt as number;
+							if (cnt < 0) {
+								throw new Error(`COUNT(*) returned ${cnt} for table ${table.name}`);
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+
+	it('LIMIT constrains result set size', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 1, max: 15 }),
+				fc.integer({ min: 0, max: 20 }),
+				async (schema, rowCount, limit) => {
+					db = new Database();
+					try {
+						await setupSchema(schema, rowCount);
+						for (const table of schema.tables) {
+							const rows = await tryCollectRows(db, `select * from ${table.name} limit ${limit}`);
+							if (rows === null) continue;
+							if (rows.length > limit) {
+								throw new Error(`LIMIT ${limit} returned ${rows.length} rows from ${table.name}`);
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+
+	it('ORDER BY ASC produces sorted results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 2, max: 15 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(schema, rowCount);
+						for (const table of schema.tables) {
+							for (const col of table.columns) {
+								const rows = await tryCollectRows(db, `select ${col.name} as v from ${table.name} order by ${col.name} asc`);
+								if (rows === null || rows.length < 2) continue;
+								// Check sortedness: nulls first, then ascending
+								let seenNonNull = false;
+								for (let i = 0; i < rows.length; i++) {
+									if (rows[i].v === null) {
+										if (seenNonNull) {
+											// null after non-null is OK in some SQL dialects, skip strict check
+										}
+									} else {
+										seenNonNull = true;
+										if (i > 0 && rows[i - 1].v !== null) {
+											const prev = rows[i - 1].v;
+											const curr = rows[i].v;
+											if (typeof prev === typeof curr) {
+												if (prev > curr) {
+													throw new Error(
+														`ORDER BY ASC violation: ${JSON.stringify(prev)} > ${JSON.stringify(curr)} in ${table.name}.${col.name}`
+													);
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
 		);
 	});
 });
