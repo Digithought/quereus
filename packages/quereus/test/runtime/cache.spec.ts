@@ -64,7 +64,7 @@ describe('Runtime Shared Cache', () => {
 			expect(second).to.deep.equal(first);
 		});
 
-		it('row deep-copy correctness — mutating yielded row does not affect cache', async () => {
+		it('row deep-copy correctness — mutating yielded row does not affect cache (build pass)', async () => {
 			const sourceRows: Row[] = [[1, 'original']];
 			const state = createCacheState();
 
@@ -75,6 +75,25 @@ describe('Runtime Shared Cache', () => {
 
 			// The cached copy should be unaffected (it was spread-copied)
 			expect(state.cachedResult![0][1]).to.equal('original');
+		});
+
+		it('row deep-copy correctness — mutating yielded row does not affect cache (cache-hit pass)', async () => {
+			const sourceRows: Row[] = [[1, 'original']];
+			const state = createCacheState();
+
+			// Build pass
+			await collect(streamWithCache(fromRows(sourceRows), defaultConfig, state));
+
+			// Cache-hit pass: mutate yielded row
+			const cached = await collect(streamWithCache(fromRows([]), defaultConfig, state));
+			cached[0][1] = 'mutated';
+
+			// The cache should be unaffected
+			expect(state.cachedResult![0][1]).to.equal('original');
+
+			// Next cache-hit consumer should also get the original
+			const cached2 = await collect(streamWithCache(fromRows([]), defaultConfig, state));
+			expect(cached2[0][1]).to.equal('original');
 		});
 
 		it('threshold exceeded — cache abandoned', async () => {
