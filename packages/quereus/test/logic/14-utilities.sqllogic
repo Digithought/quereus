@@ -36,6 +36,10 @@ select v from null_sort_t order by v nulls last;
 select v from null_sort_t order by v desc nulls first;
 → [{"v":null},{"v":null},{"v":3},{"v":2},{"v":1}]
 
+-- NULLS LAST in DESC moves nulls to the end
+select v from null_sort_t order by v desc nulls last;
+→ [{"v":3},{"v":2},{"v":1},{"v":null},{"v":null}]
+
 DROP TABLE null_sort_t;
 
 -- === Storage class ordering ===

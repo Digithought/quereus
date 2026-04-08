@@ -292,13 +292,13 @@ export function compareWithOrderByFast(
 		// Explicit NULLS ordering is absolute — not affected by ASC/DESC
 		if (nullsOrdering === NullsOrdering.FIRST) return -1;
 		if (nullsOrdering === NullsOrdering.LAST) return 1;
-		// Default behavior: nulls first for ASC, nulls last for DESC
+		// Default behavior: nulls always first (both ASC and DESC)
 		comparison = direction === SortDirection.DESC ? 1 : -1;
 	} else { // b === null
 		// Explicit NULLS ordering is absolute — not affected by ASC/DESC
 		if (nullsOrdering === NullsOrdering.FIRST) return 1;
 		if (nullsOrdering === NullsOrdering.LAST) return -1;
-		// Default behavior: nulls first for ASC, nulls last for DESC
+		// Default behavior: nulls always first (both ASC and DESC)
 		comparison = direction === SortDirection.DESC ? -1 : 1;
 	}
 
