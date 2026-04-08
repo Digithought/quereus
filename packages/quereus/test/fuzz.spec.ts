@@ -559,12 +559,12 @@ describe('Grammar-Based SQL Fuzzing', function () {
 			fc.asyncProperty(
 				arbSchemaInfo,
 				fc.integer({ min: 0, max: 15 }),
-				async (schema, rowCount) => {
+				fc.integer({ min: 3, max: 10 }),
+				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
 						await setupSchema(schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sampleCount = 3 + Math.floor(Math.random() * 8); // 3-10
 						const sqls = fc.sample(arbs.select as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							await evalAndDrain(db, sql);
@@ -583,12 +583,12 @@ describe('Grammar-Based SQL Fuzzing', function () {
 			fc.asyncProperty(
 				arbSchemaInfo,
 				fc.integer({ min: 0, max: 10 }),
-				async (schema, rowCount) => {
+				fc.integer({ min: 2, max: 6 }),
+				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
 						await setupSchema(schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sampleCount = 2 + Math.floor(Math.random() * 5); // 2-6
 						const sqls = fc.sample(arbs.dml as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							await execAndDrain(db, sql);
@@ -607,13 +607,13 @@ describe('Grammar-Based SQL Fuzzing', function () {
 			fc.asyncProperty(
 				arbSchemaInfo,
 				fc.integer({ min: 1, max: 10 }),
-				async (schema, rowCount) => {
+				fc.integer({ min: 1, max: 4 }),
+				fc.integer({ min: 1, max: 4 }),
+				async (schema, rowCount, cteSampleCount, compoundSampleCount) => {
 					db = new Database();
 					try {
 						await setupSchema(schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const cteSampleCount = 1 + Math.floor(Math.random() * 4); // 1-4
-						const compoundSampleCount = 1 + Math.floor(Math.random() * 4); // 1-4
 						const ctes = fc.sample(arbs.cte as fc.Arbitrary<string>, cteSampleCount);
 						const compounds = fc.sample(arbs.select as fc.Arbitrary<string>, compoundSampleCount);
 						for (const sql of [...ctes, ...compounds]) {
@@ -633,12 +633,12 @@ describe('Grammar-Based SQL Fuzzing', function () {
 			fc.asyncProperty(
 				arbSchemaInfo,
 				fc.integer({ min: 1, max: 10 }),
-				async (schema, rowCount) => {
+				fc.integer({ min: 2, max: 6 }),
+				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
 						await setupSchema(schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sampleCount = 2 + Math.floor(Math.random() * 5); // 2-6
 						const sqls = fc.sample(arbs.windowSelect as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							await evalAndDrain(db, sql);
@@ -657,12 +657,12 @@ describe('Grammar-Based SQL Fuzzing', function () {
 			fc.asyncProperty(
 				arbSchemaInfo,
 				fc.integer({ min: 0, max: 15 }),
-				async (schema, rowCount) => {
+				fc.integer({ min: 3, max: 10 }),
+				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
 						await setupSchema(schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sampleCount = 3 + Math.floor(Math.random() * 8); // 3-10
 						const sqls = fc.sample(arbs.statement as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							// Use eval for SELECT-like, exec for DML
