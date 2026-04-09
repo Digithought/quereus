@@ -20,7 +20,7 @@
 	},
 	"license": "MIT",
 	"engines": {
-		"vscode": "^1.115.0"
+		"vscode": "^1.109.0"
 	},
 	"categories": [
 		"Programming Languages"
@@ -80,7 +80,7 @@
 	},
 	"devDependencies": {
 		"@quereus/quereus": "workspace:^",
-		"@types/vscode": "^1.115.0",
+		"@types/vscode": "^1.109.0",
 		"rimraf": "^6.1.2",
 		"typescript": "^5.9.3",
 		"vscode-languageserver": "^9.0.1",
