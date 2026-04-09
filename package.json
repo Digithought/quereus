@@ -55,8 +55,9 @@
   },
   "devDependencies": {
     "bumpp": "^10.4.0",
-    "esbuild": "^0.27.2",
+    "esbuild": "^0.28.0",
     "rimraf": "^6.1.2",
+    "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }
 }
