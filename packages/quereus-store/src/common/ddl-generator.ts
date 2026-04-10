@@ -4,7 +4,7 @@
  * Generates CREATE TABLE and CREATE INDEX statements from schema objects.
  */
 
-import type { TableSchema, TableIndexSchema } from '@quereus/quereus';
+import type { TableSchema, TableIndexSchema, SqlValue } from '@quereus/quereus';
 
 /**
  * Generate a CREATE TABLE statement from a TableSchema.
@@ -40,6 +40,9 @@ export function generateTableDDL(tableSchema: TableSchema): string {
     if (col.defaultValue !== undefined && col.defaultValue !== null) {
       colDef += ` DEFAULT ${formatDefaultValue(col.defaultValue)}`;
     }
+    if (col.tags && Object.keys(col.tags).length > 0) {
+      colDef += ' ' + formatTagsClause(col.tags);
+    }
     columnDefs.push(colDef);
   }
 
@@ -62,6 +65,11 @@ export function generateTableDDL(tableSchema: TableSchema): string {
         .join(', ');
       parts.push(`(${args})`);
     }
+  }
+
+  // Add table-level WITH TAGS
+  if (tableSchema.tags && Object.keys(tableSchema.tags).length > 0) {
+    parts.push(formatTagsClause(tableSchema.tags));
   }
 
   return parts.join(' ');
@@ -99,6 +107,11 @@ export function generateIndexDDL(
   });
 
   parts.push(`(${columns.join(', ')})`);
+
+  // Add index-level WITH TAGS
+  if (indexSchema.tags && Object.keys(indexSchema.tags).length > 0) {
+    parts.push(formatTagsClause(indexSchema.tags));
+  }
 
   return parts.join(' ');
 }
@@ -139,5 +152,27 @@ function formatArgValue(value: unknown): string {
   if (typeof value === 'number' || typeof value === 'bigint') return String(value);
   if (typeof value === 'boolean') return value ? '1' : '0';
   return JSON.stringify(value);
+}
+
+/**
+ * Format a tag value as a SQL literal.
+ * Unlike formatArgValue, booleans emit TRUE/FALSE (not 1/0).
+ */
+function formatTagValue(value: SqlValue): string {
+  if (value === null) return 'NULL';
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (typeof value === 'number' || typeof value === 'bigint') return String(value);
+  if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+  return String(value);
+}
+
+/**
+ * Format a tags record as a WITH TAGS (...) clause.
+ */
+function formatTagsClause(tags: Readonly<Record<string, SqlValue>>): string {
+  const entries = Object.entries(tags)
+    .map(([key, value]) => `${key} = ${formatTagValue(value)}`)
+    .join(', ');
+  return `WITH TAGS (${entries})`;
 }
 
