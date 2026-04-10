@@ -2207,7 +2207,7 @@ Table-valued functions return a result set that can be queried like a table.
 - `split_string(str, delimiter)`: Splits a string into rows based on a delimiter
 
 **Schema Introspection Functions:**
-- `schema()`: Returns information about all tables, views, and functions in the database
+- `schema()`: Returns information about all tables, views, and functions across all schemas (columns: `schema`, `type`, `name`, `tbl_name`, `sql`)
 - `table_info(table_name)`: Returns column information for a specific table
 - `function_info([function_name])`: Returns information about all registered functions, or a given registered function
 
@@ -2225,7 +2225,7 @@ Table-valued functions return a result set that can be queried like a table.
 select value from generate_series(1, 10);
 
 -- Get schema information
-select type, name, sql from schema() where type = 'table';
+select schema, type, name, sql from schema() where type = 'table';
 
 -- Get column information for a table
 select cid, name, type, notnull, pk from table_info('users');

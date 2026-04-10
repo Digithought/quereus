@@ -33,6 +33,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 			isReadOnly: true,
 			isSet: false,
 			columns: [
+				{ name: 'schema', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'type', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'name', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'tbl_name', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
@@ -47,6 +48,8 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 			const schemaManager = db.schemaManager;
 
 			const processSchemaInstance = function* (schemaInstance: Schema) {
+				const schemaName = schemaInstance.name;
+
 				// Process Tables
 				for (const tableSchema of schemaInstance.getAllTables()) {
 					let createSql: string | null = null;
@@ -59,6 +62,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 					}
 
 					yield [
+						schemaName,
 						tableSchema.isView ? 'view' : 'table',
 						tableSchema.name,
 						tableSchema.name,
@@ -87,6 +91,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 							}
 
 							yield [
+								schemaName,
 								'index',
 								indexSchema.name,
 								tableSchema.name,
@@ -99,6 +104,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 				// Process Views
 				for (const viewSchema of schemaInstance.getAllViews()) {
 					yield [
+						schemaName,
 						'view',
 						viewSchema.name,
 						viewSchema.name,
@@ -109,6 +115,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 				// Process Functions
 				for (const funcSchema of schemaInstance._getAllFunctions()) {
 					yield [
+						schemaName,
 						'function',
 						funcSchema.name,
 						funcSchema.name,
@@ -117,16 +124,15 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 				}
 			};
 
-			// Process main schema
-			yield* processSchemaInstance(schemaManager.getMainSchema());
-
-			// Process temp schema
-			yield* processSchemaInstance(schemaManager.getTempSchema());
+			// Process all schemas
+			for (const schemaInstance of schemaManager._getAllSchemas()) {
+				yield* processSchemaInstance(schemaInstance);
+			}
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If schema introspection fails, yield an error row
-			yield ['error', 'schema_error', 'schema_error', `Failed to introspect schema: ${error.message}`];
+			yield ['', 'error', 'schema_error', 'schema_error', `Failed to introspect schema: ${error.message}`];
 		}
 	}
 );
@@ -233,15 +239,12 @@ export const functionInfoFunc = createIntegratedTableValuedFunction(
 		try {
 			const schemaManager = db.schemaManager;
 
-			const processFunctions = function* (schemaInstance: Schema) {
+			for (const schemaInstance of schemaManager._getAllSchemas()) {
 				for (const funcSchema of schemaInstance._getAllFunctions()) {
 					if (nameFilter !== null && funcSchema.name.toLowerCase() !== nameFilter) continue;
 					yield* yieldFunctionRow(funcSchema);
 				}
-			};
-
-			yield* processFunctions(schemaManager.getMainSchema());
-			yield* processFunctions(schemaManager.getTempSchema());
+			}
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
