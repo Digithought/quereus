@@ -36,6 +36,14 @@ function _createLoc(startToken: Token, endToken: Token): AST.AstNode['loc'] {
 	};
 }
 
+/**
+ * IMPORTANT: Any changes to parsed DDL syntax (CREATE TABLE, CREATE INDEX, CREATE VIEW, etc.)
+ * must also be reflected in the corresponding DDL emitters:
+ *   - packages/quereus/src/schema/catalog.ts         (generateTableDDL, generateDeclaredDDL)
+ *   - packages/quereus/src/emit/ast-stringify.ts      (AST-to-SQL string conversion)
+ *   - packages/quereus-store/src/common/ddl-generator.ts  (persistence round-trip)
+ * If only the parser is updated, persisted schemas will silently lose the new syntax on restore.
+ */
 export class Parser {
 	private tokens: Token[] = [];
 	private current = 0;

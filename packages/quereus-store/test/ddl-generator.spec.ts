@@ -110,6 +110,43 @@ describe('DDL generator', () => {
 			const ddl = generateTableDDL(schema);
 			expect(ddl).to.include('"notes" TEXT NULL');
 		});
+
+		it('emits table-level WITH TAGS', () => {
+			const schema = makeTableSchema({
+				name: 'tagged',
+				columns: [makeColumn('id', INTEGER_TYPE, { primaryKey: true })],
+				primaryKeyDefinition: [{ index: 0 }],
+				tags: { display_name: 'Tagged Table', audit: true },
+			});
+			const ddl = generateTableDDL(schema);
+			expect(ddl).to.include('WITH TAGS');
+			expect(ddl).to.include("display_name = 'Tagged Table'");
+			expect(ddl).to.include('audit = TRUE');
+		});
+
+		it('emits column-level WITH TAGS', () => {
+			const schema = makeTableSchema({
+				name: 'col_tagged',
+				columns: [
+					makeColumn('id', INTEGER_TYPE, { primaryKey: true }),
+					makeColumn('name', TEXT_TYPE, { tags: { display_name: 'Name', searchable: true } }),
+				],
+				primaryKeyDefinition: [{ index: 0 }],
+			});
+			const ddl = generateTableDDL(schema);
+			expect(ddl).to.include('"name" TEXT WITH TAGS');
+			expect(ddl).to.include("display_name = 'Name'");
+		});
+
+		it('does not emit WITH TAGS when tags are empty', () => {
+			const schema = makeTableSchema({
+				name: 'no_tags',
+				columns: [makeColumn('id', INTEGER_TYPE, { tags: {} })],
+				tags: {},
+			});
+			const ddl = generateTableDDL(schema);
+			expect(ddl).not.to.include('WITH TAGS');
+		});
 	});
 
 	describe('generateIndexDDL', () => {
@@ -151,6 +188,18 @@ describe('DDL generator', () => {
 			const idx: TableIndexSchema = { name: 'idx_email', columns: [{ index: 0 }] };
 			const ddl = generateIndexDDL(idx, schemaQualified);
 			expect(ddl).to.include('"auth"."users"');
+		});
+
+		it('emits index-level WITH TAGS', () => {
+			const idx: TableIndexSchema = {
+				name: 'idx_email',
+				columns: [{ index: 1 }],
+				tags: { label: 'email index', priority: 1 },
+			};
+			const ddl = generateIndexDDL(idx, tableSchema);
+			expect(ddl).to.include('WITH TAGS');
+			expect(ddl).to.include("label = 'email index'");
+			expect(ddl).to.include('priority = 1');
 		});
 	});
 });
