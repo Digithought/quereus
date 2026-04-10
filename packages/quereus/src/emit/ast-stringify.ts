@@ -939,7 +939,7 @@ function foreignKeyActionToString(action: AST.ForeignKeyAction): string {
 		case 'setDefault': return 'set default';
 		case 'cascade': return 'cascade';
 		case 'restrict': return 'restrict';
-		case 'noAction': return 'no action';
+		case 'ignore': return 'no action';
 	}
 }
 

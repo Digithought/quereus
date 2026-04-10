@@ -658,8 +658,8 @@ export class SchemaManager {
 						referencedSchema: schemaName,
 						referencedColumns: Object.freeze([]), // resolved at enforcement time
 						referencedColumnNames: fk.columns, // deferred resolution via resolveReferencedColumns
-						onDelete: fk.onDelete ?? 'noAction',
-						onUpdate: fk.onUpdate ?? 'noAction',
+						onDelete: fk.onDelete ?? 'ignore',
+						onUpdate: fk.onUpdate ?? 'ignore',
 						deferred: fk.initiallyDeferred ?? false,
 					});
 				}
@@ -685,8 +685,8 @@ export class SchemaManager {
 					referencedSchema: schemaName,
 					referencedColumns: Object.freeze([]), // resolved at enforcement time
 					referencedColumnNames: fk.columns, // deferred resolution via resolveReferencedColumns
-					onDelete: fk.onDelete ?? 'noAction',
-					onUpdate: fk.onUpdate ?? 'noAction',
+					onDelete: fk.onDelete ?? 'ignore',
+					onUpdate: fk.onUpdate ?? 'ignore',
 					deferred: fk.initiallyDeferred ?? false,
 				});
 			}

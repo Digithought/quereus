@@ -255,7 +255,7 @@ export function buildParentSideFKChecks(
 
 				// Only RESTRICT and NO ACTION generate parent-side checks
 				// CASCADE, SET NULL, SET DEFAULT are handled by cascading actions (Phase 2)
-				if (action !== 'restrict' && action !== 'noAction') continue;
+				if (action !== 'restrict' && action !== 'ignore') continue;
 
 				const parentColIndices = resolveReferencedColumns(fk, tableSchema);
 				if (parentColIndices.length !== fk.columns.length) continue;
