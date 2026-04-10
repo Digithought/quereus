@@ -15,6 +15,7 @@ import type * as AST from '../parser/ast.js';
 import { ConflictResolution } from '../common/constants.js';
 import { KEYWORDS } from '../parser/lexer.js';
 import { uint8ArrayToHex } from '../util/serialization.js';
+import type { SqlValue } from '../common/types.js';
 
 // --- Identifier Quoting Logic ---
 
@@ -714,6 +715,9 @@ export function createIndexToString(stmt: AST.CreateIndexStmt): string {
 		parts.push('where', expressionToString(stmt.where));
 	}
 
+	const indexTagStr = tagsClauseToString(stmt.tags);
+	if (indexTagStr) parts.push(indexTagStr.trimStart());
+
 	return parts.join(' ');
 }
 
@@ -730,6 +734,9 @@ export function createViewToString(stmt: AST.CreateViewStmt): string {
 	}
 
 	parts.push('as', selectToString(stmt.select));
+
+	const viewTagStr = tagsClauseToString(stmt.tags);
+	if (viewTagStr) parts.push(viewTagStr.trimStart());
 
 	return parts.join(' ');
 }
@@ -895,6 +902,7 @@ function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string 
 				if (c.generated!.stored) s += ' stored';
 				break;
 		}
+		s += tagsClauseToString(c.tags);
 		return s;
 	}).filter(s => s.length > 0).join(' ');
 }
@@ -929,6 +937,7 @@ function tableConstraintsToString(constraints: AST.TableConstraint[]): string {
 				}
 				break;
 		}
+		s += tagsClauseToString(c.tags);
 		return s;
 	}).filter(s => s.length > 0).join(', ');
 }
@@ -943,11 +952,30 @@ function foreignKeyActionToString(action: AST.ForeignKeyAction): string {
 	}
 }
 
+/** Formats a tag value as a SQL literal */
+function tagValueToString(value: SqlValue): string {
+	if (value === null) return 'null';
+	if (typeof value === 'boolean') return value ? 'true' : 'false';
+	if (typeof value === 'number') return String(value);
+	if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+	return String(value);
+}
+
+/** Formats a tags record as a WITH TAGS (...) clause */
+function tagsClauseToString(tags: Record<string, SqlValue> | undefined): string {
+	if (!tags || Object.keys(tags).length === 0) return '';
+	const entries = Object.entries(tags)
+		.map(([key, value]) => `${quoteIdentifier(key)} = ${tagValueToString(value)}`)
+		.join(', ');
+	return ` with tags (${entries})`;
+}
+
 export function columnDefToString(col: AST.ColumnDef): string {
 	let colDef = quoteIdentifier(col.name);
 	if (col.dataType) colDef += ` ${col.dataType}`;
 	const constraints = columnConstraintsToString(col.constraints);
 	if (constraints) colDef += ` ${constraints}`;
+	colDef += tagsClauseToString(col.tags);
 	return colDef;
 }
 
@@ -988,6 +1016,10 @@ export function createTableToString(stmt: AST.CreateTableStmt): string {
 		}).join(', ');
 		parts.push('with context', `(${contextVars})`);
 	}
+
+	// Add WITH TAGS clause if present
+	const tagStr = tagsClauseToString(stmt.tags);
+	if (tagStr) parts.push(tagStr.trimStart());
 
 	return parts.join(' ');
 }

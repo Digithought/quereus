@@ -31,7 +31,8 @@ export function emitCreateView(plan: CreateViewNode, _ctx: EmissionContext): Ins
 			schemaName: plan.schemaName,
 			sql: plan.sql,
 			selectAst: plan.selectStmt,
-			columns: plan.columns
+			columns: plan.columns,
+			tags: plan.tags,
 		};
 
 		// Add the view to the schema manager

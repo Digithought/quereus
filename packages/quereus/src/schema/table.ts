@@ -61,6 +61,8 @@ export interface TableSchema {
 	foreignKeys?: ReadonlyArray<ForeignKeyConstraintSchema>;
 	/** Unique constraints (beyond primary key) */
 	uniqueConstraints?: ReadonlyArray<UniqueConstraintSchema>;
+	/** Arbitrary metadata tags (informational only, does not affect behavior or hashing) */
+	tags?: Readonly<Record<string, SqlValue>>;
 }
 
 /**
@@ -162,6 +164,11 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 		schema.pkOrder = 1;
 	}
 
+	// Thread column-level tags
+	if (def.tags && Object.keys(def.tags).length > 0) {
+		schema.tags = Object.freeze({ ...def.tags });
+	}
+
 	return schema;
 }
 
@@ -212,6 +219,8 @@ export interface IndexSchema {
 	name: string;
 	/** Columns in the index */
 	columns: ReadonlyArray<IndexColumnSchema>;
+	/** Arbitrary metadata tags (informational only) */
+	tags?: Readonly<Record<string, SqlValue>>;
 }
 
 /**
@@ -304,6 +313,8 @@ export interface RowConstraintSchema {
 	deferrable?: boolean;
 	/** Whether the constraint is initially deferred */
 	initiallyDeferred?: boolean;
+	/** Arbitrary metadata tags (informational only) */
+	tags?: Readonly<Record<string, SqlValue>>;
 }
 
 /**
@@ -333,6 +344,8 @@ export interface ForeignKeyConstraintSchema {
 	onUpdate: import('../parser/ast.js').ForeignKeyAction;
 	/** Whether enforcement is deferred to COMMIT */
 	deferred: boolean;
+	/** Arbitrary metadata tags (informational only) */
+	tags?: Readonly<Record<string, SqlValue>>;
 }
 
 /**
@@ -370,6 +383,8 @@ export interface UniqueConstraintSchema {
 	name?: string;
 	/** Column indices in this table that form the unique constraint */
 	columns: ReadonlyArray<number>;
+	/** Arbitrary metadata tags (informational only) */
+	tags?: Readonly<Record<string, SqlValue>>;
 }
 
 export interface PrimaryKeyColumnDefinition {

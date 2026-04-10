@@ -264,6 +264,7 @@ export interface CreateTableStmt extends AstNode {
 	moduleName?: string;   // Optional module name from USING clause
 	moduleArgs?: Record<string, SqlValue>; // Optional module arguments from USING clause
 	contextDefinitions?: MutationContextVar[]; // Optional mutation context variables
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // CREATE INDEX statement
@@ -275,6 +276,7 @@ export interface CreateIndexStmt extends AstNode {
 	columns: IndexedColumn[];
 	where?: Expression;
 	isUnique?: boolean;
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // CREATE ASSERTION statement
@@ -292,6 +294,7 @@ export interface CreateViewStmt extends AstNode {
 	columns?: string[];
 	select: SelectStmt;
 	isTemporary?: boolean;
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // ALTER TABLE statement
@@ -395,6 +398,7 @@ export interface ColumnDef {
 	name: string;
 	dataType?: string;
 	constraints: ColumnConstraint[];
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // Mutation context variable definition
@@ -426,6 +430,7 @@ export interface ColumnConstraint extends AstNode {
 	};
 	deferrable?: boolean;
 	initiallyDeferred?: boolean;
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // Table constraint (PRIMARY KEY, UNIQUE, etc.)
@@ -439,6 +444,7 @@ export interface TableConstraint extends AstNode {
 	foreignKey?: ForeignKeyClause;
 	deferrable?: boolean;
 	initiallyDeferred?: boolean;
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // Foreign key clause

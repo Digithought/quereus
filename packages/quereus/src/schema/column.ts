@@ -1,5 +1,6 @@
 import type { Expression } from '../parser/ast.js';
 import type { LogicalType } from '../types/logical-type.js';
+import type { SqlValue } from '../common/types.js';
 import { TEXT_TYPE } from '../types/builtin-types.js';
 
 /**
@@ -28,6 +29,8 @@ export interface ColumnSchema {
 	generatedStored?: boolean;
 	/** Sort direction for primary key ('asc' | 'desc') */
 	pkDirection?: 'asc' | 'desc';
+	/** Arbitrary metadata tags (informational only, does not affect behavior or hashing) */
+	tags?: Readonly<Record<string, SqlValue>>;
 }
 
 /**

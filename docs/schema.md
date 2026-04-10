@@ -14,19 +14,23 @@ A named logical grouping of tables, views, functions, and assertions. Every data
 
 ### TableSchema
 
-Describes a table's structure: columns, primary key definition, CHECK constraints, associated virtual table module, indexes, and mutation context definitions. All tables are virtual tables — `vtabModule` and `vtabModuleName` are always present.
+Describes a table's structure: columns, primary key definition, CHECK constraints, associated virtual table module, indexes, and mutation context definitions. All tables are virtual tables — `vtabModule` and `vtabModuleName` are always present. Optional `tags` field holds arbitrary key-value metadata (see `WITH TAGS`).
 
 ### ColumnSchema
 
-Defines a single column: name, logical type, nullability, primary key membership, default value expression, collation, and whether the column is generated. Columns default to NOT NULL (Third Manifesto) unless `pragma default_column_nullability = 'nullable'` is set.
+Defines a single column: name, logical type, nullability, primary key membership, default value expression, collation, and whether the column is generated. Columns default to NOT NULL (Third Manifesto) unless `pragma default_column_nullability = 'nullable'` is set. Optional `tags` field holds arbitrary key-value metadata.
 
 ### IndexSchema / IndexColumnSchema
 
-Describes a secondary index by name and an ordered list of column references (by index into `TableSchema.columns`) with optional sort direction and collation.
+Describes a secondary index by name and an ordered list of column references (by index into `TableSchema.columns`) with optional sort direction and collation. Optional `tags` field holds arbitrary key-value metadata.
 
 ### RowConstraintSchema
 
-A CHECK constraint with an AST expression, an operation bitmask (insert/update/delete), and deferral settings.
+A CHECK constraint with an AST expression, an operation bitmask (insert/update/delete), and deferral settings. Optional `tags` field holds arbitrary key-value metadata.
+
+### ViewSchema
+
+Describes a view: name, schema, SQL text, and parsed SELECT AST. Optional `tags` field holds arbitrary key-value metadata.
 
 ## SchemaManager API
 
@@ -51,6 +55,8 @@ A CHECK constraint with an AST expression, an operation bitmask (insert/update/d
 | `getTable(schemaName, tableName)` | Retrieves a table from a specific schema |
 | `getView(schemaName, viewName)` | Retrieves a view definition |
 | `getSchemaItem(schemaName, itemName)` | Returns a table or view by name (views take priority on name conflict) |
+| `getTableTags(tableName, schemaName?)` | Returns metadata tags for a table, or `undefined` |
+| `setTableTags(tableName, tags, schemaName?)` | Sets metadata tags on a table (pass `{}` to clear) |
 | `findSchemasContainingTable(tableName)` | Returns all schema names containing the table — useful for error messages |
 | `findFunction(funcName, nArg)` | Finds a function by name and argument count |
 

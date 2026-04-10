@@ -773,11 +773,12 @@ create [temp | temporary] table [if not exists] table_name (
   [, table_constraint...]
 )
 [using module_name [(module_args...)]]
+[with tags (key = value [, ...])]
 ```
 
 **Column Definition:**
 ```sql
-column_name [data_type] [column_constraint...]
+column_name [data_type] [column_constraint...] [with tags (key = value [, ...])]
 ```
 
 **Column Constraints:**
@@ -791,6 +792,7 @@ column_name [data_type] [column_constraint...]
 | collate collation_name
 | references foreign_table [(column[,...])] [ref_actions]
 | generated always as (expr) [stored | virtual] }
+[with tags (key = value [, ...])]
 ```
 
 **Table Constraints:**
@@ -800,6 +802,7 @@ column_name [data_type] [column_constraint...]
 | unique (column[,...]) [conflict_clause]
 | check [on {insert | update | delete}[,...]] (expr)
 | foreign key (column[,...]) references foreign_table [(column[,...])] [ref_actions] }
+[with tags (key = value [, ...])]
 ```
 
 **Conflict Clause:**
@@ -1014,6 +1017,42 @@ where user_id = 42;  -- Passes: requester_id matches
 - Mark optional context variables as NULL
 - Combine with user-defined functions for custom verification logic
 - Context is required when defaults or constraints reference context variables
+
+### 2.6.3 Metadata Tags
+
+Quereus supports arbitrary key-value metadata tags on schema objects via `WITH TAGS`. Tags are informational only -- the engine does not derive behavior from them. They do not affect schema hashing.
+
+**Syntax:**
+```sql
+-- Table-level tags
+create table Orders (
+  id integer primary key,
+  name text not null
+) with tags (display_name = 'Customer Orders', audit = true);
+
+-- Column-level tags
+create table Products (
+  id integer primary key with tags (display_name = 'Product ID'),
+  name text not null with tags (searchable = true)
+);
+
+-- Constraint-level tags
+create table Employees (
+  id integer primary key,
+  email text not null,
+  constraint uq_email unique (email) with tags (error_message = 'Email must be unique')
+);
+
+-- View and index tags
+create view ActiveUsers as select * from Users where active = 1
+  with tags (cacheable = true);
+
+create index idx_name on Products (name) with tags (purpose = 'search optimization');
+```
+
+Tag values can be strings, numbers, booleans (`true`/`false`), or `null`. Tag keys are identifiers. `TAGS` is a contextual keyword and can still be used as a regular identifier. `WITH TAGS` can appear alongside `WITH CONTEXT` in any order.
+
+Tags are available on the schema interfaces (`TableSchema.tags`, `ColumnSchema.tags`, etc.) and via the programmatic API (`SchemaManager.getTableTags()`, `SchemaManager.setTableTags()`).
 
 ### 2.7 ALTER TABLE Statement
 
@@ -3307,13 +3346,19 @@ qualifier          = "old" | "new" ;
 create_table_stmt  = "create" [ "temp" | "temporary" ] "table" [ "if" "not" "exists" ]
                      table_name "(" column_def { "," ( column_def | table_constraint ) } ")"
                      [ "using" module_name [ "(" module_arg { "," module_arg } ")" ] ]
-                     [ context_def_clause ] ;
+                     { context_def_clause | tags_clause } ;
 
 context_def_clause = "with" "context" "(" context_var_def { "," context_var_def } ")" ;
 
 context_var_def    = identifier type_name [ "null" ] ;
 
-column_def         = column_name [ type_name ] { column_constraint } ;
+tags_clause        = "with" "tags" "(" tag_entry { "," tag_entry } ")" ;
+
+tag_entry          = identifier "=" tag_value ;
+
+tag_value          = string_literal | signed_number | "true" | "false" | "null" ;
+
+column_def         = column_name [ type_name ] { column_constraint } [ tags_clause ] ;
 
 type_name          = identifier [ "(" signed_number [ "," signed_number ] ")" ] ;
 
@@ -3325,7 +3370,8 @@ column_constraint  = [ "constraint" name ]
                      | "default" ( signed_number | literal_value | "(" expr ")" )
                      | "collate" collation_name
                      | foreign_key_clause
-                     | "generated" "always" "as" "(" expr ")" [ "stored" | "virtual" ] ) ;
+                     | "generated" "always" "as" "(" expr ")" [ "stored" | "virtual" ] )
+                     [ tags_clause ] ;
 
 primary_key_clause = "primary" "key" [ ( "asc" | "desc" ) ] [ conflict_clause ] [ "autoincrement" ] ;
 
@@ -3333,7 +3379,8 @@ table_constraint   = [ "constraint" name ]
                      ( "primary" "key" "(" indexed_column { "," indexed_column } ")" [ conflict_clause ]
                      | "unique" "(" column_name { "," column_name } ")" [ conflict_clause ]
                      | "check" [ "on" row_op_list ] "(" expr ")"
-                     | "foreign" "key" "(" column_name { "," column_name } ")" foreign_key_clause ) ;
+                     | "foreign" "key" "(" column_name { "," column_name } ")" foreign_key_clause )
+                     [ tags_clause ] ;
 
 foreign_key_clause = "references" foreign_table [ "(" column_name { "," column_name } ")" ]
                      { [ "on" ( "delete" | "update" ) ( "set" "null" | "set" "default" | "cascade" | "restrict" | "no" "action" ) ]
@@ -3349,13 +3396,14 @@ row_op             = "insert" | "update" | "delete" ;
 /* CREATE INDEX statement */
 create_index_stmt  = "create" [ "unique" ] "index" [ "if" "not" "exists" ]
                      index_name "on" table_name "(" indexed_column { "," indexed_column } ")"
-                     [ "where" expr ] ;
+                     [ "where" expr ] [ tags_clause ] ;
 
 indexed_column     = column_name [ "collate" collation_name ] [ "asc" | "desc" ] ;
 
 /* CREATE VIEW statement */
 create_view_stmt   = "create" [ "temp" | "temporary" ] "view" [ "if" "not" "exists" ]
-                     view_name [ "(" column_name { "," column_name } ")" ] "as" select_stmt ;
+                     view_name [ "(" column_name { "," column_name } ")" ] "as" select_stmt
+                     [ tags_clause ] ;
 
 /* CREATE ASSERTION statement */
 create_assertion_stmt = "create" "assertion" assertion_name "check" "(" expr ")" ;

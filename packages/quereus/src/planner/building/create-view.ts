@@ -22,7 +22,8 @@ export function buildCreateViewStmt(ctx: PlanningContext, stmt: AST.CreateViewSt
 		stmt.ifNotExists,
 		stmt.columns,
 		stmt.select,
-		sql
+		sql,
+		stmt.tags ? Object.freeze({ ...stmt.tags }) : undefined
 	);
 }
 

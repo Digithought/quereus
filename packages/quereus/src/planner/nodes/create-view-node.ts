@@ -2,6 +2,7 @@ import type * as AST from '../../parser/ast.js';
 import { PhysicalProperties, VoidNode } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
+import type { SqlValue } from '../../common/types.js';
 
 /**
  * Plan node for CREATE VIEW statements.
@@ -17,7 +18,8 @@ export class CreateViewNode extends VoidNode {
 		public readonly ifNotExists: boolean,
 		public readonly columns: string[] | undefined,
 		public readonly selectStmt: AST.SelectStmt,
-		public readonly sql: string
+		public readonly sql: string,
+		public readonly tags?: Readonly<Record<string, SqlValue>>
 	) {
 		super(scope, 1); // Low cost for DDL operations
 	}

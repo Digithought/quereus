@@ -2,8 +2,9 @@ import type { Database } from '../core/database.js';
 import type { TableSchema, IndexSchema } from './table.js';
 import type { ViewSchema } from './view.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
-import { createTableToString, createViewToString, createIndexToString } from '../emit/ast-stringify.js';
+import { createTableToString, createViewToString, createIndexToString, quoteIdentifier } from '../emit/ast-stringify.js';
 import type * as AST from '../parser/ast.js';
+import type { SqlValue } from '../common/types.js';
 
 /**
  * Represents a catalog snapshot of the current database schema state
@@ -199,7 +200,29 @@ function generateTableDDL(tableSchema: TableSchema): string {
 		}
 	}
 
+	// Add WITH TAGS clause if present
+	if (tableSchema.tags && Object.keys(tableSchema.tags).length > 0) {
+		parts.push(formatTagsClause(tableSchema.tags));
+	}
+
 	return parts.join(' ');
+}
+
+/** Formats a tag value as a SQL literal */
+function formatTagValue(value: SqlValue): string {
+	if (value === null) return 'NULL';
+	if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+	if (typeof value === 'number') return String(value);
+	if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+	return String(value);
+}
+
+/** Formats a tags record as a WITH TAGS (...) clause */
+function formatTagsClause(tags: Readonly<Record<string, SqlValue>>): string {
+	const entries = Object.entries(tags)
+		.map(([key, value]) => `${quoteIdentifier(key)} = ${formatTagValue(value)}`)
+		.join(', ');
+	return `WITH TAGS (${entries})`;
 }
 
 /**
