@@ -160,6 +160,34 @@ describe('Emit: statement round-trips', () => {
 			roundTripStmt('create table t (a integer, b text)');
 		});
 
+		it('table-level tags', () => {
+			roundTripStmt("create table t (a integer) with tags (display_name = 'Orders', audit = true)");
+		});
+
+		it('column-level tags', () => {
+			roundTripStmt("create table t (a integer with tags (display_name = 'ID'), b text)");
+		});
+
+		it('column constraint tags', () => {
+			roundTripStmt("create table t (a integer check (a > 0) with tags (error_message = 'Must be positive'))");
+		});
+
+		it('table constraint tags', () => {
+			roundTripStmt("create table t (a integer, b integer, constraint uq unique (a) with tags (label = 'uq'))");
+		});
+
+		it('tag value types', () => {
+			roundTripStmt("create table t (a integer) with tags (s = 'hi', n = 42, f = 3.14, bt = true, bf = false, z = null, neg = -10)");
+		});
+
+		it('combined WITH TAGS and WITH CONTEXT', () => {
+			roundTripStmt("create table t (a integer) with context (user_name text) with tags (audit = true)");
+		});
+
+		it('combined WITH TAGS before WITH CONTEXT', () => {
+			roundTripStmt("create table t (a integer) with tags (audit = true) with context (user_name text)");
+		});
+
 		it('PRIMARY KEY constraint', () => {
 			roundTripStmt('create table t (id integer primary key, name text)');
 		});
@@ -213,6 +241,10 @@ describe('Emit: statement round-trips', () => {
 		it('partial index with WHERE', () => {
 			roundTripStmt('create index idx on t (a) where a > 0');
 		});
+
+		it('with tags', () => {
+			roundTripStmt("create index idx on t (a) with tags (purpose = 'search')");
+		});
 	});
 
 	describe('CREATE VIEW', () => {
@@ -226,6 +258,10 @@ describe('Emit: statement round-trips', () => {
 
 		it('with column list', () => {
 			roundTripStmt('create view v (x, y) as select a, b from t');
+		});
+
+		it('with tags', () => {
+			roundTripStmt("create view v as select * from t with tags (cacheable = true)");
 		});
 	});
 

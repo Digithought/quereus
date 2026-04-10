@@ -12,6 +12,9 @@ import { expect } from 'chai';
 import { Database, QuereusError } from '../src/index.js';
 import { SchemaManager } from '../src/schema/manager.js';
 import { Schema } from '../src/schema/schema.js';
+import { parse } from '../src/parser/index.js';
+import { computeSchemaHash } from '../src/schema/schema-hasher.js';
+import type { DeclareSchemaStmt } from '../src/parser/ast.js';
 
 describe('Schema Manager', () => {
 	let db: Database;
@@ -120,6 +123,92 @@ describe('Schema Manager', () => {
 			db.schemaManager.clearAll();
 			expect(db.schemaManager.findTable('t1')).to.be.undefined;
 			expect(db.schemaManager.findTable('t2')).to.be.undefined;
+		});
+	});
+
+	// ────────────────── Metadata tags ──────────────────
+	describe('Metadata tags', () => {
+		it('should return tags on a table created with WITH TAGS', async () => {
+			await db.exec("create table t1 (id integer primary key) with tags (display_name = 'Test', audit = true)");
+			const tags = db.schemaManager.getTableTags('t1');
+			expect(tags).to.deep.equal({ display_name: 'Test', audit: true });
+		});
+
+		it('should return undefined for a table without tags', async () => {
+			await db.exec('create table t1 (id integer primary key)');
+			const tags = db.schemaManager.getTableTags('t1');
+			expect(tags).to.be.undefined;
+		});
+
+		it('should set tags via setTableTags', async () => {
+			await db.exec('create table t1 (id integer primary key)');
+			db.schemaManager.setTableTags('t1', { label: 'new' });
+			const tags = db.schemaManager.getTableTags('t1');
+			expect(tags).to.deep.equal({ label: 'new' });
+		});
+
+		it('should clear tags when setting empty object', async () => {
+			await db.exec("create table t1 (id integer primary key) with tags (x = 1)");
+			db.schemaManager.setTableTags('t1', {});
+			expect(db.schemaManager.getTableTags('t1')).to.be.undefined;
+		});
+
+		it('should throw when setting tags on non-existent table', () => {
+			expect(() => db.schemaManager.setTableTags('nonexistent', { a: 1 })).to.throw();
+		});
+
+		it('should preserve column-level tags', async () => {
+			await db.exec("create table t1 (id integer primary key, name text with tags (display_name = 'Name'))");
+			const table = db.schemaManager.findTable('t1');
+			expect(table).to.exist;
+			expect(table!.columns[0].tags).to.be.undefined;
+			expect(table!.columns[1].tags).to.deep.equal({ display_name: 'Name' });
+		});
+
+		it('should distinguish column tags from constraint tags', async () => {
+			// WITH TAGS after PRIMARY KEY attaches to the constraint, not the column
+			await db.exec("create table t1 (id integer primary key with tags (pk_info = 'auto'), name text)");
+			const table = db.schemaManager.findTable('t1');
+			expect(table).to.exist;
+			// Tags are on the PK constraint, not the column
+			expect(table!.columns[0].tags).to.be.undefined;
+		});
+
+		it('should preserve constraint-level tags on CHECK', async () => {
+			await db.exec("create table t1 (id integer primary key, qty integer not null check (qty > 0) with tags (msg = 'positive'))");
+			const table = db.schemaManager.findTable('t1');
+			expect(table).to.exist;
+			expect(table!.checkConstraints.length).to.equal(1);
+			expect(table!.checkConstraints[0].tags).to.deep.equal({ msg: 'positive' });
+		});
+
+		it('should preserve view-level tags', async () => {
+			await db.exec('create table base (id integer primary key)');
+			await db.exec("create view v1 as select * from base with tags (cacheable = true)");
+			const view = db.schemaManager.getView('main', 'v1');
+			expect(view).to.exist;
+			expect(view!.tags).to.deep.equal({ cacheable: true });
+		});
+	});
+
+	// ────────────────── Schema hashing: tags excluded ──────────────────
+	describe('Schema hashing with tags', () => {
+		it('should produce the same hash regardless of tags', () => {
+			const withoutTags = parse('declare schema test { table t1 (id integer primary key); }') as DeclareSchemaStmt;
+			const withTags = parse("declare schema test { table t1 (id integer primary key) with tags (label = 'hello'); }") as DeclareSchemaStmt;
+			expect(computeSchemaHash(withoutTags)).to.equal(computeSchemaHash(withTags));
+		});
+
+		it('should produce the same hash regardless of column tags', () => {
+			const withoutTags = parse('declare schema test { table t1 (id integer primary key, name text); }') as DeclareSchemaStmt;
+			const withTags = parse("declare schema test { table t1 (id integer primary key with tags (x = 1), name text); }") as DeclareSchemaStmt;
+			expect(computeSchemaHash(withoutTags)).to.equal(computeSchemaHash(withTags));
+		});
+
+		it('should produce different hashes when schema structure differs', () => {
+			const schema1 = parse('declare schema test { table t1 (id integer primary key); }') as DeclareSchemaStmt;
+			const schema2 = parse('declare schema test { table t1 (id integer primary key, name text); }') as DeclareSchemaStmt;
+			expect(computeSchemaHash(schema1)).to.not.equal(computeSchemaHash(schema2));
 		});
 	});
 
