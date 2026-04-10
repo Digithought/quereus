@@ -1,26 +1,35 @@
 description: Unit tests for runtime shared-cache covering threshold, invalidation, and edge-case streaming paths
+dependencies: none
 files:
   - packages/quereus/src/runtime/cache/shared-cache.ts
   - packages/quereus/test/runtime/cache.spec.ts
+  - packages/quereus/src/runtime/emit/cache.ts
 ----
+
+## Summary
+
+21 unit tests for the shared cache module (`runtime/cache/shared-cache.ts`), covering all public functions and key behavioral paths.
 
 ## What was built
 
-21 unit tests for `runtime/cache/shared-cache.ts` covering:
+Shared cache utility providing streaming-first caching with threshold-based abandonment. Used by `runtime/emit/cache.ts` (CacheNode emitter). Exports: `createCacheState`, `streamWithCache`, `clearCache`, `getCacheMetrics`, `withSharedCache`, `createCacheFunction`.
 
-- **streamWithCache() core** (8 tests): cache population, cache-hit, row deep-copy on both build and cache-hit passes, threshold exceeded/boundary, zero/single row
-- **Cache state management** (4 tests): clearCache, consumeCount, multiple sequential consumers, partial consumption
-- **Cache abandoned path** (1 test): post-threshold consumers stream directly
-- **Edge cases** (3 tests): source throws mid-stream, large rows, diverse SqlValue types
-- **getCacheMetrics()** (3 tests): initial, cached, abandoned states
-- **withSharedCache() / createCacheFunction()** (2 tests): factory helpers
+## Test coverage
 
-## Review fix
+- **streamWithCache core**: build pass populates cache, cache hit returns identical data, row copy correctness on both build and cache-hit passes, threshold exceeded/boundary, zero/single row edge cases
+- **State management**: clearCache resets and allows rebuild, consumeCount tracks cache hits, 5 sequential consumers identical, partial break keeps cache consistent
+- **Cache abandoned path**: subsequent consumers stream directly after threshold exceeded
+- **Edge cases**: source throws mid-stream (cache not committed, next consumer rebuilds), large rows (100 cols), diverse SqlValue types (string, number, BigInt, boolean, null, Uint8Array)
+- **Utilities**: getCacheMetrics reports initial/cached/abandoned states, withSharedCache wraps iterable+state, createCacheFunction caches across calls
 
-During review, discovered that the cache-hit path (`yield* state.cachedResult`) yielded direct references to cached rows, meaning consumers could mutate the cache and corrupt data for subsequent consumers. The build path already copied via `[...row]`. Fixed the cache-hit path to also spread-copy, and added a test verifying mutation safety on the cache-hit path.
+## Validation
 
-## Test results
+- 21/21 tests pass
+- Build passes
+- No lint regressions (test file not in lint tsconfig, pre-existing project-wide issue)
 
-- 21 cache tests passing
-- Full suite: 1413 passing, 2 pending (baseline + 1 new test)
-- Build clean
+## Usage
+
+```bash
+yarn workspace @quereus/quereus test --grep "Runtime Shared Cache"
+```
