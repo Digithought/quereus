@@ -382,7 +382,7 @@ pragma default_column_nullability;
 | `default_column_nullability` | string | `'not_null'` | Default nullability for columns: `'not_null'` (Third Manifesto) or `'nullable'` (SQL standard). Aliases: `column_nullability_default`, `nullable_default` |
 | `default_vtab_module` | string | `'memory'` | Default virtual table module used for `create table` without `using` clause |
 | `default_vtab_args` | object | `{}` | Default arguments passed to the default virtual table module |
-| `foreign_keys` | boolean | `false` | Enable foreign key constraint enforcement. Alias: `fk_enforcement` |
+| `foreign_keys` | boolean | `true` | Enable foreign key constraint enforcement. FKs default to IGNORE actions; explicit action clauses required for enforcement. Alias: `fk_enforcement` |
 | `runtime_stats` | boolean | `false` | Enable runtime execution statistics collection. Alias: `runtime_metrics` |
 | `validate_plan` | boolean | `false` | Enable plan validation before execution. Alias: `plan_validation` |
 | `trace_plan_stack` | boolean | `false` | Enable plan stack tracing for debugging |

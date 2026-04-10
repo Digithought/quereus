@@ -21,7 +21,7 @@ CREATE TABLE books (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
     author_id INTEGER,
-    FOREIGN KEY (author_id) REFERENCES authors(id)
+    FOREIGN KEY (author_id) REFERENCES authors(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 
 -- Populate parent table
@@ -75,7 +75,7 @@ CREATE TABLE employees (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     dept_id INTEGER,
-    FOREIGN KEY (dept_id) REFERENCES departments(id) ON DELETE RESTRICT
+    FOREIGN KEY (dept_id) REFERENCES departments(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 
 INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Marketing');
@@ -111,7 +111,7 @@ SELECT id FROM departments;
 DROP TABLE employees;
 DROP TABLE departments;
 
--- --- NO ACTION (deferred to commit) ---
+-- --- NO ACTION (alias for IGNORE — no enforcement) ---
 
 CREATE TABLE categories (
     id INTEGER PRIMARY KEY,
@@ -128,20 +128,17 @@ CREATE TABLE products (
 INSERT INTO categories VALUES (1, 'Electronics'), (2, 'Books');
 INSERT INTO products VALUES (1, 'Laptop', 1);
 
--- Commit setup
 SELECT count(*) FROM products;
 → [{"count(*)":1}]
 
--- Within a transaction, delete parent then fix before commit
-BEGIN;
-DELETE FROM products WHERE cat_id = 1;
+-- NO ACTION = IGNORE: deleting parent with existing children should succeed
 DELETE FROM categories WHERE id = 1;
-COMMIT;
 
 SELECT count(*) FROM categories WHERE id = 1;
 → [{"count(*)":0}]
+-- Child row still exists (orphaned — no enforcement)
 SELECT count(*) FROM products WHERE cat_id = 1;
-→ [{"count(*)":0}]
+→ [{"count(*)":1}]
 
 DROP TABLE products;
 DROP TABLE categories;
@@ -343,7 +340,7 @@ CREATE TABLE null_parent (
 CREATE TABLE null_child (
     id INTEGER PRIMARY KEY,
     parent_id INTEGER NULL,
-    FOREIGN KEY (parent_id) REFERENCES null_parent(id)
+    FOREIGN KEY (parent_id) REFERENCES null_parent(id) ON DELETE RESTRICT
 );
 
 INSERT INTO null_parent VALUES (1, 'A');
@@ -411,7 +408,7 @@ CREATE TABLE p_parent (
 CREATE TABLE p_child (
     id INTEGER PRIMARY KEY,
     parent_id INTEGER,
-    FOREIGN KEY (parent_id) REFERENCES p_parent(id)
+    FOREIGN KEY (parent_id) REFERENCES p_parent(id) ON DELETE RESTRICT
 );
 
 -- With FK off, should be able to insert orphan row
@@ -611,5 +608,3 @@ SELECT id, parent_id FROM repl_sn_child ORDER BY id;
 DROP TABLE repl_sn_child;
 DROP TABLE repl_sn_parent;
 
--- Reset pragma
-PRAGMA foreign_keys = false;

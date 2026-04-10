@@ -249,9 +249,9 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 
 		this.options.registerOption('foreign_keys', {
 			type: 'boolean',
-			defaultValue: false,
+			defaultValue: true,
 			aliases: ['fk_enforcement'],
-			description: 'Enable foreign key constraint enforcement (default off for backwards compatibility)',
+			description: 'Enable foreign key constraint enforcement. FKs default to ON DELETE IGNORE ON UPDATE IGNORE, so explicit action clauses are required for enforcement.',
 		});
 	}
 

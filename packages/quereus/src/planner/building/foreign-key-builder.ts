@@ -120,6 +120,9 @@ export function buildChildSideFKChecks(
 	const checks: ConstraintCheck[] = [];
 
 	for (const fk of tableSchema.foreignKeys) {
+		// Skip entirely-ignored FKs (both actions are 'ignore' = no enforcement)
+		if (fk.onDelete === 'ignore' && fk.onUpdate === 'ignore') continue;
+
 		// Resolve parent table
 		const parentSchema = ctx.schemaManager.findTable(
 			fk.referencedTable,
@@ -253,9 +256,10 @@ export function buildParentSideFKChecks(
 
 				const action = operation === RowOpFlag.DELETE ? fk.onDelete : fk.onUpdate;
 
-				// Only RESTRICT and NO ACTION generate parent-side checks
-				// CASCADE, SET NULL, SET DEFAULT are handled by cascading actions (Phase 2)
-				if (action !== 'restrict' && action !== 'ignore') continue;
+				// Only RESTRICT generates parent-side checks
+				// CASCADE, SET NULL, SET DEFAULT are handled by cascading actions
+				// IGNORE means no enforcement at all
+				if (action !== 'restrict') continue;
 
 				const parentColIndices = resolveReferencedColumns(fk, tableSchema);
 				if (parentColIndices.length !== fk.columns.length) continue;

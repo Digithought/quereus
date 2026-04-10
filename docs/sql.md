@@ -2551,12 +2551,14 @@ create table audit_records (
 
 The foreign key constraint links tables together and ensures referential integrity.
 
-Foreign key enforcement is controlled by the `foreign_keys` pragma (default: off for backwards compatibility):
+Foreign key enforcement is controlled by the `foreign_keys` pragma (default: on):
 
 ```sql
-pragma foreign_keys = on;   -- enable FK enforcement
-pragma foreign_keys = off;  -- parse but don't enforce (default)
+pragma foreign_keys = on;   -- enable FK enforcement (default)
+pragma foreign_keys = off;  -- parse but don't enforce
 ```
+
+When no `ON DELETE` or `ON UPDATE` clause is specified, the default action is `IGNORE` (no enforcement). This means FKs are only enforced when you explicitly specify an action like `CASCADE`, `RESTRICT`, `SET NULL`, or `SET DEFAULT`.
 
 **Syntax - Column Constraint:**
 ```sql
@@ -2578,15 +2580,15 @@ Where `action` can be:
 - `set default` — set child FK columns to their default values
 - `cascade` — delete/update child rows when parent row is deleted/updated
 - `restrict` — immediately reject delete/update if child rows exist
-- `no action` (default) — same as RESTRICT but deferred to commit time
+- `no action` / `ignore` (default) — no enforcement; the FK is informational only
 
 **Enforcement Semantics:**
 
-When `pragma foreign_keys = on`:
+When `pragma foreign_keys = on` (the default):
 
-- **Child-side (INSERT/UPDATE):** Validates that referenced parent rows exist. These checks are deferred to commit time (they use cross-table subqueries).
+- **IGNORE / NO ACTION (default):** No enforcement. The FK is stored in the schema for metadata/introspection but does not generate any constraint checks or cascading actions.
+- **Child-side (INSERT/UPDATE):** For FKs with at least one non-ignore action, validates that referenced parent rows exist. These checks are deferred to commit time (they use cross-table subqueries).
 - **Parent-side DELETE/UPDATE with RESTRICT:** Immediately rejects the operation if child rows reference the parent row being modified.
-- **Parent-side DELETE/UPDATE with NO ACTION:** Same check as RESTRICT, but deferred to commit time. Within a transaction, you can delete the parent first and fix the children before committing.
 - **Parent-side DELETE/UPDATE with CASCADE:** Automatically deletes or updates matching child rows.
 - **Parent-side DELETE/UPDATE with SET NULL:** Sets child FK columns to NULL.
 - **Parent-side DELETE/UPDATE with SET DEFAULT:** Sets child FK columns to their default values.
@@ -2595,16 +2597,14 @@ Cascade cycle detection prevents infinite recursion when cascading actions chain
 
 **Examples:**
 ```sql
-pragma foreign_keys = on;
-
--- Column-level foreign key
+-- Column-level foreign key (no action clause = informational only)
 create table posts (
   id integer primary key,
   user_id integer references users(id),
   title text not null
 );
 
--- Table-level foreign key with actions
+-- Table-level foreign key with explicit actions (enforced)
 create table comments (
   id integer primary key,
   post_id integer,
@@ -3099,7 +3099,7 @@ While Quereus supports similar SQL syntax, it has evolved into a distinct system
 | **Virtual Tables** | Central to design; all tables are virtual | Additional feature |
 | **Triggers** | Not supported | Supported |
 | **Views** | Basic support | Full support |
-| **Foreign Keys** | Supported (via `pragma foreign_keys = on`) | Full support (when enabled) |
+| **Foreign Keys** | Supported (on by default; requires explicit action clauses) | Full support (when enabled) |
 | **Window Functions** | Phase 1 Complete (ranking, aggregates, partitioning) | Full support |
 | **Recursive CTEs** | Basic support | Full support |
 | **JSON Functions** | Extensive support with native JSON type | Available as extension |
