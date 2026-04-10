@@ -5,6 +5,7 @@
  */
 
 import type { TableSchema, TableIndexSchema, SqlValue } from '@quereus/quereus';
+import { quoteIdentifier } from '@quereus/quereus';
 
 /**
  * Generate a CREATE TABLE statement from a TableSchema.
@@ -171,7 +172,7 @@ function formatTagValue(value: SqlValue): string {
  */
 function formatTagsClause(tags: Readonly<Record<string, SqlValue>>): string {
   const entries = Object.entries(tags)
-    .map(([key, value]) => `${key} = ${formatTagValue(value)}`)
+    .map(([key, value]) => `${quoteIdentifier(key)} = ${formatTagValue(value)}`)
     .join(', ');
   return `WITH TAGS (${entries})`;
 }

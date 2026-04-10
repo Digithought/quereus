@@ -138,6 +138,17 @@ describe('DDL generator', () => {
 			expect(ddl).to.include("display_name = 'Name'");
 		});
 
+		it('quotes tag keys that are reserved words', () => {
+			const schema = makeTableSchema({
+				name: 'reserved_tags',
+				columns: [makeColumn('id', INTEGER_TYPE)],
+				tags: { select: 'yes', order: 42 },
+			});
+			const ddl = generateTableDDL(schema);
+			expect(ddl).to.include('"select"');
+			expect(ddl).to.include('"order"');
+		});
+
 		it('does not emit WITH TAGS when tags are empty', () => {
 			const schema = makeTableSchema({
 				name: 'no_tags',
