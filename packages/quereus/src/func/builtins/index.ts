@@ -21,7 +21,7 @@ import { jsonValidFunc, jsonSchemaFunc, jsonTypeFunc, jsonExtractFunc, jsonQuote
 	jsonGroupArrayFunc, jsonGroupObjectFunc } from './json.js';
 import { generateSeriesFunc } from './generation.js';
 import { queryPlanFunc, schedulerProgramFunc, stackTraceFunc, executionTraceFunc, rowTraceFunc, explainAssertionFunc } from './explain.js';
-import { schemaFunc, tableInfoFunc, functionInfoFunc } from './schema.js';
+import { schemaFunc, tableInfoFunc, functionInfoFunc, foreignKeyInfoFunc } from './schema.js';
 import { jsonEachFunc, jsonTreeFunc } from './json-tvf.js';
 import { INTEGER_FUNC, REAL_FUNC, TEXT_FUNC, BOOLEAN_FUNC, DATE_FUNC, TIME_FUNC, DATETIME_FUNC, JSON_FUNC, TIMESPAN_FUNC } from './conversion.js';
 import {
@@ -149,6 +149,7 @@ export const BUILTIN_FUNCTIONS: FunctionSchema[] = [
 	schemaFunc,
 	tableInfoFunc,
 	functionInfoFunc,
+	foreignKeyInfoFunc,
 	// JSON table-valued functions
 	jsonEachFunc,
 	jsonTreeFunc,

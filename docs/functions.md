@@ -456,6 +456,7 @@ select fullkey, type from json_tree('{"a": [1, 2]}');
 | `schema()` | 0 | All schema objects (tables, views, indexes, functions) |
 | `table_info(table_name)` | 1 | Column details for a specific table |
 | `function_info(name?)` | 0-1 | All registered functions, or only those matching `name` (case-insensitive) |
+| `foreign_key_info(table_name)` | 1 | Foreign key constraints for a specific table |
 
 ### `schema()` columns
 
@@ -488,11 +489,28 @@ select fullkey, type from json_tree('{"a": [1, 2]}');
 | `flags` | INTEGER | Internal flags |
 | `signature` | TEXT | Display signature |
 
+### `foreign_key_info(table_name)` columns
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER | FK index (0-based), shared by multi-column FK columns |
+| `name` | TEXT? | Constraint name (if named) |
+| `table` | TEXT | Child table name |
+| `from` | TEXT | Child column name |
+| `referenced_table` | TEXT | Parent table name |
+| `referenced_schema` | TEXT? | Parent schema (null if same schema) |
+| `to` | TEXT | Parent column name |
+| `on_update` | TEXT | Update action (`cascade`, `restrict`, `setNull`, `setDefault`, `ignore`) |
+| `on_delete` | TEXT | Delete action (`cascade`, `restrict`, `setNull`, `setDefault`, `ignore`) |
+| `deferred` | INTEGER | 1 if enforcement is deferred to COMMIT |
+| `seq` | INTEGER | Column sequence within FK (0-based) |
+
 ```sql
 select type, name from schema() where type = 'table';
 select name, type, notnull from table_info('users');
 select name, type from function_info() where type = 'scalar';
 select * from function_info('abs');
+select "from", "to", on_delete from foreign_key_info('orders');
 ```
 
 ---
