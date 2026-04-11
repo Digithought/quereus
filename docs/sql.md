@@ -219,6 +219,8 @@ select [distinct | all] select_expr [, select_expr ...]
 - `except`: Rows in left not in right (set semantics)
 - `diff`: Symmetric difference = (A except B) union (B except A) (set semantics)
 
+> **Note:** Chained set operations are right-associative: `A except B union C` evaluates as `A except (B union C)`, not `(A except B) union C`. Use CTEs or subqueries to force left-to-right evaluation when needed.
+
 **Examples:**
 ```sql
 -- Basic select with where clause
