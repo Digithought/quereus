@@ -86,7 +86,8 @@ describe('mutation-statement', () => {
 			);
 			const sql = buildInsertStatement(ctxSchema, [1, 'test'], [42]);
 			expect(sql).to.include('insert');
-			// Context values should be present in some form
+			expect(sql).to.include('user_id');
+			expect(sql).to.include('42');
 		});
 
 		it('should omit context when contextRow is undefined', () => {
@@ -113,7 +114,7 @@ describe('mutation-statement', () => {
 			const sql = buildUpdateStatement(compositeSchema, [1, 2, 99.99], [1, 2]);
 			expect(sql).to.include('update');
 			expect(sql).to.include('where');
-			// Should have AND for composite PK
+			expect(sql.toLowerCase()).to.include('and');
 		});
 
 		it('should handle null in update values', () => {
@@ -150,7 +151,8 @@ describe('mutation-statement', () => {
 			);
 			const sql = buildDeleteStatement(noPkSchema, []);
 			expect(sql).to.include('delete');
-			// Should contain WHERE 1 (tautology)
+			expect(sql).to.include('where');
+			expect(sql).to.include('1');
 		});
 
 		it('should include context values when provided', () => {
