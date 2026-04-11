@@ -1,0 +1,359 @@
+-- 98-temporal-edge-cases.sqllogic
+-- Targeted coverage for uncovered branches in temporal-types.ts and timespan.ts:
+-- DATE/TIME/DATETIME parse from numbers, validation edge cases,
+-- TIMESPAN parsing, extraction, totals, human-readable durations,
+-- timezone handling, Temporal.Duration edge cases
+
+-- ============================================================
+-- DATE type: parse edge cases
+-- ============================================================
+
+-- Valid ISO date
+SELECT date('2024-03-15') as result;
+→ [{"result":"2024-03-15"}]
+
+-- Leap year date
+SELECT date('2024-02-29') as result;
+→ [{"result":"2024-02-29"}]
+
+-- Non-leap year Feb 29 fails
+SELECT date('2023-02-29');
+-- error: Cannot convert to DATE
+
+-- Year boundary
+SELECT date('2024-12-31') as result;
+→ [{"result":"2024-12-31"}]
+
+SELECT date('2024-01-01') as result;
+→ [{"result":"2024-01-01"}]
+
+-- 'now' special case returns a date (pattern check)
+-- We just verify it doesn't error and returns a string
+SELECT typeof(date('now')) as result;
+→ [{"result":"text"}]
+
+-- Null returns null
+SELECT date(null) as result;
+→ [{"result":null}]
+
+-- Invalid string
+SELECT date('not-a-date');
+-- error: Cannot convert to DATE
+
+-- Empty string
+SELECT date('');
+-- error: Cannot convert to DATE
+
+-- ============================================================
+-- TIME type: parse edge cases
+-- ============================================================
+
+-- Valid ISO time
+SELECT time('14:30:00') as result;
+→ [{"result":"14:30:00"}]
+
+-- Midnight
+SELECT time('00:00:00') as result;
+→ [{"result":"00:00:00"}]
+
+-- Time with milliseconds
+SELECT time('12:30:45.123') as result;
+→ [{"result":"12:30:45.123"}]
+
+-- 'now' special case
+SELECT typeof(time('now')) as result;
+→ [{"result":"text"}]
+
+-- Null
+SELECT time(null) as result;
+→ [{"result":null}]
+
+-- Invalid string
+SELECT time('not-a-time');
+-- error: Cannot convert to TIME
+
+-- Empty string
+SELECT time('');
+-- error: Cannot convert to TIME
+
+-- ============================================================
+-- DATETIME type: parse edge cases
+-- ============================================================
+
+-- Valid ISO datetime
+SELECT datetime('2024-03-15T14:30:00') as result;
+→ [{"result":"2024-03-15T14:30:00"}]
+
+-- Datetime with milliseconds
+SELECT datetime('2024-01-01T12:00:00.500') as result;
+→ [{"result":"2024-01-01T12:00:00.5"}]
+
+-- 'now' special case returns ISO string
+SELECT typeof(datetime('now')) as result;
+→ [{"result":"text"}]
+
+-- Null
+SELECT datetime(null) as result;
+→ [{"result":null}]
+
+-- Invalid string
+SELECT datetime('not-a-datetime');
+-- error: Cannot convert to DATETIME
+
+-- Empty string
+SELECT datetime('');
+-- error: Cannot convert to DATETIME
+
+-- ============================================================
+-- TIMESPAN type: ISO 8601 duration parsing
+-- ============================================================
+
+-- Basic durations
+SELECT timespan('PT1H') as result;
+→ [{"result":"PT1H"}]
+
+SELECT timespan('PT30M') as result;
+→ [{"result":"PT30M"}]
+
+SELECT timespan('PT45S') as result;
+→ [{"result":"PT45S"}]
+
+SELECT timespan('P1D') as result;
+→ [{"result":"P1D"}]
+
+SELECT timespan('P1Y') as result;
+→ [{"result":"P1Y"}]
+
+SELECT timespan('P2M') as result;
+→ [{"result":"P2M"}]
+
+SELECT timespan('P1W') as result;
+→ [{"result":"P1W"}]
+
+-- Combined duration
+SELECT timespan('P1Y2M3DT4H5M6S') as result;
+→ [{"result":"P1Y2M3DT4H5M6S"}]
+
+-- Numeric input (seconds)
+SELECT timespan(3600) as result;
+→ [{"result":"PT3600S"}]
+
+SELECT timespan(0) as result;
+→ [{"result":"PT0S"}]
+
+-- Human-readable durations
+SELECT timespan('1 hour') as result;
+→ [{"result":"PT1H"}]
+
+SELECT timespan('30 minutes') as result;
+→ [{"result":"PT30M"}]
+
+SELECT timespan('2 days 3 hours') as result;
+→ [{"result":"P2DT3H"}]
+
+SELECT timespan('1 year 6 months') as result;
+→ [{"result":"P1Y6M"}]
+
+-- Human-readable with abbreviations
+SELECT timespan('5 mins') as result;
+→ [{"result":"PT5M"}]
+
+SELECT timespan('10 secs') as result;
+→ [{"result":"PT10S"}]
+
+-- Negative human-readable duration
+SELECT timespan('-2 hours') as result;
+→ [{"result":"-PT2H"}]
+
+-- Null
+SELECT timespan(null) as result;
+→ [{"result":null}]
+
+-- Invalid string
+SELECT timespan('not-a-duration');
+-- error: Cannot convert to TIMESPAN
+
+-- ============================================================
+-- TIMESPAN extraction functions
+-- ============================================================
+
+-- Years component
+SELECT timespan_years('P2Y3M') as result;
+→ [{"result":2}]
+
+-- Months component
+SELECT timespan_months('P2Y3M') as result;
+→ [{"result":3}]
+
+-- Weeks component
+SELECT timespan_weeks('P2W') as result;
+→ [{"result":2}]
+
+-- Days component
+SELECT timespan_days('P5DT3H') as result;
+→ [{"result":5}]
+
+-- Hours component
+SELECT timespan_hours('PT10H30M') as result;
+→ [{"result":10}]
+
+-- Minutes component
+SELECT timespan_minutes('PT10H30M') as result;
+→ [{"result":30}]
+
+-- Seconds component (simple)
+SELECT timespan_seconds('PT45S') as result;
+→ [{"result":45}]
+
+-- Seconds component with fractional parts (milliseconds)
+SELECT timespan_seconds('PT1.5S') as result;
+→ [{"result":1.5}]
+
+-- Zero duration components
+SELECT timespan_years('PT1H') as result;
+→ [{"result":0}]
+
+SELECT timespan_months('PT1H') as result;
+→ [{"result":0}]
+
+SELECT timespan_days('PT1H') as result;
+→ [{"result":0}]
+
+-- Null input returns null for all extraction functions
+SELECT timespan_years(null) as result;
+→ [{"result":null}]
+
+SELECT timespan_months(null) as result;
+→ [{"result":null}]
+
+SELECT timespan_weeks(null) as result;
+→ [{"result":null}]
+
+SELECT timespan_days(null) as result;
+→ [{"result":null}]
+
+SELECT timespan_hours(null) as result;
+→ [{"result":null}]
+
+SELECT timespan_minutes(null) as result;
+→ [{"result":null}]
+
+SELECT timespan_seconds(null) as result;
+→ [{"result":null}]
+
+-- Invalid input returns null
+SELECT timespan_years('not-a-duration') as result;
+→ [{"result":null}]
+
+SELECT timespan_hours('not-a-duration') as result;
+→ [{"result":null}]
+
+SELECT timespan_seconds('not-a-duration') as result;
+→ [{"result":null}]
+
+-- Non-string input returns null
+SELECT timespan_years(42) as result;
+→ [{"result":null}]
+
+SELECT timespan_hours(true) as result;
+→ [{"result":null}]
+
+-- ============================================================
+-- TIMESPAN total functions
+-- ============================================================
+
+-- Total seconds for time-only duration
+SELECT timespan_total_seconds('PT1H30M') as result;
+→ [{"result":5400}]
+
+SELECT timespan_total_seconds('PT1S') as result;
+→ [{"result":1}]
+
+-- Total minutes
+SELECT timespan_total_minutes('PT2H30M') as result;
+→ [{"result":150}]
+
+-- Total hours
+SELECT timespan_total_hours('P1DT12H') as result;
+→ [{"result":36}]
+
+-- Total days
+SELECT timespan_total_days('P1W') as result;
+→ [{"result":7}]
+
+-- Total seconds with calendar units (uses reference date)
+SELECT timespan_total_seconds('P1D') as result;
+→ [{"result":86400}]
+
+-- Total with null
+SELECT timespan_total_seconds(null) as result;
+→ [{"result":null}]
+
+SELECT timespan_total_minutes(null) as result;
+→ [{"result":null}]
+
+SELECT timespan_total_hours(null) as result;
+→ [{"result":null}]
+
+SELECT timespan_total_days(null) as result;
+→ [{"result":null}]
+
+-- Invalid input
+SELECT timespan_total_seconds('not-valid') as result;
+→ [{"result":null}]
+
+SELECT timespan_total_minutes('not-valid') as result;
+→ [{"result":null}]
+
+SELECT timespan_total_hours('not-valid') as result;
+→ [{"result":null}]
+
+SELECT timespan_total_days('not-valid') as result;
+→ [{"result":null}]
+
+-- ============================================================
+-- TIMESPAN: arithmetic with temporal values
+-- ============================================================
+
+-- Date + timespan
+SELECT date('2024-01-15') + timespan('P10D') as result;
+→ [{"result":"2024-01-25"}]
+
+-- Date + month timespan (cross year boundary)
+SELECT date('2024-11-15') + timespan('P3M') as result;
+→ [{"result":"2025-02-15"}]
+
+-- ============================================================
+-- TIMESPAN: storage and retrieval
+-- ============================================================
+
+CREATE TABLE ts_cmp (id INTEGER PRIMARY KEY, dur TIMESPAN);
+INSERT INTO ts_cmp VALUES (1, 'PT1H'), (2, 'PT30M'), (3, 'P1D'), (4, 'PT2H');
+-- run
+
+-- Verify TIMESPAN values are stored and retrieved correctly
+SELECT dur FROM ts_cmp WHERE id = 1;
+→ [{"dur":"PT1H"}]
+
+SELECT dur FROM ts_cmp WHERE id = 3;
+→ [{"dur":"P1D"}]
+
+-- Comparison in WHERE
+SELECT dur FROM ts_cmp WHERE dur = 'PT1H';
+→ [{"dur":"PT1H"}]
+
+DROP TABLE ts_cmp;
+
+-- ============================================================
+-- TIMESPAN validation
+-- ============================================================
+
+CREATE TABLE ts_val (id INTEGER PRIMARY KEY, dur TIMESPAN NULL);
+INSERT INTO ts_val VALUES (1, 'PT1H');
+INSERT INTO ts_val VALUES (2, null);
+-- run
+
+SELECT dur FROM ts_val ORDER BY id;
+→ [{"dur":"PT1H"},{"dur":null}]
+
+DROP TABLE ts_val;

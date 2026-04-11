@@ -647,7 +647,117 @@ describe('Property-Based Tests', () => {
 		});
 	});
 
-	// --- 9. ORDER BY Stability ---
+	// --- 9. Temporal Roundtrip ---
+	describe('Temporal Roundtrip', () => {
+		it('should roundtrip DATE values through date(text(date))', async () => {
+			// Generate valid year/month/day combinations
+			const dateArb = fc.tuple(
+				fc.integer({ min: 1970, max: 2100 }),
+				fc.integer({ min: 1, max: 12 }),
+				fc.integer({ min: 1, max: 28 }) // Use 28 to avoid month-length issues
+			).map(([y, m, d]) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+
+			await fc.assert(fc.asyncProperty(dateArb, async (dateStr) => {
+				let result: any;
+				for await (const row of db.eval(`select date('${dateStr}') as r`)) {
+					result = row.r;
+					break;
+				}
+				// date() should return the same normalized ISO date
+				expect(result).to.equal(dateStr,
+					`DATE roundtrip failed for ${dateStr}: got ${result}`);
+			}), { numRuns: 100 });
+		});
+
+		it('should roundtrip TIME values through time(text)', async () => {
+			const timeArb = fc.tuple(
+				fc.integer({ min: 0, max: 23 }),
+				fc.integer({ min: 0, max: 59 }),
+				fc.integer({ min: 0, max: 59 })
+			).map(([h, m, s]) =>
+				`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+			);
+
+			await fc.assert(fc.asyncProperty(timeArb, async (timeStr) => {
+				let result: any;
+				for await (const row of db.eval(`select time('${timeStr}') as r`)) {
+					result = row.r;
+					break;
+				}
+				expect(result).to.equal(timeStr,
+					`TIME roundtrip failed for ${timeStr}: got ${result}`);
+			}), { numRuns: 100 });
+		});
+	});
+
+	// --- 10. Conversion Idempotency ---
+	describe('Conversion Idempotency', () => {
+		it('integer(integer(x)) = integer(x) for valid integers', async () => {
+			await fc.assert(fc.asyncProperty(fc.integer({ min: -1000000, max: 1000000 }), async (val) => {
+				let single: any;
+				for await (const row of db.eval(`select integer(${val}) as r`)) {
+					single = row.r;
+					break;
+				}
+				let double: any;
+				for await (const row of db.eval(`select integer(integer(${val})) as r`)) {
+					double = row.r;
+					break;
+				}
+				expect(double).to.equal(single,
+					`Idempotency violated: integer(integer(${val})) = ${double}, integer(${val}) = ${single}`);
+			}), { numRuns: 100 });
+		});
+
+		it('real(real(x)) = real(x) for valid reals', async () => {
+			await fc.assert(fc.asyncProperty(
+				fc.float({ min: -1000, max: 1000, noNaN: true, noDefaultInfinity: true }),
+				async (val) => {
+					let single: any;
+					for await (const row of db.eval(`select real(${val}) as r`)) {
+						single = row.r;
+						break;
+					}
+					let double: any;
+					for await (const row of db.eval(`select real(real(${val})) as r`)) {
+						double = row.r;
+						break;
+					}
+					if (single === null) {
+						expect(double).to.be.null;
+					} else if (typeof single === 'number' && single === 0) {
+						expect(double).to.equal(0);
+					} else {
+						expect(double).to.equal(single,
+							`Idempotency violated: real(real(${val})) = ${double}, real(${val}) = ${single}`);
+					}
+				}
+			), { numRuns: 100 });
+		});
+
+		it('text(text(x)) = text(x) for strings', async () => {
+			await fc.assert(fc.asyncProperty(
+				fc.string({ minLength: 0, maxLength: 50 }),
+				async (val) => {
+					// Use parameterized query to avoid SQL injection issues with special chars
+					let single: any;
+					for await (const row of db.eval('select text(?) as r', [val])) {
+						single = row.r;
+						break;
+					}
+					let double: any;
+					for await (const row of db.eval('select text(text(?)) as r', [val])) {
+						double = row.r;
+						break;
+					}
+					expect(double).to.equal(single,
+						`Idempotency violated for text('${val}')`);
+				}
+			), { numRuns: 100 });
+		});
+	});
+
+	// --- 11. ORDER BY Stability ---
 	describe('ORDER BY Stability', () => {
 		it('should produce identical results for repeated ORDER BY on same data', async () => {
 			await db.exec('CREATE TABLE stab_t (id INTEGER PRIMARY KEY, sort_key INTEGER, payload TEXT) USING memory');

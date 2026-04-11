@@ -1,0 +1,77 @@
+# Zero Bug Plan
+
+Prioritized strategy for pushing Quereus test coverage toward zero bugs.
+
+## 1. Coverage-Driven Targeting
+
+Run `c8` to generate a branch coverage report and identify untested code paths:
+
+```bash
+yarn test:coverage
+```
+
+Focus on **branch coverage** over line coverage — uncovered branches in runtime emitters and planner analysis passes are where subtle bugs hide. Use the report to prioritize efforts below.
+
+## 2. Edge-Case SQL Logic Tests for the Runtime Layer
+
+The 61 runtime emitter files (`src/runtime/emit/`) are exercised almost entirely through integration-level sqllogic tests. Add focused `.sqllogic` files targeting edge cases in each subsystem:
+
+- **Aggregates**: NULL-only groups, empty groups, mixed types, single-row groups, `count(*)` vs `count(col)` with NULLs, aggregate over zero rows
+- **Joins**: empty table on either side, all-NULL join keys, self-joins with aliasing, joins producing zero rows, many-to-many cardinality explosions
+- **Window functions**: empty partitions, single-row partitions, frame boundary edge cases (`ROWS BETWEEN 0 PRECEDING AND 0 FOLLOWING`), `RANGE` vs `ROWS` differences, NULLs in partition/order keys
+- **Set operations**: empty inputs, all-duplicate inputs, type coercion across branches, mixed column types
+- **Sorts**: stability with duplicate keys, NULL ordering (`NULLS FIRST`/`NULLS LAST`), multi-column sorts with mixed ASC/DESC
+- **Constraints**: deferred check constraints referencing other tables, foreign key cascades during multi-row deletes, assertion evaluation at commit with complex state
+
+New `.sqllogic` files are the most efficient vehicle here — no scaffolding needed.
+
+## 3. Compositional Property-Based Tests
+
+Extend `test/property.spec.ts` and `test/fuzz.spec.ts` beyond primitive-level properties to **query-level invariants**:
+
+- **Algebraic identities**:
+  - `count(*)` matches actual row count from iteration
+  - `SELECT DISTINCT` results are actually distinct
+  - `UNION` and `UNION ALL` differ only by duplicates
+  - `A EXCEPT B` union `A INTERSECT B` = `A`
+  - `A DIFF B` is empty iff `A` and `B` have identical contents
+- **Aggregate consistency**: `sum(x)` equals the sum of individually selected `x` values
+- **Window function correctness**: `sum(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)` is a running sum; `row_number()` produces a contiguous 1..N sequence
+- **Roundtrip properties**: INSERT then SELECT for all type combinations including edge values (empty strings, `MAX_SAFE_INTEGER` boundaries, empty blobs, null-heavy rows, temporal boundary values)
+- **Optimizer equivalence** (differential testing against self): run queries with and without specific optimizer rules enabled and assert identical result sets — catches optimizer bugs that produce wrong results silently
+
+## 4. Plan-Shape Tests for Optimizer Decisions
+
+Add tests in `test/plan/` that assert specific optimizer decisions appear in the plan:
+
+- Predicate pushed below join
+- Index selected over scan when WHERE matches an index
+- Bloom join chosen for large equi-joins
+- Streaming aggregation selected when input is pre-sorted
+- Subquery decorrelated into semi/anti join
+- CTE materialized vs inlined based on reference count
+
+These guard against optimizer regressions where queries still return correct results but via a worse plan.
+
+## 5. Error Path Audit
+
+`test/logic/90-error_paths.sqllogic` exists but likely doesn't cover all error conditions. Systematically verify:
+
+- Every `QuereusError` status code is triggered by at least one test
+- Parse errors include useful diagnostics (line/column)
+- Constraint violations produce the correct error type and message
+- Transaction error paths: commit after failed statement, nested savepoint rollback, rollback of already-rolled-back savepoint
+- Type coercion errors at system boundaries
+
+Approach: grep all `StatusCode` usages in `src/`, cross-reference with test expectations, and fill gaps with new sqllogic error tests.
+
+## 6. Mutation Testing on Key Subsystems
+
+Use [Stryker](https://stryker-mutator.io/) to systematically mutate source code and verify tests catch the mutations. A line being "covered" doesn't mean the test would fail if the line were wrong — mutation testing reveals superficial coverage.
+
+Run subsystem-at-a-time to keep execution time manageable. Priority targets:
+
+1. `src/planner/analysis/` — predicate analysis, constraint extraction, cardinality estimation
+2. `src/runtime/emit/` — emitter correctness for each node type
+3. `src/func/builtins/` — function edge-case handling
+4. `src/vtab/memory/` — memory table index and scan logic
