@@ -563,14 +563,14 @@ function getFrameBounds(
 		if (isRange) {
 			start = findRangeOffsetStart(currentIndex, totalRows, orderByValues, -offset);
 		} else {
-			start = Math.max(0, currentIndex - offset);
+			start = currentIndex - offset;
 		}
 	} else if (frame.start.type === 'following') {
 		const offset = getFrameOffset(frame.start.value);
 		if (isRange) {
 			start = findRangeOffsetStart(currentIndex, totalRows, orderByValues, offset);
 		} else {
-			start = Math.min(totalRows - 1, currentIndex + offset);
+			start = currentIndex + offset;
 		}
 	} else {
 		start = 0;
@@ -593,17 +593,25 @@ function getFrameBounds(
 		if (isRange) {
 			end = findRangeOffsetEnd(currentIndex, totalRows, orderByValues, -offset);
 		} else {
-			end = Math.max(0, currentIndex - offset);
+			end = currentIndex - offset;
 		}
 	} else if (frame.end.type === 'following') {
 		const offset = getFrameOffset(frame.end.value);
 		if (isRange) {
 			end = findRangeOffsetEnd(currentIndex, totalRows, orderByValues, offset);
 		} else {
-			end = Math.min(totalRows - 1, currentIndex + offset);
+			end = currentIndex + offset;
 		}
 	} else {
 		end = currentIndex;
+	}
+
+	// For ROWS mode, clamp to valid row indices after computing logical bounds.
+	// Clamping must happen after both bounds are computed so that frames
+	// entirely outside [0, totalRows-1] are detected as empty by the check below.
+	if (!isRange) {
+		start = Math.max(0, start);
+		end = Math.min(totalRows - 1, end);
 	}
 
 	// Empty frame when bounds invert
