@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-04-11T01:26:55.425Z (agent: claude)
+  Log file: C:\projects\quereus\tickets\.logs\4-coverage-planner-optimizer.implement.2026-04-11T01-26-55-421Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 description: Add tests for under-covered planner analysis, optimizer rules, stats, and plan nodes
 dependencies: none
 files:

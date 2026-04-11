@@ -1,0 +1,135 @@
+-- predicate-normalization-edge-cases.sqllogic
+-- Tests for predicate normalization: De Morgan, double/triple negation,
+-- NOT on comparisons, OR flattening, OR-to-IN collapse, BETWEEN, IS NULL, etc.
+
+-- =============================================================================
+-- Setup
+-- =============================================================================
+
+create table norm (id integer primary key, a integer null, b integer null, c text null);
+insert into norm values (1, 10, 100, 'alpha'), (2, 20, 200, 'beta'), (3, 30, 300, null), (4, null, 400, 'delta'), (5, 50, null, 'epsilon');
+
+-- =============================================================================
+-- De Morgan's laws
+-- =============================================================================
+
+-- De Morgan with AND: NOT (a > 10 AND b > 200) → a <= 10 OR b <= 200
+-- id=1: not(false and false)=true; id=2: not(true and false)=true;
+-- id=3: not(true and true)=false; id=4: not(null and true)=not(null)=null; id=5: not(true and null)=not(null)=null
+select id from norm where not (a > 10 and b > 200) order by id;
+→ [{"id":1},{"id":2}]
+
+-- De Morgan with OR: NOT (a = 10 OR a = 20) → a != 10 AND a != 20
+-- id=3: a=30 passes; id=5: a=50 passes; id=4: a=null → null
+select id from norm where not (a = 10 or a = 20) order by id;
+→ [{"id":3},{"id":5}]
+
+-- =============================================================================
+-- Double and triple negation
+-- =============================================================================
+
+-- Double negation: NOT NOT (a > 20) → a > 20
+select id from norm where not not (a > 20) order by id;
+→ [{"id":3},{"id":5}]
+
+-- Triple negation: NOT NOT NOT (a > 20) → NOT (a > 20) → a <= 20
+select id from norm where not not not (a > 20) order by id;
+→ [{"id":1},{"id":2}]
+
+-- =============================================================================
+-- NOT on comparison operators
+-- =============================================================================
+
+-- NOT (a > 20) → a <= 20
+select id from norm where not (a > 20) order by id;
+→ [{"id":1},{"id":2}]
+
+-- NOT (a >= 20) → a < 20
+select id from norm where not (a >= 20) order by id;
+→ [{"id":1}]
+
+-- NOT (a < 30) → a >= 30
+select id from norm where not (a < 30) order by id;
+→ [{"id":3},{"id":5}]
+
+-- NOT (a <= 20) → a > 20
+select id from norm where not (a <= 20) order by id;
+→ [{"id":3},{"id":5}]
+
+-- =============================================================================
+-- OR flattening and OR-to-IN collapse
+-- =============================================================================
+
+-- OR flattening: nested OR groups flatten into a single OR
+select id from norm where (a = 10 or a = 20) or a = 30 order by id;
+→ [{"id":1},{"id":2},{"id":3}]
+
+-- OR-to-IN collapse: a = 10 OR a = 20 OR a = 30 → a IN (10,20,30)
+select id from norm where a = 10 or a = 20 or a = 30 order by id;
+→ [{"id":1},{"id":2},{"id":3}]
+
+-- =============================================================================
+-- BETWEEN and NOT BETWEEN
+-- =============================================================================
+
+-- BETWEEN: a between 20 and 30 → a >= 20 AND a <= 30
+select id from norm where a between 20 and 30 order by id;
+→ [{"id":2},{"id":3}]
+
+-- NOT BETWEEN: not (a between 20 and 40) → a < 20 OR a > 40
+-- id=1: a=10 outside; id=5: a=50 outside; id=4: a=null → null
+select id from norm where not (a between 20 and 40) order by id;
+→ [{"id":1},{"id":5}]
+
+-- =============================================================================
+-- NOT on IS NULL / IS NOT NULL
+-- =============================================================================
+
+-- NOT IS NULL → IS NOT NULL
+select id from norm where not (c is null) order by id;
+→ [{"id":1},{"id":2},{"id":4},{"id":5}]
+
+-- NOT IS NOT NULL → IS NULL
+select id from norm where not (c is not null) order by id;
+→ [{"id":3}]
+
+-- =============================================================================
+-- Complex nested predicates
+-- =============================================================================
+
+-- NOT ((a > 10 AND b < 300) OR c IS NULL)
+-- id=1: not((false and true) or false) = not(false) = true
+-- id=2: not((true and true) or false) = not(true) = false
+-- id=3: not((true and false) or true) = not(true) = false
+-- id=4: not((null and false) or false) = not(false) = true
+-- id=5: not((true and null) or false) = not(null) = null
+select id from norm where not ((a > 10 and b < 300) or c is null) order by id;
+→ [{"id":1},{"id":4}]
+
+-- Mixed NOT with AND/OR: NOT (a = 10) AND NOT (b = 200)
+-- Only id=3 passes (a=30≠10, b=300≠200); id=4 and id=5 have NULLs
+select id from norm where not (a = 10) and not (b = 200) order by id;
+→ [{"id":3}]
+
+-- =============================================================================
+-- Reversed operand order
+-- =============================================================================
+
+-- OR with reversed operands: literal = column pattern
+select id from norm where 10 = a or 20 = a order by id;
+→ [{"id":1},{"id":2}]
+
+-- =============================================================================
+-- Deeply nested AND flattening
+-- =============================================================================
+
+-- Nested AND: a > 5 AND (b > 50 AND (a < 100 AND b < 500)) flattens to four ANDs
+-- id=1: all true; id=2: all true; id=3: all true; id=4: a=null; id=5: b=null
+select id from norm where a > 5 and (b > 50 and (a < 100 and b < 500)) order by id;
+→ [{"id":1},{"id":2},{"id":3}]
+
+-- =============================================================================
+-- Cleanup
+-- =============================================================================
+
+drop table norm;
