@@ -757,7 +757,96 @@ describe('Property-Based Tests', () => {
 		});
 	});
 
-	// --- 11. ORDER BY Stability ---
+	// --- 11. Transaction Isolation ---
+	describe('Transaction Isolation', () => {
+		it('should never see partial transaction state via read after commit', async () => {
+			await db.exec('CREATE TABLE iso_t (id INTEGER PRIMARY KEY, val INTEGER) USING memory');
+
+			// Seed initial rows
+			for (let i = 1; i <= 5; i++) {
+				await db.exec(`INSERT INTO iso_t VALUES (${i}, ${i * 10})`);
+			}
+
+			await fc.assert(fc.asyncProperty(
+				// Generate a random set of mutations per transaction
+				fc.array(fc.tuple(
+					fc.constantFrom('insert', 'update', 'delete'),
+					fc.integer({ min: 1, max: 20 }),
+					fc.integer({ min: 0, max: 100 }),
+				), { minLength: 1, maxLength: 5 }),
+				async (mutations) => {
+					// Start explicit transaction
+					await db.exec('BEGIN');
+
+					try {
+						for (const [op, id, val] of mutations) {
+							try {
+								if (op === 'insert') {
+									await db.exec(`INSERT OR IGNORE INTO iso_t VALUES (${id}, ${val})`);
+								} else if (op === 'update') {
+									await db.exec(`UPDATE iso_t SET val = ${val} WHERE id = ${id}`);
+								} else {
+									await db.exec(`DELETE FROM iso_t WHERE id = ${id}`);
+								}
+							} catch {
+								// Constraint violations are expected — continue
+							}
+						}
+					} finally {
+						await db.exec('ROLLBACK');
+					}
+
+					// After rollback, all rows should match their original values
+					const rows: Array<{ id: number; val: number }> = [];
+					for await (const row of db.eval('SELECT id, val FROM iso_t ORDER BY id')) {
+						rows.push(row as { id: number; val: number });
+					}
+
+					// Exactly the original 5 rows with original values
+					expect(rows).to.have.length(5);
+					for (const row of rows) {
+						expect(row.val).to.equal(row.id * 10,
+							`Row ${row.id} has wrong value after rollback: expected ${row.id * 10}, got ${row.val}`);
+					}
+				}
+			), { numRuns: 50 });
+		});
+
+		it('should preserve schema DDL through rollback', async () => {
+			await fc.assert(fc.asyncProperty(
+				fc.integer({ min: 1, max: 100 }),
+				async (tableId) => {
+					const tableName = `ddl_test_${tableId}`;
+
+					// Ensure clean state
+					await db.exec(`DROP TABLE IF EXISTS ${tableName}`);
+
+					// Create in committed context
+					await db.exec(`CREATE TABLE ${tableName} (id INTEGER PRIMARY KEY, val TEXT)`);
+
+					// Start transaction, insert data, rollback
+					await db.exec('BEGIN');
+					try {
+						await db.exec(`INSERT INTO ${tableName} VALUES (1, 'test')`);
+					} finally {
+						await db.exec('ROLLBACK');
+					}
+
+					// Table should still exist but be empty
+					const rows: unknown[] = [];
+					for await (const row of db.eval(`SELECT * FROM ${tableName}`)) {
+						rows.push(row);
+					}
+					expect(rows).to.have.length(0);
+
+					// Cleanup
+					await db.exec(`DROP TABLE ${tableName}`);
+				}
+			), { numRuns: 20 });
+		});
+	});
+
+	// --- 12. ORDER BY Stability ---
 	describe('ORDER BY Stability', () => {
 		it('should produce identical results for repeated ORDER BY on same data', async () => {
 			await db.exec('CREATE TABLE stab_t (id INTEGER PRIMARY KEY, sort_key INTEGER, payload TEXT) USING memory');
