@@ -35,10 +35,15 @@ export function relationTypeFromTableSchema(tableSchema: TableSchema): RelationT
     keys.push(primaryKey);
   }
 
-  // Add unique constraints as additional keys
+  // Add unique constraints as additional keys, but only when all constrained
+  // columns are NOT NULL. SQL UNIQUE allows multiple NULLs, so a nullable
+  // UNIQUE column is not a true key for DISTINCT elimination purposes.
   if (tableSchema.uniqueConstraints) {
     for (const uc of tableSchema.uniqueConstraints) {
-      keys.push(uc.columns.map(idx => ({ index: idx })));
+      const allNotNull = uc.columns.every(idx => tableSchema.columns[idx]?.notNull);
+      if (allNotNull) {
+        keys.push(uc.columns.map(idx => ({ index: idx })));
+      }
     }
   }
 

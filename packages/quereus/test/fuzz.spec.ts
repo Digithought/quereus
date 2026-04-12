@@ -858,9 +858,7 @@ describe('Algebraic Identities', function () {
 		);
 	});
 
-	// Skipped: DISTINCT deduplication is broken across all column types.
-	// Filed as fix ticket: 4-distinct-deduplication-bug.md
-	it.skip('SELECT DISTINCT results are unique', async function () {
+	it('SELECT DISTINCT results are unique', async function () {
 		await fc.assert(
 			fc.asyncProperty(
 				arbSchemaInfo,

@@ -1,5 +1,5 @@
 import type { Database } from '../../../core/database.js';
-import { type TableSchema, type IndexSchema, buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js';
+import { type TableSchema, type IndexSchema, type UniqueConstraintSchema, buildColumnIndexMap, columnDefToSchema } from '../../../schema/table.js';
 import { type BTreeKeyForPrimary } from '../types.js';
 import { StatusCode, type SqlValue, type Row, type UpdateResult } from '../../../common/types.js';
 import { BaseLayer } from './base.js';
@@ -58,6 +58,7 @@ export class MemoryTableManager {
 		this.isReadOnly = readOnly;
 		this.eventEmitter = eventEmitter;
 
+		this.ensureUniqueConstraintIndexes();
 		this.initializePrimaryKeyFunctions();
 
 		this.baseLayer = new BaseLayer(this.tableSchema);
@@ -66,6 +67,44 @@ export class MemoryTableManager {
 
 	private initializePrimaryKeyFunctions(): void {
 		this.primaryKeyFunctions = createPrimaryKeyFunctions(this.tableSchema);
+	}
+
+	/**
+	 * Auto-creates secondary indexes for UNIQUE constraints that don't already
+	 * have a matching index. This mirrors standard SQL behavior where UNIQUE
+	 * constraints imply an index for efficient enforcement.
+	 */
+	private ensureUniqueConstraintIndexes(): void {
+		const uniqueConstraints = this.tableSchema.uniqueConstraints;
+		if (!uniqueConstraints || uniqueConstraints.length === 0) return;
+
+		const existingIndexes = this.tableSchema.indexes ?? [];
+		const newIndexes: IndexSchema[] = [...existingIndexes];
+		let added = false;
+
+		for (const uc of uniqueConstraints) {
+			const hasMatchingIndex = existingIndexes.some(idx =>
+				idx.columns.length === uc.columns.length &&
+				idx.columns.every((col, i) => col.index === uc.columns[i])
+			);
+
+			if (!hasMatchingIndex) {
+				const colNames = uc.columns.map(i => this.tableSchema.columns[i]?.name ?? String(i));
+				const indexName = uc.name ?? `_uc_${colNames.join('_')}`;
+				newIndexes.push({
+					name: indexName,
+					columns: uc.columns.map(colIdx => ({ index: colIdx })),
+				});
+				added = true;
+			}
+		}
+
+		if (added) {
+			this.tableSchema = {
+				...this.tableSchema,
+				indexes: Object.freeze(newIndexes),
+			};
+		}
 	}
 
 	/**
@@ -530,6 +569,10 @@ export class MemoryTableManager {
 			};
 		}
 
+		// Check UNIQUE constraints against secondary indexes
+		const ucResult = this.checkUniqueConstraints(targetLayer, schema, newRowData, primaryKey, onConflict);
+		if (ucResult) return ucResult;
+
 		targetLayer.recordUpsert(primaryKey, newRowData, null);
 		return { status: 'ok', row: newRowData };
 	}
@@ -575,8 +618,13 @@ export class MemoryTableManager {
 		const isPrimaryKeyChanged = this.comparePrimaryKeys(targetPrimaryKey, newPrimaryKey) !== 0;
 
 		if (isPrimaryKeyChanged) {
-			return this.performUpdateWithPrimaryKeyChange(targetLayer, targetPrimaryKey, newPrimaryKey, oldRowData, newRowData, onConflict);
+			return this.performUpdateWithPrimaryKeyChange(targetLayer, schema, targetPrimaryKey, newPrimaryKey, oldRowData, newRowData, onConflict);
 		} else {
+			// Check UNIQUE constraints if any constrained columns changed
+			if (this.uniqueColumnsChanged(schema, oldRowData, newRowData)) {
+				const ucResult = this.checkUniqueConstraints(targetLayer, schema, newRowData, targetPrimaryKey, onConflict);
+				if (ucResult) return ucResult;
+			}
 			targetLayer.recordUpsert(targetPrimaryKey, newRowData, oldRowData);
 			return { status: 'ok', row: newRowData };
 		}
@@ -584,6 +632,7 @@ export class MemoryTableManager {
 
 	private performUpdateWithPrimaryKeyChange(
 		targetLayer: TransactionLayer,
+		schema: TableSchema,
 		oldPrimaryKey: BTreeKeyForPrimary,
 		newPrimaryKey: BTreeKeyForPrimary,
 		oldRowData: Row,
@@ -605,7 +654,16 @@ export class MemoryTableManager {
 			};
 		}
 
+		// Delete old row first, then check UNIQUE constraints at the new position
 		targetLayer.recordDelete(oldPrimaryKey, oldRowData);
+
+		const ucResult = this.checkUniqueConstraints(targetLayer, schema, newRowData, newPrimaryKey, onConflict);
+		if (ucResult) {
+			// Rollback the delete if constraint check fails
+			targetLayer.recordUpsert(oldPrimaryKey, oldRowData, null);
+			return ucResult;
+		}
+
 		targetLayer.recordUpsert(newPrimaryKey, newRowData, null);
 		return { status: 'ok', row: newRowData };
 	}
@@ -628,6 +686,157 @@ export class MemoryTableManager {
 
 		targetLayer.recordDelete(targetPrimaryKey, oldRowData);
 		return { status: 'ok', row: oldRowData };
+	}
+
+	/** Returns true if any column covered by a UNIQUE constraint changed between old and new rows. */
+	private uniqueColumnsChanged(schema: TableSchema, oldRow: Row, newRow: Row): boolean {
+		if (!schema.uniqueConstraints) return false;
+		for (const uc of schema.uniqueConstraints) {
+			for (const colIdx of uc.columns) {
+				if (compareSqlValues(oldRow[colIdx], newRow[colIdx]) !== 0) return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Checks all UNIQUE constraints for a new/updated row. Returns an UpdateResult
+	 * if a violation is found (or IGNORE suppresses the insert), or null if all pass.
+	 * For REPLACE conflicts, the conflicting rows are deleted from the layer.
+	 */
+	private checkUniqueConstraints(
+		targetLayer: TransactionLayer,
+		schema: TableSchema,
+		newRowData: Row,
+		newPrimaryKey: BTreeKeyForPrimary,
+		onConflict: ConflictResolution
+	): UpdateResult | null {
+		if (!schema.uniqueConstraints) return null;
+
+		for (const uc of schema.uniqueConstraints) {
+			const result = this.checkSingleUniqueConstraint(
+				targetLayer, schema, uc, newRowData, newPrimaryKey, onConflict
+			);
+			if (result) return result;
+		}
+
+		return null;
+	}
+
+	private checkSingleUniqueConstraint(
+		targetLayer: TransactionLayer,
+		schema: TableSchema,
+		uc: UniqueConstraintSchema,
+		newRowData: Row,
+		newPrimaryKey: BTreeKeyForPrimary,
+		onConflict: ConflictResolution
+	): UpdateResult | null {
+		// SQL semantics: UNIQUE allows multiple NULLs — skip if any constrained column is NULL
+		if (uc.columns.some(colIdx => newRowData[colIdx] === null)) return null;
+
+		// Find the matching secondary index for this constraint
+		const index = this.findIndexForConstraint(targetLayer, uc);
+		if (index) {
+			return this.checkUniqueViaIndex(targetLayer, schema, uc, index, newRowData, newPrimaryKey, onConflict);
+		}
+
+		// Fallback: scan primary tree
+		return this.checkUniqueByScanning(targetLayer, schema, uc, newRowData, newPrimaryKey, onConflict);
+	}
+
+	private findIndexForConstraint(
+		targetLayer: Layer,
+		uc: UniqueConstraintSchema
+	): import('../index.js').MemoryIndex | undefined {
+		const schema = targetLayer.getSchema();
+		if (!schema.indexes) return undefined;
+
+		for (const idx of schema.indexes) {
+			if (idx.columns.length === uc.columns.length &&
+				idx.columns.every((col, i) => col.index === uc.columns[i])) {
+				return targetLayer.getSecondaryIndex?.(idx.name);
+			}
+		}
+		return undefined;
+	}
+
+	private checkUniqueViaIndex(
+		targetLayer: TransactionLayer,
+		schema: TableSchema,
+		uc: UniqueConstraintSchema,
+		index: import('../index.js').MemoryIndex,
+		newRowData: Row,
+		newPrimaryKey: BTreeKeyForPrimary,
+		onConflict: ConflictResolution
+	): UpdateResult | null {
+		const indexKey = index.keyFromRow(newRowData);
+		const existingPKs = index.getPrimaryKeys(indexKey);
+
+		for (const existingPK of existingPKs) {
+			if (this.comparePrimaryKeys(newPrimaryKey, existingPK) === 0) continue;
+
+			// Found a different row with the same unique key values
+			if (onConflict === ConflictResolution.IGNORE) {
+				return { status: 'ok', row: undefined };
+			}
+			if (onConflict === ConflictResolution.REPLACE) {
+				const conflictingRow = this.lookupEffectiveRow(existingPK, targetLayer);
+				if (conflictingRow) {
+					targetLayer.recordDelete(existingPK, conflictingRow);
+				}
+				return null; // Conflict resolved, continue with insert
+			}
+			const colNames = uc.columns.map(i => schema.columns[i].name).join(', ');
+			const existingRow = this.lookupEffectiveRow(existingPK, targetLayer);
+			return {
+				status: 'constraint',
+				constraint: 'unique',
+				message: `UNIQUE constraint failed: ${this._tableName} (${colNames})`,
+				existingRow: existingRow ?? undefined
+			};
+		}
+
+		return null;
+	}
+
+	private checkUniqueByScanning(
+		targetLayer: TransactionLayer,
+		schema: TableSchema,
+		uc: UniqueConstraintSchema,
+		newRowData: Row,
+		newPrimaryKey: BTreeKeyForPrimary,
+		onConflict: ConflictResolution
+	): UpdateResult | null {
+		const primaryTree = targetLayer.getModificationTree('primary');
+		if (!primaryTree) return null;
+
+		for (const path of primaryTree.ascending(primaryTree.first())) {
+			const existingRow = primaryTree.at(path)!;
+			const existingPK = this.primaryKeyFromRow(existingRow);
+			if (this.comparePrimaryKeys(newPrimaryKey, existingPK) === 0) continue;
+
+			const allMatch = uc.columns.every(
+				colIdx => compareSqlValues(newRowData[colIdx], existingRow[colIdx]) === 0
+			);
+			if (!allMatch) continue;
+
+			if (onConflict === ConflictResolution.IGNORE) {
+				return { status: 'ok', row: undefined };
+			}
+			if (onConflict === ConflictResolution.REPLACE) {
+				targetLayer.recordDelete(existingPK, existingRow);
+				return null;
+			}
+			const colNames = uc.columns.map(i => schema.columns[i].name).join(', ');
+			return {
+				status: 'constraint',
+				constraint: 'unique',
+				message: `UNIQUE constraint failed: ${this._tableName} (${colNames})`,
+				existingRow: existingRow
+			};
+		}
+
+		return null;
 	}
 
 	public renameTable(newName: string): void {
