@@ -266,6 +266,59 @@ describe('Property-Based Tests', () => {
 				}
 			}), { numRuns: 200 });
 		});
+
+		it('should handle JSON edge values through json_extract', async () => {
+			// Deeply nested object (12 levels)
+			let deepObj: any = { value: 42 };
+			for (let i = 0; i < 12; i++) {
+				deepObj = { nested: deepObj };
+			}
+
+			// Large array (1000 elements)
+			const largeArray = Array.from({ length: 1000 }, (_, i) => i);
+
+			// Object with empty-string key
+			const emptyKeyObj = { '': 'empty-key-value', 'normal': 'value' };
+
+			// Mixed-type values in one object
+			const mixedObj = {
+				str: 'hello',
+				num: 42,
+				float: 3.14,
+				bool: true,
+				nil: null,
+				arr: [1, 'two', null, false],
+				obj: { a: 1 },
+			};
+
+			const edgeCases: Array<{ label: string; value: any }> = [
+				{ label: 'deeply nested object', value: deepObj },
+				{ label: 'large array (1000 elements)', value: largeArray },
+				{ label: 'empty-string key object', value: emptyKeyObj },
+				{ label: 'mixed-type object', value: mixedObj },
+				{ label: 'empty object', value: {} },
+				{ label: 'empty array', value: [] },
+				{ label: 'nested arrays', value: [[1, 2], [3, [4, 5]]] },
+			];
+
+			for (const { label, value } of edgeCases) {
+				const jsonStr = JSON.stringify(value);
+				let resultRow: Record<string, any> | undefined;
+				for await (const row of db.eval("select json_extract(?, '$') as result", [jsonStr])) {
+					resultRow = row;
+					break;
+				}
+
+				expect(resultRow).to.not.be.undefined;
+				// json_extract returns objects/arrays as JSON strings
+				const parsed = typeof resultRow!.result === 'string'
+					? JSON.parse(resultRow!.result)
+					: resultRow!.result;
+				const isEqual = deepEqualIgnoringZeroSign(parsed, value);
+				expect(isEqual).to.be.true,
+					`JSON edge roundtrip failed for ${label}`;
+			}
+		});
 	});
 
 	// --- 4. Mixed Type Arithmetic Edge Cases ---
@@ -645,6 +698,162 @@ describe('Property-Based Tests', () => {
 				}
 			}), { numRuns: 100 });
 		});
+
+		it('should roundtrip integer boundary values', async () => {
+			await db.exec('CREATE TABLE rt_int_bounds (id INTEGER PRIMARY KEY, v INTEGER) USING memory');
+
+			const boundaries = [
+				Number.MAX_SAFE_INTEGER,   // 2^53-1
+				Number.MIN_SAFE_INTEGER,   // -(2^53-1)
+				0,
+				-1,
+				1,
+				2 ** 31 - 1,               // INT32_MAX
+				-(2 ** 31),                 // INT32_MIN
+				2 ** 32 - 1,               // UINT32_MAX
+			];
+
+			for (const val of boundaries) {
+				await db.exec('DELETE FROM rt_int_bounds');
+				const stmt = db.prepare('INSERT INTO rt_int_bounds (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_int_bounds')) {
+					expect(row.v).to.equal(val,
+						`Integer boundary roundtrip failed for ${val}`);
+				}
+			}
+		});
+
+		it('should roundtrip bigint boundary values', async () => {
+			await db.exec('CREATE TABLE rt_bigint_bounds (id INTEGER PRIMARY KEY, v INTEGER) USING memory');
+
+			const boundaries: bigint[] = [
+				BigInt('9223372036854775807'),   // 2^63-1 (INT64_MAX)
+				BigInt('-9223372036854775808'),   // -2^63 (INT64_MIN)
+				0n,
+				1n,
+				-1n,
+				BigInt(Number.MAX_SAFE_INTEGER),
+				BigInt(Number.MIN_SAFE_INTEGER),
+			];
+
+			for (const val of boundaries) {
+				await db.exec('DELETE FROM rt_bigint_bounds');
+				const stmt = db.prepare('INSERT INTO rt_bigint_bounds (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_bigint_bounds')) {
+					// Values within safe integer range may come back as number
+					if (val >= BigInt(Number.MIN_SAFE_INTEGER) && val <= BigInt(Number.MAX_SAFE_INTEGER)) {
+						const actual = typeof row.v === 'bigint' ? row.v : BigInt(row.v as number);
+						expect(actual).to.equal(val,
+							`BigInt boundary roundtrip failed for ${val}: got ${row.v} (${typeof row.v})`);
+					} else {
+						expect(row.v).to.equal(val,
+							`BigInt boundary roundtrip failed for ${val}`);
+					}
+				}
+			}
+		});
+
+		it('should roundtrip special and edge-case strings', async () => {
+			await db.exec('CREATE TABLE rt_str_edge (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+
+			const edgeStrings = [
+				'',                                         // empty string
+				'   ',                                      // whitespace only
+				'\t\n\r',                                   // control whitespace
+				'hello\0world',                             // embedded NUL
+				'\0',                                       // just NUL
+				'a'.repeat(10000),                          // 10K chars
+				'123',                                      // numeric-looking
+				'1.5e10',                                   // scientific notation string
+				'NaN',                                      // NaN string
+				'Infinity',                                 // Infinity string
+				'-Infinity',                                // negative infinity string
+				'0',                                        // zero string
+				'-0',                                       // negative zero string
+				'\u{1F600}',                                // emoji (😀)
+				'\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}', // ZWJ family emoji
+				'\u200F\u200E',                             // RTL/LTR marks
+				'\u200B\u200C\u200D',                       // zero-width chars
+				'مرحبا',                                    // Arabic (RTL)
+				'SELECT * FROM t; DROP TABLE t; --',        // SQL injection attempt
+				"it's a test",                              // single quote
+				'say "hello"',                              // double quotes
+			];
+
+			for (const val of edgeStrings) {
+				await db.exec('DELETE FROM rt_str_edge');
+				const stmt = db.prepare('INSERT INTO rt_str_edge (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_str_edge')) {
+					expect(row.v).to.equal(val,
+						`String roundtrip failed for ${JSON.stringify(val)}`);
+				}
+			}
+		});
+
+		it('should roundtrip empty blob', async () => {
+			await db.exec('CREATE TABLE rt_blob_empty (id INTEGER PRIMARY KEY, v BLOB) USING memory');
+
+			const emptyBlob = new Uint8Array(0);
+			const stmt = db.prepare('INSERT INTO rt_blob_empty (id, v) VALUES (1, ?)');
+			try { await stmt.run([emptyBlob]); } finally { await stmt.finalize(); }
+
+			for await (const row of db.eval('SELECT v FROM rt_blob_empty')) {
+				expect(row.v).to.be.instanceOf(Uint8Array);
+				expect((row.v as Uint8Array).length).to.equal(0,
+					'Empty blob should roundtrip with length 0');
+			}
+		});
+
+		it('should roundtrip NULL-heavy rows', async () => {
+			await db.exec(`CREATE TABLE rt_nulls (
+				id INTEGER PRIMARY KEY,
+				int_col INTEGER null,
+				real_col REAL null,
+				text_col TEXT null,
+				blob_col BLOB null,
+				any_col ANY null
+			) USING memory`);
+
+			// Insert a row where every nullable column is NULL
+			const stmt = db.prepare(
+				'INSERT INTO rt_nulls (id, int_col, real_col, text_col, blob_col, any_col) VALUES (1, ?, ?, ?, ?, ?)'
+			);
+			try { await stmt.run([null, null, null, null, null]); } finally { await stmt.finalize(); }
+
+			for await (const row of db.eval('SELECT int_col, real_col, text_col, blob_col, any_col FROM rt_nulls')) {
+				expect(row.int_col).to.be.null;
+				expect(row.real_col).to.be.null;
+				expect(row.text_col).to.be.null;
+				expect(row.blob_col).to.be.null;
+				expect(row.any_col).to.be.null;
+			}
+
+			// Also test with multiple all-NULL rows
+			await db.exec('DELETE FROM rt_nulls');
+			for (let i = 1; i <= 10; i++) {
+				const s = db.prepare(
+					'INSERT INTO rt_nulls (id, int_col, real_col, text_col, blob_col, any_col) VALUES (?, ?, ?, ?, ?, ?)'
+				);
+				try { await s.run([i, null, null, null, null, null]); } finally { await s.finalize(); }
+			}
+
+			let rowCount = 0;
+			for await (const row of db.eval('SELECT * FROM rt_nulls')) {
+				rowCount++;
+				expect(row.int_col).to.be.null;
+				expect(row.real_col).to.be.null;
+				expect(row.text_col).to.be.null;
+				expect(row.blob_col).to.be.null;
+				expect(row.any_col).to.be.null;
+			}
+			expect(rowCount).to.equal(10, 'Should have 10 all-NULL rows');
+		});
 	});
 
 	// --- 9. Temporal Roundtrip ---
@@ -687,6 +896,66 @@ describe('Property-Based Tests', () => {
 				expect(result).to.equal(timeStr,
 					`TIME roundtrip failed for ${timeStr}: got ${result}`);
 			}), { numRuns: 100 });
+		});
+
+		it('should roundtrip DATE boundary values', async () => {
+			const boundaryDates = [
+				'0001-01-01',    // earliest representable date
+				'9999-12-31',    // latest representable date
+				'2000-02-29',    // leap year (2000 is leap)
+				'1900-02-28',    // non-leap year (1900 is not leap despite /100)
+				'2024-02-29',    // recent leap year
+				'1970-01-01',    // Unix epoch
+			];
+
+			for (const dateStr of boundaryDates) {
+				let result: any;
+				for await (const row of db.eval(`select date('${dateStr}') as r`)) {
+					result = row.r;
+					break;
+				}
+				expect(result).to.equal(dateStr,
+					`DATE boundary roundtrip failed for ${dateStr}: got ${result}`);
+			}
+		});
+
+		it('should roundtrip TIME boundary values', async () => {
+			const boundaryTimes: Array<[string, string]> = [
+				['00:00:00', '00:00:00'],             // midnight
+				['23:59:59', '23:59:59'],             // last second of day
+				['12:00:00', '12:00:00'],             // noon
+				['12:00:00.000', '12:00:00'],         // fractional zeros normalize
+				['23:59:59.999', '23:59:59.999'],     // last millisecond
+			];
+
+			for (const [timeStr, expected] of boundaryTimes) {
+				let result: any;
+				for await (const row of db.eval(`select time('${timeStr}') as r`)) {
+					result = row.r;
+					break;
+				}
+				expect(result).to.equal(expected,
+					`TIME boundary roundtrip failed for ${timeStr}: got ${result}`);
+			}
+		});
+
+		it('should roundtrip DATETIME boundary values', async () => {
+			const boundaryDatetimes: Array<[string, string]> = [
+				['0001-01-01 00:00:00', '0001-01-01T00:00:00'],
+				['9999-12-31 23:59:59', '9999-12-31T23:59:59'],
+				['1970-01-01 00:00:00', '1970-01-01T00:00:00'],
+				['2000-02-29 12:30:45', '2000-02-29T12:30:45'],
+			];
+
+			for (const [dtStr, expected] of boundaryDatetimes) {
+				let result: any;
+				for await (const row of db.eval(`select datetime('${dtStr}') as r`)) {
+					result = row.r;
+					break;
+				}
+				expect(result).to.equal(expected,
+					`DATETIME boundary roundtrip failed for ${dtStr}: got ${result}`);
+			}
 		});
 	});
 
