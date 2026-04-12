@@ -596,7 +596,9 @@ if (shouldCache(node, context)) {
 
 ## Future Directions
 
-See `tickets/plan/` for future optimizer work.
+The overarching optimization strategy is **progressive, JIT-inspired**: robust heuristic defaults that avoid catastrophic plans without any statistics, with runtime execution feedback driving incremental improvement. See [Progressive Query Optimization](./progressive-optimizer.md) for the full architecture.
+
+See `tickets/plan/` for planned optimizer work.
 
 ## Join Optimization with QuickPick
 
@@ -830,10 +832,10 @@ The context-scoped design enables sophisticated optimization strategies:
 - Same join nodes can be optimized differently in each tour
 - Best plan selected across all contexts
 
-**Adaptive Optimization**:
+**Progressive Optimization** (see [progressive-optimizer.md](./progressive-optimizer.md)):
 - Contexts can carry different statistics or cost models
-- A/B testing of optimization strategies
-- Runtime feedback integration
+- Tier 2 re-optimization re-runs physical selection with runtime stats overlay
+- Runtime cardinality feedback updates stats between executions
 
 ### Key-driven row-count reduction
 
@@ -1269,7 +1271,7 @@ if (assessment) {
 
 **Nested Loop Foundation**: ApplyNode provides a clean nested-loop foundation that can be optimized based on virtual table capabilities.
 
-**Adaptive Optimization**: Modules can choose between full scans and index seeks based on correlation selectivity.
+**Progressive Optimization**: Modules can choose between full scans and index seeks based on correlation selectivity. Runtime cardinality feedback at pipeline breakers drives tier promotion and re-optimization (see [progressive-optimizer.md](./progressive-optimizer.md)).
 
 **Later Physical Optimization**: Non-correlated Apply operations can be transformed into bloom joins or merge joins by later optimization phases.
 

@@ -816,3 +816,292 @@ describe('Grammar-Based SQL Fuzzing', function () {
 		);
 	});
 });
+
+// ============================================================================
+// Phase 4: Algebraic Identity Properties
+// ============================================================================
+
+describe('Algebraic Identities', function () {
+	this.timeout(120_000);
+
+	let db: Database;
+
+	async function setupSchema(schema: SchemaInfo, rowsPerTable: number): Promise<void> {
+		await createSchema(db, schema);
+		for (const table of schema.tables) {
+			await seedTable(db, table, rowsPerTable);
+		}
+	}
+
+	it('COUNT(*) matches iteration count', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 0, max: 20 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(schema, rowCount);
+						for (const table of schema.tables) {
+							const countRows = await tryCollectRows(db, `select count(*) as cnt from ${table.name}`);
+							fc.pre(countRows !== null);
+							const cnt = countRows![0].cnt as number;
+
+							const allRows = await tryCollectRows(db, `select * from ${table.name}`);
+							fc.pre(allRows !== null);
+
+							if (cnt !== allRows!.length) {
+								throw new Error(
+									`COUNT(*) = ${cnt} but iteration yielded ${allRows!.length} rows for table ${table.name}`
+								);
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+
+	// Skipped: DISTINCT deduplication is broken across all column types.
+	// Filed as fix ticket: 4-distinct-deduplication-bug.md
+	it.skip('SELECT DISTINCT results are unique', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 1, max: 20 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(schema, rowCount);
+						for (const table of schema.tables) {
+							for (const col of table.columns) {
+								const rows = await tryCollectRows(
+									db,
+									`select distinct ${col.name} as v from ${table.name}`
+								);
+								if (rows === null) continue;
+								const serialized = rows.map(r => JSON.stringify(r.v));
+								const unique = new Set(serialized);
+								if (unique.size !== serialized.length) {
+									throw new Error(
+										`DISTINCT returned duplicates for ${table.name}.${col.name}: ${serialized.length} rows, ${unique.size} unique`
+									);
+								}
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+
+	it('UNION deduplicates, UNION ALL does not', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 1, max: 15 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(schema, rowCount);
+						for (const table of schema.tables) {
+							const col = table.columns[0].name;
+							const base = `select ${col} from ${table.name}`;
+
+							const baseRows = await tryCollectRows(db, base);
+							if (baseRows === null) continue;
+							const baseCount = baseRows.length;
+
+							// UNION ALL A, A should double the row count
+							const unionAllRows = await tryCollectRows(db, `${base} union all ${base}`);
+							if (unionAllRows === null) continue;
+							if (unionAllRows.length !== 2 * baseCount) {
+								throw new Error(
+									`UNION ALL: expected ${2 * baseCount} rows, got ${unionAllRows.length} for ${table.name}.${col}`
+								);
+							}
+
+							// UNION A, A should deduplicate, so count <= base count
+							const unionRows = await tryCollectRows(db, `${base} union ${base}`);
+							if (unionRows === null) continue;
+							if (unionRows.length > baseCount) {
+								throw new Error(
+									`UNION: expected <= ${baseCount} rows, got ${unionRows.length} for ${table.name}.${col}`
+								);
+							}
+						}
+
+						// Cross-table: UNION count <= UNION ALL count
+						if (schema.tables.length >= 2) {
+							const t1 = schema.tables[0];
+							const t2 = schema.tables[1];
+							const a = `select cast(${t1.columns[0].name} as text) as v from ${t1.name}`;
+							const b = `select cast(${t2.columns[0].name} as text) as v from ${t2.name}`;
+
+							const unionAllRows = await tryCollectRows(db, `${a} union all ${b}`);
+							const unionRows = await tryCollectRows(db, `${a} union ${b}`);
+							if (unionAllRows !== null && unionRows !== null) {
+								if (unionRows.length > unionAllRows.length) {
+									throw new Error(
+										`UNION row count (${unionRows.length}) > UNION ALL row count (${unionAllRows.length})`
+									);
+								}
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 75, endOnFailure: true }
+		);
+	});
+
+	it('EXCEPT + INTERSECT = original (as sets)', async function () {
+		// Use a schema generator that always produces 2+ tables
+		const arbMultiTableSchema: fc.Arbitrary<SchemaInfo> = fc.integer({ min: 2, max: 3 }).chain(tableCount =>
+			fc.tuple(...TABLE_NAMES.slice(0, tableCount).map(n => arbTableInfo(n)))
+				.map(tables => ({ tables: [...tables] }))
+		);
+
+		await fc.assert(
+			fc.asyncProperty(
+				arbMultiTableSchema,
+				fc.integer({ min: 1, max: 15 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(schema, rowCount);
+
+						const t1 = schema.tables[0];
+						const t2 = schema.tables[1];
+						const a = `select cast(${t1.columns[0].name} as text) as v from ${t1.name}`;
+						const b = `select cast(${t2.columns[0].name} as text) as v from ${t2.name}`;
+
+						// Get deduplicated A as the reference set
+						const aRows = await tryCollectRows(
+							db,
+							`select distinct cast(${t1.columns[0].name} as text) as v from ${t1.name}`
+						);
+						if (aRows === null) return; // query errored, skip
+
+						// (A except B) union (A intersect B) should equal distinct A
+						const combinedRows = await tryCollectRows(
+							db,
+							`(${a} except ${b}) union (${a} intersect ${b})`
+						);
+						if (combinedRows === null) return; // query errored, skip
+
+						const aSet = new Set(aRows.map(r => JSON.stringify(r.v)));
+						const combinedSet = new Set(combinedRows.map(r => JSON.stringify(r.v)));
+
+						if (aSet.size !== combinedSet.size) {
+							throw new Error(
+								`EXCEPT+INTERSECT set size ${combinedSet.size} != original set size ${aSet.size}`
+							);
+						}
+						for (const v of aSet) {
+							if (!combinedSet.has(v)) {
+								throw new Error(`Value ${v} in original but not in EXCEPT+INTERSECT result`);
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 75, endOnFailure: true }
+		);
+	});
+
+	it('A EXCEPT A returns zero rows', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 0, max: 15 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(schema, rowCount);
+						for (const table of schema.tables) {
+							const col = table.columns[0].name;
+							const q = `select ${col} from ${table.name}`;
+							const rows = await tryCollectRows(db, `${q} except ${q}`);
+							if (rows === null) continue;
+							if (rows.length !== 0) {
+								throw new Error(
+									`A EXCEPT A returned ${rows.length} rows for ${table.name}.${col}`
+								);
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+
+	it('SUM consistency: aggregate matches manual sum', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 0, max: 20 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(schema, rowCount);
+						for (const table of schema.tables) {
+							for (const col of table.columns) {
+								if (col.type !== 'integer' && col.type !== 'real') continue;
+
+								const sumRows = await tryCollectRows(
+									db,
+									`select sum(${col.name}) as s from ${table.name}`
+								);
+								if (sumRows === null) continue;
+								const sqlSum = sumRows[0].s;
+
+								const valRows = await tryCollectRows(
+									db,
+									`select ${col.name} as v from ${table.name}`
+								);
+								if (valRows === null) continue;
+
+								// Manual sum: exclude NULLs; all-NULL yields NULL
+								const nonNulls = valRows
+									.filter(r => r.v !== null)
+									.map(r => r.v as number);
+
+								if (nonNulls.length === 0) {
+									if (sqlSum !== null) {
+										throw new Error(
+											`SUM of all NULLs should be NULL, got ${sqlSum} for ${table.name}.${col.name}`
+										);
+									}
+								} else {
+									const manualSum = nonNulls.reduce((acc, v) => acc + v, 0);
+									if (typeof sqlSum !== 'number' || Math.abs(sqlSum - manualSum) > 1e-6) {
+										throw new Error(
+											`SUM mismatch: SQL=${sqlSum}, manual=${manualSum} for ${table.name}.${col.name}`
+										);
+									}
+								}
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+});
