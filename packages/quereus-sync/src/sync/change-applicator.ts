@@ -18,7 +18,6 @@ import type {
 	SchemaChangeToApply,
 	SchemaMigration,
 } from './protocol.js';
-import type { ConflictEvent } from './events.js';
 import type { SyncContext } from './sync-context.js';
 import { persistHLCState, toError } from './sync-context.js';
 
@@ -207,8 +206,8 @@ export async function resolveChange(
 				pk: change.pk,
 			},
 		};
-	} else if (ctx.config.conflictResolver) {
-		// Custom resolver path: fetch local version for context
+	} else {
+		// Column change: single getColumnVersion read, then decide via resolver or HLC
 		const localVersion = await ctx.columnVersions.getColumnVersion(
 			change.schema,
 			change.table,
@@ -217,19 +216,21 @@ export async function resolveChange(
 		);
 
 		if (localVersion) {
-			const resolution = ctx.config.conflictResolver({
-				schema: change.schema,
-				table: change.table,
-				pk: change.pk,
-				column: change.column,
-				localValue: localVersion.value,
-				localHlc: localVersion.hlc,
-				remoteValue: change.value,
-				remoteHlc: change.hlc,
-			});
+			const remoteWins = ctx.config.conflictResolver
+				? ctx.config.conflictResolver({
+					schema: change.schema,
+					table: change.table,
+					pk: change.pk,
+					column: change.column,
+					localValue: localVersion.value,
+					localHlc: localVersion.hlc,
+					remoteValue: change.value,
+					remoteHlc: change.hlc,
+				}) === 'remote'
+				: compareHLC(change.hlc, localVersion.hlc) > 0;
 
-			if (resolution === 'local') {
-				const conflictEvent: ConflictEvent = {
+			if (!remoteWins) {
+				ctx.syncEvents.emitConflictResolved({
 					schema: change.schema,
 					table: change.table,
 					pk: change.pk,
@@ -238,14 +239,12 @@ export async function resolveChange(
 					remoteValue: change.value,
 					winner: 'local',
 					winningHLC: localVersion.hlc,
-				};
-				ctx.syncEvents.emitConflictResolved(conflictEvent);
+				});
 				return { outcome: 'conflict', change };
 			}
 		}
-		// resolution === 'remote' or no local version → fall through to apply
 
-		// Check for tombstone blocking
+		// Remote wins or no local version — check tombstone blocking
 		const isBlocked = await ctx.tombstones.isDeletedAndBlocking(
 			change.schema,
 			change.table,
@@ -259,7 +258,7 @@ export async function resolveChange(
 		}
 
 		if (localVersion) {
-			const conflictEvent: ConflictEvent = {
+			ctx.syncEvents.emitConflictResolved({
 				schema: change.schema,
 				table: change.table,
 				pk: change.pk,
@@ -268,95 +267,13 @@ export async function resolveChange(
 				remoteValue: change.value,
 				winner: 'remote',
 				winningHLC: change.hlc,
-			};
-			ctx.syncEvents.emitConflictResolved(conflictEvent);
+			});
 		}
 
 		return {
 			outcome: 'applied',
 			change,
 			oldColumnVersion: localVersion ?? undefined,
-			dataChange: {
-				type: 'update',
-				schema: change.schema,
-				table: change.table,
-				pk: change.pk,
-				columns: { [change.column]: change.value },
-			},
-		};
-	} else {
-		// Original fast path: pure HLC comparison via shouldApplyWrite()
-		const shouldApply = await ctx.columnVersions.shouldApplyWrite(
-			change.schema,
-			change.table,
-			change.pk,
-			change.column,
-			change.hlc,
-		);
-
-		if (!shouldApply) {
-			const localVersion = await ctx.columnVersions.getColumnVersion(
-				change.schema,
-				change.table,
-				change.pk,
-				change.column,
-			);
-
-			if (localVersion) {
-				const conflictEvent: ConflictEvent = {
-					schema: change.schema,
-					table: change.table,
-					pk: change.pk,
-					column: change.column,
-					localValue: localVersion.value,
-					remoteValue: change.value,
-					winner: 'local',
-					winningHLC: localVersion.hlc,
-				};
-				ctx.syncEvents.emitConflictResolved(conflictEvent);
-			}
-
-			return { outcome: 'conflict', change };
-		}
-
-		// Check for tombstone blocking
-		const isBlocked = await ctx.tombstones.isDeletedAndBlocking(
-			change.schema,
-			change.table,
-			change.pk,
-			change.hlc,
-			ctx.config.allowResurrection,
-		);
-
-		if (isBlocked) {
-			return { outcome: 'skipped', change };
-		}
-
-		const oldColumnVersion = await ctx.columnVersions.getColumnVersion(
-			change.schema,
-			change.table,
-			change.pk,
-			change.column,
-		) ?? undefined;
-
-		if (oldColumnVersion) {
-			const conflictEvent: ConflictEvent = {
-				schema: change.schema,
-				table: change.table,
-				pk: change.pk,
-				column: change.column,
-				localValue: oldColumnVersion.value,
-				remoteValue: change.value,
-				winner: 'remote',
-				winningHLC: change.hlc,
-			};
-			ctx.syncEvents.emitConflictResolved(conflictEvent);
-		}
-
-		return {
-			outcome: 'applied',
-			change,
-			oldColumnVersion,
 			dataChange: {
 				type: 'update',
 				schema: change.schema,

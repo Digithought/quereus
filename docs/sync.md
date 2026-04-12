@@ -610,6 +610,7 @@ interface LocalChangeEvent {
 }
 
 interface ConflictEvent {
+  schema: string;
   table: string;
   pk: SqlValue[];
   column: string;
