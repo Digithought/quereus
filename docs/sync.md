@@ -84,6 +84,36 @@ After merge: Row has name='Alice' (from A) AND email='b@x.com' (from B)
 
 This is more fine-grained than row-level LWW, preserving more user intent.
 
+#### Pluggable Conflict Resolution
+
+The default LWW strategy can be replaced by setting `conflictResolver` on `SyncConfig`. The resolver is called for every column-level conflict where a local version already exists.
+
+```typescript
+import { createSyncModule, localWinsResolver, remoteWinsResolver } from '@quereus/sync';
+import type { ConflictResolver } from '@quereus/sync';
+
+// Built-in: always keep local value (target-wins)
+const { syncManager } = await createSyncModule(kv, storeEvents, {
+  conflictResolver: localWinsResolver,
+});
+
+// Built-in: always accept remote value (source-wins)
+const { syncManager } = await createSyncModule(kv, storeEvents, {
+  conflictResolver: remoteWinsResolver,
+});
+
+// Custom: per-column policy
+const resolver: ConflictResolver = (ctx) => {
+  if (ctx.column === 'counter') return 'remote';  // max-wins simulation
+  return 'local';                                  // default: keep local
+};
+const { syncManager } = await createSyncModule(kv, storeEvents, {
+  conflictResolver: resolver,
+});
+```
+
+When no `conflictResolver` is configured, the fast-path HLC comparison is used directly (no extra KV read per column). Schema conflicts remain non-pluggable.
+
 > **Future Work**: The architecture supports extending to other CRDT types (counters, sets, RGA for text) by tracking different metadata per column type.
 
 ### Tombstones and Deletions

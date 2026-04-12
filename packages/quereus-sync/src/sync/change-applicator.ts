@@ -207,8 +207,85 @@ export async function resolveChange(
 				pk: change.pk,
 			},
 		};
+	} else if (ctx.config.conflictResolver) {
+		// Custom resolver path: fetch local version for context
+		const localVersion = await ctx.columnVersions.getColumnVersion(
+			change.schema,
+			change.table,
+			change.pk,
+			change.column,
+		);
+
+		if (localVersion) {
+			const resolution = ctx.config.conflictResolver({
+				schema: change.schema,
+				table: change.table,
+				pk: change.pk,
+				column: change.column,
+				localValue: localVersion.value,
+				localHlc: localVersion.hlc,
+				remoteValue: change.value,
+				remoteHlc: change.hlc,
+			});
+
+			if (resolution === 'local') {
+				const conflictEvent: ConflictEvent = {
+					schema: change.schema,
+					table: change.table,
+					pk: change.pk,
+					column: change.column,
+					localValue: localVersion.value,
+					remoteValue: change.value,
+					winner: 'local',
+					winningHLC: localVersion.hlc,
+				};
+				ctx.syncEvents.emitConflictResolved(conflictEvent);
+				return { outcome: 'conflict', change };
+			}
+		}
+		// resolution === 'remote' or no local version → fall through to apply
+
+		// Check for tombstone blocking
+		const isBlocked = await ctx.tombstones.isDeletedAndBlocking(
+			change.schema,
+			change.table,
+			change.pk,
+			change.hlc,
+			ctx.config.allowResurrection,
+		);
+
+		if (isBlocked) {
+			return { outcome: 'skipped', change };
+		}
+
+		if (localVersion) {
+			const conflictEvent: ConflictEvent = {
+				schema: change.schema,
+				table: change.table,
+				pk: change.pk,
+				column: change.column,
+				localValue: localVersion.value,
+				remoteValue: change.value,
+				winner: 'remote',
+				winningHLC: change.hlc,
+			};
+			ctx.syncEvents.emitConflictResolved(conflictEvent);
+		}
+
+		return {
+			outcome: 'applied',
+			change,
+			oldColumnVersion: localVersion ?? undefined,
+			dataChange: {
+				type: 'update',
+				schema: change.schema,
+				table: change.table,
+				pk: change.pk,
+				columns: { [change.column]: change.value },
+			},
+		};
 	} else {
-		// Column change
+		// Original fast path: pure HLC comparison via shouldApplyWrite()
 		const shouldApply = await ctx.columnVersions.shouldApplyWrite(
 			change.schema,
 			change.table,
@@ -227,6 +304,7 @@ export async function resolveChange(
 
 			if (localVersion) {
 				const conflictEvent: ConflictEvent = {
+					schema: change.schema,
 					table: change.table,
 					pk: change.pk,
 					column: change.column,
@@ -261,9 +339,9 @@ export async function resolveChange(
 			change.column,
 		) ?? undefined;
 
-		// Emit conflict event when remote overwrites an existing local version
 		if (oldColumnVersion) {
 			const conflictEvent: ConflictEvent = {
+				schema: change.schema,
 				table: change.table,
 				pk: change.pk,
 				column: change.column,

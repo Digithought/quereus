@@ -44,6 +44,8 @@ export interface LocalChangeEvent {
  * Fired when a conflict is resolved.
  */
 export interface ConflictEvent {
+  /** Schema where conflict occurred */
+  readonly schema: string;
   /** Table where conflict occurred */
   readonly table: string;
   /** Primary key of the row */
