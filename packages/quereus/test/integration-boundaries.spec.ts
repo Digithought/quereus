@@ -458,7 +458,7 @@ describe('Integration Boundaries', () => {
 			await db.exec('create table err_ce (id integer primary key, name text not null)');
 			await db.exec("insert into err_ce values (1, 'unique_name')");
 			try {
-				// PK uniqueness violation — secondary UNIQUE constraints not enforced via SQL pipeline
+				// PK uniqueness violation
 				await db.exec("insert into err_ce values (1, 'other_name')");
 				expect.fail('Should have thrown');
 			} catch (e: any) {

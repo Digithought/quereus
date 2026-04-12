@@ -224,3 +224,313 @@ This distinction is important: a query joining a local `MemoryTable` with a DHT-
 | `src/core/statement.ts` | `Statement` — plan lifecycle, compile, execute, invalidation |
 | `src/planner/optimizer.ts` | Optimizer entry point, rule registration |
 | `src/planner/optimizer-tuning.ts` | Tuning knobs (depth limits, disabled rules, tour counts) |
+
+## Design decisions
+
+  ---                                                                                                                                                                                                                                                                         
+  Decision 1: Query Fingerprinting — What to Hash                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                                                              
+  The fingerprint determines which executions share feedback. Too narrow and we never learn; too broad and we apply wrong feedback.                                                                                                                                           
+                                                                                                                                                                                                                                                                              
+  Option A: Fingerprint the AST (post-parse, pre-build)           
+
+  Hash the parsed AST structure, normalizing literals and parameter values to placeholders.
+
+  Pros:
+  - Cheapest possible — happens before any planning or optimization work
+  - Catches the dominant case: same prepared statement re-executed, or same query text with different parameter values
+  - AST is a stable, well-defined structure (SelectStmt with from, where, columns, etc.)
+  - Naturally groups parameterized queries — select * from t where id = 1 and select * from t where id = 2 share a fingerprint
+  - Simple to implement: recursive visitor over the ~20 AST Statement types, emitting structural tokens, replacing literal values with a placeholder
+
+  Cons:
+  - Syntactically different queries that produce identical plans don't share feedback. E.g. select a, b from t vs select b, a from t — different fingerprint, same plan
+  - Alias differences (select x as foo vs select x as bar) change the fingerprint unless normalized
+  - Whitespace/formatting is already handled (the parser normalizes), but clause ordering in some positions (e.g., JOIN order in FROM) could vary
+  - If the plan builder makes structural choices (e.g., view expansion, CTE inlining), the AST doesn't reflect what the optimizer actually sees
+
+  Key tradeoff: Cheapness vs. sharing breadth. The missed-sharing cases (column reorder, alias differences) are uncommon in practice — most real workloads run the same SQL text repeatedly with different parameters.
+
+  Option B: Fingerprint the built plan (post-build, pre-optimize)
+
+  Hash the logical PlanNode tree after the builder runs but before the optimizer transforms it.
+
+  Pros:
+  - Captures structural equivalence — view expansion, CTE inlining, and builder normalization are already done
+  - Two queries that parse differently but build to the same logical plan share feedback
+  - The plan node tree has stable attribute IDs and node types — the fingerprintExpression pattern extends naturally
+
+  Cons:
+  - Building is non-trivial work (schema lookups, scope resolution, type inference). We do all of it before checking the cache, defeating the "quick startup" goal
+  - The plan tree is richer (60+ node types vs ~20 AST types) — more surface area for the fingerprint function
+  - Attribute IDs are assigned fresh per build, so they'd need normalization (positional rather than by ID)
+  - Subquery plan nodes already bail to unique IDs in the current fingerprint code (_SQ:${node.id}), so complex queries would get unique fingerprints anyway
+
+  Key tradeoff: Better sharing at the cost of doing the full build before any cache benefit. In the DHT scenario where the build itself may trigger schema lookups, this is a real cost.
+
+  Option C: Fingerprint the SQL text with literal normalization
+
+  Regex or lexer-level replacement of literals with ? placeholders, then hash the normalized text.
+
+  Pros:
+  - Absolute cheapest — no parse, no build, just a string operation
+  - How PostgreSQL's pg_stat_statements works (proven approach)
+  - Trivially cacheable — string hash is O(n) in query length
+
+  Cons:
+  - Brittle to formatting: SELECT vs select, extra whitespace, parenthesization differences
+  - Doesn't normalize aliases, column order, or semantically equivalent rewrites
+  - Requires a lexer-level pass to correctly identify literals vs. identifiers vs. keywords (can't just regex — string literals contain arbitrary text)
+  - We already have a parser, so "avoid parsing" is less of a win than in systems where parsing is expensive
+
+  Key tradeoff: Maximum cheapness at the cost of correctness edge cases. Would need a dedicated SQL normalizer/lexer, which is essentially a partial parser.
+
+  My read
+
+  Option A is the sweet spot. The parser already runs before anything else (it's in the Statement constructor). AST fingerprinting adds negligible cost on top of parsing, catches the 95% case (repeated parameterized queries), and avoids the build-before-cache problem of
+   Option B. Option C's brittleness isn't worth the marginal speed gain over A.
+
+  The remaining question within Option A: normalize at the AST level or at the toString() level? The AST has a toString() method on each statement. Normalizing literals in the string representation is simpler than a full AST visitor, but misses structural normalization
+  (alias differences, etc.). A proper AST visitor is more work but more correct. Given that the primary use case is repeated parameterized queries (where the SQL text is identical except for bound parameter values, which are already ? placeholders), even a simple
+  approach works.
+
+  ---
+  Decision 2: Counter → Stats Overlay Mapping
+
+  Runtime counters on Instructions measure "N rows flowed here." The StatsProvider interface needs "table X has Y rows" and "predicate P on table X has selectivity S." Bridging this gap requires plan provenance metadata.
+
+  Option A: Attach plan metadata at emit time
+
+  Each emitter already receives the PlanNode. Attach a metadata object to the Instruction during emission: table name, predicate fingerprint, estimated rows. After execution, read back the metadata alongside the actual counter.
+
+  Pros:
+  - Clean separation — emitters stamp metadata, the feedback collector reads it
+  - The PlanNode is available at emit time, so all information (table schema, predicate nodes, estimates) is accessible
+  - No changes to the runtime hot path — metadata is set once at emit time, read once after execution
+
+  Cons:
+  - Requires extending the Instruction type with an optional metadata field (small API change)
+  - Each emitter that participates in feedback needs to populate the metadata — some implementation effort across ~6 emitters (scan, filter, sort, hash-aggregate, bloom-join, merge-join)
+  - The metadata needs to be specific enough for the overlay to key on (table name + predicate fingerprint), which ties the feedback format to the StatsProvider interface
+
+  Key tradeoff: Clean architecture at the cost of touching each participating emitter. The touch is small (3-5 lines per emitter to attach metadata).
+
+  Option B: Walk the plan tree post-execution, match nodes to counters
+
+  After execution, walk the original PlanNode tree alongside the Instruction tree, correlating plan nodes with their instruction counters.
+
+  Pros:
+  - No changes to the Instruction type or individual emitters
+  - Plan metadata is read from the original plan tree, which is already retained on the Statement
+
+  Cons:
+  - The plan tree and instruction tree don't have a guaranteed 1:1 structural correspondence — emitters can flatten, combine, or split nodes. The emitPlanNode dispatch is not a simple isomorphic mapping
+  - Fragile: any change to how emitters produce instructions could break the correlation
+  - Requires the plan tree to be retained until after execution completes (it currently is, on Statement.plan, but this becomes a harder requirement)
+
+  Key tradeoff: Avoids emit-time changes but introduces a fragile coupling between plan structure and instruction structure.
+
+  Option C: Dedicated feedback channel, separate from Instructions
+
+  Create a FeedbackCollector object that emitters register against directly. During emission, the emitter registers a callback: "when this instruction finishes, report actual rows for table X / predicate P." The collector is passed through EmissionContext.
+
+  Pros:
+  - Fully decoupled from Instruction internals — doesn't pollute the runtime type
+  - Emitters opt in explicitly — clear which operators participate
+  - The collector can aggregate and deduplicate (e.g., two filters on the same table)
+
+  Cons:
+  - More moving parts — new type, new lifecycle management, new threading through EmissionContext
+  - Callbacks from execution back to the collector need a rendezvous point (after execution completes)
+  - Over-engineering risk for what is fundamentally "store a few numbers on a few instructions"
+
+  Key tradeoff: Cleaner separation at the cost of more infrastructure. Likely premature for Phase 1.
+
+  My read
+
+  Option A is the pragmatic choice. The Instruction type already has optional fields (note, runtimeStats, emissionContext). One more optional field for plan provenance metadata is consistent with the existing pattern. The per-emitter work is small and explicit. Option C
+   is cleaner in theory but adds machinery that isn't justified until we learn more about what feedback we actually need.
+
+  ---
+  Decision 3: Tier 0 Physical Selection — Separate Path vs. Existing Optimizer
+
+  Option A: NaiveStatsProvider IS Tier 0
+
+  Run the existing full optimizer with NaiveStatsProvider as the stats source. No new code path — the "tier" distinction is just which StatsProvider is passed to the OptContext.
+
+  Pros:
+  - Zero new optimizer code — the distinction is purely in stats input
+  - All existing rules, passes, and cost comparisons still run — battle-tested path
+  - NaiveStatsProvider already exists with reasonable defaults (1000 rows, 0.3 selectivity, 0.1 for equality)
+  - The cost model with heuristic inputs already produces reasonable plans — hash join is cheaper than nested loop at 1000×1000, index seek is cheaper than seq scan at 0.1 selectivity
+  - Tier promotion from 0→1 is just swapping the stats provider, not changing the code path
+
+  Cons:
+  - NaiveStatsProvider's defaults may not produce the "robust worst-case" behavior in all scenarios. Example: defaultSelectivity: 0.3 combined with a 1000-row default means an equality predicate estimates 300 rows — might not trigger index seek if the cost model sees it
+   as marginal
+  - The full optimizer runs all 5 passes, including QuickPick join enumeration, CSE, CTE optimization — overkill for a "quick startup" tier
+  - The cost model can make actively bad choices with heuristic inputs. NaiveStatsProvider treats all BinaryOps as 0.1 selectivity regardless of operator — a > comparison gets the same selectivity as =
+  - "Tier 0 = existing optimizer with worse stats" means Tier 0 is not actually faster than Tier 1 — just less accurate. The "quick startup" goal isn't served
+
+  Key tradeoff: Simplicity (no new code) vs. the stated goals of quick startup and robust worst-case. If the optimizer is already fast enough that "quick startup" doesn't matter, this is fine. If optimization time is measurable (complex queries with many joins), this
+  doesn't help.
+
+  Option B: Restricted pass set for Tier 0
+
+  Run only passes 0-1 (constant folding, structural) plus a restricted pass 2 that skips cost comparisons. Physical selection uses hardcoded heuristics: index seek for equality, hash join for all equi-joins, hash aggregate for unsorted input, stream aggregate for sorted
+   input.
+
+  Pros:
+  - Actually faster — skips QuickPick, CTE optimization, materialization advisory, CSE
+  - Produces predictable worst-case plans — the heuristics never choose nested loop for large inputs, never choose seq scan when an index is available
+  - Clear semantic separation: Tier 0 is "always right" heuristics, Tier 1 is "usually better" cost-based
+  - PassManager already supports running subsets of passes (needs executeOnly or equivalent, but architecturally trivial)
+
+  Cons:
+  - New code: heuristic physical selection rules (or a heuristic mode flag on existing rules)
+  - The existing rules mix heuristic fallbacks with cost comparisons internally — ruleSelectAccessPath already falls back to heuristics when stats are missing. Extracting the heuristic path as a standalone mode may require refactoring
+  - Two code paths means two sets of behavior to test and maintain
+  - Risk of the heuristic path producing plans that are strictly worse than the cost-based path with NaiveStatsProvider — the "always right" claim needs validation
+
+  Key tradeoff: Genuine quick startup and predictable worst-case at the cost of a second physical selection path. The maintenance burden depends on how cleanly the heuristic subset can be extracted from existing rules.
+
+  Option C: Tier 0 = skip physical selection entirely, emit from logical nodes
+
+  Use the logical plan directly, with the emit layer handling the mapping to physical operators at runtime.
+
+  Pros:
+  - Absolute fastest planning — no physical selection at all
+  - Forces a clean separation between logical and physical layers
+
+  Cons:
+  - The emit layer currently expects physical nodes (IndexSeekNode, BloomJoinNode, HashAggregateNode). Emitting from logical nodes would require a parallel set of emitters or a fallback dispatch
+  - Massive architectural change — the entire pipeline assumes physical nodes by emit time
+  - The "single hierarchy, dual phase" design (logical and physical in the same tree) makes this particularly awkward
+
+  Key tradeoff: Not viable without a major architecture change. Ruling this out.
+
+  My read
+
+  The answer depends on whether optimization time is actually a problem. If Statement.compile() is sub-millisecond for typical queries (which it likely is for <5 tables), then Option A is fine — Tier 0 and Tier 1 are the same speed, the distinction is only about stats
+  quality. The "quick startup" goal is served by "don't block on stats collection," not by "optimize faster."
+
+  If optimization time IS measurable (complex queries, many-way joins where QuickPick runs multiple tours), Option B is worth it, but the implementation should be "skip expensive passes" (disable QuickPick, skip CTE optimization, skip materialization advisory) rather
+  than "rewrite physical selection." This is achievable via OptimizerTuning — set quickpick.enabled = false, disable specific rules, without a fundamentally new code path.
+
+  So the real Tier 0 might be: existing optimizer with NaiveStatsProvider AND a restricted tuning profile (no QuickPick, no materialization advisory). This is a hybrid of A and B that requires no new code — just a second tuning preset.
+
+  ---
+  Decision 4: Statement ↔ Fingerprint Registry Interaction
+
+  Option A: Registry holds metadata only, plan stays on Statement
+
+  The registry stores execution counts, actual cardinalities, tier, and cooling state. Each Statement still owns its own compiled plan. On compile(), the Statement consults the registry for tier selection and feeds runtime overlay data into the optimizer.
+
+  Pros:
+  - Minimal coupling — registry is a passive data store, Statement is the active planner
+  - No cross-Statement plan sharing (which would require complex lifecycle management — what happens when one Statement is finalized but another shares its plan?)
+  - Soft invalidation is simple: set a flag on the registry entry, each Statement checks on next compile()
+  - Schema-change hard invalidation stays on Statement (existing mechanism unchanged)
+
+  Cons:
+  - Two Statements running the same query shape each compile independently — duplicate optimization work
+  - The registry doesn't directly benefit first execution of a query (no cached plan to reuse)
+  - "Consults the registry" means the Statement needs access to both the registry and the runtime overlay, adding parameters to the compile path
+
+  Key tradeoff: Simplicity and safety at the cost of not sharing compiled plans across Statements. In the embedded scenario, how common is it to have multiple live Statements for the same query? If the pattern is prepare-once-execute-many (single Statement reused), this
+   is a non-issue.
+
+  Option B: Registry holds compiled plans, Statements share them
+
+  The registry caches optimized plans keyed by fingerprint. On compile(), a Statement checks the registry for a cached plan. If found, it reuses it (with validation that schema hasn't changed).
+
+  Pros:
+  - Second Statement with the same query shape gets a free compiled plan
+  - Optimization work is truly amortized across all users of a query shape
+
+  Cons:
+  - Plan lifecycle is now shared — who owns the plan? When does it get GC'd? What if one Statement is finalized but the plan is still in the registry?
+  - Plans capture schema snapshots via EmissionContext. A shared plan's snapshot may not match a later Statement's expectations if schema changed between the two
+  - The existing schema-change invalidation is per-Statement (event listener sets needsCompile). Shared plans need a different invalidation path — invalidate the registry entry, which then cascades
+  - Plans are emitted into Instructions with schema captures (table refs, function refs). Sharing plans means sharing these captures. If the captures reference connection-specific state (vtab instances), sharing breaks
+  - Thread safety: if two Statements compile concurrently for the same fingerprint, who wins the race?
+
+  Key tradeoff: Amortized compilation at the cost of significant lifecycle complexity. The shared-state concerns (schema captures, vtab instances, invalidation cascading) are substantial.
+
+  Option C: Registry holds structural plans, physical selection per-Statement
+
+  The registry caches the post-structural-pass plan (after passes 0-1 but before physical selection). Each Statement retrieves this intermediate plan and runs physical selection locally with its own stats context.
+
+  Pros:
+  - Structural passes (the deterministic part) are shared — predicate pushdown, CSE, etc. are done once
+  - Physical selection (the stats-dependent part) is per-Statement, avoiding the shared-capture problems
+  - Soft invalidation for stats changes is natural — re-run physical selection with new overlay
+  - Hard invalidation for schema changes clears the registry entry (structural plan is invalid)
+
+  Cons:
+  - Requires the PassManager to produce and accept intermediate plans (pause after structural, resume at physical)
+  - The intermediate plan format needs to be stable — structural passes must not leave the plan in a state that physical selection can't consume
+  - More complex than Option A but less complex than Option B
+  - The "skip structural passes" behavior of Tier 2 re-optimization naturally falls out of this design — but it needs the PassManager split that both options require
+
+  Key tradeoff: The most architecturally elegant option, but requires PassManager support for partial execution and a well-defined intermediate plan contract.
+
+  My read
+
+  Option A for Phase 1. The prepare-once-execute-many pattern means cross-Statement plan sharing has low value. The registry's primary job is tracking execution metadata for tier selection and feedback — not caching plans. The Statement already caches its own plan and
+  handles invalidation.
+
+  Option C is the right long-term architecture (it cleanly separates the deterministic structural phase from the stats-dependent physical phase), and it falls naturally out of the PassManager selective execution work that Tier 2 already requires. But it doesn't need to
+  be built for Phase 1.
+
+  ---
+  Decision 5: Counter → Overlay Granularity
+
+  This one wasn't in my original list but emerged from thinking through Decision 2. The StatsProvider interface takes (TableSchema, predicate) as keys. The runtime overlay needs to store observations at a granularity that matches these keys. What granularity?
+
+  Option A: Per-table row count only
+
+  The overlay stores only table → observed row count. No predicate-level selectivity.
+
+  Pros:
+  - Simplest possible overlay. One number per table.
+  - The most impactful single feedback signal — if the estimated table size is 1000 (naive default) but reality is 10M, the plan is likely wrong everywhere
+  - Easy to collect: count at scan output
+  - Easy to key: table name is unambiguous
+
+  Cons:
+  - Doesn't help with selectivity misestimates. A table with 10M rows and a predicate that filters to 5 rows — knowing the table size helps, but the selectivity (0.0000005) is what really matters for join order and access path selection
+  - Doesn't help with join selectivity, which depends on correlation between tables
+
+  Option B: Per-table row count + per-predicate selectivity
+
+  The overlay stores table → row count and (table, predicate_fingerprint) → selectivity.
+
+  Pros:
+  - Captures the two most impactful feedback signals
+  - Predicate selectivity directly drives access path selection (index seek vs. scan) and join order
+  - Predicate fingerprinting already exists (fingerprintExpression)
+
+  Cons:
+  - Predicate fingerprints include literal values (by design — they're for CSE dedup). For the overlay, we'd need a normalized fingerprint that replaces literals with type placeholders (e.g., BO:=(CR:123,LI:?) instead of BO:=(CR:123,LI:42))
+  - The selectivity observation is per-execution — one data point. It could be an outlier. Needs smoothing (running average, or exponential decay)
+  - More keys in the overlay map, more memory, more LRU pressure
+
+  Option C: Full per-operator cardinality
+
+  Store actual row counts at every monitored operator (scan, filter, join, aggregate, sort), keyed by operator + plan position.
+
+  Pros:
+  - Maximum information for re-optimization — every cost estimate can be corrected
+  - Enables Tier 3 (mid-execution adaptation) where individual operator estimates matter
+
+  Cons:
+  - The overlay becomes plan-specific, not table-specific. If the plan changes (different join order), the cached cardinalities don't apply
+  - Keying by plan position is fragile — plan structure changes invalidate all cached data
+  - Much more data to store and manage
+  - Overkill for Phase 1
+
+  My read
+
+  Option A for Phase 1, Option B for Phase 2. Per-table row count is the single highest-leverage feedback signal, requires minimal infrastructure, and is unambiguous to key. Predicate selectivity is the next most valuable signal and can be added once the feedback
+  pipeline is proven. Full per-operator cardinality is Tier 3 territory.
