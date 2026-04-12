@@ -315,8 +315,7 @@ describe('Property-Based Tests', () => {
 					? JSON.parse(resultRow!.result)
 					: resultRow!.result;
 				const isEqual = deepEqualIgnoringZeroSign(parsed, value);
-				expect(isEqual).to.be.true,
-					`JSON edge roundtrip failed for ${label}`;
+				expect(isEqual, `JSON edge roundtrip failed for ${label}`).to.be.true;
 			}
 		});
 	});
