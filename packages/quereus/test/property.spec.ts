@@ -1150,4 +1150,220 @@ describe('Property-Based Tests', () => {
 		});
 	});
 
+	// --- 13. Window Function Invariants ---
+	describe('Window Function Invariants', () => {
+		it('row_number() produces contiguous 1..N (unpartitioned)', async () => {
+			await db.exec('CREATE TABLE wf_rn (id INTEGER PRIMARY KEY, val INTEGER) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(fc.integer({ min: -1000, max: 1000 }), { minLength: 1, maxLength: 50 }),
+				async (values) => {
+					await db.exec('DELETE FROM wf_rn');
+					const stmt = db.prepare('INSERT INTO wf_rn (id, val) VALUES (?, ?)');
+					try {
+						for (let i = 0; i < values.length; i++) {
+							await stmt.run([i + 1, values[i]]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					const rowNums: number[] = [];
+					for await (const row of db.eval('select row_number() over (order by id) as rn from wf_rn')) {
+						rowNums.push(row.rn as number);
+					}
+
+					expect(rowNums.length).to.equal(values.length);
+					const expected = Array.from({ length: values.length }, (_, i) => i + 1);
+					expect(rowNums).to.deep.equal(expected,
+						`row_number() should produce contiguous 1..${values.length}, got ${JSON.stringify(rowNums)}`);
+				}
+			), { numRuns: 50 });
+		});
+
+		it('partitioned row_number() produces 1..K per partition', async () => {
+			await db.exec('CREATE TABLE wf_prn (id INTEGER PRIMARY KEY, grp INTEGER NOT NULL, val INTEGER) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(
+					fc.record({
+						grp: fc.integer({ min: 1, max: 3 }),
+						val: fc.integer({ min: -1000, max: 1000 }),
+					}),
+					{ minLength: 1, maxLength: 50 }
+				),
+				async (rows) => {
+					await db.exec('DELETE FROM wf_prn');
+					const stmt = db.prepare('INSERT INTO wf_prn (id, grp, val) VALUES (?, ?, ?)');
+					try {
+						for (let i = 0; i < rows.length; i++) {
+							await stmt.run([i + 1, rows[i].grp, rows[i].val]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					const results: Array<{ grp: number; rn: number }> = [];
+					for await (const row of db.eval(
+						'select grp, row_number() over (partition by grp order by id) as rn from wf_prn'
+					)) {
+						results.push({ grp: row.grp as number, rn: row.rn as number });
+					}
+
+					// Group results by partition
+					const partitions = new Map<number, number[]>();
+					for (const r of results) {
+						const arr = partitions.get(r.grp) ?? [];
+						arr.push(r.rn);
+						partitions.set(r.grp, arr);
+					}
+
+					// Each partition should have contiguous 1..K
+					for (const [grp, rns] of partitions) {
+						const expected = Array.from({ length: rns.length }, (_, i) => i + 1);
+						expect(rns).to.deep.equal(expected,
+							`Partition ${grp}: row_number() should be 1..${rns.length}, got ${JSON.stringify(rns)}`);
+					}
+				}
+			), { numRuns: 50 });
+		});
+
+		it('running sum via window equals cumulative sum', async () => {
+			await db.exec('CREATE TABLE wf_rsum (id INTEGER PRIMARY KEY, val INTEGER NOT NULL) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(fc.integer({ min: -100, max: 100 }), { minLength: 1, maxLength: 50 }),
+				async (values) => {
+					await db.exec('DELETE FROM wf_rsum');
+					const stmt = db.prepare('INSERT INTO wf_rsum (id, val) VALUES (?, ?)');
+					try {
+						for (let i = 0; i < values.length; i++) {
+							await stmt.run([i + 1, values[i]]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					const windowSums: number[] = [];
+					for await (const row of db.eval(
+						'select val, sum(val) over (order by id rows between unbounded preceding and current row) as running from wf_rsum order by id'
+					)) {
+						windowSums.push(row.running as number);
+					}
+
+					// Compute expected cumulative sums independently
+					const expectedSums: number[] = [];
+					let cumSum = 0;
+					for (const v of values) {
+						cumSum += v;
+						expectedSums.push(cumSum);
+					}
+
+					expect(windowSums).to.deep.equal(expectedSums,
+						`Running sum mismatch: window=${JSON.stringify(windowSums)}, expected=${JSON.stringify(expectedSums)}`);
+				}
+			), { numRuns: 50 });
+		});
+
+		it('total window sum equals aggregate sum', async () => {
+			await db.exec('CREATE TABLE wf_tsum (id INTEGER PRIMARY KEY, val INTEGER NOT NULL) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(fc.integer({ min: -100, max: 100 }), { minLength: 1, maxLength: 50 }),
+				async (values) => {
+					await db.exec('DELETE FROM wf_tsum');
+					const stmt = db.prepare('INSERT INTO wf_tsum (id, val) VALUES (?, ?)');
+					try {
+						for (let i = 0; i < values.length; i++) {
+							await stmt.run([i + 1, values[i]]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					// Get aggregate sum
+					let aggSum: number | null = null;
+					for await (const row of db.eval('select sum(val) as s from wf_tsum')) {
+						aggSum = row.s as number;
+					}
+
+					// Get window sum on every row (unpartitioned, no order = full frame)
+					const windowSums: number[] = [];
+					for await (const row of db.eval('select sum(val) over () as wsum from wf_tsum')) {
+						windowSums.push(row.wsum as number);
+					}
+
+					expect(windowSums.length).to.equal(values.length);
+					for (let i = 0; i < windowSums.length; i++) {
+						expect(windowSums[i]).to.equal(aggSum,
+							`Row ${i}: window sum(val) over () = ${windowSums[i]}, but aggregate sum = ${aggSum}`);
+					}
+				}
+			), { numRuns: 50 });
+		});
+
+		it('rank() and dense_rank() tie consistency', async () => {
+			await db.exec('CREATE TABLE wf_rank (id INTEGER PRIMARY KEY, sort_key INTEGER NOT NULL) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(fc.integer({ min: 1, max: 10 }), { minLength: 2, maxLength: 50 }),
+				async (keys) => {
+					await db.exec('DELETE FROM wf_rank');
+					const stmt = db.prepare('INSERT INTO wf_rank (id, sort_key) VALUES (?, ?)');
+					try {
+						for (let i = 0; i < keys.length; i++) {
+							await stmt.run([i + 1, keys[i]]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					const results: Array<{ sort_key: number; rnk: number; drnk: number }> = [];
+					for await (const row of db.eval(
+						'select sort_key, rank() over (order by sort_key) as rnk, dense_rank() over (order by sort_key) as drnk from wf_rank'
+					)) {
+						results.push({
+							sort_key: row.sort_key as number,
+							rnk: row.rnk as number,
+							drnk: row.drnk as number,
+						});
+					}
+
+					// Verify: rows with the same sort_key must have the same rank and dense_rank
+					const rankByKey = new Map<number, number>();
+					const denseRankByKey = new Map<number, number>();
+					for (const r of results) {
+						if (rankByKey.has(r.sort_key)) {
+							expect(r.rnk).to.equal(rankByKey.get(r.sort_key),
+								`rank() inconsistent for sort_key=${r.sort_key}`);
+						} else {
+							rankByKey.set(r.sort_key, r.rnk);
+						}
+						if (denseRankByKey.has(r.sort_key)) {
+							expect(r.drnk).to.equal(denseRankByKey.get(r.sort_key),
+								`dense_rank() inconsistent for sort_key=${r.sort_key}`);
+						} else {
+							denseRankByKey.set(r.sort_key, r.drnk);
+						}
+					}
+
+					// Verify: dense_rank values have no gaps (should be 1, 2, 3, ...)
+					const distinctDenseRanks = [...new Set(results.map(r => r.drnk))].sort((a, b) => a - b);
+					const expectedDenseRanks = Array.from({ length: distinctDenseRanks.length }, (_, i) => i + 1);
+					expect(distinctDenseRanks).to.deep.equal(expectedDenseRanks,
+						`dense_rank() should have no gaps: got ${JSON.stringify(distinctDenseRanks)}`);
+
+					// Verify: rank() of first occurrence matches position
+					// rank(x) = 1 + count of rows with sort_key < x
+					const sortedKeys = [...keys].sort((a, b) => a - b);
+					for (const [key, rnk] of rankByKey) {
+						const expectedRank = sortedKeys.indexOf(key) + 1;
+						expect(rnk).to.equal(expectedRank,
+							`rank() for sort_key=${key}: expected ${expectedRank}, got ${rnk}`);
+					}
+				}
+			), { numRuns: 50 });
+		});
+	});
+
 });
