@@ -20,19 +20,21 @@ verifying relational algebra laws across randomly generated schemas and data usi
 ## Testing
 
 - All 5 active tests pass (1 pending/skipped)
-- No regressions in existing fuzz or optimizer tests (20 passing total)
-- Build and type checks clean
+- Full suite: 1722 passing, 3 pending — no regressions
+- Build clean
 
 ## Bug found
 
 DISTINCT deduplication bug filed as `tickets/fix/4-distinct-deduplication-bug.md`.
 Test is `.skip`ped until the underlying issue is resolved.
 
-## Review notes
+## Review findings
 
-- Resource cleanup: every Database closed in `finally`
-- Test isolation: each property creates/closes its own Database
-- numRuns in 75-100 range, suitable for CI
+- **DRY fix applied**: Hoisted duplicate `setupSchema` from Grammar-Based and Algebraic
+  describe blocks to module-level with explicit `db` parameter, eliminating closure dependency.
+- Resource cleanup: every Database closed in `finally` — correct
+- Test isolation: each property creates/closes its own Database — correct
+- numRuns 75-100 per property, ~2s total for the block — suitable for CI
 - Error messages include table/column names and expected vs actual values
 - Cast-to-text pattern for cross-table type compatibility is sound
 - Dedicated `arbMultiTableSchema` generator avoids precondition skip waste

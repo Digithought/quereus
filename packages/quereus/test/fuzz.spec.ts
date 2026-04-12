@@ -139,6 +139,13 @@ async function seedTable(db: Database, table: TableInfo, rowCount: number): Prom
 	}
 }
 
+async function setupSchema(db: Database, schema: SchemaInfo, rowsPerTable: number): Promise<void> {
+	await createSchema(db, schema);
+	for (const table of schema.tables) {
+		await seedTable(db, table, rowsPerTable);
+	}
+}
+
 // ============================================================================
 // Phase 2: SQL String Arbitraries
 // ============================================================================
@@ -547,13 +554,6 @@ describe('Grammar-Based SQL Fuzzing', function () {
 
 	let db: Database;
 
-	async function setupSchema(schema: SchemaInfo, rowsPerTable: number): Promise<void> {
-		await createSchema(db, schema);
-		for (const table of schema.tables) {
-			await seedTable(db, table, rowsPerTable);
-		}
-	}
-
 	it('SELECT queries do not crash', async function () {
 		await fc.assert(
 			fc.asyncProperty(
@@ -563,7 +563,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
 						const sqls = fc.sample(arbs.select as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
@@ -587,7 +587,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
 						const sqls = fc.sample(arbs.dml as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
@@ -612,7 +612,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount, cteSampleCount, compoundSampleCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
 						const ctes = fc.sample(arbs.cte as fc.Arbitrary<string>, cteSampleCount);
 						const compounds = fc.sample(arbs.select as fc.Arbitrary<string>, compoundSampleCount);
@@ -637,7 +637,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
 						const sqls = fc.sample(arbs.windowSelect as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
@@ -661,7 +661,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
 						const sqls = fc.sample(arbs.statement as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
@@ -690,7 +690,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
 						const sqls = fc.sample(arbs.select as fc.Arbitrary<string>, 5);
 						for (const sql of sqls) {
@@ -726,7 +726,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							const rows = await tryCollectRows(db, `select count(*) as cnt from ${table.name}`);
 							if (rows === null) continue;
@@ -753,7 +753,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount, limit) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							const rows = await tryCollectRows(db, `select * from ${table.name} limit ${limit}`);
 							if (rows === null) continue;
@@ -778,7 +778,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							for (const col of table.columns) {
 								const rows = await tryCollectRows(db, `select ${col.name} as v from ${table.name} order by ${col.name} asc`);
@@ -826,13 +826,6 @@ describe('Algebraic Identities', function () {
 
 	let db: Database;
 
-	async function setupSchema(schema: SchemaInfo, rowsPerTable: number): Promise<void> {
-		await createSchema(db, schema);
-		for (const table of schema.tables) {
-			await seedTable(db, table, rowsPerTable);
-		}
-	}
-
 	it('COUNT(*) matches iteration count', async function () {
 		await fc.assert(
 			fc.asyncProperty(
@@ -841,7 +834,7 @@ describe('Algebraic Identities', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							const countRows = await tryCollectRows(db, `select count(*) as cnt from ${table.name}`);
 							fc.pre(countRows !== null);
@@ -875,7 +868,7 @@ describe('Algebraic Identities', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							for (const col of table.columns) {
 								const rows = await tryCollectRows(
@@ -909,7 +902,7 @@ describe('Algebraic Identities', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							const col = table.columns[0].name;
 							const base = `select ${col} from ${table.name}`;
@@ -977,7 +970,7 @@ describe('Algebraic Identities', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 
 						const t1 = schema.tables[0];
 						const t2 = schema.tables[1];
@@ -1028,7 +1021,7 @@ describe('Algebraic Identities', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							const col = table.columns[0].name;
 							const q = `select ${col} from ${table.name}`;
@@ -1057,7 +1050,7 @@ describe('Algebraic Identities', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							for (const col of table.columns) {
 								if (col.type !== 'integer' && col.type !== 'real') continue;
