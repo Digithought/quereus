@@ -30,19 +30,18 @@ trusting UNIQUE → query output contains duplicates.
 
 ## Verified Reproduction
 
-Counterexample from fuzz test (seed -1030173194):
+Counterexample from fuzz test (seed 1089454147):
 ```sql
-create table t1 (c_blob0 blob unique, c_int1 integer primary key,
-                  c_any2 any not null unique) using memory;
-insert into t1 values (x'00', 1, 'a');
-insert into t1 values (x'00', 2, 'b');  -- should fail UNIQUE, but succeeds
-insert into t1 values (x'00', 3, 'c');  -- should fail UNIQUE, but succeeds
-select distinct c_blob0 from t1;
--- Returns 3 rows (all x'00') instead of 1
+create table t1 (c_int0 integer not null unique, c_int1 integer primary key) using memory;
+insert into t1 values (1, 100);
+insert into t1 values (1, 103);  -- should fail UNIQUE, but succeeds
+select distinct c_int0 from t1;
+-- Returns 2 rows (both 1) instead of 1; DISTINCT node eliminated from plan
 ```
 
-Confirmed: DISTINCT BTree comparison itself works correctly (tested without UNIQUE
-constraint). The bug is UNIQUE enforcement + DISTINCT elimination.
+Confirmed via plan dump: with UNIQUE constraint, plan is `Project → SeqScan` (no DistinctNode).
+Without UNIQUE constraint, plan is `Distinct → Project → SeqScan` and deduplication works correctly.
+The bug is UNIQUE enforcement + DISTINCT elimination, not the BTree comparison logic.
 
 ## Architecture
 
@@ -89,6 +88,15 @@ updated).
 In `packages/quereus/test/fuzz.spec.ts:870`, change `it.skip(...)` to `it(...)` for
 `'SELECT DISTINCT results are unique'`.
 
+## Defensive: Nullable UNIQUE columns and DISTINCT elimination
+
+Even after UNIQUE enforcement is fixed, `type-utils.ts:38-43` adds ALL unique constraints
+as keys regardless of column nullability. In SQL, UNIQUE on a nullable column allows multiple
+NULLs, so it's not a true key for DISTINCT elimination purposes. As a defensive measure,
+`relationTypeFromTableSchema()` should only add a UNIQUE constraint to `keys[]` when all
+columns in the constraint are NOT NULL. This is a secondary concern but prevents a class of
+future bugs if nullable UNIQUE columns become possible.
+
 ## TODO
 
 ### Phase 1
@@ -101,6 +109,7 @@ In `packages/quereus/test/fuzz.spec.ts:870`, change `it.skip(...)` to `it(...)` 
 - [ ] Skip check for the row being updated (same PK)
 
 ### Phase 3
+- [ ] In `type-utils.ts:38-43`, only add UNIQUE constraints to `keys[]` when all constrained columns are NOT NULL (defensive fix for nullable UNIQUE)
 - [ ] Unskip the fuzz test `'SELECT DISTINCT results are unique'` in `fuzz.spec.ts`
 - [ ] Run the full fuzz test suite to verify the fix
 - [ ] Run `yarn test` across the workspace to check for regressions
