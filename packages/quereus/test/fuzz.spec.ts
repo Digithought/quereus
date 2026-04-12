@@ -1105,3 +1105,254 @@ describe('Algebraic Identities', function () {
 		);
 	});
 });
+
+// ============================================================================
+// Phase 5: Optimizer Equivalence (Differential Testing)
+// ============================================================================
+
+describe('Optimizer Equivalence', function () {
+	this.timeout(120_000);
+
+	// Rule groups by category (rewrite rules only — safe to disable without
+	// preventing physical plan generation)
+	const PREDICATE_RULES = ['predicate-pushdown', 'filter-merge'];
+	const JOIN_REWRITE_RULES = ['join-greedy-commute', 'join-key-inference'];
+	const SUBQUERY_RULES = ['subquery-decorrelation'];
+	const CACHE_RULES = ['cte-optimization', 'in-subquery-cache', 'mutating-subquery-cache', 'scalar-cse'];
+	const DISTINCT_RULES = ['distinct-elimination'];
+
+	// All rewrite rules combined for the catch-all test
+	const ALL_REWRITE_RULES = [
+		...PREDICATE_RULES,
+		...JOIN_REWRITE_RULES,
+		...SUBQUERY_RULES,
+		...CACHE_RULES,
+		...DISTINCT_RULES,
+		'projection-pruning',
+	];
+
+	/**
+	 * Create paired databases with identical schema and data.
+	 * The restricted database has the specified rules disabled.
+	 */
+	async function createPairedDatabases(
+		schema: SchemaInfo,
+		rowCount: number,
+		disabledRuleIds: string[],
+	): Promise<[Database, Database]> {
+		const dbFull = new Database();
+		const dbRestricted = new Database();
+
+		// Disable rules on restricted DB
+		const baseTuning = dbRestricted.optimizer.tuning;
+		dbRestricted.optimizer.updateTuning({
+			...baseTuning,
+			disabledRules: new Set(disabledRuleIds),
+		});
+
+		// Create identical schemas
+		await createSchema(dbFull, schema);
+		await createSchema(dbRestricted, schema);
+
+		// Seed with identical data — verify both DBs agree on each insert
+		for (const table of schema.tables) {
+			const rows = fc.sample(arbSeedRow(table), rowCount);
+			for (const sql of rows) {
+				let fullOk = true;
+				let restrictedOk = true;
+				try { await dbFull.exec(sql); } catch (e) {
+					if (!(e instanceof QuereusError)) throw e;
+					fullOk = false;
+				}
+				try { await dbRestricted.exec(sql); } catch (e) {
+					if (!(e instanceof QuereusError)) throw e;
+					restrictedOk = false;
+				}
+				if (fullOk !== restrictedOk) {
+					throw new Error(
+						`Seeding diverged: insert ${fullOk ? 'succeeded' : 'failed'} on full but ` +
+						`${restrictedOk ? 'succeeded' : 'failed'} on restricted\nSQL: ${sql}`
+					);
+				}
+			}
+		}
+
+		return [dbFull, dbRestricted];
+	}
+
+	/**
+	 * Compare result sets order-independently. Throws on mismatch.
+	 * both-null (both errored) = OK; one-null = bug; both-non-null must match.
+	 */
+	function assertEqualResultSets(
+		full: Record<string, unknown>[] | null,
+		restricted: Record<string, unknown>[] | null,
+		sql: string,
+		ruleIds: string[],
+	): void {
+		if (full === null && restricted === null) return;
+
+		if (full === null || restricted === null) {
+			const which = full === null ? 'full (rules enabled)' : 'restricted (rules disabled)';
+			throw new Error(
+				`Only ${which} errored when disabling rules [${ruleIds.join(', ')}]\nSQL: ${sql}`
+			);
+		}
+
+		// Sort rows by JSON serialization for order-independent comparison
+		const normalize = (rows: Record<string, unknown>[]) =>
+			rows.map(r => JSON.stringify(r)).sort();
+		const s1 = normalize(full);
+		const s2 = normalize(restricted);
+
+		if (s1.length !== s2.length) {
+			throw new Error(
+				`Row count mismatch: ${s1.length} (full) vs ${s2.length} (restricted) ` +
+				`when disabling rules [${ruleIds.join(', ')}]\nSQL: ${sql}`
+			);
+		}
+		for (let i = 0; i < s1.length; i++) {
+			if (s1[i] !== s2[i]) {
+				throw new Error(
+					`Row mismatch at sorted position ${i} when disabling rules [${ruleIds.join(', ')}]\n` +
+					`Full:       ${s1[i]}\nRestricted: ${s2[i]}\nSQL: ${sql}`
+				);
+			}
+		}
+	}
+
+	/**
+	 * Run differential test: same queries on paired databases, compare results.
+	 */
+	async function runDifferentialTest(
+		schema: SchemaInfo,
+		rowCount: number,
+		disabledRuleIds: string[],
+		queryArbitrary: fc.Arbitrary<string>,
+		queryCount: number,
+	): Promise<void> {
+		const [dbFull, dbRestricted] = await createPairedDatabases(schema, rowCount, disabledRuleIds);
+		try {
+			const queries = fc.sample(queryArbitrary, queryCount);
+			for (const sql of queries) {
+				const fullResult = await tryCollectRows(dbFull, sql);
+				const restrictedResult = await tryCollectRows(dbRestricted, sql);
+				assertEqualResultSets(fullResult, restrictedResult, sql, disabledRuleIds);
+			}
+		} finally {
+			await dbFull.close();
+			await dbRestricted.close();
+		}
+	}
+
+	it('predicate pushdown rules produce identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					await runDifferentialTest(
+						schema, rowCount, PREDICATE_RULES,
+						arbs.select as fc.Arbitrary<string>, 5,
+					);
+				}
+			),
+			{ numRuns: 25, endOnFailure: true }
+		);
+	});
+
+	it('join rewrite rules produce identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					await runDifferentialTest(
+						schema, rowCount, JOIN_REWRITE_RULES,
+						arbs.select as fc.Arbitrary<string>, 5,
+					);
+				}
+			),
+			{ numRuns: 25, endOnFailure: true }
+		);
+	});
+
+	it('subquery decorrelation produces identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					await runDifferentialTest(
+						schema, rowCount, SUBQUERY_RULES,
+						arbs.select as fc.Arbitrary<string>, 5,
+					);
+				}
+			),
+			{ numRuns: 25, endOnFailure: true }
+		);
+	});
+
+	it('cache/CTE rules produce identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					const queryArb = fc.oneof(
+						arbs.cte as fc.Arbitrary<string>,
+						arbs.select as fc.Arbitrary<string>,
+					);
+					await runDifferentialTest(
+						schema, rowCount, CACHE_RULES,
+						queryArb, 5,
+					);
+				}
+			),
+			{ numRuns: 25, endOnFailure: true }
+		);
+	});
+
+	it('distinct elimination produces identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					await runDifferentialTest(
+						schema, rowCount, DISTINCT_RULES,
+						arbs.select as fc.Arbitrary<string>, 5,
+					);
+				}
+			),
+			{ numRuns: 25, endOnFailure: true }
+		);
+	});
+
+	it('all rewrite rules disabled produces identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					const queryArb = fc.oneof(
+						arbs.select as fc.Arbitrary<string>,
+						arbs.cte as fc.Arbitrary<string>,
+						arbs.windowSelect as fc.Arbitrary<string>,
+					);
+					await runDifferentialTest(
+						schema, rowCount, ALL_REWRITE_RULES,
+						queryArb, 5,
+					);
+				}
+			),
+			{ numRuns: 20, endOnFailure: true }
+		);
+	});
+});
