@@ -646,23 +646,12 @@ class QuereusWorker implements QuereusWorkerAPI {
     // Open a default KV store for sync metadata
     this.kvStore = await IndexedDBStore.openForTable('quoomb', 'sync_meta');
 
-    // Restore persisted tables from IndexedDB
-    await this.restorePersistedTables();
-  }
-
-  private async restorePersistedTables(): Promise<void> {
-    const db = this.db;
-    if (!db || !this.storeModule) {
-      return;
-    }
-
-    // Load DDL from the central catalog store
-    const ddlStatements = await this.storeModule.loadAllDDL();
-
-    if (ddlStatements.length > 0) {
-      // Import the catalog into the schema manager
-      // This calls connect() on the module instead of create()
-      await db.schemaManager.importCatalog(ddlStatements);
+    // Rehydrate persisted catalog from IndexedDB
+    const rehydration = await this.storeModule.rehydrateCatalog(db);
+    if (rehydration.errors.length > 0) {
+      console.warn(
+        `[quoomb-web] ${rehydration.errors.length} catalog entries failed to rehydrate`
+      );
     }
   }
 

@@ -42,6 +42,23 @@ import { deserializeRow } from './serialization.js';
 import { generateTableDDL } from './ddl-generator.js';
 
 /**
+ * Result of catalog rehydration.
+ */
+export interface RehydrationResult {
+	tables: string[];
+	indexes: string[];
+	errors: RehydrationError[];
+}
+
+/**
+ * An error encountered while rehydrating a single DDL entry.
+ */
+export interface RehydrationError {
+	ddl: string;
+	error: Error;
+}
+
+/**
  * Configuration options for StoreModule tables.
  */
 export interface StoreModuleConfig extends BaseModuleConfig {
@@ -671,6 +688,42 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		}
 
 		return ddlStatements;
+	}
+
+	/**
+	 * Rehydrate persisted catalog into the in-memory schema manager.
+	 *
+	 * Loads all DDL from the catalog store and imports each entry
+	 * individually. Parse failures are collected rather than fatal,
+	 * so a single corrupt entry does not prevent other tables from
+	 * loading.
+	 *
+	 * Call after `db.registerModule()` (and `db.setDefaultVtabName()`
+	 * if DDL may lack a USING clause).
+	 */
+	async rehydrateCatalog(db: Database): Promise<RehydrationResult> {
+		const ddlStatements = await this.loadAllDDL();
+		const result: RehydrationResult = { tables: [], indexes: [], errors: [] };
+
+		if (ddlStatements.length === 0) {
+			return result;
+		}
+
+		for (const ddl of ddlStatements) {
+			try {
+				const imported = await db.schemaManager.importCatalog([ddl]);
+				result.tables.push(...imported.tables);
+				result.indexes.push(...imported.indexes);
+			} catch (e: unknown) {
+				const error = e instanceof Error ? e : new Error(String(e));
+				console.warn(
+					`[StoreModule] Failed to rehydrate DDL entry, skipping: ${error.message}\n  DDL: ${ddl.substring(0, 120)}`
+				);
+				result.errors.push({ ddl, error });
+			}
+		}
+
+		return result;
 	}
 
 	/**
