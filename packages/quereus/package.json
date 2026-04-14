@@ -62,12 +62,16 @@
     "test:plans": "cd ../.. && node --import ./packages/quereus/register.mjs node_modules/mocha/bin/mocha.js \"packages/quereus/test/plan/**/*.spec.ts\" --colors",
     "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit",
-    "bench": "node bench/run.mjs"
+    "bench": "node bench/run.mjs",
+    "mutation:subsystem": "node mutation-subsystem.mjs"
   },
   "devDependencies": {
     "@quereus/plugin-leveldb": "workspace:^",
     "@quereus/plugin-loader": "*",
     "@quereus/store": "workspace:^",
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/mocha-runner": "^9.6.1",
+    "@stryker-mutator/typescript-checker": "^9.6.1",
     "@types/chai": "^5.2.3",
     "@types/debug": "^4.1.12",
     "@types/mocha": "^10.0.10",

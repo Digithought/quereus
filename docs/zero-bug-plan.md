@@ -75,3 +75,54 @@ Run subsystem-at-a-time to keep execution time manageable. Priority targets:
 2. `src/runtime/emit/` — emitter correctness for each node type
 3. `src/func/builtins/` — function edge-case handling
 4. `src/vtab/memory/` — memory table index and scan logic
+
+### Mutation Testing Session Results (2026-04-13)
+
+Setup: Stryker (`@stryker-mutator/core` + mocha runner + typescript checker) configured in
+`packages/quereus/stryker.config.mjs`. Run via `yarn mutation:subsystem <alias>` where aliases
+are `analysis`, `emit`, `builtins`, `memory`.
+
+**Baseline scores (before killing tests):**
+
+| Subsystem | File | Score |
+|-----------|------|-------|
+| planner/analysis | predicate-normalizer.ts | 31.78% |
+| planner/analysis | binding-collector.ts | 0.00% |
+| planner/analysis | const-pass.ts | 64.65% |
+| planner/analysis | const-evaluator.ts | 61.29% |
+| planner/analysis | constraint-extractor.ts | 47.97% |
+| planner/analysis | expression-fingerprint.ts | 83.33% |
+| runtime/emit | sort.ts | 100% |
+| runtime/emit | filter.ts | 94.44% |
+| runtime/emit | distinct.ts | 87.50% |
+| runtime/emit | binary.ts | 68.15% |
+| runtime/emit | limit-offset.ts | 62.50% |
+| runtime/emit | cast.ts | 54.55% |
+| runtime/emit | unary.ts | 52.08% |
+| runtime/emit | scan.ts | 53.85% |
+| vtab/memory | module.ts | 66.67% |
+| vtab/memory | table.ts | 35.09% |
+| vtab/memory | connection.ts | 40.00% |
+
+**Tests added (140 net new tests, 1728 → 1868):**
+
+| Test file | Type | Tests | Targets |
+|-----------|------|-------|---------|
+| test/planner/predicate-normalizer.spec.ts | unit+integration | 50 | OR-to-IN collapse, De Morgan, comparison inversion, identity checks |
+| test/optimizer/expression-fingerprint.spec.ts | unit (additions) | 40 | Commutative ordering, BETWEEN NOT flag, window/aggregate/CASE |
+| test/optimizer/binding-collector.spec.ts | integration | 14 | Parameter/correlation collection, deduplication |
+| test/optimizer/const-pass.spec.ts | integration | 35 | Constant classification, border detection, replacement |
+| test/logic/104-emit-mutation-kills.sqllogic | sqllogic | ~40 assertions | cast null, bigint filter, negative limit/offset, null arithmetic, unary edge cases |
+| test/logic/101-builtin-mutation-kills.sqllogic | sqllogic | ~157 assertions | Null guards, edge cases for scalar/string/aggregate/conversion functions |
+| test/logic/105-vtab-memory-mutation-kills.sqllogic | sqllogic | ~164 assertions | IS NULL on NOT NULL, index planning, composite PK, savepoints, ALTER TABLE |
+
+**Common equivalent mutant patterns** (not worth killing):
+- Debug `note` string construction (cosmetic, no behavioral impact)
+- Identity-check optimizations (`a === b ? b : new(...)` — returns same logical value either way)
+- Resource cleanup in `finally` blocks (e.g., `outputSlot.close()`)
+
+**Next steps:**
+- Re-run Stryker periodically to track score improvements
+- Target `constraint-extractor.ts` (47.97%) — largest file with most survivors (176)
+- Add temporal arithmetic tests for `binary.ts` temporal paths
+- Consider per-file ignore lists for documented equivalent mutants

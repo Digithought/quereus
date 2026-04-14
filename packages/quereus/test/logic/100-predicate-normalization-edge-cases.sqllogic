@@ -129,6 +129,109 @@ select id from norm where a > 5 and (b > 50 and (a < 100 and b < 500)) order by 
 → [{"id":1},{"id":2},{"id":3}]
 
 -- =============================================================================
+-- OR-to-IN with mixed operand order (lit=col and col=lit)
+-- =============================================================================
+
+-- Mixed literal=column and column=literal patterns should all resolve correctly
+-- id=1: 10=a true; id=2: a=20 true; id=3: 30=a true
+select id from norm where 10 = a or a = 20 or 30 = a order by id;
+→ [{"id":1},{"id":2},{"id":3}]
+
+-- =============================================================================
+-- OR-to-IN with different columns should NOT collapse
+-- =============================================================================
+
+-- Different columns in OR disjuncts: no IN collapse, but correct results
+-- id=1: a=10 true; id=2: b=200 true; others: a≠10 and b≠200 or null
+select id from norm where a = 10 or b = 200 order by id;
+→ [{"id":1},{"id":2}]
+
+-- =============================================================================
+-- OR-to-IN with non-equality operators
+-- =============================================================================
+
+-- Non-equality (>) should not trigger IN collapse
+-- id=2: a=20>10; id=3: a=30>10; id=5: a=50>10; id=4: a=null
+select id from norm where a > 10 or a > 20 order by id;
+→ [{"id":2},{"id":3},{"id":5}]
+
+-- =============================================================================
+-- OR-to-IN with non-binary disjunct (BETWEEN)
+-- =============================================================================
+
+-- BETWEEN is not a BinaryOp; should not trigger IN collapse
+-- id=1: a=10 true; id=2: a=20 in [20,30]; id=3: a=30 in [20,30]
+select id from norm where a = 10 or a between 20 and 30 order by id;
+→ [{"id":1},{"id":2},{"id":3}]
+
+-- =============================================================================
+-- Deeply nested OR flattening (4-level)
+-- =============================================================================
+
+-- Four nested ORs: ((a=10 OR a=20) OR (a=30 OR a=50)) flattens completely
+select id from norm where ((a = 10 or a = 20) or (a = 30 or a = 50)) order by id;
+→ [{"id":1},{"id":2},{"id":3},{"id":5}]
+
+-- =============================================================================
+-- NOT over IS NOT NULL
+-- =============================================================================
+
+-- NOT (a IS NOT NULL) should behave like IS NULL
+-- id=4: a=null
+select id from norm where not (a is not null) order by id;
+→ [{"id":4}]
+
+-- NOT (b IS NOT NULL) should behave like IS NULL
+-- id=5: b=null
+select id from norm where not (b is not null) order by id;
+→ [{"id":5}]
+
+-- =============================================================================
+-- NOT over non-invertible binary (LIKE)
+-- =============================================================================
+
+-- NOT (c LIKE 'alpha') should negate the LIKE result
+-- id=2: beta≠alpha; id=3: null→null; id=4: delta≠alpha; id=5: epsilon≠alpha
+select id from norm where not (c like 'alpha') order by id;
+→ [{"id":2},{"id":4},{"id":5}]
+
+-- =============================================================================
+-- OR-to-IN boundary: 33 disjuncts (exceeds 32 limit)
+-- =============================================================================
+
+-- 33 disjuncts should not collapse to IN but still return correct results
+-- Only a=10 (id=1), a=20 (id=2), a=30 (id=3), a=50 (id=5) match from our data
+select id from norm where a=1 or a=2 or a=3 or a=4 or a=5 or a=6 or a=7 or a=8 or a=9 or a=10 or a=11 or a=12 or a=13 or a=14 or a=15 or a=16 or a=17 or a=18 or a=19 or a=20 or a=21 or a=22 or a=23 or a=24 or a=25 or a=26 or a=27 or a=28 or a=29 or a=30 or a=31 or a=32 or a=33 order by id;
+→ [{"id":1},{"id":2},{"id":3}]
+
+-- =============================================================================
+-- NOT BETWEEN double toggle
+-- =============================================================================
+
+-- NOT NOT BETWEEN: double NOT on BETWEEN should cancel out
+-- Equivalent to a BETWEEN 20 AND 30
+select id from norm where not not (a between 20 and 30) order by id;
+→ [{"id":2},{"id":3}]
+
+-- =============================================================================
+-- De Morgan with nested OR-to-IN
+-- =============================================================================
+
+-- NOT (a = 10 AND b = 100): De Morgan → a != 10 OR b != 100
+-- id=1: a=10,b=100 → false; id=2: a≠10 → true; id=3: a≠10 → true; id=4: b≠100 → true; id=5: a≠10 → true
+select id from norm where not (a = 10 and b = 100) order by id;
+→ [{"id":2},{"id":3},{"id":4},{"id":5}]
+
+-- =============================================================================
+-- Mixed operand order with more values
+-- =============================================================================
+
+-- Alternating lit=col and col=lit patterns
+-- id=1: 10=a; id=2: a=20; id=5: 50=a
+select id from norm where 10 = a or a = 20 or 50 = a order by id;
+→ [{"id":1},{"id":2},{"id":5}]
+
+-- =============================================================================
 -- Cleanup
 -- =============================================================================
 
