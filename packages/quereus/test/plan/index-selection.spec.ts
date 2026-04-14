@@ -1,5 +1,6 @@
 import { expect } from 'chai';
 import { Database } from '../../src/core/database.js';
+import { planOps, allRows } from './_helpers.js';
 
 describe('Plan shape: index selection', () => {
 	let db: Database;
@@ -26,24 +27,10 @@ describe('Plan shape: index selection', () => {
 		await db.close();
 	});
 
-	async function planOps(sql: string): Promise<string[]> {
-		const ops: string[] = [];
-		for await (const r of db.eval("SELECT op FROM query_plan(?)", [sql])) {
-			ops.push((r as { op: string }).op);
-		}
-		return ops;
-	}
-
-	async function allRows<T>(sql: string): Promise<T[]> {
-		const rows: T[] = [];
-		for await (const r of db.eval(sql)) rows.push(r as T);
-		return rows;
-	}
-
 	describe('index selected over sequential scan', () => {
 		it('uses IndexSeek for equality on secondary index', async () => {
 			const q = "SELECT name FROM products WHERE category = 'tools'";
-			const ops = await planOps(q);
+			const ops = await planOps(db, q);
 
 			const hasIndexAccess = ops.some(op =>
 				op === 'INDEXSEEK' || op === 'INDEXSCAN'
@@ -54,7 +41,7 @@ describe('Plan shape: index selection', () => {
 
 		it('uses IndexSeek for PK equality', async () => {
 			const q = "SELECT name FROM products WHERE id = 3";
-			const ops = await planOps(q);
+			const ops = await planOps(db, q);
 
 			expect(ops).to.include('INDEXSEEK', 'PK equality should use IndexSeek');
 			expect(ops).to.not.include('SEQSCAN');
@@ -62,7 +49,7 @@ describe('Plan shape: index selection', () => {
 
 		it('uses index access for range predicate on indexed column', async () => {
 			const q = "SELECT name FROM products WHERE price > 15.0";
-			const ops = await planOps(q);
+			const ops = await planOps(db, q);
 
 			const hasIndexAccess = ops.some(op =>
 				op === 'INDEXSEEK' || op === 'INDEXSCAN'
@@ -72,7 +59,7 @@ describe('Plan shape: index selection', () => {
 
 		it('uses index access for bounded range', async () => {
 			const q = "SELECT name FROM products WHERE price >= 10.0 AND price <= 25.0";
-			const ops = await planOps(q);
+			const ops = await planOps(db, q);
 
 			const hasIndexAccess = ops.some(op =>
 				op === 'INDEXSEEK' || op === 'INDEXSCAN'
@@ -83,14 +70,14 @@ describe('Plan shape: index selection', () => {
 
 	describe('correct results with index access', () => {
 		it('returns correct rows for equality on secondary index', async () => {
-			const results = await allRows<{ name: string }>(
+			const results = await allRows<{ name: string }>(db,
 				"SELECT name FROM products WHERE category = 'tools' ORDER BY name"
 			);
 			expect(results.map(r => r.name)).to.deep.equal(['Sprocket', 'Widget']);
 		});
 
 		it('returns correct rows for range on secondary index', async () => {
-			const results = await allRows<{ name: string; price: number }>(
+			const results = await allRows<{ name: string; price: number }>(db,
 				"SELECT name, price FROM products WHERE price > 15.0 ORDER BY price"
 			);
 			expect(results).to.have.lengthOf(2);
@@ -99,7 +86,7 @@ describe('Plan shape: index selection', () => {
 		});
 
 		it('returns correct rows for PK seek', async () => {
-			const results = await allRows<{ name: string }>(
+			const results = await allRows<{ name: string }>(db,
 				"SELECT name FROM products WHERE id = 3"
 			);
 			expect(results).to.deep.equal([{ name: 'Sprocket' }]);
@@ -109,7 +96,7 @@ describe('Plan shape: index selection', () => {
 	describe('no index available falls back to SeqScan', () => {
 		it('uses SeqScan for predicate on non-indexed column', async () => {
 			const q = "SELECT id FROM products WHERE name = 'Widget'";
-			const ops = await planOps(q);
+			const ops = await planOps(db, q);
 
 			const hasSeqScan = ops.includes('SEQSCAN');
 			const hasFilter = ops.includes('FILTER');

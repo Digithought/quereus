@@ -1,14 +1,6 @@
 import { expect } from 'chai';
 import { Database } from '../../src/core/database.js';
-
-interface PlanRow {
-	id: number;
-	parent_id: number | null;
-	op: string;
-	node_type: string;
-	detail: string;
-	object_name: string | null;
-}
+import { planRows, planOps, isDescendantOf } from './_helpers.js';
 
 describe('Plan shape: predicate pushdown', () => {
 	let db: Database;
@@ -21,37 +13,6 @@ describe('Plan shape: predicate pushdown', () => {
 		await db.close();
 	});
 
-	async function planRows(sql: string): Promise<PlanRow[]> {
-		const rows: PlanRow[] = [];
-		for await (const r of db.eval(
-			"SELECT id, parent_id, op, node_type, detail, object_name FROM query_plan(?)", [sql]
-		)) {
-			rows.push(r as PlanRow);
-		}
-		return rows;
-	}
-
-	async function planOps(sql: string): Promise<string[]> {
-		const ops: string[] = [];
-		for await (const r of db.eval("SELECT op FROM query_plan(?)", [sql])) {
-			ops.push((r as { op: string }).op);
-		}
-		return ops;
-	}
-
-	function isDescendantOf(rows: PlanRow[], childId: number, ancestorId: number): boolean {
-		let current = childId;
-		const visited = new Set<number>();
-		while (true) {
-			if (visited.has(current)) return false;
-			visited.add(current);
-			const row = rows.find(r => r.id === current);
-			if (!row || row.parent_id === null) return false;
-			if (row.parent_id === ancestorId) return true;
-			current = row.parent_id;
-		}
-	}
-
 	describe('predicate pushed below join', () => {
 		beforeEach(async () => {
 			await db.exec("CREATE TABLE a (id INTEGER PRIMARY KEY, x INTEGER, name TEXT) USING memory");
@@ -62,7 +23,7 @@ describe('Plan shape: predicate pushdown', () => {
 
 		it('join with single-table predicate contains both FILTER and JOIN nodes', async () => {
 			const q = "SELECT * FROM a JOIN b ON a.id = b.a_id WHERE a.x > 10";
-			const rows = await planRows(q);
+			const rows = await planRows(db, q);
 
 			const joinRow = rows.find(r => r.op.includes('JOIN'));
 			const filterRow = rows.find(r => r.op === 'FILTER');
@@ -89,7 +50,7 @@ describe('Plan shape: predicate pushdown', () => {
 
 		it('pushes predicate on original column through subquery projection', async () => {
 			const q = "SELECT * FROM (SELECT a.*, a.x + 1 AS y FROM a) v WHERE v.x > 10";
-			const ops = await planOps(q);
+			const ops = await planOps(db, q);
 
 			const hasFilter = ops.includes('FILTER');
 			const hasAccess = ops.some(op =>
@@ -98,7 +59,7 @@ describe('Plan shape: predicate pushdown', () => {
 			expect(hasAccess, 'Plan should contain an access node for the base table').to.equal(true);
 
 			if (hasFilter) {
-				const rows = await planRows(q);
+				const rows = await planRows(db, q);
 				const accessRow = rows.find(r =>
 					r.op === 'SEQSCAN' || r.op === 'INDEXSCAN' || r.op === 'INDEXSEEK'
 				);
@@ -118,7 +79,7 @@ describe('Plan shape: predicate pushdown', () => {
 			await db.exec("CREATE VIEW va AS SELECT id, x, name FROM a");
 			const q = "SELECT * FROM va WHERE id = 2";
 
-			const ops = await planOps(q);
+			const ops = await planOps(db, q);
 			expect(ops).to.include('INDEXSEEK', 'PK predicate through view should become INDEXSEEK');
 			expect(ops).to.not.include('FILTER', 'No residual FILTER after PK pushdown');
 		});

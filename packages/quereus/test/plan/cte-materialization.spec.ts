@@ -1,5 +1,6 @@
 import { expect } from 'chai';
 import { Database } from '../../src/core/database.js';
+import { planOps, allRows } from './_helpers.js';
 
 describe('Plan shape: CTE materialization', () => {
 	let db: Database;
@@ -14,24 +15,10 @@ describe('Plan shape: CTE materialization', () => {
 		await db.close();
 	});
 
-	async function planOps(sql: string): Promise<string[]> {
-		const ops: string[] = [];
-		for await (const r of db.eval("SELECT op FROM query_plan(?)", [sql])) {
-			ops.push((r as { op: string }).op);
-		}
-		return ops;
-	}
-
-	async function allRows<T>(sql: string): Promise<T[]> {
-		const rows: T[] = [];
-		for await (const r of db.eval(sql)) rows.push(r as T);
-		return rows;
-	}
-
 	describe('single-reference CTE should be inlined', () => {
 		it('does not produce a CACHE node for single-use CTE', async () => {
 			const q = "WITH cte AS (SELECT id, val FROM items WHERE val >= 20) SELECT * FROM cte";
-			const ops = await planOps(q);
+			const ops = await planOps(db, q);
 
 			expect(ops).to.not.include('CACHE',
 				'Single-reference CTE should be inlined, not materialized/cached');
@@ -41,7 +28,7 @@ describe('Plan shape: CTE materialization', () => {
 
 		it('produces correct results for inlined CTE', async () => {
 			const q = "WITH cte AS (SELECT id, val FROM items WHERE val >= 20) SELECT * FROM cte ORDER BY id";
-			const results = await allRows<{ id: number; val: number }>(q);
+			const results = await allRows<{ id: number; val: number }>(db, q);
 			expect(results).to.deep.equal([
 				{ id: 2, val: 20 },
 				{ id: 3, val: 30 },
@@ -57,7 +44,7 @@ describe('Plan shape: CTE materialization', () => {
 				SELECT c1.id, c2.val
 				FROM cte c1 JOIN cte c2 ON c1.id = c2.id
 			`;
-			const ops = await planOps(q);
+			const ops = await planOps(db, q);
 
 			const cteRefCount = ops.filter(op => op === 'CTEREFERENCE').length;
 			expect(cteRefCount).to.equal(2, 'Should have two CTE reference nodes');
@@ -73,7 +60,7 @@ describe('Plan shape: CTE materialization', () => {
 				FROM cte c1 JOIN cte c2 ON c1.id = c2.id
 				ORDER BY c1.id
 			`;
-			const results = await allRows<{ id: number; val: number }>(q);
+			const results = await allRows<{ id: number; val: number }>(db, q);
 			expect(results).to.have.lengthOf(4);
 			expect(results[0]).to.deep.equal({ id: 1, val: 10 });
 			expect(results[3]).to.deep.equal({ id: 4, val: 40 });
@@ -90,7 +77,7 @@ describe('Plan shape: CTE materialization', () => {
 				)
 				SELECT x FROM cnt ORDER BY x
 			`;
-			const ops = await planOps(q);
+			const ops = await planOps(db, q);
 
 			expect(ops).to.include('RECURSIVECTE',
 				'Recursive CTE should produce a RECURSIVECTE node');
@@ -105,7 +92,7 @@ describe('Plan shape: CTE materialization', () => {
 				)
 				SELECT x FROM cnt ORDER BY x
 			`;
-			const results = await allRows<{ x: number }>(q);
+			const results = await allRows<{ x: number }>(db, q);
 			expect(results.map(r => r.x)).to.deep.equal([1, 2, 3, 4, 5]);
 		});
 	});

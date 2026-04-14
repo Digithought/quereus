@@ -1,5 +1,6 @@
 import { expect } from 'chai';
 import { Database } from '../../src/core/database.js';
+import { planOps, allRows } from './_helpers.js';
 
 describe('Plan shape: aggregate strategy selection', () => {
 	let db: Database;
@@ -14,23 +15,9 @@ describe('Plan shape: aggregate strategy selection', () => {
 		await db.close();
 	});
 
-	async function planOps(sql: string): Promise<string[]> {
-		const ops: string[] = [];
-		for await (const r of db.eval("SELECT op FROM query_plan(?)", [sql])) {
-			ops.push((r as { op: string }).op);
-		}
-		return ops;
-	}
-
-	async function allRows<T>(sql: string): Promise<T[]> {
-		const rows: T[] = [];
-		for await (const r of db.eval(sql)) rows.push(r as T);
-		return rows;
-	}
-
 	it('uses StreamAggregate when input is pre-sorted by GROUP BY column (PK)', async () => {
 		const q = "SELECT id, count(*) AS c FROM t GROUP BY id";
-		const ops = await planOps(q);
+		const ops = await planOps(db, q);
 
 		expect(ops).to.include('STREAMAGGREGATE',
 			'GROUP BY on PK (pre-sorted input) should use StreamAggregate');
@@ -40,7 +27,7 @@ describe('Plan shape: aggregate strategy selection', () => {
 
 	it('uses HashAggregate for unsorted GROUP BY column', async () => {
 		const q = "SELECT grp, count(*) AS cnt FROM t GROUP BY grp";
-		const ops = await planOps(q);
+		const ops = await planOps(db, q);
 
 		expect(ops).to.include('HASHAGGREGATE',
 			'GROUP BY on non-sorted column should use HashAggregate');
@@ -48,7 +35,7 @@ describe('Plan shape: aggregate strategy selection', () => {
 
 	it('uses StreamAggregate for scalar aggregate (no GROUP BY)', async () => {
 		const q = "SELECT count(*), sum(val) FROM t";
-		const ops = await planOps(q);
+		const ops = await planOps(db, q);
 
 		expect(ops).to.include('STREAMAGGREGATE',
 			'Scalar aggregate without GROUP BY should use StreamAggregate');
@@ -57,7 +44,7 @@ describe('Plan shape: aggregate strategy selection', () => {
 
 	it('uses StreamAggregate when subquery provides sorted input', async () => {
 		const q = "SELECT id, count(*) AS c FROM (SELECT * FROM t ORDER BY id LIMIT 100) s GROUP BY id";
-		const ops = await planOps(q);
+		const ops = await planOps(db, q);
 
 		expect(ops).to.include('STREAMAGGREGATE',
 			'GROUP BY on already-sorted subquery output should use StreamAggregate');
@@ -65,7 +52,7 @@ describe('Plan shape: aggregate strategy selection', () => {
 
 	it('StreamAggregate on PK produces correct results', async () => {
 		const q = "SELECT id, count(*) AS c FROM t GROUP BY id ORDER BY id";
-		const results = await allRows<{ id: number; c: number }>(q);
+		const results = await allRows<{ id: number; c: number }>(db, q);
 		expect(results).to.have.lengthOf(5);
 		for (const row of results) {
 			expect(row.c).to.equal(1);
@@ -74,7 +61,7 @@ describe('Plan shape: aggregate strategy selection', () => {
 
 	it('HashAggregate on non-sorted column produces correct results', async () => {
 		const q = "SELECT grp, count(*) AS cnt, sum(val) AS total FROM t GROUP BY grp ORDER BY grp";
-		const results = await allRows<{ grp: string; cnt: number; total: number }>(q);
+		const results = await allRows<{ grp: string; cnt: number; total: number }>(db, q);
 		expect(results).to.deep.equal([
 			{ grp: 'a', cnt: 2, total: 40 },
 			{ grp: 'b', cnt: 2, total: 60 },
