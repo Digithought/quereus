@@ -118,6 +118,44 @@ function isOrderedOnEquiPairs(
 }
 
 /**
+ * Reorder equi-pairs to match the left source's physical ordering prefix.
+ * The merge-join emitter compares keys in equi-pair order, so the pairs
+ * must align with both sources' sort order.  Returns null if the pairs
+ * cannot be reordered to match both sides simultaneously.
+ */
+function reorderEquiPairsForMerge(
+	equiPairs: readonly EquiJoinPair[],
+	left: RelationalPlanNode,
+	right: RelationalPlanNode
+): EquiJoinPair[] | null {
+	const leftOrdering = PlanNodeCharacteristics.getOrdering(left);
+	if (!leftOrdering || leftOrdering.length < equiPairs.length) return null;
+
+	const leftAttrs = left.getAttributes();
+
+	// Build a map from left column index → equi-pair index
+	const colToEqIdx = new Map<number, number>();
+	for (let i = 0; i < equiPairs.length; i++) {
+		const attrIdx = leftAttrs.findIndex(a => a.id === equiPairs[i].leftAttrId);
+		if (attrIdx === -1) return null;
+		colToEqIdx.set(attrIdx, i);
+	}
+
+	// Reorder to match the left ordering prefix
+	const reordered: EquiJoinPair[] = [];
+	for (let i = 0; i < equiPairs.length; i++) {
+		const eqIdx = colToEqIdx.get(leftOrdering[i].column);
+		if (eqIdx === undefined || leftOrdering[i].desc) return null;
+		reordered.push(equiPairs[eqIdx]);
+	}
+
+	// Verify the reordered pairs also match the right source's ordering
+	if (!isOrderedOnEquiPairs(right, reordered, 'right')) return null;
+
+	return reordered;
+}
+
+/**
  * Create a SortNode that sorts a source on the equi-pair columns for this side.
  */
 function createSortForEquiPairs(
@@ -197,9 +235,19 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 	const probeRows = Math.max(leftRows, rightRows);
 	const hashCostValue = hashJoinCost(buildRows, probeRows);
 
-	// Merge join cost: depends on whether inputs are already sorted
-	const leftOrdered = isOrderedOnEquiPairs(node.left, extracted.equiPairs, 'left');
-	const rightOrdered = isOrderedOnEquiPairs(node.right, extracted.equiPairs, 'right');
+	// Merge join cost: depends on whether inputs are already sorted.
+	// Try reordering equi-pairs to match the source orderings first.
+	let mergeEquiPairs = extracted.equiPairs;
+	let leftOrdered = isOrderedOnEquiPairs(node.left, mergeEquiPairs, 'left');
+	let rightOrdered = isOrderedOnEquiPairs(node.right, mergeEquiPairs, 'right');
+	if ((!leftOrdered || !rightOrdered) && mergeEquiPairs.length > 1) {
+		const reordered = reorderEquiPairsForMerge(mergeEquiPairs, node.left, node.right);
+		if (reordered) {
+			mergeEquiPairs = reordered;
+			leftOrdered = true;
+			rightOrdered = true;
+		}
+	}
 	const mergeCostValue = mergeJoinCost(leftRows, rightRows, !leftOrdered, !rightOrdered);
 
 	// Pick the cheapest physical join algorithm
@@ -234,11 +282,11 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 		let rightSource: RelationalPlanNode = node.right;
 
 		if (!leftOrdered) {
-			leftSource = createSortForEquiPairs(node.left, extracted.equiPairs, 'left', node.scope);
+			leftSource = createSortForEquiPairs(node.left, mergeEquiPairs, 'left', node.scope);
 			log('Inserted left sort for merge join');
 		}
 		if (!rightOrdered) {
-			rightSource = createSortForEquiPairs(node.right, extracted.equiPairs, 'right', node.scope);
+			rightSource = createSortForEquiPairs(node.right, mergeEquiPairs, 'right', node.scope);
 			log('Inserted right sort for merge join');
 		}
 
@@ -247,7 +295,7 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 			leftSource,
 			rightSource,
 			joinType,
-			extracted.equiPairs,
+			mergeEquiPairs,
 			extracted.residual,
 			preserveAttrs
 		);

@@ -181,6 +181,28 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			bestPlan = this.adjustPlanForOrdering(bestPlan, request, availableIndexes);
 		}
 
+		// B-tree scans inherently produce rows in PK order.  Advertise this
+		// when there is no explicit ORDER BY so the join rule can pick merge join.
+		// When requiredOrdering is present, adjustPlanForOrdering already handled it;
+		// adding PK ordering here would incorrectly claim we satisfy a different ORDER BY.
+		if (!bestPlan.providesOrdering
+			&& !(request.requiredOrdering && request.requiredOrdering.length > 0)
+			&& tableInfo.primaryKeyDefinition && tableInfo.primaryKeyDefinition.length > 0
+		) {
+			const usesSecondaryIndex = bestPlan.indexName && bestPlan.indexName !== '_primary_';
+			if (!usesSecondaryIndex) {
+				const pkOrdering: OrderingSpec[] = tableInfo.primaryKeyDefinition.map(col => ({
+					columnIndex: col.index,
+					desc: false
+				}));
+				bestPlan = {
+					...bestPlan,
+					providesOrdering: pkOrdering,
+					orderingIndexName: bestPlan.orderingIndexName ?? '_primary_'
+				};
+			}
+		}
+
 		// Prefer plans that fully handle at least one filter over pure full scans when costs tie
 		if (request.filters.length > 0 && bestPlan.handledFilters?.some(Boolean) === false) {
 			// Small nudge to cost to encourage using any usable index when costs are equal
