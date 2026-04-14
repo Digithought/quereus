@@ -60,6 +60,7 @@ export {
   // Transaction types
   type ChangeSet,
   // API types
+  type ApplyRejection,
   type ApplyResult,
   type ColumnVersionEntry,
   type TableSnapshot,

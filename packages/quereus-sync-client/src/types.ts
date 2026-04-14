@@ -21,7 +21,7 @@ export type SyncStatus =
 /**
  * Sync event types for logging/UI notifications.
  */
-export type SyncEventType = 'remote-change' | 'local-change' | 'conflict' | 'state-change' | 'error' | 'info';
+export type SyncEventType = 'remote-change' | 'local-change' | 'conflict' | 'state-change' | 'error' | 'info' | 'rejected';
 
 /**
  * Sync event for logging/UI display.
@@ -35,6 +35,7 @@ export interface SyncEvent {
     changeCount?: number;
     conflicts?: number;
     skipped?: number;
+    rejections?: Array<{ reason: string; code?: string }>;
   };
 }
 
@@ -183,6 +184,12 @@ export interface ApplyResultMessage {
   skipped: number;
   conflicts: number;
   transactions: number;
+  rejected?: Array<{
+    reason: string;
+    code?: string;
+    table?: string;
+    column?: string;
+  }>;
 }
 
 /** Server → Client: Error */

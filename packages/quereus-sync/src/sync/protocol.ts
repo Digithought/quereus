@@ -99,6 +99,14 @@ export interface ChangeSet {
 /**
  * Result of applying changes from a peer.
  */
+/** Rejection detail for a change that failed server-side validation. */
+export interface ApplyRejection {
+  reason: string;
+  code?: string;
+  table?: string;
+  column?: string;
+}
+
 export interface ApplyResult {
   /** Changes successfully applied (winner was remote) */
   applied: number;
@@ -108,6 +116,8 @@ export interface ApplyResult {
   conflicts: number;
   /** Number of transactions processed */
   transactions: number;
+  /** Changes rejected by server-side validation hooks */
+  rejected?: ApplyRejection[];
 }
 
 /**

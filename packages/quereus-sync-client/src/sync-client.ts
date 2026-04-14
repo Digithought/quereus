@@ -350,13 +350,19 @@ export class SyncClient {
     this.setStatus({ status: 'synced', lastSyncTime: Date.now() });
   }
 
-  private handleApplyResult(message: { applied?: number }): void {
+  private handleApplyResult(message: { applied?: number; rejected?: Array<{ reason: string; code?: string }> }): void {
     // Update lastSentHLC to enable delta sync on next send
     if (this.pendingSentHLC) {
       this.lastSentHLC = this.pendingSentHLC;
       this.pendingSentHLC = null;
     }
     this.emitSyncEvent('info', `Server applied ${message.applied ?? 0} change(s)`);
+
+    if (message.rejected?.length) {
+      for (const r of message.rejected) {
+        this.emitSyncEvent('rejected', r.reason, { rejections: [r] });
+      }
+    }
   }
 
   private async handleRequestChanges(message: { siteId?: string; sinceHLC?: string }): Promise<void> {
