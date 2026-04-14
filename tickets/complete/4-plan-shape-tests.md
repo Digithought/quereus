@@ -28,4 +28,14 @@ Seven plan-shape test files (48 tests total) guarding against optimizer regressi
 
 4. **Updated README** — documented plan-shape tests alongside existing golden-plan tests.
 
+**Post-review fix:**
+
+5. **DRY cleanup in `predicate-pushdown.spec.ts`** — replaced manual `for await` + `any[]` loops
+   with the `allRows` typed helper, consistent with all other test files.
+
 **Testing:** 48 plan tests passing, 1915 full suite passing, TypeScript clean.
+
+**Usage:**
+```bash
+yarn test:plans     # all plan-shape + golden-plan tests
+```

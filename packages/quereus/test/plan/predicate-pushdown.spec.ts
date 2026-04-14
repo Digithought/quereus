@@ -1,6 +1,6 @@
 import { expect } from 'chai';
 import { Database } from '../../src/core/database.js';
-import { planRows, planOps, isDescendantOf } from './_helpers.js';
+import { planRows, planOps, allRows, isDescendantOf } from './_helpers.js';
 
 describe('Plan shape: predicate pushdown', () => {
 	let db: Database;
@@ -33,8 +33,7 @@ describe('Plan shape: predicate pushdown', () => {
 
 		it('returns correct results after pushdown', async () => {
 			const q = "SELECT a.name, b.label FROM a JOIN b ON a.id = b.a_id WHERE a.x > 10";
-			const results: any[] = [];
-			for await (const r of db.eval(q)) results.push(r);
+			const results = await allRows<{ name: string; label: string }>(db, q);
 			expect(results).to.have.lengthOf(2);
 			for (const row of results) {
 				expect(['mid', 'hi']).to.include(row.name);
@@ -86,8 +85,7 @@ describe('Plan shape: predicate pushdown', () => {
 
 		it('returns correct results when predicate is pushed through projection', async () => {
 			const q = "SELECT * FROM (SELECT a.*, a.x + 1 AS y FROM a) v WHERE v.x > 10";
-			const results: any[] = [];
-			for await (const r of db.eval(q)) results.push(r);
+			const results = await allRows<{ id: number; x: number; name: string; y: number }>(db, q);
 			expect(results).to.have.lengthOf(2);
 			for (const row of results) {
 				expect(row.x).to.be.greaterThan(10);
