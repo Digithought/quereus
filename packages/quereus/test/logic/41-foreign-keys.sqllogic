@@ -350,6 +350,13 @@ INSERT INTO null_child VALUES (1, NULL);
 SELECT * FROM null_child;
 → [{"id":1,"parent_id":null}]
 
+-- Update FK column to NULL should also succeed (MATCH SIMPLE applies to UPDATE too)
+INSERT INTO null_parent VALUES (2, 'B');
+INSERT INTO null_child VALUES (2, 2);
+UPDATE null_child SET parent_id = NULL WHERE id = 2;
+SELECT * FROM null_child ORDER BY id;
+→ [{"id":1,"parent_id":null},{"id":2,"parent_id":null}]
+
 DROP TABLE null_child;
 DROP TABLE null_parent;
 

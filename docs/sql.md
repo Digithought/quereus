@@ -2636,7 +2636,7 @@ Where `action` can be:
 When `pragma foreign_keys = on` (the default):
 
 - **IGNORE / NO ACTION (default):** No enforcement. The FK is stored in the schema for metadata/introspection but does not generate any constraint checks or cascading actions.
-- **Child-side (INSERT/UPDATE):** For FKs with at least one non-ignore action, validates that referenced parent rows exist. These checks are deferred to commit time (they use cross-table subqueries).
+- **Child-side (INSERT/UPDATE):** For FKs with at least one non-ignore action, validates that referenced parent rows exist. These checks are deferred to commit time (they use cross-table subqueries). Uses MATCH SIMPLE semantics (SQL default): if any FK column is NULL, the constraint is satisfied without checking the parent table.
 - **Parent-side DELETE/UPDATE with RESTRICT:** Immediately rejects the operation if child rows reference the parent row being modified.
 - **Parent-side DELETE/UPDATE with CASCADE:** Automatically deletes or updates matching child rows.
 - **Parent-side DELETE/UPDATE with SET NULL:** Sets child FK columns to NULL.
