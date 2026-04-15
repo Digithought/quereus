@@ -1,6 +1,6 @@
 import { expect } from 'chai';
 import { parse } from '../src/parser/index.js';
-import { traverseAst, type AstVisitorCallbacks } from '../src/parser/visitor.js';
+import { traverseAst } from '../src/parser/visitor.js';
 import type { AstNode } from '../src/parser/ast.js';
 
 /** Collect all node types visited via enterNode */

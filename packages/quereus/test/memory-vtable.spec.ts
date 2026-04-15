@@ -8,9 +8,7 @@ import { BaseLayer } from "../src/vtab/memory/layer/base.js";
 import type { TableSchema, IndexSchema } from "../src/schema/table.js";
 import type { ColumnSchema } from "../src/schema/column.js";
 import type { FilterInfo } from "../src/vtab/filter-info.js";
-import type { IndexInfo } from "../src/vtab/index-info.js";
-import { StatusCode, SqlDataType } from "../src/common/types.js";
-import { IndexConstraintOp, ConflictResolution } from "../src/common/constants.js";
+import { ConflictResolution } from "../src/common/constants.js";
 import type * as AST from "../src/parser/ast.js";
 import { INTEGER_TYPE, TEXT_TYPE, REAL_TYPE, BLOB_TYPE } from "../src/types/index.js";
 

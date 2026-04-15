@@ -4,7 +4,7 @@ import type { JSONValue } from './json-types.js';
 export type MaybePromise<T> = T | Promise<T>;
 
 export type DeepReadonly<T> =
-	T extends string | number | bigint | boolean | symbol | null | undefined | Function | Uint8Array
+	T extends string | number | bigint | boolean | symbol | null | undefined | ((...args: never[]) => unknown) | Uint8Array
 		? T
 		: T extends JSONValue
 			? T // Stop recursing into JSON values (recursive type)

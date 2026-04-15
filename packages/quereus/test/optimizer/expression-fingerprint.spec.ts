@@ -8,7 +8,7 @@ import { AggregateFunctionCallNode } from '../../src/planner/nodes/aggregate-fun
 import type { ScalarPlanNode } from '../../src/planner/nodes/plan-node.js';
 import type * as AST from '../../src/parser/ast.js';
 import type { ScalarFunctionSchema, AggregateFunctionSchema } from '../../src/schema/function.js';
-import { TEXT_TYPE, INTEGER_TYPE, REAL_TYPE } from '../../src/types/builtin-types.js';
+import { TEXT_TYPE, INTEGER_TYPE } from '../../src/types/builtin-types.js';
 import { FunctionFlags } from '../../src/common/constants.js';
 import type { ScalarType } from '../../src/common/datatype.js';
 import { WindowFunctionCallNode } from '../../src/planner/nodes/window-function.js';

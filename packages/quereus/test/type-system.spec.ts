@@ -24,7 +24,7 @@ import {
 	NUMERIC_TYPE,
 	ANY_TYPE,
 } from '../src/types/builtin-types.js';
-import { DATE_TYPE, TIME_TYPE, DATETIME_TYPE, TIMESPAN_TYPE } from '../src/types/temporal-types.js';
+import { DATE_TYPE, TIME_TYPE } from '../src/types/temporal-types.js';
 import { JSON_TYPE } from '../src/types/json-type.js';
 import { PhysicalType, getPhysicalType } from '../src/types/logical-type.js';
 import type { LogicalType } from '../src/types/logical-type.js';

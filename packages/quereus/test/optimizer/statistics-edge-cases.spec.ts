@@ -3,7 +3,7 @@
 import { describe, it } from 'mocha';
 import { expect } from 'chai';
 import { buildHistogram, selectivityFromHistogram } from '../../src/planner/stats/histogram.js';
-import type { EquiHeightHistogram, HistogramBucket, ColumnStatistics, TableStatistics } from '../../src/planner/stats/catalog-stats.js';
+import type { EquiHeightHistogram, ColumnStatistics, TableStatistics } from '../../src/planner/stats/catalog-stats.js';
 import { CatalogStatsProvider } from '../../src/planner/stats/catalog-stats.js';
 import type { TableSchema } from '../../src/schema/table.js';
 import type { ScalarPlanNode } from '../../src/planner/nodes/plan-node.js';

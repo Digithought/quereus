@@ -12,7 +12,7 @@ export default tseslint.config(
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {
-        project: './tsconfig.json',
+        project: './tsconfig.eslint.json',
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -21,9 +21,16 @@ export default tseslint.config(
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'warn',
-			'@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+			'@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
 			'import/extensions': ['error', 'always', { ignorePackages: true }],
 			'@typescript-eslint/no-floating-promises': ['error', { ignoreVoid: true }]
+    },
+  },
+  {
+    // Chai assertions like `expect(x).to.be.true` read as unused expressions.
+    files: ['test/**/*.ts', 'test/**/*.tsx'],
+    rules: {
+      '@typescript-eslint/no-unused-expressions': 'off',
     },
   },
 );

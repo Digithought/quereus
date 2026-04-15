@@ -6,7 +6,7 @@ import { ColumnReferenceNode } from '../../src/planner/nodes/reference.js';
 import type { ScalarPlanNode } from '../../src/planner/nodes/plan-node.js';
 import type * as AST from '../../src/parser/ast.js';
 import { normalizePredicate } from '../../src/planner/analysis/predicate-normalizer.js';
-import { TEXT_TYPE, INTEGER_TYPE } from '../../src/types/builtin-types.js';
+import { INTEGER_TYPE } from '../../src/types/builtin-types.js';
 import { Database } from '../../src/core/database.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

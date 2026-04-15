@@ -1,6 +1,5 @@
 import { expect } from 'chai';
 import { Database } from '../../src/core/database.js';
-import { PlanNode } from '../../src/planner/nodes/plan-node.js';
 
 describe('Constant folding analysis (const-pass)', () => {
 	let db: Database;
@@ -25,14 +24,6 @@ describe('Constant folding analysis (const-pass)', () => {
 			types.push((r as { node_type: string }).node_type);
 		}
 		return types;
-	}
-
-	async function getPlanOps(sql: string): Promise<string[]> {
-		const ops: string[] = [];
-		for await (const r of db.eval('SELECT op FROM query_plan(?) ORDER BY id', [sql])) {
-			ops.push((r as { op: string }).op);
-		}
-		return ops;
 	}
 
 	// --- classifyNode: Rule 1 (physical.constant === true) ---

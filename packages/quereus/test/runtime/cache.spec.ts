@@ -8,7 +8,6 @@ import {
 	withSharedCache,
 	createCacheFunction,
 	type SharedCacheConfig,
-	type CacheState,
 } from '../../src/runtime/cache/shared-cache.js';
 
 /** Helper: collect all rows from an async iterable */

@@ -1,6 +1,6 @@
 import { expect } from 'chai';
 import { Database } from '../../src/core/database.js';
-import { planNodeTypes, planOps, allRows } from './_helpers.js';
+import { planNodeTypes, allRows } from './_helpers.js';
 
 describe('Plan shape: constant folding', () => {
 	let db: Database;

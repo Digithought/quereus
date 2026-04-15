@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { expect } from 'chai';
-import { Database, QuereusError, ParseError, StatusCode, Parser, Statement } from '../src/index.js';
+import { Database, QuereusError, StatusCode } from '../src/index.js';
 
 describe('Integration Boundaries', () => {
 	let db: Database;
@@ -479,7 +479,7 @@ describe('Integration Boundaries', () => {
 			await db.exec('create table res_t (id integer primary key)');
 			const stmt = db.prepare('select * from res_t');
 			await stmt.run();
-			stmt.finalize();
+			await stmt.finalize();
 			// Using finalized statement should throw
 			try {
 				await stmt.run();

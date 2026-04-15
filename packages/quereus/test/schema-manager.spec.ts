@@ -9,8 +9,7 @@
  */
 
 import { expect } from 'chai';
-import { Database, QuereusError } from '../src/index.js';
-import { SchemaManager } from '../src/schema/manager.js';
+import { Database } from '../src/index.js';
 import { Schema } from '../src/schema/schema.js';
 import { parse } from '../src/parser/index.js';
 import { computeSchemaHash } from '../src/schema/schema-hasher.js';
