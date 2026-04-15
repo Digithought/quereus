@@ -4,7 +4,7 @@ import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { type SqlValue, StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
-import type { TableSchema, IndexSchema, PrimaryKeyColumnDefinition } from '../../schema/table.js';
+import type { TableSchema, PrimaryKeyColumnDefinition } from '../../schema/table.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
 import type { ColumnDef } from '../../parser/ast.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
@@ -484,7 +484,7 @@ async function rebuildViaShadowTable(
 	let createDdl = `create table ${schemaPrefix}${quoteIdentifier(shadowName)} (${colDefs.join(', ')}`;
 	createDdl += pkColNames.length > 0
 		? `, primary key (${pkColNames.join(', ')}))`
-		: `, primary key ())`;
+		: `)`;
 
 	if (tableSchema.vtabModuleName) {
 		createDdl += ` using ${tableSchema.vtabModuleName}`;
