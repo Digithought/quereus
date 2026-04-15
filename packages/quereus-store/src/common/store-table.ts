@@ -609,7 +609,7 @@ export class StoreTable extends VirtualTable {
 					this.eventEmitter?.emitDataChange(deleteEvent);
 				}
 
-				return { status: 'ok' };
+				return { status: 'ok', row: oldRow || undefined };
 			}
 
 			default:
