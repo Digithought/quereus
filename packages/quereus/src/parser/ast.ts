@@ -474,7 +474,8 @@ export type AlterTableAction =
 	| { type: 'renameColumn', oldName: string, newName: string }
 	| { type: 'addColumn', column: ColumnDef }
 	| { type: 'dropColumn', name: string }
-	| { type: 'addConstraint', constraint: TableConstraint };
+	| { type: 'addConstraint', constraint: TableConstraint }
+	| { type: 'alterPrimaryKey', columns: Array<{ name: string; direction?: 'asc' | 'desc' }> };
 
 // Add PragmaStmt interface
 export interface PragmaStmt extends AstNode {

@@ -24,6 +24,10 @@ export interface TableAlterDiff {
 	tableName: string;
 	columnsToAdd: string[];
 	columnsToDrop: string[];
+	primaryKeyChange?: {
+		oldPkColumns: string[];
+		newPkColumns: Array<{ name: string; direction?: 'asc' | 'desc' }>;
+	};
 }
 
 /**
@@ -89,7 +93,7 @@ export function computeSchemaDiff(
 		} else {
 			// Table exists - check if it needs alteration
 			const alterDiff = computeTableAlterDiff(declaredTable, actualTables.get(name)!);
-			if (alterDiff.columnsToAdd.length > 0 || alterDiff.columnsToDrop.length > 0) {
+			if (alterDiff.columnsToAdd.length > 0 || alterDiff.columnsToDrop.length > 0 || alterDiff.primaryKeyChange) {
 				diff.tablesToAlter.push(alterDiff);
 			}
 		}
@@ -233,12 +237,12 @@ function applyIndexDefaults(
 
 function computeTableAlterDiff(
 	declaredTable: AST.DeclaredTable,
-	actualTable: { name: string; columns: Array<{ name: string }> }
+	actualTable: import('./catalog.js').CatalogTable,
 ): TableAlterDiff {
 	const diff: TableAlterDiff = {
 		tableName: declaredTable.tableStmt.table.name,
 		columnsToAdd: [],
-		columnsToDrop: []
+		columnsToDrop: [],
 	};
 
 	const declaredColumns = new Set(
@@ -262,7 +266,64 @@ function computeTableAlterDiff(
 		}
 	}
 
+	// Detect PK changes
+	const declaredPk = extractDeclaredPK(declaredTable);
+	const actualPk = actualTable.primaryKey;
+
+	if (!pkSequencesEqual(declaredPk, actualPk)) {
+		diff.primaryKeyChange = {
+			oldPkColumns: actualPk.map(pk => pk.columnName),
+			newPkColumns: declaredPk,
+		};
+	}
+
 	return diff;
+}
+
+function extractDeclaredPK(declaredTable: AST.DeclaredTable): Array<{ name: string; direction?: 'asc' | 'desc' }> {
+	const stmt = declaredTable.tableStmt;
+
+	// Check for table-level PRIMARY KEY constraint
+	if (stmt.constraints) {
+		for (const constraint of stmt.constraints) {
+			if (constraint.type === 'primaryKey' && constraint.columns) {
+				return constraint.columns.map(c => ({
+					name: c.name,
+					direction: c.direction,
+				}));
+			}
+		}
+	}
+
+	// Check for column-level PRIMARY KEY
+	const pkCols: Array<{ name: string; direction?: 'asc' | 'desc' }> = [];
+	for (const col of stmt.columns) {
+		if (col.constraints?.some(c => c.type === 'primaryKey')) {
+			const pkConstraint = col.constraints.find(c => c.type === 'primaryKey');
+			pkCols.push({
+				name: col.name,
+				direction: pkConstraint?.type === 'primaryKey' ? pkConstraint.direction : undefined,
+			});
+		}
+	}
+
+	if (pkCols.length > 0) return pkCols;
+
+	// No explicit PK — Quereus defaults to all columns
+	return stmt.columns.map(c => ({ name: c.name }));
+}
+
+function pkSequencesEqual(
+	declared: Array<{ name: string; direction?: 'asc' | 'desc' }>,
+	actual: Array<{ columnName: string; desc: boolean }>,
+): boolean {
+	if (declared.length !== actual.length) return false;
+	for (let i = 0; i < declared.length; i++) {
+		if (declared[i].name.toLowerCase() !== actual[i].columnName.toLowerCase()) return false;
+		const declaredDesc = declared[i].direction === 'desc';
+		if (declaredDesc !== actual[i].desc) return false;
+	}
+	return true;
 }
 
 /**
@@ -303,11 +364,21 @@ export function generateMigrationDDL(diff: SchemaDiff, schemaName?: string): str
 	statements.push(...diff.indexesToCreate);
 	statements.push(...diff.assertionsToCreate);
 
-	// Alter existing tables
+	// Alter existing tables (order: ADD COLUMN → ALTER PRIMARY KEY → DROP COLUMN)
 	for (const alter of diff.tablesToAlter) {
 		const quotedTable = `${schemaPrefix}${quoteIdentifier(alter.tableName)}`;
 		for (const colDef of alter.columnsToAdd) {
 			statements.push(`ALTER TABLE ${quotedTable} ADD COLUMN ${colDef}`);
+		}
+		if (alter.primaryKeyChange) {
+			const pkCols = alter.primaryKeyChange.newPkColumns
+				.map(c => {
+					let s = quoteIdentifier(c.name);
+					if (c.direction === 'desc') s += ' desc';
+					return s;
+				})
+				.join(', ');
+			statements.push(`ALTER TABLE ${quotedTable} ALTER PRIMARY KEY (${pkCols})`);
 		}
 		for (const colName of alter.columnsToDrop) {
 			statements.push(`ALTER TABLE ${quotedTable} DROP COLUMN ${quoteIdentifier(colName)}`);

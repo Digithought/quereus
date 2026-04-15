@@ -758,6 +758,16 @@ function alterTableToString(stmt: AST.AlterTableStmt): string {
 			return `alter table ${table} drop column ${quoteIdentifier(stmt.action.name)}`;
 		case 'addConstraint':
 			return `alter table ${table} add ${tableConstraintsToString([stmt.action.constraint])}`;
+		case 'alterPrimaryKey': {
+			const cols = stmt.action.columns
+				.map(c => {
+					let s = quoteIdentifier(c.name);
+					if (c.direction === 'desc') s += ' desc';
+					return s;
+				})
+				.join(', ');
+			return `alter table ${table} alter primary key (${cols})`;
+		}
 	}
 }
 

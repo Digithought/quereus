@@ -21,6 +21,7 @@ export interface CatalogTable {
 	name: string;
 	ddl: string;
 	columns: Array<{ name: string; type: string; notNull: boolean; primaryKey: boolean }>;
+	primaryKey: Array<{ columnName: string; desc: boolean }>;
 }
 
 export interface CatalogView {
@@ -107,10 +108,16 @@ function tableSchemaToCatalog(tableSchema: TableSchema): CatalogTable {
 		primaryKey: col.primaryKey
 	}));
 
+	const primaryKey = tableSchema.primaryKeyDefinition.map(pk => ({
+		columnName: tableSchema.columns[pk.index].name,
+		desc: pk.desc ?? false,
+	}));
+
 	return {
 		name: tableSchema.name,
 		ddl,
-		columns
+		columns,
+		primaryKey,
 	};
 }
 

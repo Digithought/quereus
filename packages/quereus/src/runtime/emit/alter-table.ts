@@ -4,10 +4,11 @@ import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { type SqlValue, StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
-import type { TableSchema } from '../../schema/table.js';
+import type { TableSchema, IndexSchema, PrimaryKeyColumnDefinition } from '../../schema/table.js';
 import { buildColumnIndexMap } from '../../schema/table.js';
 import type { ColumnDef } from '../../parser/ast.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
+import { quoteIdentifier } from '../../emit/ast-stringify.js';
 
 const log = createLogger('runtime:emit:alter-table');
 
@@ -31,6 +32,8 @@ export function emitAlterTable(plan: AlterTableNode, _ctx: EmissionContext): Ins
 				return runAddColumn(rctx, tableSchema, schema, action.column);
 			case 'dropColumn':
 				return runDropColumn(rctx, tableSchema, schema, action.name);
+			case 'alterPrimaryKey':
+				return runAlterPrimaryKey(rctx, tableSchema, schema, action.columns);
 		}
 	}
 
@@ -40,6 +43,7 @@ export function emitAlterTable(plan: AlterTableNode, _ctx: EmissionContext): Ins
 			case 'renameColumn': return `renameColumn(${tableSchema.name}.${action.oldName} -> ${action.newName})`;
 			case 'addColumn': return `addColumn(${tableSchema.name}.${action.column.name})`;
 			case 'dropColumn': return `dropColumn(${tableSchema.name}.${action.name})`;
+			case 'alterPrimaryKey': return `alterPrimaryKey(${tableSchema.name} -> [${action.columns.map(c => c.name).join(', ')}])`;
 		}
 	})();
 
@@ -249,6 +253,270 @@ async function runDropColumn(
 
 	log('Dropped column %s from table %s.%s', columnName, tableSchema.schemaName, tableSchema.name);
 	return null;
+}
+
+async function runAlterPrimaryKey(
+	rctx: RuntimeContext,
+	tableSchema: TableSchema,
+	schema: import('../../schema/schema.js').Schema,
+	columns: Array<{ name: string; direction?: 'asc' | 'desc' }>,
+): Promise<SqlValue> {
+	const newPkDef: PrimaryKeyColumnDefinition[] = columns.map(col => {
+		const idx = tableSchema.columnIndexMap.get(col.name.toLowerCase());
+		if (idx === undefined) {
+			throw new QuereusError(
+				`Column '${col.name}' not found in table '${tableSchema.name}'`,
+				StatusCode.ERROR,
+			);
+		}
+		const colSchema = tableSchema.columns[idx];
+		if (!colSchema.notNull) {
+			throw new QuereusError(
+				`Column '${col.name}' must be NOT NULL to participate in PRIMARY KEY`,
+				StatusCode.CONSTRAINT,
+			);
+		}
+		return { index: idx, desc: col.direction === 'desc' };
+	});
+
+	// Check for duplicate columns
+	const seen = new Set<number>();
+	for (const pk of newPkDef) {
+		if (seen.has(pk.index)) {
+			throw new QuereusError(
+				`Duplicate column '${tableSchema.columns[pk.index].name}' in PRIMARY KEY definition`,
+				StatusCode.ERROR,
+			);
+		}
+		seen.add(pk.index);
+	}
+
+	// Try native module re-key first
+	const module = tableSchema.vtabModule;
+	if (module.alterTable) {
+		try {
+			const schemaChangePk = newPkDef.map(pk => ({ index: pk.index, desc: pk.desc ?? false }));
+			const updatedTableSchema = await module.alterTable(
+				rctx.db, tableSchema.schemaName, tableSchema.name,
+				{ type: 'alterPrimaryKey', newPkColumns: schemaChangePk },
+			);
+			schema.addTable(updatedTableSchema);
+			rctx.db.schemaManager.getChangeNotifier().notifyChange({
+				type: 'table_modified',
+				schemaName: tableSchema.schemaName,
+				objectName: tableSchema.name,
+				oldObject: tableSchema,
+				newObject: updatedTableSchema,
+			});
+			log('Altered primary key of %s.%s (native)', tableSchema.schemaName, tableSchema.name);
+			return null;
+		} catch (e) {
+			if (e instanceof QuereusError && e.code === StatusCode.UNSUPPORTED) {
+				// Fall through to rebuild
+			} else {
+				throw e;
+			}
+		}
+	}
+
+	// Rebuild fallback
+	await rebuildTableWithNewShape(rctx, tableSchema, schema, tableSchema.columns.map(c => c.name), newPkDef);
+
+	log('Altered primary key of %s.%s (rebuild)', tableSchema.schemaName, tableSchema.name);
+	return null;
+}
+
+/**
+ * Rebuilds a table with a new column projection and/or primary key.
+ * For MemoryTable: builds a new table via the module API and copies rows directly,
+ * bypassing SQL execution to avoid transaction-layer isolation issues.
+ * For other modules: uses shadow-table SQL approach with DROP+RENAME.
+ */
+async function rebuildTableWithNewShape(
+	rctx: RuntimeContext,
+	tableSchema: TableSchema,
+	schema: import('../../schema/schema.js').Schema,
+	survivingColumns: string[],
+	newPkDef: PrimaryKeyColumnDefinition[],
+): Promise<void> {
+	const tableName = tableSchema.name;
+	const schemaName = tableSchema.schemaName;
+	const module = tableSchema.vtabModule;
+
+	if (module instanceof MemoryTableModule) {
+		await rebuildMemoryTable(rctx, tableSchema, schema, module, survivingColumns, newPkDef);
+	} else {
+		await rebuildViaShadowTable(rctx, tableSchema, schema, survivingColumns, newPkDef);
+	}
+
+	const finalSchema = schema.getTable(tableName);
+	if (finalSchema) {
+		rctx.db.schemaManager.getChangeNotifier().notifyChange({
+			type: 'table_modified',
+			schemaName,
+			objectName: tableName,
+			oldObject: tableSchema,
+			newObject: finalSchema,
+		});
+	}
+}
+
+/**
+ * MemoryTable rebuild: builds a new table via module.create() and copies rows
+ * directly from the old manager, then swaps in the module and catalog.
+ */
+async function rebuildMemoryTable(
+	rctx: RuntimeContext,
+	tableSchema: TableSchema,
+	schema: import('../../schema/schema.js').Schema,
+	module: MemoryTableModule,
+	survivingColumns: string[],
+	newPkDef: PrimaryKeyColumnDefinition[],
+): Promise<void> {
+	const tableName = tableSchema.name;
+	const schemaName = tableSchema.schemaName;
+	const oldKey = `${schemaName}.${tableName}`.toLowerCase();
+	const oldMgr = module.tables.get(oldKey);
+	if (!oldMgr) {
+		throw new QuereusError(`Table '${tableName}' not found in module`, StatusCode.INTERNAL);
+	}
+
+	// Build column index mapping: old column index → new column index
+	const survivingIndices: number[] = [];
+	const newColumns: import('../../schema/column.js').ColumnSchema[] = [];
+	for (const colName of survivingColumns) {
+		const oldIdx = tableSchema.columnIndexMap.get(colName.toLowerCase());
+		if (oldIdx === undefined) continue;
+		survivingIndices.push(oldIdx);
+		newColumns.push(tableSchema.columns[oldIdx]);
+	}
+
+	// Remap PK indices from old schema to new column order
+	const remappedPk: PrimaryKeyColumnDefinition[] = newPkDef.map(pk => {
+		const newIdx = survivingIndices.indexOf(pk.index);
+		if (newIdx === -1) {
+			throw new QuereusError(`PK column index ${pk.index} not in surviving columns`, StatusCode.INTERNAL);
+		}
+		return { ...pk, index: newIdx };
+	});
+
+	// Build new schema
+	const newSchema: TableSchema = Object.freeze({
+		...tableSchema,
+		columns: Object.freeze(newColumns),
+		columnIndexMap: buildColumnIndexMap(newColumns),
+		primaryKeyDefinition: Object.freeze(remappedPk),
+		indexes: Object.freeze([]),
+	});
+
+	// Create the new table via the module API (goes directly to base layer)
+	const shadowName = `${tableName}__rekey_${Date.now()}`;
+	const shadowSchema: TableSchema = Object.freeze({ ...newSchema, name: shadowName });
+	await module.create(rctx.db, shadowSchema);
+	const shadowMgr = module.tables.get(`${schemaName}.${shadowName}`.toLowerCase());
+	if (!shadowMgr) {
+		throw new QuereusError(`Shadow table manager not found after create`, StatusCode.INTERNAL);
+	}
+
+	try {
+		// Copy rows from old table to new, projecting surviving columns
+		const rows = oldMgr.scanAllRows();
+		for (const oldRow of rows) {
+			const newRow = survivingIndices.map(i => oldRow[i]);
+			shadowMgr.insertRow(newRow);
+		}
+
+		// Swap: remove old, remove shadow, re-register shadow under old name
+		module.tables.delete(oldKey);
+		module.tables.delete(`${schemaName}.${shadowName}`.toLowerCase());
+		shadowMgr.renameTable(tableName);
+		module.tables.set(oldKey, shadowMgr);
+
+		// Update catalog
+		schema.removeTable(tableName);
+		schema.addTable(shadowMgr.tableSchema);
+	} catch (e) {
+		// Clean up shadow on failure
+		try {
+			module.tables.delete(`${schemaName}.${shadowName}`.toLowerCase());
+		} catch { /* ignore */ }
+		throw e;
+	}
+}
+
+/**
+ * Generic rebuild via shadow table SQL for non-memory modules.
+ */
+async function rebuildViaShadowTable(
+	rctx: RuntimeContext,
+	tableSchema: TableSchema,
+	schema: import('../../schema/schema.js').Schema,
+	survivingColumns: string[],
+	newPkDef: PrimaryKeyColumnDefinition[],
+): Promise<void> {
+	const tableName = tableSchema.name;
+	const schemaName = tableSchema.schemaName;
+	const schemaPrefix = (schemaName && schemaName.toLowerCase() !== 'main')
+		? `${quoteIdentifier(schemaName)}.`
+		: '';
+	const shadowName = `${tableName}__rekey_${Date.now()}`;
+
+	const colDefs: string[] = [];
+	const pkColNames: string[] = [];
+
+	for (const colName of survivingColumns) {
+		const idx = tableSchema.columnIndexMap.get(colName.toLowerCase());
+		if (idx === undefined) continue;
+		const col = tableSchema.columns[idx];
+		let def = quoteIdentifier(col.name) + ' ' + col.logicalType.name;
+		if (col.notNull) def += ' not null';
+		if (col.collation && col.collation !== 'BINARY') def += ` collate ${col.collation}`;
+		colDefs.push(def);
+	}
+
+	for (const pk of newPkDef) {
+		const colName = tableSchema.columns[pk.index].name;
+		let entry = quoteIdentifier(colName);
+		if (pk.desc) entry += ' desc';
+		pkColNames.push(entry);
+	}
+
+	let createDdl = `create table ${schemaPrefix}${quoteIdentifier(shadowName)} (${colDefs.join(', ')}`;
+	createDdl += pkColNames.length > 0
+		? `, primary key (${pkColNames.join(', ')}))`
+		: `, primary key ())`;
+
+	if (tableSchema.vtabModuleName) {
+		createDdl += ` using ${tableSchema.vtabModuleName}`;
+		if (tableSchema.vtabArgs && Object.keys(tableSchema.vtabArgs).length > 0) {
+			const args = Object.entries(tableSchema.vtabArgs)
+				.map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
+				.join(', ');
+			createDdl += ` (${args})`;
+		}
+	}
+
+	const projection = survivingColumns.map(c => quoteIdentifier(c)).join(', ');
+
+	try {
+		await rctx.db._execWithinTransaction(createDdl);
+		await rctx.db._execWithinTransaction(
+			`insert into ${schemaPrefix}${quoteIdentifier(shadowName)} (${projection}) select ${projection} from ${schemaPrefix}${quoteIdentifier(tableName)}`
+		);
+		await rctx.db._execWithinTransaction(
+			`drop table ${schemaPrefix}${quoteIdentifier(tableName)}`
+		);
+		await rctx.db._execWithinTransaction(
+			`alter table ${schemaPrefix}${quoteIdentifier(shadowName)} rename to ${quoteIdentifier(tableName)}`
+		);
+	} catch (e) {
+		try {
+			await rctx.db._execWithinTransaction(
+				`drop table if exists ${schemaPrefix}${quoteIdentifier(shadowName)}`
+			);
+		} catch { /* ignore */ }
+		throw e;
+	}
 }
 
 /**

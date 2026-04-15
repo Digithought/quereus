@@ -1098,6 +1098,14 @@ Removes a column from the table and all its data. Restrictions:
 - Cannot drop a PRIMARY KEY column.
 - Cannot drop the last remaining column.
 
+**ALTER PRIMARY KEY**
+
+```sql
+ALTER TABLE table_name ALTER PRIMARY KEY (col_name [ASC|DESC] [, ...]);
+```
+
+Replaces the table's primary key definition. All named columns must have a NOT NULL constraint. The empty-PK case `ALTER PRIMARY KEY ()` is permitted (the table reverts to an implicit rowid-style key). Modules that support re-keying in place handle the change directly; modules that cannot (including the built-in MemoryTable) use an automatic rebuild fallback that copies all rows into a new table with the updated PK and swaps it in place.
+
 ## 3. Clauses and Subclauses
 
 ### 3.1 FROM Clause
@@ -3419,7 +3427,8 @@ alter_table_stmt   = "alter" "table" table_name
                      | rename_column_stmt
                      | add_column_stmt
                      | drop_column_stmt
-                     | add_constraint_stmt ) ;
+                     | add_constraint_stmt
+                     | alter_pk_stmt ) ;
 
 rename_table_stmt  = "rename" "to" new_table_name ;
 
@@ -3430,6 +3439,10 @@ add_column_stmt    = "add" [ "column" ] column_def ;
 drop_column_stmt   = "drop" [ "column" ] column_name ;
 
 add_constraint_stmt = "add" table_constraint ;
+
+alter_pk_stmt      = "alter" "primary" "key" "(" [ pk_col { "," pk_col } ] ")" ;
+
+pk_col             = column_name [ "asc" | "desc" ] ;
 
 /* Transaction statements */
 begin_stmt         = "begin" [ "deferred" | "immediate" | "exclusive" ] [ "transaction" ] ;

@@ -2479,8 +2479,28 @@ export class Parser {
 			this.matchKeyword('COLUMN');
 			const name = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected column name after DROP COLUMN.");
 			action = { type: 'dropColumn', name };
+		} else if (this.peekKeyword('ALTER')) {
+			this.consumeKeyword('ALTER', "Expected ALTER.");
+			this.consumeKeyword('PRIMARY', "Expected 'PRIMARY' after ALTER.");
+			this.consumeKeyword('KEY', "Expected 'KEY' after PRIMARY.");
+			this.consume(TokenType.LPAREN, "Expected '(' after PRIMARY KEY.");
+			const columns: Array<{ name: string; direction?: 'asc' | 'desc' }> = [];
+			if (!this.check(TokenType.RPAREN)) {
+				do {
+					const colName = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected column name in PRIMARY KEY definition.");
+					let direction: 'asc' | 'desc' | undefined;
+					if (this.matchKeyword('ASC')) {
+						direction = 'asc';
+					} else if (this.matchKeyword('DESC')) {
+						direction = 'desc';
+					}
+					columns.push({ name: colName, direction });
+				} while (this.match(TokenType.COMMA));
+			}
+			this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY column list.");
+			action = { type: 'alterPrimaryKey', columns };
 		} else {
-			throw this.error(this.peek(), "Expected RENAME, ADD, or DROP after table name in ALTER TABLE.");
+			throw this.error(this.peek(), "Expected RENAME, ADD, DROP, or ALTER after table name in ALTER TABLE.");
 		}
 
 		return {

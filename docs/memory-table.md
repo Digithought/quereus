@@ -52,6 +52,7 @@ The `MemoryTable` implementation (`src/vtab/memory/`) provides a sophisticated, 
 
 ### **Schema Evolution:**
 *   **Dynamic Schema Changes:** `ALTER TABLE` support for adding, dropping, and renaming columns
+*   **Primary Key Alteration:** `ALTER TABLE ... ALTER PRIMARY KEY` is supported via an automatic table rebuild. The rebuild creates a new table with the new PK definition, copies all rows, and swaps it in place. If duplicate-key violations occur during the rebuild, the operation fails cleanly without data loss (the original table is unchanged).
 *   **Index Management:** Runtime creation and deletion of secondary indexes
 *   **Schema Safety:** Operations ensure consistency across all active transactions
 

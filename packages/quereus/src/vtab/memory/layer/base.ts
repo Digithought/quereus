@@ -43,6 +43,7 @@ export class BaseLayer implements Layer {
 		});
 		this.tableSchema = newSchema;
 		this.initializePrimaryKeyFunctions();
+		this.initializePrimaryKeyFunctions();
 	}
 
 	private initializePrimaryKeyFunctions(): void {

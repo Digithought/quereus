@@ -323,6 +323,24 @@ private async ensureConnection(): Promise<MyConnection> {
 
 **Note:** The `DatabaseInternal` interface is marked `@internal` and may change between versions. It's intended for tight integration scenarios like storage backends and isolation layers.
 
+## Schema Changes (`SchemaChangeInfo`)
+
+When `ALTER TABLE` is executed, the engine calls `VirtualTable.alterSchema(changeInfo)` with a `SchemaChangeInfo` discriminated union describing the change. The current variants are:
+
+```typescript
+export type SchemaChangeInfo =
+	| { type: 'addColumn'; columnDef: ColumnDef }
+	| { type: 'dropColumn'; columnName: string }
+	| { type: 'renameColumn'; oldName: string; newName: string; newColumnDefAst?: ColumnDef }
+	| { type: 'alterPrimaryKey'; newPkColumns: ReadonlyArray<{ index: number; desc: boolean }> };
+```
+
+### `alterPrimaryKey`
+
+The `alterPrimaryKey` variant is dispatched for `ALTER TABLE ... ALTER PRIMARY KEY (...)`. Each entry in `newPkColumns` gives the column `index` (0-based position in the table's column list) and whether the column is `desc`. An empty array means the table reverts to an implicit key.
+
+Modules that can re-key in place should handle the change directly and return an updated `TableSchema`. Modules that **cannot** re-key in place should throw `QuereusError(..., StatusCode.UNSUPPORTED)` — the runtime treats this as a signal to fall back to a generic table rebuild. The rebuild copies all rows from the old table to a new table with the updated PK definition, then swaps it in place.
+
 ## Best Practices
 
 ### 1. Accurate Cost Estimation

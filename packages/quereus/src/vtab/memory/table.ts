@@ -321,6 +321,11 @@ export class MemoryTable extends VirtualTable {
 					}
 					await this.manager.renameColumn(changeInfo.oldName, changeInfo.newColumnDefAst as ASTColumnDef);
 					break;
+				case 'alterPrimaryKey':
+					throw new QuereusError(
+						'MemoryTable does not support in-place primary key alteration',
+						StatusCode.UNSUPPORTED,
+					);
 				default: {
 					const exhaustiveCheck: never = changeInfo;
 					// eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -524,6 +524,12 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 
 				return updatedSchema;
 			}
+
+			case 'alterPrimaryKey':
+				throw new QuereusError(
+					'Store module does not support in-place primary key alteration',
+					StatusCode.UNSUPPORTED,
+				);
 		}
 	}
 

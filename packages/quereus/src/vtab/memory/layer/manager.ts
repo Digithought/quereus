@@ -842,6 +842,9 @@ export class MemoryTableManager {
 	public renameTable(newName: string): void {
 		logger.operation('Rename Table', this._tableName, { newName });
 		this._tableName = newName;
+		const renamed = Object.freeze({ ...this.tableSchema, name: newName });
+		this.tableSchema = renamed;
+		this.baseLayer.tableSchema = renamed;
 
 		// Emit schema change event
 		this.eventEmitter?.emitSchemaChange?.({
@@ -850,6 +853,31 @@ export class MemoryTableManager {
 			schemaName: this.schemaName,
 			objectName: newName,
 		});
+	}
+
+	/** Iterates all committed rows from the current committed layer (for rebuild). */
+	scanAllRows(): Row[] {
+		const tree = this._currentCommittedLayer.getModificationTree('primary');
+		if (!tree) return [];
+		const rows: Row[] = [];
+		for (const path of tree.ascending(tree.first())) {
+			rows.push(tree.at(path)!);
+		}
+		return rows;
+	}
+
+	/** Inserts a row directly into the base layer (for rebuild, bypasses transaction).
+	 *  Throws on duplicate primary key. */
+	insertRow(row: Row): void {
+		const key = this.primaryKeyFunctions.extractFromRow(row);
+		const path = this.baseLayer.primaryTree.find(key);
+		if (path.on) {
+			throw new QuereusError(
+				`UNIQUE constraint failed: ${this._tableName} PK.`,
+				StatusCode.CONSTRAINT,
+			);
+		}
+		this.baseLayer.primaryTree.insert(row);
 	}
 
 	// --- Schema Operations (simplified with inherited BTrees) ---
@@ -933,7 +961,7 @@ export class MemoryTableManager {
 			const updatedColumnsSchema = this.tableSchema.columns.filter((_, idx) => idx !== colIndex);
 			const updatedPkDefinition = this.tableSchema.primaryKeyDefinition.map(def => ({
 				...def, index: def.index > colIndex ? def.index - 1 : def.index
-			})).filter(def => def.index !== colIndex);
+			}));
 			const updatedPrimaryKeyNames = updatedPkDefinition.map(def => updatedColumnsSchema[def.index]?.name).filter(Boolean) as string[];
 
 			const updatedIndexes = (this.tableSchema.indexes || []).map(idx => ({
