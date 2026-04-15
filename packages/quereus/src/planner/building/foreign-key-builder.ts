@@ -58,18 +58,32 @@ function synthesizeExistsCheck(
 	parentTable: TableSchema,
 	parentColIndices: number[],
 	qualifier: 'new' | 'old',
-): AST.ExistsExpr {
+): AST.Expression {
+	const qualifierUpper = qualifier.toUpperCase();
 	const pairs = fk.columns.map((childColIdx, i) => ({
 		leftTable: parentTable.name,
 		leftCol: parentTable.columns[parentColIndices[i]].name,
-		rightTable: qualifier.toUpperCase(),
+		rightTable: qualifierUpper,
 		rightCol: childTable.columns[childColIdx].name,
 	}));
 
-	return {
+	const existsExpr: AST.ExistsExpr = {
 		type: 'exists',
 		subquery: synthesizeFKSubquery(parentTable.name, pairs),
 	};
+
+	// MATCH SIMPLE (SQL default): FK is satisfied when any referencing column is NULL.
+	// Wrap EXISTS with OR-chained IS NULL guards to skip the subquery in that case.
+	const nullGuards: AST.UnaryExpr[] = fk.columns.map((childColIdx) => ({
+		type: 'unary',
+		operator: 'IS NULL',
+		expr: { type: 'column', name: childTable.columns[childColIdx].name, table: qualifierUpper } as AST.ColumnExpr,
+	}));
+
+	return nullGuards.reduceRight<AST.Expression>(
+		(acc, guard) => ({ type: 'binary', operator: 'OR', left: guard, right: acc } as AST.BinaryExpr),
+		existsExpr,
+	);
 }
 
 /**

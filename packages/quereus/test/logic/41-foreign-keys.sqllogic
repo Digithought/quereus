@@ -353,6 +353,109 @@ SELECT * FROM null_child;
 DROP TABLE null_child;
 DROP TABLE null_parent;
 
+-- --- MATCH SIMPLE: NULL FK with empty parent (RESTRICT) ---
+
+CREATE TABLE ms_parent (
+    id INTEGER PRIMARY KEY
+);
+
+CREATE TABLE ms_child (
+    id INTEGER PRIMARY KEY,
+    parent_id INTEGER NULL,
+    FOREIGN KEY (parent_id) REFERENCES ms_parent(id) ON DELETE RESTRICT
+);
+
+-- Insert with NULL FK into empty parent table — must succeed per MATCH SIMPLE
+INSERT INTO ms_child VALUES (1, NULL);
+SELECT * FROM ms_child;
+→ [{"id":1,"parent_id":null}]
+
+DROP TABLE ms_child;
+DROP TABLE ms_parent;
+
+-- --- MATCH SIMPLE: self-referential FK, first row NULL ---
+
+CREATE TABLE ms_tree (
+    id INTEGER PRIMARY KEY,
+    parent_id INTEGER NULL,
+    FOREIGN KEY (parent_id) REFERENCES ms_tree(id) ON DELETE CASCADE
+);
+
+-- Insert root with NULL parent_id into empty table — must succeed
+INSERT INTO ms_tree VALUES (1, NULL);
+SELECT * FROM ms_tree;
+→ [{"id":1,"parent_id":null}]
+
+DROP TABLE ms_tree;
+
+-- --- MATCH SIMPLE: multi-column FK, one NULL column ---
+
+CREATE TABLE ms_mc_parent (
+    a INTEGER,
+    b INTEGER,
+    PRIMARY KEY (a, b)
+);
+
+CREATE TABLE ms_mc_child (
+    id INTEGER PRIMARY KEY,
+    ref_a INTEGER NULL,
+    ref_b INTEGER NULL,
+    FOREIGN KEY (ref_a, ref_b) REFERENCES ms_mc_parent(a, b) ON DELETE RESTRICT
+);
+
+-- One NULL column satisfies MATCH SIMPLE even with empty parent
+INSERT INTO ms_mc_child VALUES (1, 42, NULL);
+SELECT * FROM ms_mc_child;
+→ [{"id":1,"ref_a":42,"ref_b":null}]
+
+DROP TABLE ms_mc_child;
+DROP TABLE ms_mc_parent;
+
+-- --- MATCH SIMPLE: multi-column FK, all NULLs ---
+
+CREATE TABLE ms_mc2_parent (
+    a INTEGER,
+    b INTEGER,
+    PRIMARY KEY (a, b)
+);
+
+CREATE TABLE ms_mc2_child (
+    id INTEGER PRIMARY KEY,
+    ref_a INTEGER NULL,
+    ref_b INTEGER NULL,
+    FOREIGN KEY (ref_a, ref_b) REFERENCES ms_mc2_parent(a, b) ON DELETE RESTRICT
+);
+
+-- All NULLs satisfies MATCH SIMPLE
+INSERT INTO ms_mc2_child VALUES (1, NULL, NULL);
+SELECT * FROM ms_mc2_child;
+→ [{"id":1,"ref_a":null,"ref_b":null}]
+
+DROP TABLE ms_mc2_child;
+DROP TABLE ms_mc2_parent;
+
+-- --- MATCH SIMPLE: multi-column FK, no NULLs, no match (regression guard) ---
+
+CREATE TABLE ms_mc3_parent (
+    a INTEGER,
+    b INTEGER,
+    PRIMARY KEY (a, b)
+);
+
+CREATE TABLE ms_mc3_child (
+    id INTEGER PRIMARY KEY,
+    ref_a INTEGER,
+    ref_b INTEGER,
+    FOREIGN KEY (ref_a, ref_b) REFERENCES ms_mc3_parent(a, b) ON DELETE RESTRICT
+);
+
+-- No NULLs, no matching parent row — must fail
+INSERT INTO ms_mc3_child VALUES (1, 1, 2);
+-- error: CHECK constraint failed: _fk_ms_mc3_child_ref_a_ref_b
+
+DROP TABLE ms_mc3_child;
+DROP TABLE ms_mc3_parent;
+
 -- ===================================================================
 -- Multi-column FK
 -- ===================================================================
