@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-04-15T23:31:06.445Z (agent: claude)
+  Log file: C:\projects\quereus\tickets\.logs\4-test-constraint-extractor-mutation-kills.implement.2026-04-15T23-31-06-444Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 ---
 description: Kill surviving Stryker mutants in src/planner/analysis/constraint-extractor.ts — baseline 47.97% with ~176 survivors, the largest gap in planner/analysis per the mutation testing session.
 dependencies: Stryker infrastructure (already configured in stryker.config.mjs, `yarn mutation:subsystem analysis`)
