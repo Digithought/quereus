@@ -131,8 +131,11 @@ Tests added: `test/planner/stats/{basic-estimates,histogram,catalog-stats,index}
 - Identity-check optimizations (`a === b ? b : new(...)` — returns same logical value either way)
 - Resource cleanup in `finally` blocks (e.g., `outputSlot.close()`)
 
+**Coverage improvement — `temporal-arithmetic` (2026-04-16):**
+
+Tests added: `test/runtime/temporal-arithmetic.spec.ts` (97 unit tests), `test/logic/107-temporal-arithmetic-mutation-kills.sqllogic` (~80 assertions). Covers all `tryTemporalArithmetic` operator/type combinations (date/time/datetime/timespan ±, timespan ×/÷), `tryTemporalComparison` for all comparison operators with zero/negative/equivalent-representation timespans, month-boundary rollover, leap year Feb 29→Feb 28, negative intervals, NULL propagation, commutative orderings, and the three `binary.ts` dispatch paths (temporal, numeric-fast, generic).
+
 **Next steps:**
 - Re-run Stryker periodically to track score improvements
 - Target `constraint-extractor.ts` (47.97%) — largest file with most survivors (176)
-- Add temporal arithmetic tests for `binary.ts` temporal paths
 - Consider per-file ignore lists for documented equivalent mutants
