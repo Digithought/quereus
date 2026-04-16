@@ -116,6 +116,16 @@ are `analysis`, `emit`, `builtins`, `memory`.
 | test/logic/101-builtin-mutation-kills.sqllogic | sqllogic | ~157 assertions | Null guards, edge cases for scalar/string/aggregate/conversion functions |
 | test/logic/105-vtab-memory-mutation-kills.sqllogic | sqllogic | ~164 assertions | IS NULL on NOT NULL, index planning, composite PK, savepoints, ALTER TABLE |
 
+**Coverage improvement — `planner/stats` (2026-04-15):**
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Lines | 51.1% | 87.4% |
+| Branches | 64.8% | 92.6% |
+| Functions | 40.3% | 97.7% |
+
+Tests added: `test/planner/stats/{basic-estimates,histogram,catalog-stats,index}.spec.ts`, `test/logic/108-cardinality-estimation.sqllogic`. Covers all join type branches, aggregate grouping, filter/limit boundaries, histogram selectivity for all operators, CatalogStatsProvider predicate extractors (equality, range, IS NULL, IN, BETWEEN, LIKE, FK→PK joins), NaiveStatsProvider heuristics, and `createStatsProvider` factory.
+
 **Common equivalent mutant patterns** (not worth killing):
 - Debug `note` string construction (cosmetic, no behavioral impact)
 - Identity-check optimizations (`a === b ? b : new(...)` — returns same logical value either way)
