@@ -1923,4 +1923,633 @@ describe('Constraint Extractor — Mutation Killing Tests', () => {
 			expect(dynRange).to.exist;
 		});
 	});
+
+	// ===================================================================
+	// L426, L435: BETWEEN usable flag — kills BooleanLiteral: true→false
+	// ===================================================================
+	describe('BETWEEN — usable flag', () => {
+		it('BETWEEN >= constraint has usable=true', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = betweenNode(col, lit(10), lit(20));
+			const result = extractConstraints(expr, [TABLE_A]);
+			const ge = result.allConstraints.find(c => c.op === '>=')!;
+			expect(ge.usable).to.be.true;
+		});
+
+		it('BETWEEN <= constraint has usable=true', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = betweenNode(col, lit(10), lit(20));
+			const result = extractConstraints(expr, [TABLE_A]);
+			const le = result.allConstraints.find(c => c.op === '<=')!;
+			expect(le.usable).to.be.true;
+		});
+
+		it('BETWEEN targetRelation set on both constraints', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = betweenNode(col, lit(10), lit(20));
+			const result = extractConstraints(expr, [TABLE_A]);
+			for (const c of result.allConstraints) {
+				expect(c.targetRelation).to.equal('t');
+			}
+		});
+	});
+
+	// ===================================================================
+	// L510: IS NULL usable flag — kills BooleanLiteral: true→false
+	// ===================================================================
+	describe('IS NULL — usable flag', () => {
+		it('IS NULL constraint has usable=true', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = unaryOp('IS NULL', col);
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.allConstraints[0].usable).to.be.true;
+		});
+
+		it('IS NOT NULL constraint has usable=true', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = unaryOp('IS NOT NULL', col);
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.allConstraints[0].usable).to.be.true;
+		});
+	});
+
+	// ===================================================================
+	// L460: every→some mutant — IN with mixed usable/non-usable values
+	// ===================================================================
+	describe('IN — allUsable boundary', () => {
+		it('IN with one literal + one non-usable → not extracted (every, not some)', () => {
+			const col = colRef(101, 'a', 1);
+			// lit(1) is usable, binOp('+', ...) is NOT usable (not literal, not dynamic)
+			const nonUsable = binOp('+', lit(1), lit(2));
+			const expr = inNode(col, [lit(1), nonUsable]);
+			const result = extractConstraints(expr, [TABLE_A]);
+			// With `every`: lit is usable, nonUsable is not → false → not extracted
+			// With `some`: lit is usable → true → incorrectly extracted
+			expect(result.allConstraints).to.have.length(0);
+			expect(result.residualPredicate).to.exist;
+		});
+
+		it('IN with two non-usable values → not extracted', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = inNode(col, [binOp('+', lit(1), lit(2)), binOp('+', lit(3), lit(4))]);
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.allConstraints).to.have.length(0);
+		});
+	});
+
+	// ===================================================================
+	// L596: OR branches targeting multiple tables → residual
+	// Kills ConditionalExpression mutant: allRelations.size !== 1 → false
+	// ===================================================================
+	describe('OR — multi-table branch rejection', () => {
+		it('OR where each branch targets a different table → residual', () => {
+			const a = colRef(101, 'a', 1);
+			const x = colRef(200, 'x', 0);
+			const expr = orNode(binOp('=', a, lit(1)), binOp('=', x, lit(2)));
+			const result = extractConstraints(expr, [TABLE_A, TABLE_B]);
+			// Both branches extractable but target different tables → allRelations.size === 2 → residual
+			expect(result.allConstraints).to.have.length(0);
+			expect(result.residualPredicate).to.exist;
+		});
+	});
+
+	// ===================================================================
+	// L738: OR_RANGE with < 2 range specs → null
+	// (Can't directly trigger this since tryCollapseToOrRange is only called
+	// from tryExtractOrBranches which already ensures >= 2 disjuncts, but
+	// tests confirm the check isn't removable)
+	// ===================================================================
+
+	// ===================================================================
+	// L922: computeCoveredKeysForConstraints — IN with non-array value
+	// Kills mutant: c.op === 'IN' && Array.isArray(c.value)
+	// ===================================================================
+	describe('computeCoveredKeysForConstraints — IN edge cases', () => {
+		function makeConstraintFull(op: string, colIdx: number, value: unknown): PredicateConstraint {
+			return {
+				columnIndex: colIdx,
+				attributeId: colIdx,
+				op: op as PredicateConstraint['op'],
+				value: value as PredicateConstraint['value'],
+				usable: true,
+				sourceExpression: lit(1),
+				targetRelation: 't',
+			};
+		}
+
+		it('IN with non-array value → does not count as equality for key coverage', () => {
+			// Edge case: IN constraint where value is not an array (shouldn't happen normally)
+			const c = makeConstraintFull('IN', 0, 42);
+			const result = computeCoveredKeysForConstraints([c], [[0]]);
+			// value is not an array → Array.isArray check fails → doesn't add to eqCols
+			expect(result).to.deep.equal([]);
+		});
+
+		it('IN with single-element array covers key', () => {
+			const c = makeConstraintFull('IN', 0, [42]);
+			const result = computeCoveredKeysForConstraints([c], [[0]]);
+			expect(result).to.deep.equal([[0]]);
+		});
+
+		it('IN with 2-element array does NOT cover key', () => {
+			const c = makeConstraintFull('IN', 0, [1, 2]);
+			const result = computeCoveredKeysForConstraints([c], [[0]]);
+			expect(result).to.deep.equal([]);
+		});
+
+		it('empty constraints + empty keys → empty result', () => {
+			const result = computeCoveredKeysForConstraints([], []);
+			expect(result).to.deep.equal([]);
+		});
+
+		it('non-equality non-IN op → never covers', () => {
+			const c = makeConstraintFull('>', 0, 5);
+			const result = computeCoveredKeysForConstraints([c], [[0]]);
+			expect(result).to.deep.equal([]);
+		});
+
+		it('LIKE op → never covers', () => {
+			const c = makeConstraintFull('LIKE', 0, '%test');
+			const result = computeCoveredKeysForConstraints([c], [[0]]);
+			expect(result).to.deep.equal([]);
+		});
+	});
+
+	// ===================================================================
+	// L153: coveredKeysByTable — single-value IN as equality for key check
+	// Kills mutant: c.op === 'IN' || Array.isArray(c.value)
+	// ===================================================================
+	describe('coveredKeysByTable — IN-as-equality', () => {
+		it('single-value IN treated as equality for key coverage', () => {
+			const id = colRef(100, 'id', 0);
+			const expr = inNode(id, [lit(42)]);
+			const result = extractConstraints(expr, [TABLE_A]);
+			const covered = result.coveredKeysByTable!.get('t')!;
+			expect(covered).to.have.length(1);
+			expect(covered[0]).to.deep.equal([0]);
+		});
+
+		it('two-value IN NOT treated as equality for key coverage', () => {
+			const id = colRef(100, 'id', 0);
+			const expr = inNode(id, [lit(1), lit(2)]);
+			const result = extractConstraints(expr, [TABLE_A]);
+			const covered = result.coveredKeysByTable!.get('t')!;
+			expect(covered).to.have.length(0);
+		});
+
+		it('= op covers key (baseline)', () => {
+			const id = colRef(100, 'id', 0);
+			const expr = binOp('=', id, lit(1));
+			const result = extractConstraints(expr, [TABLE_A]);
+			const covered = result.coveredKeysByTable!.get('t')!;
+			expect(covered).to.have.length(1);
+		});
+
+		it('> op does NOT cover key', () => {
+			const id = colRef(100, 'id', 0);
+			const expr = binOp('>', id, lit(1));
+			const result = extractConstraints(expr, [TABLE_A]);
+			const covered = result.coveredKeysByTable!.get('t')!;
+			expect(covered).to.have.length(0);
+		});
+	});
+
+	// ===================================================================
+	// OR → IN collapse with IN branch having dynamic valueExpr
+	// Covers L642-L646 (NoCoverage in collapseBranchesToIn)
+	// ===================================================================
+	describe('collapseBranchesToIn — IN branch with dynamic values', () => {
+		it('IN(col, [lit, param]) OR col=lit → merged IN with mixed binding', () => {
+			const col = colRef(101, 'a', 1);
+			const param = paramRef(':p');
+			// Branch 1: a IN (1, :p) → IN constraint with mixed binding + valueExpr
+			const branch1 = inNode(col, [lit(1), param]);
+			// Branch 2: a=10 → equality constraint
+			const branch2 = binOp('=', col, lit(10));
+			const expr = orNode(branch1, branch2);
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.allConstraints).to.have.length(1);
+			expect(result.allConstraints[0].op).to.equal('IN');
+			// Values should be merged: [1, undefined (param), 10]
+			const values = result.allConstraints[0].value as unknown[];
+			expect(values).to.have.length(3);
+			expect(values).to.include(1);
+			expect(values).to.include(10);
+			// Should have mixed binding due to parameter
+			expect(result.allConstraints[0].bindingKind).to.equal('mixed');
+			expect(result.allConstraints[0].valueExpr).to.be.an('array');
+		});
+
+		it('two IN branches with params → merged mixed binding', () => {
+			const col = colRef(101, 'a', 1);
+			const p1 = paramRef(':p1');
+			const p2 = paramRef(':p2');
+			const branch1 = inNode(col, [lit(1), p1]);
+			const branch2 = inNode(col, [p2, lit(4)]);
+			const expr = orNode(branch1, branch2);
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.allConstraints).to.have.length(1);
+			expect(result.allConstraints[0].op).to.equal('IN');
+			const values = result.allConstraints[0].value as unknown[];
+			expect(values).to.have.length(4);
+			expect(result.allConstraints[0].bindingKind).to.equal('mixed');
+		});
+	});
+
+	// ===================================================================
+	// OR_RANGE — dynamic value expressions tracked per-spec
+	// Kills L726 BlockStatement mutant (removing body of dynamic value assignment)
+	// ===================================================================
+	describe('OR_RANGE — dynamic value in spec', () => {
+		it('param in upper bound → spec.upper.valueExpr set', () => {
+			const col = colRef(101, 'a', 1);
+			const param = paramRef(':p');
+			// Branch 1: a > :p (param)
+			// Branch 2: a < 0 (literal)
+			const expr = orNode(binOp('>', col, param), binOp('<', col, lit(0)));
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.allConstraints).to.have.length(1);
+			const ranges = result.allConstraints[0].ranges!;
+			expect(ranges).to.have.length(2);
+			// Find the range with dynamic lower bound
+			const dynRange = ranges.find(r => r.lower && r.lower.valueExpr)!;
+			expect(dynRange).to.exist;
+			expect(dynRange.lower!.value).to.be.undefined;
+			// The literal range should not have valueExpr
+			const litRange = ranges.find(r => r.upper && !r.upper.valueExpr)!;
+			expect(litRange).to.exist;
+			expect(litRange.upper!.value).to.equal(0);
+		});
+
+		it('equality with param in OR_RANGE → both bounds have valueExpr', () => {
+			const col = colRef(101, 'a', 1);
+			const param = paramRef(':p');
+			// Branch 1: a = :p (equality with param → lower and upper both set)
+			// Branch 2: a > 100
+			const expr = orNode(binOp('=', col, param), binOp('>', col, lit(100)));
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.allConstraints).to.have.length(1);
+			expect(result.allConstraints[0].op).to.equal('OR_RANGE');
+			const ranges = result.allConstraints[0].ranges!;
+			const eqRange = ranges.find(r => r.lower && r.upper)!;
+			expect(eqRange).to.exist;
+			// Both bounds from equality should reference the param
+			expect(eqRange.lower!.valueExpr).to.exist;
+			expect(eqRange.upper!.valueExpr).to.exist;
+		});
+	});
+
+	// ===================================================================
+	// OR → IN with equality branch having dynamic valueExpr
+	// Kills L656-659 BlockStatement mutants in collapseBranchesToIn
+	// ===================================================================
+	describe('collapseBranchesToIn — equality branch with dynamic value', () => {
+		it('col=param OR col=lit → IN with mixed binding + correct valueExpr array', () => {
+			const col = colRef(101, 'a', 1);
+			const param = paramRef(':p');
+			const expr = orNode(binOp('=', col, param), binOp('=', col, lit(42)));
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.allConstraints).to.have.length(1);
+			expect(result.allConstraints[0].op).to.equal('IN');
+			expect(result.allConstraints[0].bindingKind).to.equal('mixed');
+			const valueExprs = result.allConstraints[0].valueExpr as ScalarPlanNode[];
+			expect(valueExprs).to.be.an('array');
+			expect(valueExprs).to.have.length(2);
+		});
+	});
+
+	// ===================================================================
+	// BETWEEN — column index undefined (no mapping) → not extracted
+	// Kills L411 blockStatement mutant
+	// ===================================================================
+	describe('BETWEEN — columnIndex mapping edge case', () => {
+		it('BETWEEN column mapped to table but no columnIndex → residual', () => {
+			const table: TableInfo = {
+				relationName: 'broken',
+				relationKey: 'broken',
+				attributes: [{ id: 600, name: 'x' }],
+				columnIndexMap: new Map(), // Empty — no column index
+			};
+			const col = colRef(600, 'x', 0);
+			const expr = betweenNode(col, lit(1), lit(10));
+			const result = extractConstraints(expr, [table]);
+			expect(result.allConstraints).to.have.length(0);
+		});
+	});
+
+	// ===================================================================
+	// IS NULL — column index undefined → not extracted
+	// ===================================================================
+	describe('IS NULL — columnIndex mapping edge case', () => {
+		it('IS NULL column mapped to table but no columnIndex → residual', () => {
+			const table: TableInfo = {
+				relationName: 'broken',
+				relationKey: 'broken',
+				attributes: [{ id: 600, name: 'x' }],
+				columnIndexMap: new Map(),
+			};
+			const col = colRef(600, 'x', 0);
+			const expr = unaryOp('IS NULL', col);
+			const result = extractConstraints(expr, [table]);
+			expect(result.allConstraints).to.have.length(0);
+		});
+	});
+
+	// ===================================================================
+	// IN — column index undefined → not extracted
+	// ===================================================================
+	describe('IN — columnIndex mapping edge case', () => {
+		it('IN column mapped to table but no columnIndex → residual', () => {
+			const table: TableInfo = {
+				relationName: 'broken',
+				relationKey: 'broken',
+				attributes: [{ id: 600, name: 'x' }],
+				columnIndexMap: new Map(),
+			};
+			const col = colRef(600, 'x', 0);
+			const expr = inNode(col, [lit(1), lit(2)]);
+			const result = extractConstraints(expr, [table]);
+			expect(result.allConstraints).to.have.length(0);
+		});
+	});
+
+	// ===================================================================
+	// Binary — column index undefined → not extracted
+	// ===================================================================
+	describe('binary — columnIndex mapping edge case', () => {
+		it('binary col=lit mapped to table but no columnIndex → residual', () => {
+			const table: TableInfo = {
+				relationName: 'broken',
+				relationKey: 'broken',
+				attributes: [{ id: 600, name: 'x' }],
+				columnIndexMap: new Map(),
+			};
+			const col = colRef(600, 'x', 0);
+			const expr = binOp('=', col, lit(5));
+			const result = extractConstraints(expr, [table]);
+			expect(result.allConstraints).to.have.length(0);
+		});
+	});
+
+	// ===================================================================
+	// OR_RANGE — branch consistency checks
+	// ===================================================================
+	describe('OR_RANGE — branch validation edge cases', () => {
+		it('OR with 3-constraint branch (>2) → cannot be OR_RANGE, falls to residual if not IN', () => {
+			const col = colRef(101, 'a', 1);
+			// Three constraints in one branch: a>1 AND a<10 AND a>=5
+			const branch1 = andNode(andNode(binOp('>', col, lit(1)), binOp('<', col, lit(10))), binOp('>=', col, lit(5)));
+			const branch2 = binOp('>', col, lit(20));
+			const expr = orNode(branch1, branch2);
+			const result = extractConstraints(expr, [TABLE_A]);
+			// Branch1 has 3 constraints → tryCollapseToOrRange rejects it (>2 per branch)
+			// allEqOrIn check also fails (branch1 has 3 constraints, not 1)
+			// So entire OR is residual
+			expect(result.residualPredicate).to.exist;
+		});
+
+		it('OR_RANGE with 2-constraint branch (lower+upper) → succeeds', () => {
+			const col = colRef(101, 'a', 1);
+			const branch1 = andNode(binOp('>=', col, lit(1)), binOp('<=', col, lit(10)));
+			const branch2 = andNode(binOp('>=', col, lit(20)), binOp('<=', col, lit(30)));
+			const expr = orNode(branch1, branch2);
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.allConstraints).to.have.length(1);
+			expect(result.allConstraints[0].op).to.equal('OR_RANGE');
+			const ranges = result.allConstraints[0].ranges!;
+			expect(ranges).to.have.length(2);
+			// First range: [1, 10]
+			const r1 = ranges.find(r => r.lower?.value === 1)!;
+			expect(r1.lower!.op).to.equal('>=');
+			expect(r1.upper!.op).to.equal('<=');
+			expect(r1.upper!.value).to.equal(10);
+			// Second range: [20, 30]
+			const r2 = ranges.find(r => r.lower?.value === 20)!;
+			expect(r2.lower!.op).to.equal('>=');
+			expect(r2.upper!.op).to.equal('<=');
+			expect(r2.upper!.value).to.equal(30);
+		});
+
+		it('OR_RANGE where inner branch has mismatched columns → residual', () => {
+			const a = colRef(101, 'a', 1);
+			const b = colRef(102, 'b', 2);
+			// Branch 1: a>5 AND b<10 — two different columns in one branch
+			const branch1 = andNode(binOp('>', a, lit(5)), binOp('<', b, lit(10)));
+			// Branch 2: a>20
+			const branch2 = binOp('>', a, lit(20));
+			const expr = orNode(branch1, branch2);
+			const result = extractConstraints(expr, [TABLE_A]);
+			// Branch 1 constraints target different columns → tryCollapseToOrRange rejects
+			// allEqOrIn check also fails (branch1 has 2 constraints on different columns)
+			// Falls to residual
+			expect(result.allConstraints).to.have.length(0);
+			expect(result.residualPredicate).to.exist;
+		});
+	});
+
+	// ===================================================================
+	// Residual: exact undefined when 0 residuals (not just falsy)
+	// Kills L120 ConditionalExpression: true
+	// ===================================================================
+	describe('residualPredicate — strict undefined', () => {
+		it('0 residuals → residualPredicate is strictly undefined', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = binOp('=', col, lit(5));
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.residualPredicate).to.equal(undefined);
+		});
+
+		it('all extractable AND → residualPredicate is strictly undefined', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = andNode(binOp('=', col, lit(1)), binOp('>', col, lit(0)));
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.residualPredicate).to.equal(undefined);
+		});
+	});
+
+	// ===================================================================
+	// createResidualFilter — exact return values
+	// Kills L1194 mutants
+	// ===================================================================
+	describe('createResidualFilter — return value precision', () => {
+		it('empty handledConstraints → returns exactly undefined', () => {
+			const expr = binOp('=', colRef(101, 'a', 1), lit(5));
+			const result = createResidualFilter(expr, []);
+			expect(result).to.equal(undefined);
+		});
+
+		it('non-empty handledConstraints → returns exactly undefined (stub)', () => {
+			const expr = binOp('=', colRef(101, 'a', 1), lit(5));
+			const constraint: PredicateConstraint = {
+				columnIndex: 1, attributeId: 101, op: '=', value: 5,
+				usable: true, sourceExpression: expr, targetRelation: 't',
+			};
+			const result = createResidualFilter(expr, [constraint]);
+			expect(result).to.equal(undefined);
+		});
+
+		it('handledConstraints.length === 0 vs > 0 produce same result (stub)', () => {
+			const expr = binOp('=', colRef(101, 'a', 1), lit(5));
+			const constraint: PredicateConstraint = {
+				columnIndex: 1, attributeId: 101, op: '=', value: 5,
+				usable: true, sourceExpression: expr, targetRelation: 't',
+			};
+			const resultEmpty = createResidualFilter(expr, []);
+			const resultFull = createResidualFilter(expr, [constraint]);
+			expect(resultEmpty).to.equal(undefined);
+			expect(resultFull).to.equal(undefined);
+		});
+	});
+
+	// ===================================================================
+	// L600, L607, L616: OR→IN collapse — allEqOrIn and sameColumn checks
+	// ===================================================================
+	describe('OR → IN collapse — detailed condition checks', () => {
+		it('OR of equality + range on same col → NOT IN (goes to OR_RANGE)', () => {
+			const col = colRef(101, 'a', 1);
+			// Branch 1: a=5 (equality)
+			// Branch 2: a>10 (range, not equality/IN)
+			// allEqOrIn check fails for branch2
+			const expr = orNode(binOp('=', col, lit(5)), binOp('>', col, lit(10)));
+			const result = extractConstraints(expr, [TABLE_A]);
+			expect(result.allConstraints).to.have.length(1);
+			// Should be OR_RANGE, not IN
+			expect(result.allConstraints[0].op).to.not.equal('IN');
+			expect(result.allConstraints[0].op).to.equal('OR_RANGE');
+		});
+
+		it('OR of equality on DIFFERENT columns → no IN collapse', () => {
+			const a = colRef(101, 'a', 1);
+			const b = colRef(102, 'b', 2);
+			// Same table, different columns → allEqOrIn=true, sameColumn=false
+			const expr = orNode(binOp('=', a, lit(1)), binOp('=', b, lit(2)));
+			const result = extractConstraints(expr, [TABLE_A]);
+			// Same table but different columns → tryCollapseToOrRange also fails (different cols)
+			// → residual
+			expect(result.allConstraints).to.have.length(0);
+			expect(result.residualPredicate).to.exist;
+		});
+	});
+
+	// ===================================================================
+	// OR_RANGE — targetColumnIndex/targetAttributeId consistency
+	// Kills L710 mutants (targetColumnIndex !== firstCol || ...)
+	// ===================================================================
+	describe('OR_RANGE — cross-branch column consistency', () => {
+		it('branches with different columns → not OR_RANGE', () => {
+			const a = colRef(101, 'a', 1);
+			const b = colRef(102, 'b', 2);
+			// Branch 1: a>5, Branch 2: b<10 — different columns
+			const expr = orNode(binOp('>', a, lit(5)), binOp('<', b, lit(10)));
+			const result = extractConstraints(expr, [TABLE_A]);
+			// Different columns → tryCollapseToOrRange returns null
+			// allEqOrIn fails (not equality/IN)
+			// → residual
+			expect(result.allConstraints).to.have.length(0);
+			expect(result.residualPredicate).to.exist;
+		});
+	});
+
+	// ===================================================================
+	// OR_RANGE — branch with no bounds (e.g., LIKE) → reject
+	// Kills L733 ConditionalExpression: false
+	// ===================================================================
+	describe('OR_RANGE — non-range op in branch', () => {
+		it('LIKE ops in both OR branches → not OR_RANGE, residual', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = orNode(binOp('LIKE', col, lit('%a')), binOp('LIKE', col, lit('%b')));
+			const result = extractConstraints(expr, [TABLE_A]);
+			// LIKE is not a range operator → tryCollapseToOrRange returns null at L727
+			expect(result.allConstraints).to.have.length(0);
+			expect(result.residualPredicate).to.exist;
+		});
+	});
+
+	// ===================================================================
+	// L323, L327, L330: extractBinaryConstraint — pattern matching branches
+	// ===================================================================
+	describe('extractBinaryConstraint — pattern matching precision', () => {
+		it('col op non-col-non-lit → residual (not matched by any branch)', () => {
+			const col = colRef(101, 'a', 1);
+			// RHS is a complex expression (BinaryOp), not literal, not column, not param
+			const complexRhs = binOp('+', lit(1), lit(2));
+			const expr = binOp('=', col, complexRhs);
+			const result = extractConstraints(expr, [TABLE_A]);
+			// BinaryOp(+) fails isLiteralConstant and isDynamicValue → no match
+			expect(result.allConstraints).to.have.length(0);
+			expect(result.residualPredicate).to.exist;
+		});
+
+		it('non-col-non-lit op col → residual', () => {
+			const col = colRef(101, 'a', 1);
+			const complexLhs = binOp('+', lit(1), lit(2));
+			const expr = binOp('=', complexLhs, col);
+			const result = extractConstraints(expr, [TABLE_A]);
+			// LHS is BinaryOp(+), not literal, not dynamic → no match
+			expect(result.allConstraints).to.have.length(0);
+			expect(result.residualPredicate).to.exist;
+		});
+	});
+
+	// ===================================================================
+	// L368: nonLiteral detection — LHS literal, RHS non-literal and vice versa
+	// Kills LogicalOperator: !isLiteralConstant(lhs) && !isLiteralConstant(rhs)
+	// and BooleanLiteral: isLiteralConstant(lhs)/isLiteralConstant(rhs)
+	// ===================================================================
+	describe('binding detection — nonLiteral flag precision', () => {
+		it('col(left) = param(right) → nonLiteral true (rhs not literal)', () => {
+			const col = colRef(101, 'a', 1);
+			const param = paramRef(':p');
+			const expr = binOp('=', col, param);
+			const result = extractConstraints(expr, [TABLE_A]);
+			const c = result.allConstraints[0];
+			// nonLiteral = !isLiteral(col) || !isLiteral(param) = true || true = true
+			// valueSide = rhs = param (not literal) → enters dynamic path
+			expect(c.bindingKind).to.equal('parameter');
+			expect(c.valueExpr).to.exist;
+		});
+
+		it('param(left) = col(right) → nonLiteral true, flip applied', () => {
+			const col = colRef(101, 'a', 1);
+			const param = paramRef(':p');
+			const expr = binOp('<', param, col);
+			const result = extractConstraints(expr, [TABLE_A]);
+			const c = result.allConstraints[0];
+			// columnIsLeft = false (column is right) → valueSide = lhs = param
+			expect(c.op).to.equal('>'); // flipped
+			expect(c.bindingKind).to.equal('parameter');
+			expect(c.valueExpr).to.exist;
+		});
+
+		it('col(left) = cast(lit)(right) → nonLiteral true but valueSide is literal', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = binOp('=', col, castNode(lit(42)));
+			const result = extractConstraints(expr, [TABLE_A]);
+			const c = result.allConstraints[0];
+			// nonLiteral = !isLiteral(col) || !isLiteral(cast(lit)) = true || false = true
+			// valueSide = rhs = cast(lit), isLiteralConstant(cast(lit)) = true (unwraps)
+			// → enters the "literal" branch inside nonLiteral block
+			expect(c.bindingKind).to.equal('literal');
+			expect(c.valueExpr).to.be.undefined;
+		});
+	});
+
+	// ===================================================================
+	// OR_RANGE — equality branch creates lower AND upper with same value
+	// Directly test that both bounds exist (kills BlockStatement mutants)
+	// ===================================================================
+	describe('OR_RANGE — equality branch bounds', () => {
+		it('equality in OR_RANGE creates both lower AND upper bounds', () => {
+			const col = colRef(101, 'a', 1);
+			const expr = orNode(binOp('=', col, lit(42)), binOp('>', col, lit(100)));
+			const result = extractConstraints(expr, [TABLE_A]);
+			const ranges = result.allConstraints[0].ranges!;
+			const eqRange = ranges.find(r => r.lower && r.upper && r.lower.value === r.upper.value)!;
+			expect(eqRange).to.exist;
+			expect(eqRange.lower!.op).to.equal('>=');
+			expect(eqRange.upper!.op).to.equal('<=');
+			expect(eqRange.lower!.value).to.equal(42);
+			expect(eqRange.upper!.value).to.equal(42);
+		});
+	});
 });
