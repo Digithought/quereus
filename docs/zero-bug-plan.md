@@ -135,6 +135,14 @@ Tests added: `test/planner/stats/{basic-estimates,histogram,catalog-stats,index}
 
 Tests added: `test/runtime/temporal-arithmetic.spec.ts` (97 unit tests), `test/logic/107-temporal-arithmetic-mutation-kills.sqllogic` (~80 assertions). Covers all `tryTemporalArithmetic` operator/type combinations (date/time/datetime/timespan ±, timespan ×/÷), `tryTemporalComparison` for all comparison operators with zero/negative/equivalent-representation timespans, month-boundary rollover, leap year Feb 29→Feb 28, negative intervals, NULL propagation, commutative orderings, and the three `binary.ts` dispatch paths (temporal, numeric-fast, generic).
 
+**Coverage improvement — `runtime/emit/scan.ts` (2026-04-17):**
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Mutation score | 53.85% | 61.54% |
+
+Tests added: `test/runtime/scan-emitter.spec.ts` (21 unit tests), `test/logic/110-scan-emitter-mutation-kills.sqllogic` (SeqScan/IndexScan/IndexSeek coverage). Covers connect-failure error wrapping (QuereusError code preservation, plain-Error → ERROR fallback, cause chain), mid-iteration error wrapping, query-unsupported fallback, vtab disconnect on error, vtabArgs propagation to connect options, row descriptor column mapping, and all happy paths (empty/single/multi-row, index-ordered, point-seek, composite PK, dynamic-param seek). Remaining survivors are defensive guards for impossible internal states (missing moduleInfo, missing connect) plus equivalent mutants around the IndexSeek dynamic-args check that can't be distinguished by observable behavior (SeqScan/IndexScan emit no dynamic args).
+
 **Next steps:**
 - Re-run Stryker periodically to track score improvements
 - Target `constraint-extractor.ts` (47.97%) — largest file with most survivors (176)

@@ -123,6 +123,25 @@ function makeConnectThrowsPlainErrorModule(): VirtualTableModule<StubTable, Base
 	};
 }
 
+function makeCaptureOptionsModule(capture: { options?: BaseModuleConfig }): VirtualTableModule<StubTable, BaseModuleConfig> {
+	return {
+		async create(db, tableSchema) {
+			return new StubTable(db, this as any, tableSchema.schemaName, tableSchema.name, undefined, tableSchema);
+		},
+		async connect(db, _pAux, _mod, schemaName, tableName, options) {
+			capture.options = options;
+			const queryFn = async function* (): AsyncIterable<Row> {
+				yield [1] as Row;
+			};
+			return new StubTable(db, this as any, schemaName, tableName, queryFn);
+		},
+		async destroy() { /* no-op */ },
+		getBestAccessPlan(_db: Database, _tableInfo: TableSchema, _request: BestAccessPlanRequest): BestAccessPlanResult {
+			return { cost: 100, rows: 1, explains: 'full scan', handledFilters: _request.filters.map(() => false) };
+		},
+	};
+}
+
 function makeNoQueryModule(): VirtualTableModule<StubTable, BaseModuleConfig> {
 	return {
 		async create(db, tableSchema) {
@@ -397,6 +416,21 @@ describe('Scan emitter (runtime/emit/scan.ts)', () => {
 			const rows = await evalAll(db, 'select v from t_dynamic where id = ?', [3]);
 			expect(rows).to.have.lengthOf(1);
 			expect(rows[0].v).to.equal('three');
+		});
+	});
+
+	// ---- vtabArgs propagation to connect ----
+
+	describe('vtabArgs propagation', () => {
+		it('passes USING module args to connect options', async () => {
+			const capture: { options?: BaseModuleConfig } = {};
+			db.registerModule('capture_opts', makeCaptureOptionsModule(capture));
+			await db.exec("create table t_opts (id integer primary key) using capture_opts(flavor='vanilla', count=42)");
+
+			await evalAll(db, 'select * from t_opts');
+			expect(capture.options).to.exist;
+			expect((capture.options as any).flavor).to.equal('vanilla');
+			expect((capture.options as any).count).to.equal(42);
 		});
 	});
 
