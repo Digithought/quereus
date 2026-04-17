@@ -1,6 +1,6 @@
 import { expect } from 'chai';
 import { buildHistogram, selectivityFromHistogram } from '../../../src/planner/stats/histogram.js';
-import type { EquiHeightHistogram, HistogramBucket } from '../../../src/planner/stats/catalog-stats.js';
+import type { EquiHeightHistogram } from '../../../src/planner/stats/catalog-stats.js';
 
 // ── buildHistogram ──────────────────────────────────────────────────────
 

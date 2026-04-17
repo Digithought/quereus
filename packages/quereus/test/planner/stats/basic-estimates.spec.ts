@@ -236,7 +236,7 @@ describe('ensureRowEstimate', () => {
 		const node = {} as RelationalPlanNode;
 		ensureRowEstimate(node, 42);
 		// ESM modules run in strict mode, so writing to a non-writable property throws.
-		expect(() => { (node as any).estimatedRows = 999; }).to.throw(TypeError);
+		expect(() => { (node as { estimatedRows: number }).estimatedRows = 999; }).to.throw(TypeError);
 		expect(node.estimatedRows).to.equal(42);
 	});
 });

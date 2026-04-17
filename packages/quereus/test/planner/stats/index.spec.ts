@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { expect } from 'chai';
 import { NaiveStatsProvider, createStatsProvider, defaultStatsProvider } from '../../../src/planner/stats/index.js';
 import type { TableSchema } from '../../../src/schema/table.js';
