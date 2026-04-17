@@ -412,7 +412,9 @@ class QuereusWorker implements QuereusWorkerAPI {
       columnDefs.push(colDef);
     }
 
-    if (tableSchema.primaryKeyDefinition.length > 1) {
+    if (tableSchema.primaryKeyDefinition.length === 0) {
+      columnDefs.push('PRIMARY KEY ()');
+    } else if (tableSchema.primaryKeyDefinition.length > 1) {
       const pkCols = tableSchema.primaryKeyDefinition
         .map(pk => `"${tableSchema.columns[pk.index].name}"`)
         .join(', ');

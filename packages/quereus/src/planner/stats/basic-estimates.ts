@@ -38,8 +38,14 @@ export class BasicRowEstimator {
 				return Math.max(rightRows, Math.floor(leftRows * rightRows * 0.1));
 			case 'full':
 			case 'full outer':
-				// Full outer join: sum minus overlap
-				return leftRows + rightRows - Math.floor(leftRows * rightRows * 0.1);
+				// Full outer join: at least max(left, right); heuristic subtracts a small
+				// overlap from the sum, but never below the larger side (matches the
+				// invariant that a full outer join returns every row from both inputs).
+				return Math.max(
+					leftRows,
+					rightRows,
+					leftRows + rightRows - Math.floor(leftRows * rightRows * 0.1),
+				);
 			case 'cross':
 				// Cross join: cartesian product
 				return leftRows * rightRows;

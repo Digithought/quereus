@@ -56,6 +56,21 @@ describe('DDL generator', () => {
 			expect(ddl).to.include('"name" TEXT');
 		});
 
+		it('generates singleton PRIMARY KEY () for empty PK definition', () => {
+			const schema = makeTableSchema({
+				name: 'settings',
+				columns: [
+					makeColumn('name', TEXT_TYPE, { notNull: false }),
+					makeColumn('val', TEXT_TYPE, { notNull: false }),
+				],
+				primaryKeyDefinition: [],
+			});
+			const ddl = generateTableDDL(schema);
+			expect(ddl).to.include('PRIMARY KEY ()');
+			// No column-level PK annotation should leak in.
+			expect(ddl).not.to.match(/\bPRIMARY KEY\b(?!\s*\()/);
+		});
+
 		it('generates composite PK as table constraint', () => {
 			const schema = makeTableSchema({
 				name: 'order_items',

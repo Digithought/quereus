@@ -78,17 +78,17 @@ describe('BasicRowEstimator', () => {
 			expect(est.estimateJoin(200, 100, 'right outer')).to.equal(2000);
 		});
 
-		it('full outer join computes sum minus overlap', () => {
-			// 100 + 200 - floor(100 * 200 * 0.1) = 300 - 2000 = -1700
-			expect(est.estimateJoin(100, 200, 'full')).to.equal(-1700);
+		it('full outer join never falls below max(left, right)', () => {
+			// Heuristic would yield 300 - 2000 = -1700; clamped to max(100, 200) = 200.
+			expect(est.estimateJoin(100, 200, 'full')).to.equal(200);
 		});
 
 		it('full outer alias behaves same as full', () => {
-			expect(est.estimateJoin(100, 200, 'full outer')).to.equal(-1700);
+			expect(est.estimateJoin(100, 200, 'full outer')).to.equal(200);
 		});
 
-		it('full outer with small tables returns positive', () => {
-			// 3 + 5 - floor(3 * 5 * 0.1) = 8 - 1 = 7
+		it('full outer with small tables uses sum minus overlap', () => {
+			// 3 + 5 - floor(3 * 5 * 0.1) = 8 - 1 = 7 (already >= max(3, 5))
 			expect(est.estimateJoin(3, 5, 'full')).to.equal(7);
 		});
 
@@ -235,8 +235,8 @@ describe('ensureRowEstimate', () => {
 	it('property is non-writable after being set', () => {
 		const node = {} as RelationalPlanNode;
 		ensureRowEstimate(node, 42);
-		// Attempting to write should silently fail (non-strict) or throw (strict)
-		expect(() => { (node as any).estimatedRows = 999; }).to.throw;
+		// ESM modules run in strict mode, so writing to a non-writable property throws.
+		expect(() => { (node as any).estimatedRows = 999; }).to.throw(TypeError);
 		expect(node.estimatedRows).to.equal(42);
 	});
 });

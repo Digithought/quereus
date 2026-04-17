@@ -13,11 +13,11 @@ CREATE TABLE ce_products (
 	name TEXT
 ) USING memory;
 
--- 100 rows: 4 categories (high selectivity equality), spread prices
--- Category distribution: 25 electronics, 25 books, 25 clothing, 25 food
--- Price distribution: 0.99 to 990.01
+-- 40 rows: 4 categories (high selectivity equality), spread prices
+-- Category distribution: 10 electronics, 10 books, 10 clothing, 10 food
+-- Price distribution: 9.99 to 399.60
 
--- Batch insert rows
+-- Insert rows (one per statement)
 INSERT INTO ce_products VALUES (1, 'electronics', 9.99, 'item_1');
 INSERT INTO ce_products VALUES (2, 'books', 19.98, 'item_2');
 INSERT INTO ce_products VALUES (3, 'clothing', 29.97, 'item_3');

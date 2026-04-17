@@ -88,6 +88,87 @@ describe('Schema Catalog', () => {
 			expect(catalog.schemaName).to.equal('main');
 			expect(catalog.tables.find(t => t.name === 'default_schema')).to.exist;
 		});
+
+		it('should emit PRIMARY KEY () for singleton tables', async () => {
+			await db.exec('CREATE TABLE settings (name TEXT, val TEXT, PRIMARY KEY ()) USING memory');
+
+			const catalog = collectSchemaCatalog(db, 'main');
+			const table = catalog.tables.find(t => t.name === 'settings');
+			expect(table, 'settings table').to.exist;
+			expect(table!.ddl).to.include('PRIMARY KEY ()');
+			expect(table!.primaryKey).to.have.length(0);
+		});
+	});
+
+	// Roundtrip tests: catalog DDL must parse back into an equivalent schema.
+	// These catch drift between generator branches and the parser — e.g. a
+	// singleton table silently losing its PRIMARY KEY () on re-persistence.
+	describe('DDL roundtrip', () => {
+		async function roundtrip(createSql: string, tableName: string): Promise<void> {
+			await db.exec(createSql);
+			const beforeTable = db.schemaManager.getTable('main', tableName);
+			expect(beforeTable, 'table exists before roundtrip').to.exist;
+			const beforePk = beforeTable!.primaryKeyDefinition.map(pk => ({
+				index: pk.index,
+				desc: pk.desc ?? false,
+			}));
+			const beforeCols = beforeTable!.columns.map(c => c.name);
+
+			const catalog = collectSchemaCatalog(db, 'main');
+			const entry = catalog.tables.find(t => t.name === tableName);
+			expect(entry, 'catalog entry').to.exist;
+
+			await db.exec(`DROP TABLE ${tableName}`);
+			expect(db.schemaManager.getTable('main', tableName)).to.not.exist;
+
+			await db.exec(entry!.ddl);
+			const afterTable = db.schemaManager.getTable('main', tableName);
+			expect(afterTable, 'table exists after roundtrip').to.exist;
+
+			expect(afterTable!.columns.map(c => c.name)).to.deep.equal(beforeCols);
+			expect(afterTable!.primaryKeyDefinition.map(pk => ({
+				index: pk.index,
+				desc: pk.desc ?? false,
+			}))).to.deep.equal(beforePk);
+		}
+
+		it('roundtrips a single-column PRIMARY KEY', async () => {
+			await roundtrip(
+				'CREATE TABLE rt_single (id INTEGER PRIMARY KEY, name TEXT) USING memory',
+				'rt_single',
+			);
+		});
+
+		it('roundtrips a composite PRIMARY KEY', async () => {
+			await roundtrip(
+				'CREATE TABLE rt_composite (a INTEGER, b TEXT, c REAL, PRIMARY KEY (a, b)) USING memory',
+				'rt_composite',
+			);
+		});
+
+		it('roundtrips a singleton (empty) PRIMARY KEY', async () => {
+			await roundtrip(
+				'CREATE TABLE rt_singleton (app_name TEXT, version TEXT, PRIMARY KEY ()) USING memory',
+				'rt_singleton',
+			);
+		});
+
+		it('preserves singleton semantics across roundtrip', async () => {
+			await db.exec('CREATE TABLE rt_sing_sem (k TEXT, v TEXT, PRIMARY KEY ()) USING memory');
+			const catalog = collectSchemaCatalog(db, 'main');
+			const entry = catalog.tables.find(t => t.name === 'rt_sing_sem')!;
+			await db.exec('DROP TABLE rt_sing_sem');
+			await db.exec(entry.ddl);
+
+			await db.exec("INSERT INTO rt_sing_sem VALUES ('a', 'b')");
+			let threw = false;
+			try {
+				await db.exec("INSERT INTO rt_sing_sem VALUES ('c', 'd')");
+			} catch {
+				threw = true;
+			}
+			expect(threw, 'second insert into singleton must fail').to.be.true;
+		});
 	});
 
 	describe('generateDeclaredDDL', () => {
