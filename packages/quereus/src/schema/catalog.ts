@@ -186,8 +186,10 @@ function generateTableDDL(tableSchema: TableSchema): string {
 		columnDefs.push(colDef);
 	}
 
-	// Add table-level PRIMARY KEY if composite
-	if (tableSchema.primaryKeyDefinition.length > 1) {
+	// Add table-level PRIMARY KEY: empty () for singleton tables, composite for multi-column
+	if (tableSchema.primaryKeyDefinition.length === 0) {
+		columnDefs.push(`PRIMARY KEY ()`);
+	} else if (tableSchema.primaryKeyDefinition.length > 1) {
 		const pkCols = tableSchema.primaryKeyDefinition
 			.map(pk => `"${tableSchema.columns[pk.index].name}"`)
 			.join(', ');
