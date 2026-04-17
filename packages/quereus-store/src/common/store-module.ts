@@ -39,7 +39,7 @@ import {
 	buildFullScanBounds,
 } from './key-builder.js';
 import { deserializeRow } from './serialization.js';
-import { generateTableDDL } from './ddl-generator.js';
+import { generateTableDDL } from '@quereus/quereus';
 
 /**
  * Result of catalog rehydration.

@@ -284,6 +284,7 @@ Quereus exports all critical utilities needed for plugin and module development:
 * **Collation Support**: `registerCollation`, `getCollation`, built-in collations (`BINARY_COLLATION`, `NOCASE_COLLATION`, `RTRIM_COLLATION`)
 * **Type System**: Full access to logical types, validation, and parsing utilities
 * **Event Hooks**: `VTableEventEmitter` interface for mutation and schema change events — Enable reactive patterns, caching, and replication
+* **DDL Generation**: `generateTableDDL(tableSchema, db?)`, `generateIndexDDL(indexSchema, tableSchema, db?)` — Canonical `CREATE TABLE` / `CREATE INDEX` output from runtime schema objects. With a `Database`, matches session defaults (schema qualification, `default_column_nullability`, `default_vtab_module`/`default_vtab_args`) for readable output; without one, emits fully-qualified, explicitly-annotated DDL safe for cross-session persistence. See [Schema Management — DDL Generation](../../docs/schema.md#ddl-generation).
 
 See the [Plugin System documentation](../../docs/plugins.md#comparison-and-coercion-utilities) for complete API reference and examples.
 

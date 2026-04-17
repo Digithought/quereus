@@ -70,11 +70,8 @@ export {
   type DataChangeListener,
 } from './events.js';
 
-// DDL generation
-export {
-  generateTableDDL,
-  generateIndexDDL,
-} from './ddl-generator.js';
+// DDL generation (canonical implementation lives in @quereus/quereus)
+export { generateTableDDL, generateIndexDDL } from '@quereus/quereus';
 
 // Transaction support
 export {

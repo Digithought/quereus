@@ -137,6 +137,35 @@ Imports existing schema objects without creating new storage. Used when connecti
 - `CREATE INDEX` registers the index metadata without calling `module.createIndex()`
 - Schema change events are not emitted (these are existing objects)
 
+### DDL Generation
+
+Canonical `TableSchema` → DDL and `IndexSchema` → DDL generators are exported from the package entry point:
+
+```typescript
+import { generateTableDDL, generateIndexDDL } from '@quereus/quereus';
+
+const ddl = generateTableDDL(tableSchema, db?);        // CREATE TABLE ...
+const idxDdl = generateIndexDDL(indexSchema, tableSchema, db?);  // CREATE INDEX ...
+```
+
+Both generators accept an optional `Database` argument that provides session context. Their emission behavior depends on whether `db` is supplied:
+
+| Aspect | With `db` | Without `db` |
+|--------|-----------|--------------|
+| Schema qualification | Elided when it matches `db.schemaManager.getCurrentSchemaName()` | Always qualified (`"schema"."name"`) |
+| Column nullability | Only the annotation that differs from `default_column_nullability` is emitted | Every column is explicitly annotated (`NULL` or `NOT NULL`) |
+| `USING <module> (...)` | Elided when both module and args match `default_vtab_module` / `default_vtab_args` | Always emitted for any `vtabModuleName` |
+
+Use the no-`db` form when persisting DDL to storage, so the output survives re-parsing under any session's `default_column_nullability` setting. Use the with-`db` form for display or round-trip within the same session to produce more readable output.
+
+Feature coverage (both forms): `TEMP`, schema qualification, inline single-column `PRIMARY KEY`, table-level `PRIMARY KEY (...)` (including singleton `PRIMARY KEY ()`), `DEFAULT <expr>`, `USING <module>` with SQL-literal args, and `WITH TAGS (...)` at table, column, and index levels.
+
+`@quereus/store` re-exports these symbols for backward compatibility:
+
+```typescript
+import { generateTableDDL } from '@quereus/store';
+```
+
 ## Schema Path
 
 The schema path controls the search order when resolving unqualified table names. These are `Database`-level methods:

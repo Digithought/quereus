@@ -1,10 +1,10 @@
 import type { Database } from '../core/database.js';
-import type { TableSchema, IndexSchema } from './table.js';
+import type { TableSchema } from './table.js';
 import type { ViewSchema } from './view.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
-import { createTableToString, createViewToString, createIndexToString, quoteIdentifier } from '../emit/ast-stringify.js';
+import { createTableToString, createViewToString, createIndexToString } from '../emit/ast-stringify.js';
 import type * as AST from '../parser/ast.js';
-import type { SqlValue } from '../common/types.js';
+import { generateTableDDL, generateIndexDDL } from './ddl-generator.js';
 
 /**
  * Represents a catalog snapshot of the current database schema state
@@ -63,7 +63,7 @@ export function collectSchemaCatalog(db: Database, schemaName: string = 'main'):
 	// Collect tables
 	for (const tableSchema of schema.getAllTables()) {
 		if (!tableSchema.isView) {
-			tables.push(tableSchemaToCatalog(tableSchema));
+			tables.push(tableSchemaToCatalog(tableSchema, db));
 
 			// Collect indexes for this table
 			if (tableSchema.indexes && tableSchema.indexes.length > 0) {
@@ -71,7 +71,7 @@ export function collectSchemaCatalog(db: Database, schemaName: string = 'main'):
 					indexes.push({
 						name: indexSchema.name,
 						tableName: tableSchema.name,
-						ddl: generateIndexDDL(indexSchema, tableSchema)
+						ddl: generateIndexDDL(indexSchema, tableSchema, db)
 					});
 				}
 			}
@@ -97,9 +97,9 @@ export function collectSchemaCatalog(db: Database, schemaName: string = 'main'):
 	};
 }
 
-function tableSchemaToCatalog(tableSchema: TableSchema): CatalogTable {
+function tableSchemaToCatalog(tableSchema: TableSchema, db: Database): CatalogTable {
 	// Generate canonical DDL from TableSchema
-	const ddl = generateTableDDL(tableSchema);
+	const ddl = generateTableDDL(tableSchema, db);
 
 	const columns = tableSchema.columns.map(col => ({
 		name: col.name,
@@ -133,105 +133,6 @@ function assertionSchemaToCatalog(assertionSchema: IntegrityAssertionSchema): Ca
 		name: assertionSchema.name,
 		ddl: `CREATE ASSERTION ${assertionSchema.name} CHECK (${assertionSchema.violationSql})`
 	};
-}
-
-/**
- * Generates canonical DDL for an index from its schema
- */
-function generateIndexDDL(indexSchema: IndexSchema, tableSchema: TableSchema): string {
-	// Convert IndexSchema back to AST CreateIndexStmt for stringification
-	const indexStmt: AST.CreateIndexStmt = {
-		type: 'createIndex',
-		index: { type: 'identifier', name: indexSchema.name },
-		table: { type: 'identifier', name: tableSchema.name },
-		ifNotExists: false,
-		isUnique: false,
-		columns: indexSchema.columns.map(col => ({
-			name: tableSchema.columns[col.index].name,
-			expr: undefined,
-			collation: col.collation,
-			direction: col.desc ? 'desc' : 'asc'
-		}))
-	};
-
-	return createIndexToString(indexStmt);
-}
-
-/**
- * Generates canonical DDL for a table from its schema
- */
-function generateTableDDL(tableSchema: TableSchema): string {
-	const parts: string[] = ['CREATE'];
-
-	if (tableSchema.isTemporary) {
-		parts.push('TEMP');
-	}
-
-	parts.push('TABLE');
-	parts.push(`"${tableSchema.name}"`);
-
-	// Generate column definitions
-	const columnDefs: string[] = [];
-	for (const col of tableSchema.columns) {
-		let colDef = `"${col.name}"`;
-		if (col.logicalType) {
-			colDef += ` ${col.logicalType.name}`;
-		}
-		if (col.notNull) {
-			colDef += ' NOT NULL';
-		}
-		if (col.primaryKey && tableSchema.primaryKeyDefinition.length === 1) {
-			colDef += ' PRIMARY KEY';
-		}
-		columnDefs.push(colDef);
-	}
-
-	// Add table-level PRIMARY KEY: empty () for singleton tables, composite for multi-column
-	if (tableSchema.primaryKeyDefinition.length === 0) {
-		columnDefs.push(`PRIMARY KEY ()`);
-	} else if (tableSchema.primaryKeyDefinition.length > 1) {
-		const pkCols = tableSchema.primaryKeyDefinition
-			.map(pk => `"${tableSchema.columns[pk.index].name}"`)
-			.join(', ');
-		columnDefs.push(`PRIMARY KEY (${pkCols})`);
-	}
-
-	parts.push(`(${columnDefs.join(', ')})`);
-
-	// Add USING clause
-	if (tableSchema.vtabModuleName) {
-		parts.push(`USING ${tableSchema.vtabModuleName}`);
-		if (tableSchema.vtabArgs && Object.keys(tableSchema.vtabArgs).length > 0) {
-			const args = Object.entries(tableSchema.vtabArgs)
-				.map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
-				.join(', ');
-			parts.push(`(${args})`);
-		}
-	}
-
-	// Add WITH TAGS clause if present
-	if (tableSchema.tags && Object.keys(tableSchema.tags).length > 0) {
-		parts.push(formatTagsClause(tableSchema.tags));
-	}
-
-	return parts.join(' ');
-}
-
-/** Formats a tag value as a SQL literal */
-function formatTagValue(value: SqlValue): string {
-	if (value === null) return 'NULL';
-	if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
-	if (typeof value === 'number') return String(value);
-	if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
-	return String(value);
-}
-
-/** Formats a tags record as a WITH TAGS (...) clause */
-function formatTagsClause(tags: Readonly<Record<string, SqlValue>>): string {
-	const entries = Object.entries(tags)
-		.map(([key, value]) => `${quoteIdentifier(key)} = ${formatTagValue(value)}`)
-		.join(', ');
-	return `WITH TAGS (${entries})`;
 }
 
 /**

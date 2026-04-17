@@ -1,5 +1,5 @@
 import * as Comlink from 'comlink';
-import { Database, type SqlValue, type DatabaseDataChangeEvent, type DatabaseSchemaChangeEvent } from '@quereus/quereus';
+import { Database, generateTableDDL, type SqlValue, type DatabaseDataChangeEvent, type DatabaseSchemaChangeEvent } from '@quereus/quereus';
 import { expressionToString } from '@quereus/quereus/emit';
 import type { Expression } from '@quereus/quereus/parser';
 import { dynamicLoadModule } from '@quereus/plugin-loader';
@@ -365,7 +365,7 @@ class QuereusWorker implements QuereusWorkerAPI {
         return {
           name: tableSchema.name,
           type: tableSchema.isView ? 'view' : 'table',
-          sql: this.generateTableDDL(tableSchema),
+          sql: generateTableDDL(tableSchema, db),
           columns,
         };
       }
@@ -394,46 +394,6 @@ class QuereusWorker implements QuereusWorkerAPI {
     } catch (error) {
       throw new Error(`Failed to get table schema: ${error instanceof Error ? error.message : error}`);
     }
-  }
-
-  private generateTableDDL(tableSchema: { name: string; isTemporary?: boolean; columns: ReadonlyArray<{ name: string; logicalType: { name: string }; notNull: boolean; primaryKey: boolean }>; primaryKeyDefinition: ReadonlyArray<{ index: number }>; vtabModuleName?: string; vtabArgs?: Record<string, SqlValue> }): string {
-    const parts: string[] = ['CREATE'];
-    if (tableSchema.isTemporary) parts.push('TEMP');
-    parts.push('TABLE', `"${tableSchema.name}"`);
-
-    const columnDefs: string[] = [];
-    for (const col of tableSchema.columns) {
-      let colDef = `"${col.name}"`;
-      if (col.logicalType) colDef += ` ${col.logicalType.name}`;
-      if (col.notNull) colDef += ' NOT NULL';
-      if (col.primaryKey && tableSchema.primaryKeyDefinition.length === 1) {
-        colDef += ' PRIMARY KEY';
-      }
-      columnDefs.push(colDef);
-    }
-
-    if (tableSchema.primaryKeyDefinition.length === 0) {
-      columnDefs.push('PRIMARY KEY ()');
-    } else if (tableSchema.primaryKeyDefinition.length > 1) {
-      const pkCols = tableSchema.primaryKeyDefinition
-        .map(pk => `"${tableSchema.columns[pk.index].name}"`)
-        .join(', ');
-      columnDefs.push(`PRIMARY KEY (${pkCols})`);
-    }
-
-    parts.push(`(${columnDefs.join(', ')})`);
-
-    if (tableSchema.vtabModuleName) {
-      parts.push('USING', tableSchema.vtabModuleName);
-      if (tableSchema.vtabArgs && Object.keys(tableSchema.vtabArgs).length > 0) {
-        const args = Object.entries(tableSchema.vtabArgs)
-          .map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
-          .join(', ');
-        parts.push(`(${args})`);
-      }
-    }
-
-    return parts.join(' ');
   }
 
   async previewCsv(csvData: string): Promise<CsvPreview> {

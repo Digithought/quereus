@@ -169,6 +169,65 @@ describe('Schema Catalog', () => {
 			}
 			expect(threw, 'second insert into singleton must fail').to.be.true;
 		});
+
+		it('roundtrips tags, defaults, and mixed nullability with a composite PK', async () => {
+			await db.exec(`CREATE TABLE rt_full (
+				a INTEGER,
+				b TEXT,
+				c INTEGER NULL DEFAULT 7,
+				d TEXT DEFAULT 'x',
+				PRIMARY KEY (a, b)
+			) USING memory WITH TAGS (owner = 'app', version = 1)`);
+
+			const beforeTable = db.schemaManager.getTable('main', 'rt_full')!;
+			const beforeTags = beforeTable.tags;
+			const beforeNullability = beforeTable.columns.map(c => c.notNull);
+			const beforeDefaults = beforeTable.columns.map(c => c.defaultValue !== null);
+
+			const catalog = collectSchemaCatalog(db, 'main');
+			const entry = catalog.tables.find(t => t.name === 'rt_full')!;
+			expect(entry.ddl).to.include('WITH TAGS');
+			expect(entry.ddl).to.include('DEFAULT');
+
+			await db.exec('DROP TABLE rt_full');
+			await db.exec(entry.ddl);
+
+			const after = db.schemaManager.getTable('main', 'rt_full')!;
+			expect(after.columns.map(c => c.notNull)).to.deep.equal(beforeNullability);
+			expect(after.columns.map(c => c.defaultValue !== null)).to.deep.equal(beforeDefaults);
+			expect(after.tags).to.deep.equal(beforeTags);
+		});
+
+		it('honors default_column_nullability for emission and survives a roundtrip', async () => {
+			// Default is 'not_null': NOT NULL columns elide the annotation, nullable emits NULL.
+			await db.exec('CREATE TABLE rt_nn (id INTEGER PRIMARY KEY, note TEXT NULL) USING memory');
+			const defaultCatalog = collectSchemaCatalog(db, 'main');
+			const defaultEntry = defaultCatalog.tables.find(t => t.name === 'rt_nn')!;
+			expect(defaultEntry.ddl).to.include('"note" TEXT NULL');
+			expect(defaultEntry.ddl).to.not.match(/"id" INTEGER NOT NULL/);
+
+			await db.exec('DROP TABLE rt_nn');
+			await db.exec(defaultEntry.ddl);
+			const afterDefault = db.schemaManager.getTable('main', 'rt_nn')!;
+			expect(afterDefault.columns.find(c => c.name === 'id')!.notNull).to.equal(true);
+			expect(afterDefault.columns.find(c => c.name === 'note')!.notNull).to.equal(false);
+
+			await db.exec('DROP TABLE rt_nn');
+
+			// Flip pragma: nullable default. Now NOT NULL must be annotated, NULL is implicit.
+			db.setOption('default_column_nullability', 'nullable');
+			await db.exec('CREATE TABLE rt_nn (id INTEGER NOT NULL PRIMARY KEY, note TEXT) USING memory');
+			const nullableCatalog = collectSchemaCatalog(db, 'main');
+			const nullableEntry = nullableCatalog.tables.find(t => t.name === 'rt_nn')!;
+			expect(nullableEntry.ddl).to.include('"id" INTEGER NOT NULL');
+			expect(nullableEntry.ddl).to.not.match(/"note" TEXT NULL/);
+
+			await db.exec('DROP TABLE rt_nn');
+			await db.exec(nullableEntry.ddl);
+			const afterNullable = db.schemaManager.getTable('main', 'rt_nn')!;
+			expect(afterNullable.columns.find(c => c.name === 'id')!.notNull).to.equal(true);
+			expect(afterNullable.columns.find(c => c.name === 'note')!.notNull).to.equal(false);
+		});
 	});
 
 	describe('generateDeclaredDDL', () => {
