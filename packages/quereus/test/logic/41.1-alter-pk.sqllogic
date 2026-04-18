@@ -167,7 +167,34 @@ drop table t_rekey_dupcolpk;
 -- run
 
 -- ===================================
--- 10. Parser round-trip via stringifier
+-- 10a. Rekey preserves nullable columns (regression)
+-- ===================================
+-- Regression test: a nullable non-PK column with a NULL value must survive
+-- the rebuild. (The MemoryTable path copies ColumnSchema directly and was
+-- never affected; the non-memory path — rebuildViaShadowTable — omitted
+-- explicit nullability and silently recreated nullable columns as NOT NULL.
+-- See runtime/shadow-ddl.spec.ts for the pure-DDL coverage.)
+
+create table t_rekey_nullable (id integer primary key, note text null, rate real default 1.0);
+insert into t_rekey_nullable (id, note) values (1, null), (2, 'hi');
+-- run
+
+alter table t_rekey_nullable alter primary key (id);
+-- run
+
+-- Row with NULL in nullable column must survive:
+select id, note, rate from t_rekey_nullable order by id;
+→ [{"id": 1, "note": null, "rate": 1.0}, {"id": 2, "note": "hi", "rate": 1.0}]
+
+-- Nullability of the non-PK column must be preserved:
+select name, "notnull" from table_info('t_rekey_nullable') where name = 'note';
+→ [{"name": "note", "notnull": 0}]
+
+drop table t_rekey_nullable;
+-- run
+
+-- ===================================
+-- 11. Parser round-trip via stringifier
 -- ===================================
 
 create table t_roundtrip (x integer primary key, y integer not null, z integer not null);

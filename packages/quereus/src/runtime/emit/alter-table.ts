@@ -8,7 +8,7 @@ import type { TableSchema, PrimaryKeyColumnDefinition } from '../../schema/table
 import { buildColumnIndexMap } from '../../schema/table.js';
 import type { ColumnDef } from '../../parser/ast.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
-import { quoteIdentifier } from '../../emit/ast-stringify.js';
+import { quoteIdentifier, expressionToString } from '../../emit/ast-stringify.js';
 
 const log = createLogger('runtime:emit:alter-table');
 
@@ -445,35 +445,39 @@ async function rebuildMemoryTable(
 }
 
 /**
- * Generic rebuild via shadow table SQL for non-memory modules.
+ * Build the shadow-table CREATE TABLE DDL used by the non-memory rebuild path.
+ *
+ * Nullability is emitted explicitly for every column, matching the "no-db"
+ * stance of `generateTableDDL` in ddl-generator.ts: safe under any session's
+ * `default_column_nullability` setting. DEFAULT and COLLATE are preserved so
+ * the shadow table faithfully mirrors the original schema.
  */
-async function rebuildViaShadowTable(
-	rctx: RuntimeContext,
+export function buildShadowTableDdl(
 	tableSchema: TableSchema,
-	schema: import('../../schema/schema.js').Schema,
+	shadowName: string,
 	survivingColumns: string[],
 	newPkDef: PrimaryKeyColumnDefinition[],
-): Promise<void> {
-	const tableName = tableSchema.name;
+): string {
 	const schemaName = tableSchema.schemaName;
 	const schemaPrefix = (schemaName && schemaName.toLowerCase() !== 'main')
 		? `${quoteIdentifier(schemaName)}.`
 		: '';
-	const shadowName = `${tableName}__rekey_${Date.now()}`;
 
 	const colDefs: string[] = [];
-	const pkColNames: string[] = [];
-
 	for (const colName of survivingColumns) {
 		const idx = tableSchema.columnIndexMap.get(colName.toLowerCase());
 		if (idx === undefined) continue;
 		const col = tableSchema.columns[idx];
 		let def = quoteIdentifier(col.name) + ' ' + col.logicalType.name;
-		if (col.notNull) def += ' not null';
+		def += col.notNull ? ' not null' : ' null';
 		if (col.collation && col.collation !== 'BINARY') def += ` collate ${col.collation}`;
+		if (col.defaultValue !== null && col.defaultValue !== undefined) {
+			def += ` default ${expressionToString(col.defaultValue)}`;
+		}
 		colDefs.push(def);
 	}
 
+	const pkColNames: string[] = [];
 	for (const pk of newPkDef) {
 		const colName = tableSchema.columns[pk.index].name;
 		let entry = quoteIdentifier(colName);
@@ -496,6 +500,27 @@ async function rebuildViaShadowTable(
 		}
 	}
 
+	return createDdl;
+}
+
+/**
+ * Generic rebuild via shadow table SQL for non-memory modules.
+ */
+async function rebuildViaShadowTable(
+	rctx: RuntimeContext,
+	tableSchema: TableSchema,
+	schema: import('../../schema/schema.js').Schema,
+	survivingColumns: string[],
+	newPkDef: PrimaryKeyColumnDefinition[],
+): Promise<void> {
+	const tableName = tableSchema.name;
+	const schemaName = tableSchema.schemaName;
+	const schemaPrefix = (schemaName && schemaName.toLowerCase() !== 'main')
+		? `${quoteIdentifier(schemaName)}.`
+		: '';
+	const shadowName = `${tableName}__rekey_${Date.now()}`;
+
+	const createDdl = buildShadowTableDdl(tableSchema, shadowName, survivingColumns, newPkDef);
 	const projection = survivingColumns.map(c => quoteIdentifier(c)).join(', ');
 
 	try {
