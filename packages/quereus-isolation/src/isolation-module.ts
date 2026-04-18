@@ -1,5 +1,5 @@
-import type { Database, VirtualTableModule, BaseModuleConfig, TableSchema, TableIndexSchema as IndexSchema, ModuleCapabilities, VirtualTable, BestAccessPlanRequest, BestAccessPlanResult } from '@quereus/quereus';
-import { MemoryTableModule, PhysicalType } from '@quereus/quereus';
+import type { Database, VirtualTableModule, BaseModuleConfig, TableSchema, TableIndexSchema as IndexSchema, ModuleCapabilities, VirtualTable, BestAccessPlanRequest, BestAccessPlanResult, SchemaChangeInfo } from '@quereus/quereus';
+import { MemoryTableModule, PhysicalType, QuereusError, StatusCode } from '@quereus/quereus';
 import type { IsolationModuleConfig } from './isolation-types.js';
 import { IsolatedTable } from './isolated-table.js';
 
@@ -268,6 +268,39 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 		} else if (this.underlying.createIndex) {
 			await this.underlying.createIndex(db, schemaName, tableName, indexSchema);
 		}
+	}
+
+	/**
+	 * Delegates ALTER TABLE to the underlying module. ADD/DROP/RENAME COLUMN
+	 * mutates the underlying TableSchema in place; any per-connection overlays
+	 * derived from the pre-alter schema are invalidated here.
+	 */
+	async alterTable(
+		db: Database,
+		schemaName: string,
+		tableName: string,
+		change: SchemaChangeInfo,
+	): Promise<TableSchema> {
+		if (!this.underlying.alterTable) {
+			throw new QuereusError(
+				`Underlying module does not support ALTER TABLE for '${schemaName}.${tableName}'`,
+				StatusCode.UNSUPPORTED,
+			);
+		}
+
+		const updated = await this.underlying.alterTable(db, schemaName, tableName, change);
+
+		// Invalidate any per-connection overlays derived from the pre-alter schema.
+		// Overlay tables carry columns copied from the underlying schema + tombstone,
+		// so their shape is stale after ADD/DROP/RENAME.
+		const suffix = `:${schemaName}.${tableName}`.toLowerCase();
+		for (const key of [...this.connectionOverlays.keys()]) {
+			if (key.endsWith(suffix)) {
+				this.connectionOverlays.delete(key);
+			}
+		}
+
+		return updated;
 	}
 
 	/**
