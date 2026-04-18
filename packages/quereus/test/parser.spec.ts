@@ -315,4 +315,38 @@ describe('Parser', () => {
 			expect(expr.type).to.equal('case');
 		});
 	});
+
+	describe('ALTER TABLE ALTER COLUMN', () => {
+		it('parses SET NOT NULL', () => {
+			const stmt = parse(`alter table t alter column c set not null`) as import('../src/parser/ast.js').AlterTableStmt;
+			expect(stmt.type).to.equal('alterTable');
+			expect(stmt.action.type).to.equal('alterColumn');
+			expect(stmt.action).to.include({ type: 'alterColumn', columnName: 'c', setNotNull: true });
+		});
+
+		it('parses DROP NOT NULL', () => {
+			const stmt = parse(`alter table t alter column c drop not null`) as import('../src/parser/ast.js').AlterTableStmt;
+			expect(stmt.action).to.include({ type: 'alterColumn', columnName: 'c', setNotNull: false });
+		});
+
+		it('parses SET DATA TYPE', () => {
+			const stmt = parse(`alter table t alter column c set data type real`) as import('../src/parser/ast.js').AlterTableStmt;
+			expect(stmt.action).to.include({ type: 'alterColumn', columnName: 'c', setDataType: 'real' });
+		});
+
+		it('parses SET DEFAULT <expr>', () => {
+			const stmt = parse(`alter table t alter column c set default 42`) as import('../src/parser/ast.js').AlterTableStmt;
+			const action = stmt.action as Extract<import('../src/parser/ast.js').AlterTableAction, { type: 'alterColumn' }>;
+			expect(action.columnName).to.equal('c');
+			expect(action.setDefault).to.not.be.null;
+			expect((action.setDefault as LiteralExpr).value).to.equal(42);
+		});
+
+		it('parses DROP DEFAULT', () => {
+			const stmt = parse(`alter table t alter column c drop default`) as import('../src/parser/ast.js').AlterTableStmt;
+			const action = stmt.action as Extract<import('../src/parser/ast.js').AlterTableAction, { type: 'alterColumn' }>;
+			expect(action.columnName).to.equal('c');
+			expect(action.setDefault).to.equal(null);
+		});
+	});
 });

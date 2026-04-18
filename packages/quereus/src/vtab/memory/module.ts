@@ -544,6 +544,14 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 					'MemoryTable does not support in-place primary key alteration',
 					StatusCode.UNSUPPORTED,
 				);
+			case 'alterColumn':
+				await manager.alterColumn({
+					columnName: change.columnName,
+					setNotNull: change.setNotNull,
+					setDataType: change.setDataType,
+					setDefault: change.setDefault,
+				});
+				break;
 		}
 
 		return manager.tableSchema;

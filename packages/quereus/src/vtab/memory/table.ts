@@ -326,6 +326,14 @@ export class MemoryTable extends VirtualTable {
 						'MemoryTable does not support in-place primary key alteration',
 						StatusCode.UNSUPPORTED,
 					);
+				case 'alterColumn':
+					await this.manager.alterColumn({
+						columnName: changeInfo.columnName,
+						setNotNull: changeInfo.setNotNull,
+						setDataType: changeInfo.setDataType,
+						setDefault: changeInfo.setDefault,
+					});
+					break;
 				default: {
 					const exhaustiveCheck: never = changeInfo;
 					// eslint-disable-next-line @typescript-eslint/no-explicit-any

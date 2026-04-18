@@ -768,6 +768,24 @@ function alterTableToString(stmt: AST.AlterTableStmt): string {
 				.join(', ');
 			return `alter table ${table} alter primary key (${cols})`;
 		}
+		case 'alterColumn': {
+			const colName = quoteIdentifier(stmt.action.columnName);
+			const a = stmt.action;
+			if (a.setDataType !== undefined) {
+				return `alter table ${table} alter column ${colName} set data type ${a.setDataType}`;
+			}
+			if (a.setDefault !== undefined) {
+				return a.setDefault === null
+					? `alter table ${table} alter column ${colName} drop default`
+					: `alter table ${table} alter column ${colName} set default ${expressionToString(a.setDefault)}`;
+			}
+			if (a.setNotNull !== undefined) {
+				return a.setNotNull
+					? `alter table ${table} alter column ${colName} set not null`
+					: `alter table ${table} alter column ${colName} drop not null`;
+			}
+			return `alter table ${table} alter column ${colName}`;
+		}
 	}
 }
 

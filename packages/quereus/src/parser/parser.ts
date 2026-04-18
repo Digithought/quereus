@@ -2481,24 +2481,29 @@ export class Parser {
 			action = { type: 'dropColumn', name };
 		} else if (this.peekKeyword('ALTER')) {
 			this.consumeKeyword('ALTER', "Expected ALTER.");
-			this.consumeKeyword('PRIMARY', "Expected 'PRIMARY' after ALTER.");
-			this.consumeKeyword('KEY', "Expected 'KEY' after PRIMARY.");
-			this.consume(TokenType.LPAREN, "Expected '(' after PRIMARY KEY.");
-			const columns: Array<{ name: string; direction?: 'asc' | 'desc' }> = [];
-			if (!this.check(TokenType.RPAREN)) {
-				do {
-					const colName = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected column name in PRIMARY KEY definition.");
-					let direction: 'asc' | 'desc' | undefined;
-					if (this.matchKeyword('ASC')) {
-						direction = 'asc';
-					} else if (this.matchKeyword('DESC')) {
-						direction = 'desc';
-					}
-					columns.push({ name: colName, direction });
-				} while (this.match(TokenType.COMMA));
+			if (this.peekKeyword('COLUMN')) {
+				this.consumeKeyword('COLUMN', "Expected COLUMN.");
+				action = this.alterColumnAction();
+			} else {
+				this.consumeKeyword('PRIMARY', "Expected 'PRIMARY' or 'COLUMN' after ALTER.");
+				this.consumeKeyword('KEY', "Expected 'KEY' after PRIMARY.");
+				this.consume(TokenType.LPAREN, "Expected '(' after PRIMARY KEY.");
+				const columns: Array<{ name: string; direction?: 'asc' | 'desc' }> = [];
+				if (!this.check(TokenType.RPAREN)) {
+					do {
+						const colName = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected column name in PRIMARY KEY definition.");
+						let direction: 'asc' | 'desc' | undefined;
+						if (this.matchKeyword('ASC')) {
+							direction = 'asc';
+						} else if (this.matchKeyword('DESC')) {
+							direction = 'desc';
+						}
+						columns.push({ name: colName, direction });
+					} while (this.match(TokenType.COMMA));
+				}
+				this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY column list.");
+				action = { type: 'alterPrimaryKey', columns };
 			}
-			this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY column list.");
-			action = { type: 'alterPrimaryKey', columns };
 		} else {
 			throw this.error(this.peek(), "Expected RENAME, ADD, DROP, or ALTER after table name in ALTER TABLE.");
 		}
@@ -2509,6 +2514,74 @@ export class Parser {
 			action,
 			loc: _createLoc(startToken, this.previous()),
 		};
+	}
+
+	/**
+	 * Parse the body of ALTER TABLE ... ALTER COLUMN <name> <subcommand>.
+	 * Produces an 'alterColumn' action with exactly one attribute set.
+	 * Caller has already consumed ALTER COLUMN.
+	 */
+	private alterColumnAction(): AST.AlterTableAction {
+		const columnName = this.consumeIdentifier(
+			['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'],
+			"Expected column name after ALTER COLUMN.",
+		);
+
+		if (this.matchKeyword('SET')) {
+			if (this.matchKeyword('NOT')) {
+				this.consumeKeyword('NULL', "Expected 'NULL' after SET NOT.");
+				return { type: 'alterColumn', columnName, setNotNull: true };
+			}
+			if (this.matchKeyword('DATA')) {
+				this.consumeKeyword('TYPE', "Expected 'TYPE' after SET DATA.");
+				const dataType = this.parseDataTypeName();
+				return { type: 'alterColumn', columnName, setDataType: dataType };
+			}
+			if (this.matchKeyword('DEFAULT')) {
+				const expr = this.expression();
+				return { type: 'alterColumn', columnName, setDefault: expr };
+			}
+			throw this.error(this.peek(), "Expected NOT NULL, DATA TYPE, or DEFAULT after SET.");
+		}
+
+		if (this.matchKeyword('DROP')) {
+			if (this.matchKeyword('NOT')) {
+				this.consumeKeyword('NULL', "Expected 'NULL' after DROP NOT.");
+				return { type: 'alterColumn', columnName, setNotNull: false };
+			}
+			if (this.matchKeyword('DEFAULT')) {
+				return { type: 'alterColumn', columnName, setDefault: null };
+			}
+			throw this.error(this.peek(), "Expected NOT NULL or DEFAULT after DROP.");
+		}
+
+		throw this.error(this.peek(), "Expected SET or DROP after ALTER COLUMN name.");
+	}
+
+	/**
+	 * Parse a data-type name as used in column definitions. Supports optional
+	 * parameterized types like VARCHAR(40). Shared with columnDefinition().
+	 */
+	private parseDataTypeName(): string {
+		if (!this.check(TokenType.IDENTIFIER)) {
+			throw this.error(this.peek(), "Expected data type name.");
+		}
+		let dataType = this.advance().lexeme;
+		if (this.match(TokenType.LPAREN)) {
+			dataType += '(';
+			let parenLevel = 1;
+			while (parenLevel > 0 && !this.isAtEnd()) {
+				const token = this.peek();
+				if (token.type === TokenType.LPAREN) parenLevel++;
+				if (token.type === TokenType.RPAREN) parenLevel--;
+				if (parenLevel > 0) {
+					dataType += this.advance().lexeme;
+				}
+			}
+			dataType += ')';
+			this.consume(TokenType.RPAREN, "Expected ')' after type parameters.");
+		}
+		return dataType;
 	}
 
 	/**

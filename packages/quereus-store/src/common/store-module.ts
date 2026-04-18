@@ -26,7 +26,7 @@ import type {
 	SchemaChangeInfo,
 	ColumnSchema,
 } from '@quereus/quereus';
-import { AccessPlanBuilder, QuereusError, StatusCode, buildColumnIndexMap, columnDefToSchema } from '@quereus/quereus';
+import { AccessPlanBuilder, QuereusError, StatusCode, buildColumnIndexMap, columnDefToSchema, inferType, validateAndParse } from '@quereus/quereus';
 
 import type { KVStore, KVStoreProvider } from './kv-store.js';
 import type { StoreEventEmitter } from './events.js';
@@ -530,6 +530,90 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 					'Store module does not support in-place primary key alteration',
 					StatusCode.UNSUPPORTED,
 				);
+
+			case 'alterColumn': {
+				const colNameLower = change.columnName.toLowerCase();
+				const colIndex = oldSchema.columns.findIndex(c => c.name.toLowerCase() === colNameLower);
+				if (colIndex === -1) {
+					throw new QuereusError(`Column '${change.columnName}' not found.`, StatusCode.ERROR);
+				}
+				const oldCol = oldSchema.columns[colIndex];
+				let newCol: ColumnSchema = oldCol;
+
+				// Pull exactly one of the three attributes from the change.
+				if (change.setNotNull !== undefined) {
+					if (change.setNotNull === true && !oldCol.notNull) {
+						// Backfill NULLs from a literal DEFAULT, or throw.
+						let defaultLiteral: SqlValue | undefined;
+						const expr = oldCol.defaultValue;
+						if (expr && (expr as { type?: string }).type === 'literal') {
+							defaultLiteral = (expr as { value?: SqlValue }).value ?? null;
+						}
+						const nullCount = await table.rowsWithNullAtIndex(colIndex);
+						if (nullCount > 0) {
+							if (defaultLiteral === undefined || defaultLiteral === null) {
+								throw new QuereusError(
+									`column ${change.columnName} contains NULL values`,
+									StatusCode.CONSTRAINT,
+								);
+							}
+							const fill = defaultLiteral;
+							await table.mapRowsAtIndex(colIndex, (v) => v === null ? fill : v);
+						}
+						newCol = { ...oldCol, notNull: true };
+					} else if (change.setNotNull === false && oldCol.notNull) {
+						if (oldSchema.primaryKeyDefinition.some(def => def.index === colIndex)) {
+							throw new QuereusError(
+								`Cannot DROP NOT NULL on PRIMARY KEY column '${change.columnName}'`,
+								StatusCode.CONSTRAINT,
+							);
+						}
+						newCol = { ...oldCol, notNull: false };
+					} else {
+						return oldSchema; // already in desired state
+					}
+				} else if (change.setDataType !== undefined) {
+					const newLogicalType = inferType(change.setDataType);
+					if (newLogicalType.physicalType !== oldCol.logicalType.physicalType) {
+						// Physical conversion required — walk every row and attempt parse.
+						await table.mapRowsAtIndex(colIndex, (v) => {
+							if (v === null) return v;
+							try {
+								return validateAndParse(v, newLogicalType, change.columnName) as SqlValue;
+							} catch {
+								throw new QuereusError(
+									`Cannot convert value in '${change.columnName}' to ${change.setDataType}`,
+									StatusCode.MISMATCH,
+								);
+							}
+						});
+					}
+					newCol = { ...oldCol, logicalType: newLogicalType };
+				} else if (change.setDefault !== undefined) {
+					newCol = { ...oldCol, defaultValue: change.setDefault };
+				} else {
+					throw new QuereusError('ALTER COLUMN requires an attribute to change', StatusCode.INTERNAL);
+				}
+
+				const updatedColumns = oldSchema.columns.map((c, i) => i === colIndex ? newCol : c);
+				const updatedSchema: TableSchema = {
+					...oldSchema,
+					columns: Object.freeze(updatedColumns),
+					columnIndexMap: buildColumnIndexMap(updatedColumns),
+				};
+
+				table.updateSchema(updatedSchema);
+				await this.saveTableDDL(updatedSchema);
+
+				this.eventEmitter?.emitSchemaChange({
+					type: 'alter',
+					objectType: 'table',
+					schemaName,
+					objectName: tableName,
+				});
+
+				return updatedSchema;
+			}
 		}
 	}
 

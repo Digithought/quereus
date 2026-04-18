@@ -20,7 +20,13 @@ export interface SchemaCatalog {
 export interface CatalogTable {
 	name: string;
 	ddl: string;
-	columns: Array<{ name: string; type: string; notNull: boolean; primaryKey: boolean }>;
+	columns: Array<{
+		name: string;
+		type: string;
+		notNull: boolean;
+		primaryKey: boolean;
+		defaultValue: AST.Expression | null;
+	}>;
 	primaryKey: Array<{ columnName: string; desc: boolean }>;
 }
 
@@ -105,7 +111,8 @@ function tableSchemaToCatalog(tableSchema: TableSchema, db: Database): CatalogTa
 		name: col.name,
 		type: col.logicalType.name,
 		notNull: col.notNull,
-		primaryKey: col.primaryKey
+		primaryKey: col.primaryKey,
+		defaultValue: col.defaultValue ?? null,
 	}));
 
 	const primaryKey = tableSchema.primaryKeyDefinition.map(pk => ({

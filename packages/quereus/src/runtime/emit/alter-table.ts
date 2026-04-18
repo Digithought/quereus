@@ -34,6 +34,8 @@ export function emitAlterTable(plan: AlterTableNode, _ctx: EmissionContext): Ins
 				return runDropColumn(rctx, tableSchema, schema, action.name);
 			case 'alterPrimaryKey':
 				return runAlterPrimaryKey(rctx, tableSchema, schema, action.columns);
+			case 'alterColumn':
+				return runAlterColumn(rctx, tableSchema, schema, action);
 		}
 	}
 
@@ -44,6 +46,7 @@ export function emitAlterTable(plan: AlterTableNode, _ctx: EmissionContext): Ins
 			case 'addColumn': return `addColumn(${tableSchema.name}.${action.column.name})`;
 			case 'dropColumn': return `dropColumn(${tableSchema.name}.${action.name})`;
 			case 'alterPrimaryKey': return `alterPrimaryKey(${tableSchema.name} -> [${action.columns.map(c => c.name).join(', ')}])`;
+			case 'alterColumn': return `alterColumn(${tableSchema.name}.${action.columnName})`;
 		}
 	})();
 
@@ -252,6 +255,67 @@ async function runDropColumn(
 	});
 
 	log('Dropped column %s from table %s.%s', columnName, tableSchema.schemaName, tableSchema.name);
+	return null;
+}
+
+async function runAlterColumn(
+	rctx: RuntimeContext,
+	tableSchema: TableSchema,
+	schema: import('../../schema/schema.js').Schema,
+	action: Extract<import('../../planner/nodes/alter-table-node.js').AlterTableAction, { type: 'alterColumn' }>,
+): Promise<SqlValue> {
+	const colIndex = tableSchema.columnIndexMap.get(action.columnName.toLowerCase());
+	if (colIndex === undefined) {
+		throw new QuereusError(`Column '${action.columnName}' not found in table '${tableSchema.name}'`, StatusCode.ERROR);
+	}
+
+	// Guard: at most one of the three attribute changes per statement.
+	const populated = [action.setNotNull !== undefined, action.setDataType !== undefined, action.setDefault !== undefined];
+	const populatedCount = populated.filter(Boolean).length;
+	if (populatedCount !== 1) {
+		throw new QuereusError(
+			`ALTER COLUMN requires exactly one of SET/DROP NOT NULL, SET DATA TYPE, SET/DROP DEFAULT (got ${populatedCount})`,
+			StatusCode.INTERNAL,
+		);
+	}
+
+	// Cannot alter a PRIMARY KEY column's nullability or data type.
+	if (tableSchema.primaryKeyDefinition.some(def => def.index === colIndex)) {
+		if (action.setNotNull === false) {
+			throw new QuereusError(`Cannot DROP NOT NULL on PRIMARY KEY column '${action.columnName}'`, StatusCode.CONSTRAINT);
+		}
+		if (action.setDataType !== undefined) {
+			throw new QuereusError(`Cannot SET DATA TYPE on PRIMARY KEY column '${action.columnName}'`, StatusCode.CONSTRAINT);
+		}
+	}
+
+	const module = tableSchema.vtabModule;
+	if (!module.alterTable) {
+		throw new QuereusError(
+			`Module for table '${tableSchema.name}' does not support ALTER COLUMN`,
+			StatusCode.UNSUPPORTED,
+		);
+	}
+
+	const updatedTableSchema = await module.alterTable(rctx.db, tableSchema.schemaName, tableSchema.name, {
+		type: 'alterColumn',
+		columnName: action.columnName,
+		setNotNull: action.setNotNull,
+		setDataType: action.setDataType,
+		setDefault: action.setDefault,
+	});
+
+	schema.addTable(updatedTableSchema);
+
+	rctx.db.schemaManager.getChangeNotifier().notifyChange({
+		type: 'table_modified',
+		schemaName: tableSchema.schemaName,
+		objectName: tableSchema.name,
+		oldObject: tableSchema,
+		newObject: updatedTableSchema,
+	});
+
+	log('Altered column %s.%s.%s', tableSchema.schemaName, tableSchema.name, action.columnName);
 	return null;
 }
 

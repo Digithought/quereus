@@ -13,7 +13,14 @@ export type AlterTableAction =
 	| { type: 'renameColumn'; oldName: string; newName: string }
 	| { type: 'addColumn'; column: AST.ColumnDef }
 	| { type: 'dropColumn'; name: string }
-	| { type: 'alterPrimaryKey'; columns: Array<{ name: string; direction?: 'asc' | 'desc' }> };
+	| { type: 'alterPrimaryKey'; columns: Array<{ name: string; direction?: 'asc' | 'desc' }> }
+	| {
+		type: 'alterColumn';
+		columnName: string;
+		setNotNull?: boolean;
+		setDataType?: string;
+		setDefault?: AST.Expression | null;
+	};
 
 /**
  * Plan node for ALTER TABLE operations (rename table/column, add/drop column).
@@ -46,6 +53,8 @@ export class AlterTableNode extends VoidNode {
 				return `ALTER TABLE DROP COLUMN ${this.action.name}`;
 			case 'alterPrimaryKey':
 				return `ALTER TABLE ALTER PRIMARY KEY (${this.action.columns.map(c => c.name).join(', ')})`;
+			case 'alterColumn':
+				return `ALTER TABLE ALTER COLUMN ${this.action.columnName}`;
 		}
 	}
 

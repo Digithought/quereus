@@ -1,7 +1,7 @@
 import type { SchemaCatalog } from './catalog.js';
 import type * as AST from '../parser/ast.js';
 import type { SqlValue } from '../common/types.js';
-import { createTableToString, createViewToString, createIndexToString, createAssertionToString, columnDefToString, quoteIdentifier } from '../emit/ast-stringify.js';
+import { createTableToString, createViewToString, createIndexToString, createAssertionToString, columnDefToString, quoteIdentifier, expressionToString } from '../emit/ast-stringify.js';
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 
@@ -20,10 +20,26 @@ export interface SchemaDiff {
 	assertionsToDrop: string[];
 }
 
+export interface ColumnAttributeChange {
+	columnName: string;
+	/** Desired NOT NULL setting. Omitted = no change. */
+	notNull?: boolean;
+	/** Desired declared (logical) data type. Omitted = no change. */
+	dataType?: string;
+	/**
+	 * Desired DEFAULT expression.
+	 *   undefined = no change
+	 *   null      = drop existing default
+	 *   Expression = set to given expression
+	 */
+	defaultValue?: AST.Expression | null;
+}
+
 export interface TableAlterDiff {
 	tableName: string;
 	columnsToAdd: string[];
 	columnsToDrop: string[];
+	columnsToAlter: ColumnAttributeChange[];
 	primaryKeyChange?: {
 		oldPkColumns: string[];
 		newPkColumns: Array<{ name: string; direction?: 'asc' | 'desc' }>;
@@ -93,7 +109,7 @@ export function computeSchemaDiff(
 		} else {
 			// Table exists - check if it needs alteration
 			const alterDiff = computeTableAlterDiff(declaredTable, actualTables.get(name)!);
-			if (alterDiff.columnsToAdd.length > 0 || alterDiff.columnsToDrop.length > 0 || alterDiff.primaryKeyChange) {
+			if (alterDiff.columnsToAdd.length > 0 || alterDiff.columnsToDrop.length > 0 || alterDiff.columnsToAlter.length > 0 || alterDiff.primaryKeyChange) {
 				diff.tablesToAlter.push(alterDiff);
 			}
 		}
@@ -243,26 +259,39 @@ function computeTableAlterDiff(
 		tableName: declaredTable.tableStmt.table.name,
 		columnsToAdd: [],
 		columnsToDrop: [],
+		columnsToAlter: [],
 	};
 
-	const declaredColumns = new Set(
-		declaredTable.tableStmt.columns.map(c => c.name.toLowerCase())
-	);
-	const actualColumns = new Set(
-		actualTable.columns.map(c => c.name.toLowerCase())
-	);
+	const declaredColumnsByName = new Map<string, AST.ColumnDef>();
+	for (const col of declaredTable.tableStmt.columns) {
+		declaredColumnsByName.set(col.name.toLowerCase(), col);
+	}
+	const actualColumnsByName = new Map<string, import('./catalog.js').CatalogTable['columns'][number]>();
+	for (const col of actualTable.columns) {
+		actualColumnsByName.set(col.name.toLowerCase(), col);
+	}
 
 	// Find columns to add (store full column definition for DDL generation)
 	for (const col of declaredTable.tableStmt.columns) {
-		if (!actualColumns.has(col.name.toLowerCase())) {
+		if (!actualColumnsByName.has(col.name.toLowerCase())) {
 			diff.columnsToAdd.push(columnDefToString(col));
 		}
 	}
 
 	// Find columns to drop
 	for (const col of actualTable.columns) {
-		if (!declaredColumns.has(col.name.toLowerCase())) {
+		if (!declaredColumnsByName.has(col.name.toLowerCase())) {
 			diff.columnsToDrop.push(col.name);
+		}
+	}
+
+	// Detect attribute changes for surviving columns (present in both declared + actual)
+	for (const col of declaredTable.tableStmt.columns) {
+		const actual = actualColumnsByName.get(col.name.toLowerCase());
+		if (!actual) continue;
+		const change = computeColumnAttributeChange(col, actual);
+		if (change) {
+			diff.columnsToAlter.push(change);
 		}
 	}
 
@@ -278,6 +307,83 @@ function computeTableAlterDiff(
 	}
 
 	return diff;
+}
+
+/**
+ * Extract a declared column's effective nullability from its AST constraints.
+ * Returns undefined when no explicit NULL/NOT NULL is present (session default applies).
+ */
+function extractDeclaredNotNull(col: AST.ColumnDef): boolean | undefined {
+	if (!col.constraints) return undefined;
+	// PK always implies NOT NULL.
+	if (col.constraints.some(c => c.type === 'primaryKey')) return true;
+	for (const c of col.constraints) {
+		if (c.type === 'notNull') return true;
+		if (c.type === 'null') return false;
+	}
+	return undefined;
+}
+
+function extractDeclaredDefault(col: AST.ColumnDef): AST.Expression | null {
+	if (!col.constraints) return null;
+	const d = col.constraints.find(c => c.type === 'default');
+	return d?.expr ?? null;
+}
+
+/**
+ * Structural equality for DEFAULT expressions. Compares AST shape by
+ * JSON serialization with a stable key order — adequate for literals
+ * and common expression shapes typically used as DEFAULT values.
+ */
+function defaultExpressionsEqual(a: AST.Expression | null, b: AST.Expression | null): boolean {
+	if (a === null && b === null) return true;
+	if (a === null || b === null) return false;
+	return stableStringify(a) === stableStringify(b);
+}
+
+function stableStringify(v: unknown): string {
+	if (v === null || typeof v !== 'object') return JSON.stringify(v);
+	if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
+	const obj = v as Record<string, unknown>;
+	const keys = Object.keys(obj).filter(k => k !== 'loc').sort();
+	return `{${keys.map(k => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',')}}`;
+}
+
+function computeColumnAttributeChange(
+	declared: AST.ColumnDef,
+	actual: import('./catalog.js').CatalogTable['columns'][number],
+): ColumnAttributeChange | undefined {
+	const change: ColumnAttributeChange = { columnName: declared.name };
+	let any = false;
+
+	// Nullability — only compare when explicitly declared; session default handles unspecified.
+	const declaredNotNull = extractDeclaredNotNull(declared);
+	if (declaredNotNull !== undefined && declaredNotNull !== actual.notNull) {
+		change.notNull = declaredNotNull;
+		any = true;
+	}
+
+	// Data type — declared type is a string; compare case-insensitively.
+	if (declared.dataType && declared.dataType.toLowerCase() !== actual.type.toLowerCase()) {
+		change.dataType = declared.dataType;
+		any = true;
+	}
+
+	// Default expression — declared absent + actual present → drop (null).
+	const declaredDefault = extractDeclaredDefault(declared);
+	const hasDeclaredDefaultConstraint = !!declared.constraints?.some(c => c.type === 'default');
+	const actualDefault = actual.defaultValue ?? null;
+	if (hasDeclaredDefaultConstraint) {
+		if (!defaultExpressionsEqual(declaredDefault, actualDefault)) {
+			change.defaultValue = declaredDefault;
+			any = true;
+		}
+	} else if (actualDefault !== null) {
+		change.defaultValue = null;
+		any = true;
+	}
+
+	return any ? change : undefined;
 }
 
 function extractDeclaredPK(declaredTable: AST.DeclaredTable): Array<{ name: string; direction?: 'asc' | 'desc' }> {
@@ -364,11 +470,35 @@ export function generateMigrationDDL(diff: SchemaDiff, schemaName?: string): str
 	statements.push(...diff.indexesToCreate);
 	statements.push(...diff.assertionsToCreate);
 
-	// Alter existing tables (order: ADD COLUMN → ALTER PRIMARY KEY → DROP COLUMN)
+	// Alter existing tables.
+	// Phase order within one table:
+	//   ADD COLUMN
+	//   → ALTER COLUMN (type, then default, then nullability — so SET NOT NULL
+	//     can rely on an already-populated DEFAULT for backfill)
+	//   → ALTER PRIMARY KEY
+	//   → DROP COLUMN (last, so NOT NULL relaxation never blocks subsequent drops)
 	for (const alter of diff.tablesToAlter) {
 		const quotedTable = `${schemaPrefix}${quoteIdentifier(alter.tableName)}`;
 		for (const colDef of alter.columnsToAdd) {
 			statements.push(`ALTER TABLE ${quotedTable} ADD COLUMN ${colDef}`);
+		}
+		for (const colAlter of alter.columnsToAlter) {
+			const quotedCol = quoteIdentifier(colAlter.columnName);
+			if (colAlter.dataType !== undefined) {
+				statements.push(`ALTER TABLE ${quotedTable} ALTER COLUMN ${quotedCol} SET DATA TYPE ${colAlter.dataType}`);
+			}
+			if (colAlter.defaultValue !== undefined) {
+				if (colAlter.defaultValue === null) {
+					statements.push(`ALTER TABLE ${quotedTable} ALTER COLUMN ${quotedCol} DROP DEFAULT`);
+				} else {
+					statements.push(`ALTER TABLE ${quotedTable} ALTER COLUMN ${quotedCol} SET DEFAULT ${expressionToString(colAlter.defaultValue)}`);
+				}
+			}
+			if (colAlter.notNull !== undefined) {
+				statements.push(colAlter.notNull
+					? `ALTER TABLE ${quotedTable} ALTER COLUMN ${quotedCol} SET NOT NULL`
+					: `ALTER TABLE ${quotedTable} ALTER COLUMN ${quotedCol} DROP NOT NULL`);
+			}
 		}
 		if (alter.primaryKeyChange) {
 			const pkCols = alter.primaryKeyChange.newPkColumns

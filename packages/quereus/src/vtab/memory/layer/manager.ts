@@ -19,6 +19,8 @@ import { createMemoryTableLoggers } from '../utils/logging.js';
 import { getSyncLiteral } from '../../../parser/utils.js';
 import { validateAndParse } from '../../../types/validation.js';
 import type { VTableEventEmitter } from '../../events.js';
+import { inferType } from '../../../types/registry.js';
+import type { Expression } from '../../../parser/ast.js';
 
 let tableManagerCounter = 0;
 const logger = createMemoryTableLoggers('layer:manager');
@@ -1064,6 +1066,143 @@ export class MemoryTableManager {
 			this.tableSchema = originalManagerSchema;
 			this.initializePrimaryKeyFunctions();
 			logger.error('Rename Column', this._tableName, e);
+			throw e;
+		} finally {
+			release();
+		}
+	}
+
+	/**
+	 * Apply a single-attribute ALTER COLUMN change (NOT NULL, DEFAULT, DATA TYPE).
+	 * The caller supplies exactly one populated change; multi-attribute combinations
+	 * are rejected by the runtime before reaching this method.
+	 */
+	async alterColumn(change: {
+		columnName: string;
+		setNotNull?: boolean;
+		setDataType?: string;
+		setDefault?: Expression | null;
+	}): Promise<void> {
+		if (this.isReadOnly) throw new QuereusError(`Table '${this._tableName}' is read-only`, StatusCode.READONLY);
+		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this._tableName}`;
+		const release = await Latches.acquire(lockKey);
+		const originalManagerSchema = this.tableSchema;
+		try {
+			await this.ensureSchemaChangeSafety();
+
+			const colNameLower = change.columnName.toLowerCase();
+			const colIndex = this.tableSchema.columns.findIndex(c => c.name.toLowerCase() === colNameLower);
+			if (colIndex === -1) {
+				throw new QuereusError(`Column '${change.columnName}' not found.`, StatusCode.ERROR);
+			}
+			const oldCol = this.tableSchema.columns[colIndex];
+			let newCol: ColumnSchema = oldCol;
+
+			if (change.setNotNull !== undefined) {
+				if (change.setNotNull === true && !oldCol.notNull) {
+					// Tightening: scan for NULLs. If DEFAULT present, backfill first.
+					const defaultExpr = oldCol.defaultValue;
+					let defaultLiteral: SqlValue | undefined;
+					if (defaultExpr && defaultExpr.type === 'literal') {
+						defaultLiteral = getSyncLiteral(defaultExpr as LiteralExpr);
+					}
+
+					const tree = this.baseLayer.primaryTree;
+					const nullRows: Row[] = [];
+					for (const path of tree.ascending(tree.first())) {
+						const row = tree.at(path)!;
+						if (row[colIndex] === null) nullRows.push(row);
+					}
+
+					if (nullRows.length > 0) {
+						if (defaultLiteral === undefined || defaultLiteral === null) {
+							throw new QuereusError(
+								`column ${change.columnName} contains NULL values`,
+								StatusCode.CONSTRAINT,
+							);
+						}
+						// Backfill NULLs with the default literal.
+						for (const row of nullRows) {
+							const newRow: Row = row.map((v, i) => i === colIndex ? defaultLiteral! : v) as Row;
+							// replace in-place: same PK, mutate row array. BTree keys by PK extraction,
+							// so overwriting the value at the same key is sufficient.
+							tree.insert(newRow);
+						}
+					}
+
+					newCol = { ...oldCol, notNull: true };
+				} else if (change.setNotNull === false && oldCol.notNull) {
+					if (this.tableSchema.primaryKeyDefinition.some(def => def.index === colIndex)) {
+						throw new QuereusError(
+							`Cannot DROP NOT NULL on PRIMARY KEY column '${change.columnName}'`,
+							StatusCode.CONSTRAINT,
+						);
+					}
+					newCol = { ...oldCol, notNull: false };
+				} else {
+					// No-op (already in desired state).
+					return;
+				}
+			} else if (change.setDataType !== undefined) {
+				const newLogicalType = inferType(change.setDataType);
+				if (newLogicalType.physicalType === oldCol.logicalType.physicalType) {
+					newCol = { ...oldCol, logicalType: newLogicalType };
+				} else {
+					// Physical conversion required. Iterate rows and convert.
+					const tree = this.baseLayer.primaryTree;
+					const toConvert: Array<{ path: ReturnType<typeof tree.first>, row: Row }> = [];
+					for (const path of tree.ascending(tree.first())) {
+						const row = tree.at(path)!;
+						toConvert.push({ path, row });
+					}
+					for (const { row } of toConvert) {
+						const oldVal = row[colIndex];
+						if (oldVal === null) continue;
+						let newVal: SqlValue;
+						try {
+							newVal = validateAndParse(oldVal, newLogicalType, change.columnName) as SqlValue;
+						} catch {
+							throw new QuereusError(
+								`Cannot convert value in '${change.columnName}' to ${change.setDataType}`,
+								StatusCode.MISMATCH,
+							);
+						}
+						const newRow: Row = row.map((v, i) => i === colIndex ? newVal : v) as Row;
+						tree.insert(newRow);
+					}
+					newCol = { ...oldCol, logicalType: newLogicalType };
+				}
+			} else if (change.setDefault !== undefined) {
+				newCol = { ...oldCol, defaultValue: change.setDefault };
+			} else {
+				throw new QuereusError('ALTER COLUMN requires an attribute to change', StatusCode.INTERNAL);
+			}
+
+			const updatedCols = this.tableSchema.columns.map((c, i) => i === colIndex ? newCol : c);
+			const finalNewTableSchema: TableSchema = Object.freeze({
+				...this.tableSchema,
+				columns: Object.freeze(updatedCols),
+				columnIndexMap: buildColumnIndexMap(updatedCols),
+			});
+
+			this.baseLayer.updateSchema(finalNewTableSchema);
+			this.tableSchema = finalNewTableSchema;
+			this.initializePrimaryKeyFunctions();
+
+			this.eventEmitter?.emitSchemaChange?.({
+				type: 'alter',
+				objectType: 'column',
+				schemaName: this.schemaName,
+				objectName: this._tableName,
+				columnName: change.columnName,
+			});
+
+			logger.operation('Alter Column', this._tableName, { columnName: change.columnName });
+		} catch (e: any) {
+			this.baseLayer.updateSchema(originalManagerSchema);
+			this.tableSchema = originalManagerSchema;
+			this.initializePrimaryKeyFunctions();
+			logger.error('Alter Column', this._tableName, e);
 			throw e;
 		} finally {
 			release();

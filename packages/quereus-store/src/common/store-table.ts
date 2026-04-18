@@ -137,6 +137,44 @@ export class StoreTable extends VirtualTable {
 	}
 
 	/**
+	 * Scan every row, checking whether the column at `colIndex` ever holds NULL.
+	 * Used by ALTER COLUMN SET NOT NULL to decide whether the tightening is safe.
+	 */
+	async rowsWithNullAtIndex(colIndex: number): Promise<number> {
+		const store = await this.ensureStore();
+		const bounds = buildFullScanBounds();
+		let count = 0;
+		for await (const entry of store.iterate(bounds)) {
+			const row = deserializeRow(entry.value);
+			if (row[colIndex] === null) count++;
+		}
+		return count;
+	}
+
+	/**
+	 * Apply a per-row mapping function to every stored row, in place (re-writing
+	 * the same key). The mapper may throw QuereusError — propagated to the caller.
+	 */
+	async mapRowsAtIndex(
+		colIndex: number,
+		mapper: (value: SqlValue) => SqlValue,
+	): Promise<void> {
+		const store = await this.ensureStore();
+		const bounds = buildFullScanBounds();
+		const batch = store.batch();
+		for await (const entry of store.iterate(bounds)) {
+			const row = deserializeRow(entry.value);
+			const oldVal = row[colIndex];
+			const newVal = mapper(oldVal);
+			if (newVal === oldVal) continue;
+			const newRow = row.slice();
+			newRow[colIndex] = newVal;
+			batch.put(entry.key, serializeRow(newRow as Row));
+		}
+		await batch.write();
+	}
+
+	/**
 	 * Migrate all stored rows from the old column layout to a new one.
 	 * The remap array maps newColumnIndex -> oldColumnIndex | -1.
 	 * -1 means the column is new (fill with defaultValue).

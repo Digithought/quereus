@@ -475,7 +475,18 @@ export type AlterTableAction =
 	| { type: 'addColumn', column: ColumnDef }
 	| { type: 'dropColumn', name: string }
 	| { type: 'addConstraint', constraint: TableConstraint }
-	| { type: 'alterPrimaryKey', columns: Array<{ name: string; direction?: 'asc' | 'desc' }> };
+	| { type: 'alterPrimaryKey', columns: Array<{ name: string; direction?: 'asc' | 'desc' }> }
+	| {
+		/**
+		 * ALTER COLUMN <name> [SET NOT NULL | DROP NOT NULL | SET DATA TYPE <type> | SET DEFAULT <expr> | DROP DEFAULT].
+		 * Each statement sets exactly one attribute — only one of the optional fields is populated.
+		 */
+		type: 'alterColumn',
+		columnName: string,
+		setNotNull?: boolean,          // true = SET NOT NULL, false = DROP NOT NULL
+		setDataType?: string,
+		setDefault?: Expression | null // null = DROP DEFAULT, Expression = SET DEFAULT
+	};
 
 // Add PragmaStmt interface
 export interface PragmaStmt extends AstNode {

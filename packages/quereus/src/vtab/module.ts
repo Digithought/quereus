@@ -1,7 +1,7 @@
 import type { Database } from '../core/database.js'; // Assuming Database class exists
 import type { VirtualTable } from './table.js';
 
-import type { ColumnDef } from '../parser/ast.js'; // <-- Add parser AST import
+import type { ColumnDef, Expression } from '../parser/ast.js'; // <-- Add parser AST import
 import type { TableSchema, IndexSchema } from '../schema/table.js'; // Add import for TableSchema and IndexSchema
 import type { BestAccessPlanRequest, BestAccessPlanResult } from './best-access-plan.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
@@ -201,7 +201,27 @@ export type SchemaChangeInfo =
 	| { type: 'addColumn'; columnDef: ColumnDef }
 	| { type: 'dropColumn'; columnName: string }
 	| { type: 'renameColumn'; oldName: string; newName: string; newColumnDefAst?: ColumnDef }
-	| { type: 'alterPrimaryKey'; newPkColumns: ReadonlyArray<{ index: number; desc: boolean }> };
+	| { type: 'alterPrimaryKey'; newPkColumns: ReadonlyArray<{ index: number; desc: boolean }> }
+	| {
+		/**
+		 * ALTER COLUMN with exactly one attribute change.
+		 *
+		 * Module contract:
+		 *   - setNotNull=true with rows containing NULL → throw CONSTRAINT.
+		 *     If a DEFAULT is currently set on the column, the module should
+		 *     first backfill NULL values with the default and then tighten.
+		 *   - setDataType: schema-only if physical type unchanged; otherwise the
+		 *     module must convert each row and throw MISMATCH on loss (narrowing,
+		 *     NaN, overflow).
+		 *   - setDefault / drop default: schema-only. New inserts pick up the
+		 *     new default; existing rows are untouched.
+		 */
+		type: 'alterColumn';
+		columnName: string;
+		setNotNull?: boolean;
+		setDataType?: string;
+		setDefault?: Expression | null;
+	};
 
 /**
  * Type alias for the common usage pattern where specific table and config types are not known.
