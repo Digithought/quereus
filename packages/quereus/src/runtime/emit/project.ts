@@ -29,7 +29,10 @@ export function emitProject(plan: ProjectNode, ctx: EmissionContext): Instructio
 			for await (const sourceRow of source) {
 				// Set source context for projection evaluation
 				sourceSlot.set(sourceRow);
-				const outputs = await Promise.all(projectionFunctions.map(fn => fn(rctx)));
+				const outputs: OutputValue[] = [];
+				for (const fn of projectionFunctions) {
+					outputs.push(await fn(rctx));
+				}
 				const outputRow = outputs as Row;
 
 				// Set output context for downstream column resolution
