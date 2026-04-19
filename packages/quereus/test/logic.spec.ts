@@ -41,6 +41,9 @@ const MEMORY_ONLY_FILES = new Set([
   '05-vtab_memory.sqllogic',  // Explicitly tests memory table indexing behavior
   '06-builtin_functions.sqllogic',  // JSON normalization differs between memory and store (memory normalizes, store preserves raw)
   '10-distinct_datatypes.sqllogic',  // Tests type affinity coercion (store module stores raw values without coercion)
+  '83-merge-join.sqllogic',  // Asserts planner picks MergeJoin for PK equi-join; store's cost model can validly prefer HashJoin
+  '103-database-options-edge-cases.sqllogic',  // Asserts default_vtab_module='memory'; store-mode harness sets it to 'store'
+  '105-vtab-memory-mutation-kills.sqllogic',  // White-box mutation tests targeting src/vtab/memory/ internals
 ]);
 
 // Determine project root - if we're in dist/test, go up two levels, otherwise just one
