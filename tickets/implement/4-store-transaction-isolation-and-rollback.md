@@ -5,7 +5,9 @@ files:
   packages/quereus-store/src/common/isolated-store.ts
   packages/quereus-store/src/common/store-module.ts
   packages/quereus/src/core/database-transaction.ts
+  packages/quereus/src/core/database-assertions.ts
   packages/quereus/test/logic/04-transactions.sqllogic
+  packages/quereus/test/logic/29-constraint-edge-cases.sqllogic
   packages/quereus/test/logic/42-committed-snapshot.sqllogic
   packages/quereus/test/logic/95-assertions.sqllogic
   packages/quereus/test/logic/101-transaction-edge-cases.sqllogic
@@ -23,6 +25,10 @@ The logic-test harness (`packages/quereus/test/logic.spec.ts:499-509`) registers
 ### Why scenario B is resolved by isolation alone
 
 `TransactionManager.commitTransaction` (`packages/quereus/src/core/database-transaction.ts:160-211`) runs `runGlobalAssertions()` and `runDeferredRowConstraints()` **before** invoking `connection.commit()` on any vtab. On failure it calls `connection.rollback()` on every connection (line 196). With isolation in place, staged writes live in an overlay memory table and `rollback()` discards them without ever touching the KV store. No engine-side changes are needed.
+
+### Scenario C — multi-assertion ordering (`29-constraint-edge-cases.sqllogic:156`)
+
+Previously filed as a separate "constraint evaluation order" ticket. Root cause is the same missing isolation: global assertions run via `AssertionEvaluator.executeViolationOnce` (`packages/quereus/src/core/database-assertions.ts:269`) which reads through the vtab layer. Without isolation, that read sees only committed KV data, so a row that violates an assertion at its own commit is invisible to the violation query and slips through. It then surfaces against an unrelated assertion on the next commit — producing the `ma_b_small` error where `ma_a_positive` is expected. Assertion iteration order is already stable (Map insertion order in `Schema.getAllAssertions` at `packages/quereus/src/schema/schema.ts:155`); memory-mode tests confirm it. No ordering change is required — the fix is the same isolation wrapper as scenarios A and B.
 
 ## Fix
 
@@ -64,5 +70,5 @@ Add to `packages/quereus-store/test/isolated-store.spec.ts`:
 - Fix teardown path (`leveldbModule.closeAll()`) for the wrapper
 - Remove `04-transactions.sqllogic` from `MEMORY_ONLY_FILES` if it now passes; otherwise narrow the skip
 - Add UPDATE-based read-your-own-writes test and failed-commit-rollback test to `packages/quereus-store/test/isolated-store.spec.ts`
-- `yarn test:store` — confirm 04, 10.1, 42, 43, 95, 101 all green
+- `yarn test:store` — confirm 04, 10.1, 29, 42, 43, 95, 101 all green
 - `yarn test` — confirm memory-mode suite still green
