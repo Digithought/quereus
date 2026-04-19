@@ -718,6 +718,39 @@ export class StoreTable extends VirtualTable {
 		return true;
 	}
 
+	/**
+	 * Begin a table-scoped transaction by ensuring the coordinator is active.
+	 *
+	 * Used by the isolation layer's flush path, which treats the underlying
+	 * write as an independent mini-transaction. Idempotent: if the coordinator
+	 * is already in a transaction (e.g. started by a registered connection),
+	 * this is a no-op.
+	 */
+	async begin(): Promise<void> {
+		const coordinator = await this.ensureCoordinator();
+		coordinator.begin();
+	}
+
+	/**
+	 * Commits a table-scoped transaction, flushing any buffered writes to the KV store.
+	 * No-op if the coordinator is not currently in a transaction.
+	 */
+	async commit(): Promise<void> {
+		if (this.coordinator?.isInTransaction()) {
+			await this.coordinator.commit();
+		}
+	}
+
+	/**
+	 * Rolls back a table-scoped transaction, discarding any buffered writes.
+	 * No-op if the coordinator is not currently in a transaction.
+	 */
+	async rollback(): Promise<void> {
+		if (this.coordinator?.isInTransaction()) {
+			this.coordinator.rollback();
+		}
+	}
+
 	/** Disconnect from the store. */
 	async disconnect(): Promise<void> {
 		// Called by Quereus after each scan completes.

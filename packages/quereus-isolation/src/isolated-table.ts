@@ -30,6 +30,7 @@ type IndexScanInfo =
 export class IsolatedTable extends VirtualTable implements IsolatedTableCallback {
 	private readonly isolationModule: IsolationModule;
 	private readonly underlyingTable: VirtualTable;
+	private readonly readCommitted: boolean;
 
 	private registeredConnection: IsolatedConnection | null = null;
 
@@ -43,12 +44,14 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	constructor(
 		db: Database,
 		module: IsolationModule,
-		underlyingTable: VirtualTable
+		underlyingTable: VirtualTable,
+		readCommitted: boolean = false
 	) {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		super(db, module as any, underlyingTable.schemaName, underlyingTable.tableName);
 		this.isolationModule = module;
 		this.underlyingTable = underlyingTable;
+		this.readCommitted = readCommitted;
 		// Schema comes from underlying - may be populated lazily by the underlying module
 		this.tableSchema = underlyingTable.tableSchema;
 	}
@@ -215,8 +218,8 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 			throw new Error('Underlying table does not support query');
 		}
 
-		// Fast path: no overlay or no changes, skip merge overhead
-		if (!this.overlayTable || !this.hasChanges) {
+		// Fast path: no overlay or no changes, or a committed-snapshot read — skip overlay
+		if (this.readCommitted || !this.overlayTable || !this.hasChanges) {
 			return this.underlyingTable.query(filterInfo);
 		}
 

@@ -49,7 +49,7 @@ export interface ConnectionOverlayState {
  * - Savepoint support via overlay module's transaction support
  */
 export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseModuleConfig> {
-	private readonly underlying: VirtualTableModule<any, any>;
+	readonly underlying: VirtualTableModule<any, any>;
 	readonly overlayModule: VirtualTableModule<any, any>;
 	readonly tombstoneColumn: string;
 
@@ -226,9 +226,13 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 			this.setUnderlyingState(schemaName, tableName, state);
 		}
 
+		// When the planner requested a committed-snapshot read (committed.<table>), bypass
+		// the per-connection overlay so reads reflect only persisted underlying state.
+		const readCommitted = (options as { _readCommitted?: boolean } | undefined)?._readCommitted === true;
+
 		// Return a fresh IsolatedTable instance that will look up its overlay
 		// from connection-scoped storage (shared with other instances in same transaction)
-		return new IsolatedTable(db, this, state.underlyingTable);
+		return new IsolatedTable(db, this, state.underlyingTable, readCommitted);
 	}
 
 	/**
@@ -243,6 +247,19 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 	): Promise<void> {
 		this.removeUnderlyingState(schemaName, tableName);
 		await this.underlying.destroy(db, pAux, moduleName, schemaName, tableName);
+	}
+
+	/**
+	 * Closes all resources held by the underlying module (if it supports closeAll).
+	 * Also clears connection overlay state.
+	 */
+	async closeAll(): Promise<void> {
+		this.connectionOverlays.clear();
+		this.underlyingTables.clear();
+		const underlyingWithClose = this.underlying as { closeAll?: () => Promise<void> };
+		if (typeof underlyingWithClose.closeAll === 'function') {
+			await underlyingWithClose.closeAll();
+		}
 	}
 
 	/**
