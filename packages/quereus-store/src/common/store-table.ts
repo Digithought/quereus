@@ -17,6 +17,7 @@ import {
 	QuereusError,
 	StatusCode,
 	compareSqlValues,
+	validateAndParse,
 	type Database,
 	type DatabaseInternal,
 	type TableSchema,
@@ -404,6 +405,23 @@ export class StoreTable extends VirtualTable {
 		return schema.primaryKeyDefinition.map(pk => row[pk.index]);
 	}
 
+	/**
+	 * Coerce each cell in `row` to its declared column logical type.
+	 * Mirrors the memory-table path (MemoryTableManager.performInsert/performUpdate)
+	 * so INTEGER/REAL affinity is applied and JSON columns are parsed into native
+	 * objects before PK extraction, serialization, and index-key construction.
+	 */
+	protected coerceRow(row: Row): Row {
+		const cols = this.tableSchema!.columns;
+		if (row.length > cols.length) {
+			throw new QuereusError(
+				`Too many values for ${this.schemaName}.${this.tableName}: expected ${cols.length}, got ${row.length}`,
+				StatusCode.ERROR,
+			);
+		}
+		return row.map((v, i) => validateAndParse(v, cols[i].logicalType, cols[i].name)) as Row;
+	}
+
 	/** Query the table with optional filters. */
 	async *query(filterInfo: FilterInfo): AsyncIterable<Row> {
 		const store = await this.ensureStore();
@@ -559,7 +577,8 @@ export class StoreTable extends VirtualTable {
 		switch (operation) {
 			case 'insert': {
 				if (!values) throw new QuereusError('INSERT requires values', StatusCode.MISUSE);
-				const pk = this.extractPK(values);
+				const coerced = args.preCoerced ? values : this.coerceRow(values);
+				const pk = this.extractPK(coerced);
 				const key = buildDataKey(pk, this.encodeOptions);
 
 				// Check for existing row (for conflict handling)
@@ -582,14 +601,14 @@ export class StoreTable extends VirtualTable {
 				// Enforce non-PK UNIQUE constraints
 				const ucResult = await this.checkUniqueConstraints(
 					inTransaction,
-					values,
+					coerced,
 					[pk],
 					args.onConflict,
 				);
 				if (ucResult) return ucResult;
 
 				const oldRow = existing ? deserializeRow(existing) : null;
-				const serializedRow = serializeRow(values);
+				const serializedRow = serializeRow(coerced);
 				if (inTransaction) {
 					coordinator.put(key, serializedRow);
 				} else {
@@ -597,7 +616,7 @@ export class StoreTable extends VirtualTable {
 				}
 
 				// Update secondary indexes
-				await this.updateSecondaryIndexes(inTransaction, oldRow, values, pk);
+				await this.updateSecondaryIndexes(inTransaction, oldRow, coerced, pk);
 
 				// Track statistics (only count as new if not replacing)
 				if (!existing) {
@@ -613,7 +632,7 @@ export class StoreTable extends VirtualTable {
 						tableName: schema.name,
 						key: pk,
 						oldRow,
-						newRow: values,
+						newRow: coerced,
 					};
 					if (inTransaction) {
 						coordinator.queueEvent(updateEvent);
@@ -626,7 +645,7 @@ export class StoreTable extends VirtualTable {
 						schemaName: schema.schemaName,
 						tableName: schema.name,
 						key: pk,
-						newRow: values,
+						newRow: coerced,
 					};
 					if (inTransaction) {
 						coordinator.queueEvent(insertEvent);
@@ -635,13 +654,14 @@ export class StoreTable extends VirtualTable {
 					}
 				}
 
-				return { status: 'ok', row: values, replacedRow: oldRow ?? undefined };
+				return { status: 'ok', row: coerced, replacedRow: oldRow ?? undefined };
 			}
 
 			case 'update': {
 				if (!values || !oldKeyValues) throw new QuereusError('UPDATE requires values and oldKeyValues', StatusCode.MISUSE);
+				const coerced = args.preCoerced ? values : this.coerceRow(values);
 				const oldPk = this.extractPK(oldKeyValues);
-				const newPk = this.extractPK(values);
+				const newPk = this.extractPK(coerced);
 				const oldKey = buildDataKey(oldPk, this.encodeOptions);
 				const newKey = buildDataKey(newPk, this.encodeOptions);
 
@@ -676,11 +696,11 @@ export class StoreTable extends VirtualTable {
 				// row we're moving.
 				const selfPks: SqlValue[][] = pkChanged ? [oldPk, newPk] : [oldPk];
 				const shouldCheckUniques = pkChanged
-					|| (oldRow ? this.uniqueColumnsChanged(oldRow, values) : true);
+					|| (oldRow ? this.uniqueColumnsChanged(oldRow, coerced) : true);
 				if (shouldCheckUniques) {
 					const ucResult = await this.checkUniqueConstraints(
 						inTransaction,
-						values,
+						coerced,
 						selfPks,
 						args.onConflict,
 					);
@@ -696,7 +716,7 @@ export class StoreTable extends VirtualTable {
 					}
 				}
 
-				const serializedRow = serializeRow(values);
+				const serializedRow = serializeRow(coerced);
 				if (inTransaction) {
 					coordinator.put(newKey, serializedRow);
 				} else {
@@ -704,7 +724,7 @@ export class StoreTable extends VirtualTable {
 				}
 
 				// Update secondary indexes
-				await this.updateSecondaryIndexes(inTransaction, oldRow, values, newPk);
+				await this.updateSecondaryIndexes(inTransaction, oldRow, coerced, newPk);
 
 				// Queue or emit event
 				const updateEvent = {
@@ -713,7 +733,7 @@ export class StoreTable extends VirtualTable {
 					tableName: schema.name,
 					key: newPk,
 					oldRow: oldRow || undefined,
-					newRow: values,
+					newRow: coerced,
 				};
 				if (inTransaction) {
 					coordinator.queueEvent(updateEvent);
@@ -721,7 +741,7 @@ export class StoreTable extends VirtualTable {
 					this.eventEmitter?.emitDataChange(updateEvent);
 				}
 
-				return { status: 'ok', row: values };
+				return { status: 'ok', row: coerced };
 			}
 
 			case 'delete': {

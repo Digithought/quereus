@@ -39,8 +39,6 @@ const USE_STORE_MODULE = process.env.QUEREUS_TEST_STORE === 'true' || process.en
 const MEMORY_ONLY_FILES = new Set([
   '04-transactions.sqllogic',  // UNIQUE constraint across overlay and underlying is not detected (isolation-layer limitation)
   '05-vtab_memory.sqllogic',  // Explicitly tests memory table indexing behavior
-  '06-builtin_functions.sqllogic',  // JSON normalization differs between memory and store (memory normalizes, store preserves raw)
-  '10-distinct_datatypes.sqllogic',  // Tests type affinity coercion (store module stores raw values without coercion)
   '10.1-ddl-lifecycle.sqllogic',  // DROP+CREATE reuse of table name races with underlyingTables state (unrelated to transaction isolation)
   '29-constraint-edge-cases.sqllogic',  // CASCADE FK delete across overlay/underlying does not cascade in isolation layer
   '40-constraints.sqllogic',  // Deferred constraint queue finds ambiguity between IsolatedConnection and overlay MemoryVirtualTableConnection

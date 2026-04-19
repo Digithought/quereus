@@ -861,11 +861,13 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 							operation: 'update',
 							values: entry.dataRow,
 							oldKeyValues: entry.pk,
+							preCoerced: true,
 						});
 					} else {
 						await this.underlyingTable.update({
 							operation: 'insert',
 							values: entry.dataRow,
+							preCoerced: true,
 						});
 					}
 				}
