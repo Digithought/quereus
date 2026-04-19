@@ -11,6 +11,7 @@
  */
 
 import path from 'node:path';
+import fs from 'node:fs';
 import type { KVStore, KVStoreProvider } from '@quereus/store';
 import { STORE_SUFFIX, CATALOG_STORE_NAME, STATS_STORE_NAME } from '@quereus/store';
 import { LevelDBStore } from './store.js';
@@ -42,6 +43,7 @@ export class LevelDBProvider implements KVStoreProvider {
 	private basePath: string;
 	private createIfMissing: boolean;
 	private stores = new Map<string, LevelDBStore>();
+	private storePaths = new Map<string, string>();
 	private catalogStore: LevelDBStore | null = null;
 	private statsStore: LevelDBStore | null = null;
 
@@ -114,29 +116,49 @@ export class LevelDBProvider implements KVStoreProvider {
 
 	async deleteIndexStore(schemaName: string, tableName: string, indexName: string): Promise<void> {
 		const storeName = `${schemaName}.${tableName}${STORE_SUFFIX.INDEX}${indexName}`.toLowerCase();
+		const storePath = this.storePaths.get(storeName)
+			?? path.join(this.basePath, schemaName, `${tableName}${STORE_SUFFIX.INDEX}${indexName}`);
 		await this.closeStoreByName(storeName);
-		// Note: LevelDB doesn't have a built-in delete, would need fs.rm
-		// For now, just close the store - actual deletion would require filesystem ops
+		await removeDir(storePath);
 	}
 
 	async deleteTableStores(schemaName: string, tableName: string): Promise<void> {
-		// Close data store
+		// Close and remove data store directory
 		const dataStoreName = `${schemaName}.${tableName}`.toLowerCase();
+		const dataStorePath = this.storePaths.get(dataStoreName)
+			?? path.join(this.basePath, schemaName, tableName);
 		await this.closeStoreByName(dataStoreName);
+		await removeDir(dataStorePath);
 
 		// Stats are in the unified __stats__ store, so no need to close a separate store
 		// The individual stats entry will be removed by the calling code if needed
 
-		// Close all index stores for this table
+		// Close and remove all index store directories for this table
 		const indexPrefix = `${schemaName}.${tableName}${STORE_SUFFIX.INDEX}`.toLowerCase();
-		for (const [name, store] of this.stores) {
-			if (name.startsWith(indexPrefix)) {
-				await store.close();
-				this.stores.delete(name);
-			}
+		const indexStoreNames: string[] = [];
+		for (const name of this.stores.keys()) {
+			if (name.startsWith(indexPrefix)) indexStoreNames.push(name);
+		}
+		for (const name of indexStoreNames) {
+			const indexPath = this.storePaths.get(name);
+			await this.closeStoreByName(name);
+			if (indexPath) await removeDir(indexPath);
 		}
 
-		// Note: Actual directory deletion would require filesystem operations
+		// Also sweep any on-disk index directories for this table that were never opened
+		// in this session (e.g. after a process restart followed by a DROP).
+		const schemaDir = path.join(this.basePath, schemaName);
+		const indexDirPrefix = `${tableName}${STORE_SUFFIX.INDEX}`;
+		try {
+			const entries = await fs.promises.readdir(schemaDir);
+			for (const entry of entries) {
+				if (entry.startsWith(indexDirPrefix)) {
+					await removeDir(path.join(schemaDir, entry));
+				}
+			}
+		} catch {
+			// Schema directory may not exist; nothing to sweep.
+		}
 	}
 
 	private async getOrCreateStore(storeName: string, storePath: string): Promise<LevelDBStore> {
@@ -148,6 +170,7 @@ export class LevelDBProvider implements KVStoreProvider {
 				createIfMissing: this.createIfMissing,
 			});
 			this.stores.set(storeName, store);
+			this.storePaths.set(storeName, storePath);
 		}
 
 		return store;
@@ -158,8 +181,13 @@ export class LevelDBProvider implements KVStoreProvider {
 		if (store) {
 			await store.close();
 			this.stores.delete(storeName);
+			this.storePaths.delete(storeName);
 		}
 	}
+}
+
+async function removeDir(dirPath: string): Promise<void> {
+	await fs.promises.rm(dirPath, { recursive: true, force: true });
 }
 
 /**
