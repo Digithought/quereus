@@ -137,6 +137,18 @@ export class StoreTable extends VirtualTable {
 	}
 
 	/**
+	 * Returns true if the table has at least one stored row. Stops after the first hit.
+	 */
+	async hasAnyRows(): Promise<boolean> {
+		const store = await this.ensureStore();
+		const bounds = buildFullScanBounds();
+		for await (const _entry of store.iterate(bounds)) {
+			return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Scan every row, checking whether the column at `colIndex` ever holds NULL.
 	 * Used by ALTER COLUMN SET NOT NULL to decide whether the tightening is safe.
 	 */

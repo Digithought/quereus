@@ -912,7 +912,11 @@ export class MemoryTableManager {
 			// Allow NOT NULL without DEFAULT if table is empty (SQLite-compatible)
 			const tableHasRows = this.baseLayer.primaryTree.at(this.baseLayer.primaryTree.first()) !== undefined;
 			if (newColumnSchema.notNull && defaultValue === null && !(defaultConstraint?.expr?.type ==='literal') && tableHasRows) {
-				throw new QuereusError(`Cannot add NOT NULL col '${newColumnSchema.name}' without DEFAULT.`, StatusCode.CONSTRAINT);
+				throw new QuereusError(
+					`Cannot add NOT NULL column '${newColumnSchema.name}' to non-empty table `
+						+ `'${this.schemaName}.${this._tableName}' without a DEFAULT value`,
+					StatusCode.CONSTRAINT,
+				);
 			}
 			const updatedColumnsSchema: ReadonlyArray<ColumnSchema> = Object.freeze([...this.tableSchema.columns, newColumnSchema]);
 			const finalNewTableSchema: TableSchema = Object.freeze({

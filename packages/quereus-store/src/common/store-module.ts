@@ -400,6 +400,17 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 					defaultValue = (defaultConstraint.expr as { value: SqlValue }).value;
 				}
 
+				// Refuse NOT NULL without a literal DEFAULT on a non-empty table (SQLite-compatible).
+				if (newColSchema.notNull && defaultValue === null) {
+					if (await table.hasAnyRows()) {
+						throw new QuereusError(
+							`Cannot add NOT NULL column '${newColSchema.name}' to non-empty table `
+								+ `'${schemaName}.${tableName}' without a DEFAULT value`,
+							StatusCode.CONSTRAINT,
+						);
+					}
+				}
+
 				// Build updated schema: append new column
 				const updatedColumns: ReadonlyArray<ColumnSchema> = Object.freeze([...oldSchema.columns, newColSchema]);
 				const updatedSchema: TableSchema = {

@@ -141,6 +141,59 @@ describe('Store ALTER TABLE', () => {
 			const row = await db.get('select * from items where id = 1');
 			expect(row).to.deep.equal({ id: 1, name: 'test', extra: 'val' });
 		});
+
+		it('allows NOT NULL without DEFAULT on an empty table', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+
+			await db.exec(`ALTER TABLE items ADD COLUMN rank INTEGER NOT NULL`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Alice', 10)`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, name: 'Alice', rank: 10 });
+		});
+
+		it('refuses NOT NULL without DEFAULT on a non-empty table', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Alice')`);
+
+			let caught: unknown = null;
+			try {
+				await db.exec(`ALTER TABLE items ADD COLUMN rank INTEGER NOT NULL`);
+			} catch (e) {
+				caught = e;
+			}
+
+			expect(caught).to.be.instanceOf(Error);
+			const message = (caught as Error).message;
+			expect(message).to.include(`'rank'`);
+			expect(message).to.include('main.items');
+			expect(message).to.not.include('__rekey_');
+		});
+
+		it('allows NOT NULL with literal DEFAULT on a non-empty table', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Alice')`);
+
+			await db.exec(`ALTER TABLE items ADD COLUMN score INTEGER NOT NULL DEFAULT 0`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, name: 'Alice', score: 0 });
+		});
 	});
 
 	describe('DROP COLUMN', () => {
