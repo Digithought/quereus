@@ -502,9 +502,9 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 	/**
 	 * Renames a memory table's internal registration key.
-	 * Called by the ALTER TABLE RENAME TO emitter after schema update.
+	 * Called by the ALTER TABLE RENAME TO emitter before the schema catalog update.
 	 */
-	renameTable(schemaName: string, oldName: string, newName: string): void {
+	async renameTable(_db: Database, schemaName: string, oldName: string, newName: string): Promise<void> {
 		const oldKey = `${schemaName}.${oldName}`.toLowerCase();
 		const newKey = `${schemaName}.${newName}`.toLowerCase();
 		const manager = this.tables.get(oldKey);

@@ -122,6 +122,58 @@ export class LevelDBProvider implements KVStoreProvider {
 		await removeDir(storePath);
 	}
 
+	async renameTableStores(schemaName: string, oldName: string, newName: string): Promise<void> {
+		const oldDataStoreName = `${schemaName}.${oldName}`.toLowerCase();
+		const newDataStoreName = `${schemaName}.${newName}`.toLowerCase();
+
+		if (this.stores.has(newDataStoreName)) {
+			throw new Error(`Cannot rename '${oldName}' to '${newName}': store already open under the new name`);
+		}
+
+		// Close all open handles for the old table (data + indexes) so LevelDB
+		// releases its file locks before we move the directories.
+		await this.closeStoreByName(oldDataStoreName);
+
+		const oldIndexPrefix = `${schemaName}.${oldName}${STORE_SUFFIX.INDEX}`.toLowerCase();
+		const indexStoreNames: string[] = [];
+		for (const name of this.stores.keys()) {
+			if (name.startsWith(oldIndexPrefix)) indexStoreNames.push(name);
+		}
+		for (const name of indexStoreNames) {
+			await this.closeStoreByName(name);
+		}
+
+		// Move data directory, if present.
+		const schemaDir = path.join(this.basePath, schemaName);
+		const oldDataPath = path.join(schemaDir, oldName);
+		const newDataPath = path.join(schemaDir, newName);
+		if (await pathExists(oldDataPath)) {
+			if (await pathExists(newDataPath)) {
+				throw new Error(`Cannot rename '${oldName}' to '${newName}': destination path '${newDataPath}' already exists`);
+			}
+			await fs.promises.rename(oldDataPath, newDataPath);
+		}
+
+		// Move each index directory under the new table name.
+		const oldIndexDirPrefix = `${oldName}${STORE_SUFFIX.INDEX}`;
+		try {
+			const entries = await fs.promises.readdir(schemaDir);
+			for (const entry of entries) {
+				if (!entry.startsWith(oldIndexDirPrefix)) continue;
+				const indexSuffix = entry.substring(oldIndexDirPrefix.length);
+				const renamed = `${newName}${STORE_SUFFIX.INDEX}${indexSuffix}`;
+				await fs.promises.rename(
+					path.join(schemaDir, entry),
+					path.join(schemaDir, renamed),
+				);
+			}
+		} catch (e) {
+			// readdir can fail if the schema directory doesn't exist (pre-creation);
+			// that just means there's nothing to move.
+			if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+		}
+	}
+
 	async deleteTableStores(schemaName: string, tableName: string): Promise<void> {
 		// Close and remove data store directory
 		const dataStoreName = `${schemaName}.${tableName}`.toLowerCase();
@@ -188,6 +240,15 @@ export class LevelDBProvider implements KVStoreProvider {
 
 async function removeDir(dirPath: string): Promise<void> {
 	await fs.promises.rm(dirPath, { recursive: true, force: true });
+}
+
+async function pathExists(p: string): Promise<boolean> {
+	try {
+		await fs.promises.access(p);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**

@@ -192,6 +192,24 @@ export interface VirtualTableModule<
 		tableName: string,
 		change: SchemaChangeInfo,
 	): Promise<TableSchema>;
+
+	/**
+	 * Rename a table. Called by ALTER TABLE ... RENAME TO before the engine
+	 * updates the in-memory schema catalog.
+	 *
+	 * The module is responsible for re-keying any internal handles, moving
+	 * physical storage, and updating any persistent catalog entries it owns.
+	 * The engine updates the `SchemaManager` after this call returns.
+	 *
+	 * If not implemented, RENAME TO is treated as a schema-only rename; modules
+	 * that persist data keyed by the table name must implement this hook.
+	 */
+	renameTable?(
+		db: Database,
+		schemaName: string,
+		oldName: string,
+		newName: string,
+	): Promise<void>;
 }
 
 /**

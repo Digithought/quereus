@@ -76,15 +76,18 @@ async function runRenameTable(
 		name: newName,
 	};
 
+	// Let the module re-key its internal state and move any physical storage
+	// BEFORE we mutate the in-memory catalog, so a module failure leaves the
+	// catalog untouched. Modules that don't persist by table name can simply
+	// omit the hook.
+	const module = tableSchema.vtabModule;
+	if (module.renameTable) {
+		await module.renameTable(rctx.db, tableSchema.schemaName, oldName, newName);
+	}
+
 	// Remove old, add new in the catalog
 	schema.removeTable(oldName);
 	schema.addTable(updatedTableSchema);
-
-	// Update module registration if it's a MemoryTableModule
-	const module = tableSchema.vtabModule;
-	if (module instanceof MemoryTableModule) {
-		module.renameTable(tableSchema.schemaName, oldName, newName);
-	}
 
 	// Notify schema change
 	rctx.db.schemaManager.getChangeNotifier().notifyChange({

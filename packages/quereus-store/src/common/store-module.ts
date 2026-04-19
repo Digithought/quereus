@@ -37,6 +37,7 @@ import {
 	buildCatalogScanBounds,
 	buildIndexKey,
 	buildFullScanBounds,
+	buildStatsKey,
 } from './key-builder.js';
 import { deserializeRow } from './serialization.js';
 import { generateTableDDL } from '@quereus/quereus';
@@ -626,6 +627,94 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 				return updatedSchema;
 			}
 		}
+	}
+
+	/**
+	 * Rename a store-backed table.
+	 *
+	 * Drops every in-memory reference to the old name (so the coordinator, open
+	 * handles, and cached StoreTable instance don't linger with stale paths),
+	 * delegates physical storage relocation to the provider, then rewrites the
+	 * persistent catalog DDL under the new key. After this returns, the next
+	 * access to `newName` will reconnect via `connect()` and open fresh stores
+	 * against the moved directories.
+	 */
+	async renameTable(
+		db: Database,
+		schemaName: string,
+		oldName: string,
+		newName: string,
+	): Promise<void> {
+		const oldKey = `${schemaName}.${oldName}`.toLowerCase();
+		const newKey = `${schemaName}.${newName}`.toLowerCase();
+
+		if (this.tables.has(newKey)) {
+			throw new QuereusError(
+				`Store table '${newName}' already exists in schema '${schemaName}'`,
+				StatusCode.ERROR,
+			);
+		}
+
+		// Capture the current schema BEFORE we drop in-memory references, so the
+		// new catalog DDL reflects the real column set.
+		const existing = this.tables.get(oldKey);
+		const currentSchema: TableSchema | undefined =
+			existing?.getSchema() ?? db.schemaManager.getTable(schemaName, oldName);
+
+		// ALTER TABLE is effectively DDL-committing on a store-backed table:
+		// once we move the on-disk directory, prior buffered writes can no
+		// longer be rolled back through the coordinator. Flush any pending
+		// ops to the old store NOW, before its handle is closed. Subsequent
+		// commit() calls on the same coordinator are no-ops (inTransaction
+		// is cleared), which keeps the enclosing transaction safe.
+		const coordinator = this.coordinators.get(oldKey);
+		if (coordinator?.isInTransaction()) {
+			await coordinator.commit();
+		}
+
+		// Flush any lazy stats the cached handle was buffering; disconnect failures
+		// must not block the rename.
+		if (existing) {
+			try {
+				await existing.disconnect();
+			} catch {
+				/* ignore — physical rename must proceed */
+			}
+		}
+
+		this.tables.delete(oldKey);
+		this.stores.delete(oldKey);
+		this.coordinators.delete(oldKey);
+
+		// Move physical storage (data directory + index directories).
+		if (this.provider.renameTableStores) {
+			await this.provider.renameTableStores(schemaName, oldName, newName);
+		}
+
+		// Rewrite persistent catalog under the new name. Write the new DDL first
+		// so a crash mid-rename leaves the table discoverable under at least one
+		// name rather than neither.
+		if (currentSchema) {
+			const renamedSchema: TableSchema = { ...currentSchema, name: newName };
+			await this.saveTableDDL(renamedSchema);
+		}
+		await this.removeTableDDL(schemaName, oldName);
+
+		// Relocate the stats entry (unified __stats__ store, keyed by schema.table).
+		try {
+			const statsStore = await this.provider.getStatsStore(schemaName, newName);
+			const oldStatsKey = buildStatsKey(schemaName, oldName);
+			await statsStore.delete(oldStatsKey);
+		} catch {
+			/* stats are advisory — a stale entry under the old key is harmless */
+		}
+
+		this.eventEmitter?.emitSchemaChange({
+			type: 'alter',
+			objectType: 'table',
+			schemaName,
+			objectName: newName,
+		});
 	}
 
 	/**

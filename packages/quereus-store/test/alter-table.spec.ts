@@ -58,6 +58,25 @@ function createInMemoryProvider(): KVStoreProvider {
 			}
 			stores.clear();
 		},
+		async renameTableStores(schemaName: string, oldName: string, newName: string) {
+			const oldKey = `${schemaName}.${oldName}`;
+			const newKey = `${schemaName}.${newName}`;
+			const dataStore = stores.get(oldKey);
+			if (dataStore) {
+				stores.delete(oldKey);
+				stores.set(newKey, dataStore);
+			}
+			const oldIndexPrefix = `${schemaName}.${oldName}_idx_`;
+			const newIndexPrefix = `${schemaName}.${newName}_idx_`;
+			for (const key of Array.from(stores.keys())) {
+				if (key.startsWith(oldIndexPrefix)) {
+					const suffix = key.substring(oldIndexPrefix.length);
+					const store = stores.get(key)!;
+					stores.delete(key);
+					stores.set(newIndexPrefix + suffix, store);
+				}
+			}
+		},
 	};
 }
 
@@ -305,6 +324,97 @@ describe('Store ALTER TABLE', () => {
 
 			const row = await db.get('select * from items where id = 1');
 			expect(row).to.deep.equal({ id: 1, title: 'Test' });
+		});
+	});
+
+	describe('RENAME TABLE', () => {
+		it('renames a populated table and preserves data', async () => {
+			await db.exec(`
+				CREATE TABLE t_rename (
+					id INTEGER PRIMARY KEY,
+					val TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO t_rename VALUES (1, 'a'), (2, 'b')`);
+
+			await db.exec(`ALTER TABLE t_rename RENAME TO t_renamed`);
+
+			const rows = await asyncIterableToArray(db.eval('select * from t_renamed order by id'));
+			expect(rows).to.have.lengthOf(2);
+			expect(rows[0]).to.deep.equal({ id: 1, val: 'a' });
+			expect(rows[1]).to.deep.equal({ id: 2, val: 'b' });
+		});
+
+		it('allows inserts under the new name after rename', async () => {
+			await db.exec(`
+				CREATE TABLE t_rename (
+					id INTEGER PRIMARY KEY,
+					val TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO t_rename VALUES (1, 'a')`);
+
+			await db.exec(`ALTER TABLE t_rename RENAME TO t_renamed`);
+			await db.exec(`INSERT INTO t_renamed VALUES (2, 'b')`);
+
+			const rows = await asyncIterableToArray(db.eval('select * from t_renamed order by id'));
+			expect(rows).to.have.lengthOf(2);
+			expect(rows[0]).to.deep.equal({ id: 1, val: 'a' });
+			expect(rows[1]).to.deep.equal({ id: 2, val: 'b' });
+		});
+
+		it('rejects renaming the old name after rename', async () => {
+			await db.exec(`
+				CREATE TABLE t_rename (
+					id INTEGER PRIMARY KEY,
+					val TEXT
+				) USING store
+			`);
+			await db.exec(`ALTER TABLE t_rename RENAME TO t_renamed`);
+
+			let caught: unknown = null;
+			try {
+				await db.exec(`SELECT * FROM t_rename`);
+			} catch (e) {
+				caught = e;
+			}
+			expect(caught).to.be.instanceOf(Error);
+		});
+
+		it('rejects rename to an existing table', async () => {
+			await db.exec(`
+				CREATE TABLE t_a (id INTEGER PRIMARY KEY) USING store
+			`);
+			await db.exec(`
+				CREATE TABLE t_b (id INTEGER PRIMARY KEY) USING store
+			`);
+
+			let caught: unknown = null;
+			try {
+				await db.exec(`ALTER TABLE t_a RENAME TO t_b`);
+			} catch (e) {
+				caught = e;
+			}
+			expect(caught).to.be.instanceOf(Error);
+			expect((caught as Error).message).to.match(/already exists/i);
+		});
+
+		it('rewrites the persistent catalog DDL under the new name', async () => {
+			const storeModule = new StoreModule(provider);
+			db.registerModule('store_rename_ddl', storeModule);
+
+			await db.exec(`
+				CREATE TABLE t_before (
+					id INTEGER PRIMARY KEY,
+					val TEXT
+				) USING store_rename_ddl
+			`);
+			await db.exec(`ALTER TABLE t_before RENAME TO t_after`);
+
+			const ddlStatements = await storeModule.loadAllDDL();
+			expect(ddlStatements).to.have.lengthOf(1);
+			expect(ddlStatements[0].toLowerCase()).to.include('t_after');
+			expect(ddlStatements[0].toLowerCase()).to.not.include('t_before');
 		});
 	});
 
