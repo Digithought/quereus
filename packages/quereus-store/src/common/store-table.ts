@@ -16,6 +16,7 @@ import {
 	ConflictResolution,
 	QuereusError,
 	StatusCode,
+	compareSqlValues,
 	type Database,
 	type DatabaseInternal,
 	type TableSchema,
@@ -49,6 +50,11 @@ import type { EncodeOptions } from './encoding.js';
 
 /** Number of mutations before persisting statistics. */
 const STATS_FLUSH_INTERVAL = 100;
+
+/** Hex-encode a key for use as a Map/Set lookup. */
+function bytesToHex(key: Uint8Array): string {
+	return Array.from(key).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 /**
  * Configuration for a store table.
@@ -526,6 +532,15 @@ export class StoreTable extends VirtualTable {
 					}
 				}
 
+				// Enforce non-PK UNIQUE constraints
+				const ucResult = await this.checkUniqueConstraints(
+					inTransaction,
+					values,
+					[pk],
+					args.onConflict,
+				);
+				if (ucResult) return ucResult;
+
 				const oldRow = existing ? deserializeRow(existing) : null;
 				const serializedRow = serializeRow(values);
 				if (inTransaction) {
@@ -587,8 +602,46 @@ export class StoreTable extends VirtualTable {
 				const oldRowData = await store.get(oldKey);
 				const oldRow = oldRowData ? deserializeRow(oldRowData) : null;
 
+				const pkChanged = !this.keysEqual(oldPk, newPk);
+
+				// PK-change UPDATE collides like an INSERT at the new key
+				if (pkChanged) {
+					const existingAtNew = await store.get(newKey);
+					if (existingAtNew) {
+						if (args.onConflict === ConflictResolution.IGNORE) {
+							return { status: 'ok', row: undefined };
+						}
+						if (args.onConflict !== ConflictResolution.REPLACE) {
+							return {
+								status: 'constraint',
+								constraint: 'unique',
+								message: 'UNIQUE constraint failed: primary key',
+								existingRow: deserializeRow(existingAtNew),
+							};
+						}
+					}
+				}
+
+				// Enforce non-PK UNIQUE constraints. For same-PK UPDATE, only check
+				// constraints whose covered columns actually changed; pass [oldPk]
+				// (= newPk) to skip self. For PK-change UPDATE, treat as relocation:
+				// skip both old and new PK so we don't false-conflict against the
+				// row we're moving.
+				const selfPks: SqlValue[][] = pkChanged ? [oldPk, newPk] : [oldPk];
+				const shouldCheckUniques = pkChanged
+					|| (oldRow ? this.uniqueColumnsChanged(oldRow, values) : true);
+				if (shouldCheckUniques) {
+					const ucResult = await this.checkUniqueConstraints(
+						inTransaction,
+						values,
+						selfPks,
+						args.onConflict,
+					);
+					if (ucResult) return ucResult;
+				}
+
 				// Delete old key if PK changed
-				if (!this.keysEqual(oldPk, newPk)) {
+				if (pkChanged) {
 					if (inTransaction) {
 						coordinator.delete(oldKey);
 					} else {
@@ -716,6 +769,148 @@ export class StoreTable extends VirtualTable {
 			if (a[i] !== b[i]) return false;
 		}
 		return true;
+	}
+
+	/** Returns true if any column covered by a UNIQUE constraint differs between oldRow and newRow. */
+	protected uniqueColumnsChanged(oldRow: Row, newRow: Row): boolean {
+		const ucs = this.tableSchema?.uniqueConstraints;
+		if (!ucs || ucs.length === 0) return false;
+		for (const uc of ucs) {
+			for (const colIdx of uc.columns) {
+				if (compareSqlValues(oldRow[colIdx], newRow[colIdx]) !== 0) return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Enforce table-level UNIQUE constraints against the prospective newRow.
+	 * Honors `onConflict`: IGNORE returns an ok-with-undefined-row; REPLACE
+	 * deletes the conflicting row(s) and continues; otherwise returns a
+	 * constraint result. Returns null when all constraints pass.
+	 *
+	 * Rows whose PK is in `selfPks` are skipped (the row being inserted/updated).
+	 * NULL in any covered column skips that constraint (multiple NULLs are allowed
+	 * per SQL standard).
+	 *
+	 * Reads through the transaction coordinator's pending writes when active so
+	 * intra-transaction duplicates are detected.
+	 */
+	protected async checkUniqueConstraints(
+		inTransaction: boolean,
+		newRow: Row,
+		selfPks: SqlValue[][],
+		onConflict?: ConflictResolution,
+	): Promise<UpdateResult | null> {
+		const schema = this.tableSchema!;
+		const uniqueConstraints = schema.uniqueConstraints;
+		if (!uniqueConstraints || uniqueConstraints.length === 0) return null;
+
+		for (const uc of uniqueConstraints) {
+			if (uc.columns.some(idx => newRow[idx] === null)) continue;
+
+			const conflict = await this.findUniqueConflict(uc.columns, newRow, selfPks);
+			if (!conflict) continue;
+
+			if (onConflict === ConflictResolution.IGNORE) {
+				return { status: 'ok', row: undefined };
+			}
+			if (onConflict === ConflictResolution.REPLACE) {
+				await this.deleteRowAt(inTransaction, conflict.pk, conflict.row);
+				continue;
+			}
+			const colNames = uc.columns.map(i => schema.columns[i].name).join(', ');
+			return {
+				status: 'constraint',
+				constraint: 'unique',
+				message: `UNIQUE constraint failed: ${schema.name} (${colNames})`,
+				existingRow: conflict.row,
+			};
+		}
+		return null;
+	}
+
+	/**
+	 * Scan committed + pending data rows for a row matching `newRow` on
+	 * `constrainedCols` whose PK is not in `selfPks`. Returns the first match
+	 * or null.
+	 */
+	private async findUniqueConflict(
+		constrainedCols: ReadonlyArray<number>,
+		newRow: Row,
+		selfPks: SqlValue[][],
+	): Promise<{ pk: SqlValue[]; row: Row } | null> {
+		const store = await this.ensureStore();
+		const pending = this.coordinator?.isInTransaction()
+			? this.coordinator.getPendingOpsForStore(store)
+			: null;
+
+		const matches = (candidate: Row): { pk: SqlValue[]; row: Row } | null => {
+			const pk = this.extractPK(candidate);
+			for (const skip of selfPks) {
+				if (this.keysEqual(pk, skip)) return null;
+			}
+			for (const idx of constrainedCols) {
+				if (compareSqlValues(newRow[idx], candidate[idx]) !== 0) return null;
+			}
+			return { pk, row: candidate };
+		};
+
+		const seen = new Set<string>();
+		const bounds = buildFullScanBounds();
+		for await (const entry of store.iterate(bounds)) {
+			const hex = bytesToHex(entry.key);
+			seen.add(hex);
+			if (pending?.deletes.has(hex)) continue;
+			const overlay = pending?.puts.get(hex);
+			const value = overlay ? overlay.value : entry.value;
+			const found = matches(deserializeRow(value));
+			if (found) return found;
+		}
+
+		if (pending) {
+			for (const [hex, op] of pending.puts) {
+				if (seen.has(hex)) continue;
+				const found = matches(deserializeRow(op.value));
+				if (found) return found;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Fully delete the row at `pk` (data + secondary indexes + stats + delete event).
+	 * Used by REPLACE conflict resolution to evict a conflicting unique row before
+	 * the caller's insert/update proceeds.
+	 */
+	private async deleteRowAt(
+		inTransaction: boolean,
+		pk: SqlValue[],
+		oldRow: Row,
+	): Promise<void> {
+		const store = await this.ensureStore();
+		const key = buildDataKey(pk, this.encodeOptions);
+		if (inTransaction && this.coordinator) {
+			this.coordinator.delete(key);
+		} else {
+			await store.delete(key);
+		}
+		await this.updateSecondaryIndexes(inTransaction, oldRow, null, pk);
+		this.trackMutation(-1, inTransaction);
+
+		const schema = this.tableSchema!;
+		const deleteEvent = {
+			type: 'delete' as const,
+			schemaName: schema.schemaName,
+			tableName: schema.name,
+			key: pk,
+			oldRow,
+		};
+		if (inTransaction && this.coordinator) {
+			this.coordinator.queueEvent(deleteEvent);
+		} else {
+			this.eventEmitter?.emitDataChange(deleteEvent);
+		}
 	}
 
 	/**

@@ -56,8 +56,8 @@ const MEMORY_ONLY_FILES = new Set([
   '47-upsert.sqllogic',  // ON CONFLICT does not detect cross-layer conflicts (isolation-layer UNIQUE limitation)
   '83-merge-join.sqllogic',  // Asserts planner picks MergeJoin for PK equi-join; store's cost model can validly prefer HashJoin
   '101-transaction-edge-cases.sqllogic',  // ROLLBACK TO SAVEPOINT through overlay memory connection hits undefined schema in TransactionLayer
+  '102-unique-constraints.sqllogic',  // INSERT OR REPLACE conflict resolution does not flow across isolation overlay; underlying StoreTable enforces UNIQUE correctly (see store-table unique.spec.ts)
   '102-schema-catalog-edge-cases.sqllogic',  // DROP+CREATE reuse races with isolation-layer underlyingTables state (unrelated to transaction isolation)
-  '102-unique-constraints.sqllogic',  // UNIQUE constraint across overlay and underlying is not detected (isolation-layer limitation)
   '103-database-options-edge-cases.sqllogic',  // Asserts default_vtab_module='memory'; store-mode harness sets it to 'store'
   '105-vtab-memory-mutation-kills.sqllogic',  // White-box mutation tests targeting src/vtab/memory/ internals
 ]);

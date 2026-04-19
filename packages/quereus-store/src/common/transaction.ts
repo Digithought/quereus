@@ -17,6 +17,21 @@ interface PendingOp {
   value?: Uint8Array;
 }
 
+/** Hex-encode a key for use as a Map key. */
+function keyToHex(key: Uint8Array): string {
+  return Array.from(key).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * View of buffered ops targeting a specific store, with last-write-wins semantics.
+ */
+export interface PendingStoreOps {
+  /** Pending puts (key/value) for this store, keyed by hex-encoded key. */
+  puts: Map<string, { key: Uint8Array; value: Uint8Array }>;
+  /** Hex-encoded keys with a pending delete for this store. */
+  deletes: Set<string>;
+}
+
 /** Savepoint snapshot recording position in the operation/event arrays. */
 interface SavepointSnapshot {
   opIndex: number;
@@ -203,6 +218,30 @@ export class TransactionCoordinator {
   /** Get the underlying store for direct reads. */
   getStore(): KVStore {
     return this.store;
+  }
+
+  /**
+   * Snapshot pending ops targeting the given store (or the default if omitted),
+   * collapsed to last-write-wins. Used by reads that need to see
+   * intra-transaction writes (e.g. UNIQUE constraint checks).
+   */
+  getPendingOpsForStore(store?: KVStore): PendingStoreOps {
+    const target = store ?? this.store;
+    const puts = new Map<string, { key: Uint8Array; value: Uint8Array }>();
+    const deletes = new Set<string>();
+    for (const op of this.pendingOps) {
+      const opStore = op.store ?? this.store;
+      if (opStore !== target) continue;
+      const hex = keyToHex(op.key);
+      if (op.type === 'put') {
+        puts.set(hex, { key: op.key, value: op.value! });
+        deletes.delete(hex);
+      } else {
+        deletes.add(hex);
+        puts.delete(hex);
+      }
+    }
+    return { puts, deletes };
   }
 }
 
