@@ -160,6 +160,78 @@ describe('Key Encoding', () => {
         expect(cmp).to.be.lessThan(0, `Key ${i} should sort before key ${i + 1}`);
       }
     });
+
+    describe('DESC direction (per-component bit inversion)', () => {
+      it('single DESC INTEGER inverts byte order', () => {
+        const values = [1n, 2n, 3n];
+        const encoded = values.map(v =>
+          encodeCompositeKey([v], { collation: 'NOCASE' }, [true]),
+        );
+        expect(compareBytes(encoded[2], encoded[1])).to.be.lessThan(0);
+        expect(compareBytes(encoded[1], encoded[0])).to.be.lessThan(0);
+      });
+
+      it('single DESC TEXT inverts byte order', () => {
+        const values = ['apple', 'banana', 'cherry'];
+        const encoded = values.map(v =>
+          encodeCompositeKey([v], { collation: 'NOCASE' }, [true]),
+        );
+        expect(compareBytes(encoded[2], encoded[1])).to.be.lessThan(0);
+        expect(compareBytes(encoded[1], encoded[0])).to.be.lessThan(0);
+      });
+
+      it('single DESC REAL inverts byte order', () => {
+        const values = [1.5, 2.1, 3.7];
+        const encoded = values.map(v =>
+          encodeCompositeKey([v], { collation: 'NOCASE' }, [true]),
+        );
+        expect(compareBytes(encoded[2], encoded[1])).to.be.lessThan(0);
+        expect(compareBytes(encoded[1], encoded[0])).to.be.lessThan(0);
+      });
+
+      it('ASC then DESC: ASC preserved across groups, DESC within group', () => {
+        const pairs: Array<[string, bigint]> = [
+          ['a', 1n], ['a', 2n], ['a', 3n],
+          ['b', 1n], ['b', 2n], ['b', 3n],
+        ];
+        const encoded = pairs.map(p =>
+          encodeCompositeKey(p, { collation: 'NOCASE' }, [false, true]),
+        );
+        const sorted = pairs
+          .map((p, i) => ({ p, bytes: encoded[i] }))
+          .sort((a, b) => compareBytes(a.bytes, b.bytes))
+          .map(x => x.p);
+        expect(sorted).to.deep.equal([
+          ['a', 3n], ['a', 2n], ['a', 1n],
+          ['b', 3n], ['b', 2n], ['b', 1n],
+        ]);
+      });
+
+      it('DESC then ASC: primary DESC group, secondary ASC within group', () => {
+        const pairs: Array<[string, bigint]> = [
+          ['a', 1n], ['a', 2n],
+          ['b', 1n], ['b', 2n],
+        ];
+        const encoded = pairs.map(p =>
+          encodeCompositeKey(p, { collation: 'NOCASE' }, [true, false]),
+        );
+        const sorted = pairs
+          .map((p, i) => ({ p, bytes: encoded[i] }))
+          .sort((a, b) => compareBytes(a.bytes, b.bytes))
+          .map(x => x.p);
+        expect(sorted).to.deep.equal([
+          ['b', 1n], ['b', 2n],
+          ['a', 1n], ['a', 2n],
+        ]);
+      });
+
+      it('omitted directions is equivalent to all-false ASC', () => {
+        const values: Array<bigint | string | number> = [1n, 'x', 2.5];
+        const a = encodeCompositeKey(values, { collation: 'NOCASE' });
+        const b = encodeCompositeKey(values, { collation: 'NOCASE' }, [false, false, false]);
+        expect(a).to.deep.equal(b);
+      });
+    });
   });
 
   describe('CollationEncoder infrastructure', () => {

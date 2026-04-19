@@ -87,6 +87,52 @@ describe('key-builder', () => {
 			const pkOnly = buildDataKey([1]);
 			expect(key.length).to.equal(indexOnly.length + pkOnly.length);
 		});
+
+		it('applies DESC direction independently to index and pk halves', () => {
+			// Same index value, differing pk direction: the PK half should differ.
+			const noDir = buildIndexKey(['x'], [1], undefined, [false], [false]);
+			const pkDesc = buildIndexKey(['x'], [1], undefined, [false], [true]);
+			const idxDesc = buildIndexKey(['x'], [1], undefined, [true], [false]);
+			expect(noDir).to.not.deep.equal(pkDesc);
+			expect(noDir).to.not.deep.equal(idxDesc);
+			expect(pkDesc).to.not.deep.equal(idxDesc);
+		});
+	});
+
+	describe('buildDataKey with DESC direction', () => {
+		it('PK DESC reverses byte-lex order', () => {
+			const k1 = buildDataKey([1], undefined, [true]);
+			const k2 = buildDataKey([2], undefined, [true]);
+			const k3 = buildDataKey([3], undefined, [true]);
+			// 3 < 2 < 1 in bytes
+			const cmp = (a: Uint8Array, b: Uint8Array) => {
+				for (let i = 0; i < Math.min(a.length, b.length); i++) {
+					if (a[i] !== b[i]) return a[i] - b[i];
+				}
+				return a.length - b.length;
+			};
+			expect(cmp(k3, k2)).to.be.lessThan(0);
+			expect(cmp(k2, k1)).to.be.lessThan(0);
+		});
+
+		it('composite PK mixed (ASC, DESC) preserves expected ordering', () => {
+			// (category ASC, seq DESC): ('a',3) < ('a',2) < ('a',1) < ('b',3) ...
+			const keys = [
+				buildDataKey(['a', 1], undefined, [false, true]),
+				buildDataKey(['a', 2], undefined, [false, true]),
+				buildDataKey(['a', 3], undefined, [false, true]),
+				buildDataKey(['b', 1], undefined, [false, true]),
+			];
+			const cmp = (a: Uint8Array, b: Uint8Array) => {
+				for (let i = 0; i < Math.min(a.length, b.length); i++) {
+					if (a[i] !== b[i]) return a[i] - b[i];
+				}
+				return a.length - b.length;
+			};
+			expect(cmp(keys[2], keys[1])).to.be.lessThan(0);
+			expect(cmp(keys[1], keys[0])).to.be.lessThan(0);
+			expect(cmp(keys[0], keys[3])).to.be.lessThan(0);
+		});
 	});
 
 	describe('buildCatalogKey', () => {
@@ -97,10 +143,12 @@ describe('key-builder', () => {
 	});
 
 	describe('buildFullScanBounds', () => {
-		it('returns gte=empty, lt=[0xff]', () => {
+		it('returns unbounded scan (gte=empty, no lt)', () => {
+			// Must not cap at 0xff: inverted NULL type prefix (0x00 ^ 0xff = 0xff)
+			// for DESC columns would otherwise be excluded.
 			const bounds = buildFullScanBounds();
 			expect(bounds.gte).to.deep.equal(new Uint8Array(0));
-			expect(bounds.lt).to.deep.equal(new Uint8Array([0xff]));
+			expect((bounds as { lt?: Uint8Array }).lt).to.be.undefined;
 		});
 	});
 

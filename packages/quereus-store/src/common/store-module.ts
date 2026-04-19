@@ -348,6 +348,8 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		indexSchema: TableIndexSchema
 	): Promise<void> {
 		const encodeOptions = { collation: 'NOCASE' as const };
+		const pkDirections = tableSchema.primaryKeyDefinition.map(pk => !!pk.desc);
+		const indexDirections = indexSchema.columns.map(col => !!col.desc);
 
 		// Scan all data rows
 		const bounds = buildFullScanBounds();
@@ -363,7 +365,13 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 			const indexValues = indexSchema.columns.map(col => row[col.index]);
 
 			// Build and store index key
-			const indexKey = buildIndexKey(indexValues, pkValues, encodeOptions);
+			const indexKey = buildIndexKey(
+				indexValues,
+				pkValues,
+				encodeOptions,
+				indexDirections,
+				pkDirections,
+			);
 			batch.put(indexKey, new Uint8Array(0)); // Index value is empty
 		}
 

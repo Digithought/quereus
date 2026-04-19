@@ -102,6 +102,7 @@ export class StoreTable extends VirtualTable {
 	protected connection: StoreConnection | null = null;
 	protected eventEmitter?: StoreEventEmitter;
 	protected encodeOptions: EncodeOptions;
+	protected pkDirections: boolean[];
 	protected ddlSaved = false;
 
 	// Statistics tracking
@@ -125,6 +126,7 @@ export class StoreTable extends VirtualTable {
 		this.config = config;
 		this.eventEmitter = eventEmitter;
 		this.encodeOptions = { collation: config.collation || 'NOCASE' };
+		this.pkDirections = tableSchema.primaryKeyDefinition.map(pk => !!pk.desc);
 		this.ddlSaved = isConnected;
 	}
 
@@ -141,6 +143,7 @@ export class StoreTable extends VirtualTable {
 	/** Update the table schema after an ALTER TABLE operation. */
 	updateSchema(newSchema: TableSchema): void {
 		this.tableSchema = newSchema;
+		this.pkDirections = newSchema.primaryKeyDefinition.map(pk => !!pk.desc);
 	}
 
 	/**
@@ -214,10 +217,11 @@ export class StoreTable extends VirtualTable {
 		interface Pending { newKey: Uint8Array; oldKey: Uint8Array; row: Row; }
 		const pending = new Map<string, Pending>();
 
+		const newPkDirections = newPkDef.map(pk => !!pk.desc);
 		for await (const entry of store.iterate(bounds)) {
 			const row = deserializeRow(entry.value);
 			const newPkValues = newPkDef.map(pk => row[pk.index]);
-			const newKey = buildDataKey(newPkValues, this.encodeOptions);
+			const newKey = buildDataKey(newPkValues, this.encodeOptions, newPkDirections);
 			const hex = bytesToHex(newKey);
 			if (pending.has(hex)) {
 				throw new QuereusError(
@@ -429,7 +433,7 @@ export class StoreTable extends VirtualTable {
 		const pkAccess = this.analyzePKAccess(filterInfo);
 
 		if (pkAccess.type === 'point') {
-			const key = buildDataKey(pkAccess.values!, this.encodeOptions);
+			const key = buildDataKey(pkAccess.values!, this.encodeOptions, this.pkDirections);
 			const value = await store.get(key);
 			if (value) {
 				const row = deserializeRow(value);
@@ -579,7 +583,7 @@ export class StoreTable extends VirtualTable {
 				if (!values) throw new QuereusError('INSERT requires values', StatusCode.MISUSE);
 				const coerced = args.preCoerced ? values : this.coerceRow(values);
 				const pk = this.extractPK(coerced);
-				const key = buildDataKey(pk, this.encodeOptions);
+				const key = buildDataKey(pk, this.encodeOptions, this.pkDirections);
 
 				// Check for existing row (for conflict handling)
 				const existing = await store.get(key);
@@ -662,8 +666,8 @@ export class StoreTable extends VirtualTable {
 				const coerced = args.preCoerced ? values : this.coerceRow(values);
 				const oldPk = this.extractPK(oldKeyValues);
 				const newPk = this.extractPK(coerced);
-				const oldKey = buildDataKey(oldPk, this.encodeOptions);
-				const newKey = buildDataKey(newPk, this.encodeOptions);
+				const oldKey = buildDataKey(oldPk, this.encodeOptions, this.pkDirections);
+				const newKey = buildDataKey(newPk, this.encodeOptions, this.pkDirections);
 
 				// Get old row for index updates
 				const oldRowData = await store.get(oldKey);
@@ -747,7 +751,7 @@ export class StoreTable extends VirtualTable {
 			case 'delete': {
 				if (!oldKeyValues) throw new QuereusError('DELETE requires oldKeyValues', StatusCode.MISUSE);
 				const pk = this.extractPK(oldKeyValues);
-				const key = buildDataKey(pk, this.encodeOptions);
+				const key = buildDataKey(pk, this.encodeOptions, this.pkDirections);
 
 				// Get old row for index cleanup
 				const oldRowData = await store.get(key);
@@ -800,11 +804,18 @@ export class StoreTable extends VirtualTable {
 		for (const index of indexes) {
 			const indexStore = await this.ensureIndexStore(index.name);
 			const indexCols = index.columns.map(c => c.index);
+			const indexDirections = index.columns.map(c => !!c.desc);
 
 			// Remove old index entry
 			if (oldRow) {
 				const oldIndexValues = indexCols.map(i => oldRow[i]);
-				const oldIndexKey = buildIndexKey(oldIndexValues, pk, this.encodeOptions);
+				const oldIndexKey = buildIndexKey(
+					oldIndexValues,
+					pk,
+					this.encodeOptions,
+					indexDirections,
+					this.pkDirections,
+				);
 
 				if (inTransaction && this.coordinator) {
 					this.coordinator.delete(oldIndexKey, indexStore);
@@ -816,7 +827,13 @@ export class StoreTable extends VirtualTable {
 			// Add new index entry
 			if (newRow) {
 				const newIndexValues = indexCols.map(i => newRow[i]);
-				const newIndexKey = buildIndexKey(newIndexValues, pk, this.encodeOptions);
+				const newIndexKey = buildIndexKey(
+					newIndexValues,
+					pk,
+					this.encodeOptions,
+					indexDirections,
+					this.pkDirections,
+				);
 				// Index value is empty - we just need the key for lookups
 				const emptyValue = new Uint8Array(0);
 
@@ -956,7 +973,7 @@ export class StoreTable extends VirtualTable {
 		oldRow: Row,
 	): Promise<void> {
 		const store = await this.ensureStore();
-		const key = buildDataKey(pk, this.encodeOptions);
+		const key = buildDataKey(pk, this.encodeOptions, this.pkDirections);
 		if (inTransaction && this.coordinator) {
 			this.coordinator.delete(key);
 		} else {
