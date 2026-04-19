@@ -477,6 +477,92 @@ describe('Store ALTER TABLE', () => {
 		});
 	});
 
+	describe('ALTER PRIMARY KEY', () => {
+		it('re-keys an empty table', async () => {
+			await db.exec(`
+				CREATE TABLE t_pk (
+					id INTEGER PRIMARY KEY,
+					code INTEGER NOT NULL
+				) USING store
+			`);
+
+			await db.exec(`ALTER TABLE t_pk ALTER PRIMARY KEY (code)`);
+			await db.exec(`INSERT INTO t_pk VALUES (1, 100), (2, 200)`);
+
+			const row = await db.get('select id, code from t_pk where code = 100');
+			expect(row).to.deep.equal({ id: 1, code: 100 });
+		});
+
+		it('re-keys a populated table and preserves row count and data', async () => {
+			await db.exec(`
+				CREATE TABLE t_pk (
+					id INTEGER PRIMARY KEY,
+					code INTEGER NOT NULL,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO t_pk VALUES (1, 100, 'Alice'), (2, 200, 'Bob'), (3, 300, 'Charlie')`);
+
+			await db.exec(`ALTER TABLE t_pk ALTER PRIMARY KEY (code)`);
+
+			const rows = await asyncIterableToArray(db.eval('select * from t_pk order by code'));
+			expect(rows).to.have.lengthOf(3);
+			expect(rows[0]).to.deep.equal({ id: 1, code: 100, name: 'Alice' });
+			expect(rows[2]).to.deep.equal({ id: 3, code: 300, name: 'Charlie' });
+
+			// Point lookup under the new PK
+			const hit = await db.get('select id, name from t_pk where code = 200');
+			expect(hit).to.deep.equal({ id: 2, name: 'Bob' });
+		});
+
+		it('rejects a re-key that would duplicate primary keys and leaves the table unchanged', async () => {
+			await db.exec(`
+				CREATE TABLE t_pk (
+					id INTEGER PRIMARY KEY,
+					category INTEGER NOT NULL
+				) USING store
+			`);
+			await db.exec(`INSERT INTO t_pk VALUES (1, 10), (2, 10), (3, 20)`);
+
+			let caught: unknown = null;
+			try {
+				await db.exec(`ALTER TABLE t_pk ALTER PRIMARY KEY (category)`);
+			} catch (e) {
+				caught = e;
+			}
+			expect(caught).to.be.instanceOf(Error);
+
+			// Table must still be readable under the original PK, with the same row count.
+			const cnt = await db.get('select count(*) as cnt from t_pk');
+			expect(cnt).to.deep.equal({ cnt: 3 });
+
+			const row = await db.get('select * from t_pk where id = 2');
+			expect(row).to.deep.equal({ id: 2, category: 10 });
+		});
+
+		it('rebuilds secondary indexes after a re-key', async () => {
+			await db.exec(`
+				CREATE TABLE t_pk (
+					id INTEGER PRIMARY KEY,
+					code INTEGER NOT NULL,
+					label TEXT
+				) USING store
+			`);
+			await db.exec(`CREATE INDEX idx_label ON t_pk (label)`);
+			await db.exec(`INSERT INTO t_pk VALUES (1, 100, 'alpha'), (2, 200, 'beta'), (3, 300, 'gamma')`);
+
+			await db.exec(`ALTER TABLE t_pk ALTER PRIMARY KEY (code)`);
+
+			// Query that benefits from the rebuilt secondary index
+			const row = await db.get(`select id, code from t_pk where label = 'beta'`);
+			expect(row).to.deep.equal({ id: 2, code: 200 });
+
+			// Full row set still intact
+			const rows = await asyncIterableToArray(db.eval('select * from t_pk order by code'));
+			expect(rows).to.have.lengthOf(3);
+		});
+	});
+
 	describe('DDL persistence', () => {
 		it('persists updated DDL after ADD COLUMN', async () => {
 			const storeModule = new StoreModule(provider);

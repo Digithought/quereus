@@ -193,6 +193,53 @@ export class StoreTable extends VirtualTable {
 	}
 
 	/**
+	 * Re-key every stored row under a new primary-key definition.
+	 *
+	 * Two-pass: the first pass reads every row and computes the new data keys,
+	 * tracking duplicates. On collision we throw `CONSTRAINT` without touching
+	 * the store. The second pass batches deletes of displaced old keys and puts
+	 * of new (key, row) pairs. Rows whose new key matches the old key are no-ops.
+	 *
+	 * Only the data store is rewritten — secondary indexes are rebuilt by the
+	 * caller (the keys embed the PK suffix, so they must be rebuilt whenever
+	 * the PK changes).
+	 */
+	async rekeyRows(
+		newPkDef: ReadonlyArray<{ index: number; desc: boolean }>,
+	): Promise<void> {
+		const store = await this.ensureStore();
+		const bounds = buildFullScanBounds();
+
+		interface Pending { newKey: Uint8Array; oldKey: Uint8Array; row: Row; }
+		const pending = new Map<string, Pending>();
+
+		for await (const entry of store.iterate(bounds)) {
+			const row = deserializeRow(entry.value);
+			const newPkValues = newPkDef.map(pk => row[pk.index]);
+			const newKey = buildDataKey(newPkValues, this.encodeOptions);
+			const hex = bytesToHex(newKey);
+			if (pending.has(hex)) {
+				throw new QuereusError(
+					`UNIQUE constraint failed: duplicate primary key on rekey of '${this.schemaName}.${this.tableName}'`,
+					StatusCode.CONSTRAINT,
+				);
+			}
+			pending.set(hex, { newKey, oldKey: entry.key, row });
+		}
+
+		const batch = store.batch();
+		for (const { newKey, oldKey, row } of pending.values()) {
+			const oldHex = bytesToHex(oldKey);
+			const newHex = bytesToHex(newKey);
+			if (oldHex !== newHex) {
+				batch.delete(oldKey);
+				batch.put(newKey, serializeRow(row));
+			}
+		}
+		await batch.write();
+	}
+
+	/**
 	 * Migrate all stored rows from the old column layout to a new one.
 	 * The remap array maps newColumnIndex -> oldColumnIndex | -1.
 	 * -1 means the column is new (fill with defaultValue).

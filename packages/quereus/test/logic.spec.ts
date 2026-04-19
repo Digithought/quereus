@@ -48,7 +48,6 @@ const MEMORY_ONLY_FILES = new Set([
   '41-alter-table.sqllogic',  // ALTER TABLE RENAME through isolation layer does not propagate to overlay schema
   '41-fk-cross-schema.sqllogic',  // UPDATE with PK change does not tombstone old PK in overlay (isolation-layer limitation)
   '41-foreign-keys.sqllogic',  // Deferred constraint queue finds ambiguity between IsolatedConnection and overlay MemoryVirtualTableConnection
-  '41.1-alter-pk.sqllogic',  // Store module does not support in-place PK alteration (pre-existing store-alter-primary-key-unsupported)
   '41.2-alter-column.sqllogic',  // ALTER COLUMN through isolation layer loses data on overlay re-creation
   '42-returning.sqllogic',  // RETURNING with DELETE does not include rows already in overlay (isolation-layer limitation)
   '43-transition-constraints.sqllogic',  // Transition constraint row counts diverge across overlay/underlying merge

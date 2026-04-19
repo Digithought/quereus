@@ -537,11 +537,45 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 				return updatedSchema;
 			}
 
-			case 'alterPrimaryKey':
-				throw new QuereusError(
-					'Store module does not support in-place primary key alteration',
-					StatusCode.UNSUPPORTED,
-				);
+			case 'alterPrimaryKey': {
+				const newPkColumns = change.newPkColumns;
+				const updatedSchema: TableSchema = {
+					...oldSchema,
+					primaryKeyDefinition: Object.freeze(
+						newPkColumns.map(pk => ({ index: pk.index, desc: pk.desc })),
+					),
+				};
+
+				// Re-key the data store. Throws CONSTRAINT on duplicates without
+				// mutating the store, giving us all-or-nothing semantics for the
+				// validation phase.
+				await table.rekeyRows(newPkColumns);
+
+				// Secondary index keys embed the PK suffix — clear + rebuild every
+				// index against the now-rekeyed data store.
+				const dataStore = await this.getStore(tableKey, table.getConfig());
+				for (const indexSchema of oldSchema.indexes ?? []) {
+					const indexStore = await this.getIndexStore(schemaName, tableName, indexSchema.name);
+					const clearBatch = indexStore.batch();
+					for await (const entry of indexStore.iterate(buildFullScanBounds())) {
+						clearBatch.delete(entry.key);
+					}
+					await clearBatch.write();
+					await this.buildIndexEntries(dataStore, indexStore, updatedSchema, indexSchema);
+				}
+
+				table.updateSchema(updatedSchema);
+				await this.saveTableDDL(updatedSchema);
+
+				this.eventEmitter?.emitSchemaChange({
+					type: 'alter',
+					objectType: 'table',
+					schemaName,
+					objectName: tableName,
+				});
+
+				return updatedSchema;
+			}
 
 			case 'alterColumn': {
 				const colNameLower = change.columnName.toLowerCase();
