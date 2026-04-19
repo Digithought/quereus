@@ -748,16 +748,21 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 				.build();
 		}
 
-		// Check for range constraints on PK
+		// Check for range constraints on the leading PK column.
+		// The legacy access-path rule (rule-select-access-path.ts) only forwards
+		// range bounds for primaryKeyDefinition[0]; ranges on later PK columns
+		// are silently dropped if marked handled. So only claim handled=true
+		// when the range is on the first PK column.
 		const rangeOps = ['<', '<=', '>', '>='];
-		const rangeFilters = request.filters.filter(f =>
-			f.columnIndex !== undefined &&
-			pkColumns.includes(f.columnIndex) &&
-			rangeOps.includes(f.op)
-		);
+		const firstPkColumn = tableInfo.primaryKeyDefinition[0]?.index;
+		const rangeFilters = firstPkColumn !== undefined
+			? request.filters.filter(f =>
+				f.columnIndex === firstPkColumn &&
+				rangeOps.includes(f.op))
+			: [];
 
 		if (rangeFilters.length > 0) {
-			// Range scan on PK
+			// Range scan on first PK column
 			const handledFilters = request.filters.map(f =>
 				rangeFilters.some(rf => rf.columnIndex === f.columnIndex && rf.op === f.op)
 			);
