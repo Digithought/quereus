@@ -15,6 +15,8 @@
     "lint": "yarn workspaces foreach -A --exclude quereus-workspace run lint",
     "test": "yarn workspaces foreach -A --exclude quereus-workspace run test",
     "test:all": "yarn workspaces foreach -A --exclude quereus-workspace run test:all",
+    "test:store": "cd packages/quereus && yarn test:store",
+    "test:full": "yarn test && yarn test:store",
     "dep-check": "yarn workspaces foreach -A --exclude quereus-workspace run dep-check",
     "doc": "yarn workspaces foreach -A --exclude quereus-workspace run doc",
     "typecheck": "yarn workspaces foreach -A --exclude quereus-workspace run typecheck",

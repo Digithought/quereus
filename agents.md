@@ -62,7 +62,9 @@ Task workflow in `tickets/` folder (see `tickets/AGENTS.md`).
 
 ## Build & Test
 - `yarn build` runs sequentially through all packages
-- `yarn test` runs tests across all workspaces
+- `yarn test` runs tests across all workspaces — **the default for agents**; fast, memory-backed vtab
+- `yarn test:store` re-runs `packages/quereus` logic tests against the LevelDB store module (slower; exercises the store code path for ALTER, constraints, transactions, etc.)
+- `yarn test:full` runs both — **only run when diagnosing a store-specific issue or preparing a release**
 - Only `packages/quereus` has a lint script (`eslint`)
 - On Windows, lint globs must be single-quoted to avoid command line too long errors
 - Tests use Mocha + ts-node/esm for quereus, Vitest for some other packages
