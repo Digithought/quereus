@@ -427,7 +427,7 @@ export class SchemaManager {
 	 * @param ifExists If true, do not throw an error if the table does not exist.
 	 * @returns True if the table was found and dropped, false otherwise.
 	 */
-	dropTable(schemaName: string, tableName: string, ifExists: boolean = false): boolean {
+	async dropTable(schemaName: string, tableName: string, ifExists: boolean = false): Promise<boolean> {
 		const schema = this.schemas.get(schemaName.toLowerCase()); // Ensure schemaName is lowercased for lookup
 		if (!schema) {
 			if (ifExists) return false; // Schema not found, but IF EXISTS specified
@@ -500,9 +500,10 @@ export class SchemaManager {
 			}
 		}
 
-		// Process destruction asynchronously
+		// Await destruction so subsequent DDL/DML sees a clean slate
 		if (destroyPromise) {
-			void destroyPromise.then(() => log(`destroy completed for VTab %s.%s`, schemaName, tableName));
+			await destroyPromise;
+			log(`destroy completed for VTab %s.%s`, schemaName, tableName);
 		}
 
 		return removed; // True if removed from schema, false if not found and ifExists was true.

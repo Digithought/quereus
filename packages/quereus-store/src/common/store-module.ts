@@ -270,10 +270,16 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 	): Promise<void> {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 
+		// Clear internal maps synchronously before any await, so a concurrent
+		// create() cannot observe the stale table/store/coordinator across a
+		// microtask boundary mid-destroy.
 		const table = this.tables.get(tableKey);
+		this.tables.delete(tableKey);
+		this.stores.delete(tableKey);
+		this.coordinators.delete(tableKey);
+
 		if (table) {
 			await table.disconnect();
-			this.tables.delete(tableKey);
 		}
 
 		// Delete all stores for this table (data, indexes, stats)
@@ -283,9 +289,6 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 			// Fallback: just close the data store
 			await this.provider.closeStore(schemaName, tableName);
 		}
-
-		this.stores.delete(tableKey);
-		this.coordinators.delete(tableKey);
 
 		// Remove DDL from catalog
 		await this.removeTableDDL(schemaName, tableName);

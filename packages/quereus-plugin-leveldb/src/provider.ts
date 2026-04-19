@@ -231,9 +231,11 @@ export class LevelDBProvider implements KVStoreProvider {
 	private async closeStoreByName(storeName: string): Promise<void> {
 		const store = this.stores.get(storeName);
 		if (store) {
-			await store.close();
+			// Remove from maps before awaiting close, so a concurrent
+			// getOrCreateStore cannot observe a store that is about to be closed.
 			this.stores.delete(storeName);
 			this.storePaths.delete(storeName);
+			await store.close();
 		}
 	}
 }

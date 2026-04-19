@@ -83,12 +83,12 @@ Creates a secondary index from a parsed `CreateIndexStmt`:
 4. Appends the index to the table's schema
 5. Emits `table_modified` change event
 
-#### `dropTable(schemaName, tableName, ifExists?): boolean`
+#### `dropTable(schemaName, tableName, ifExists?): Promise<boolean>`
 
 Drops a table:
-1. Calls `module.destroy()` asynchronously if the module supports it
-2. Removes the table from the schema
-3. Emits `table_removed` change event
+1. Removes the table from the schema
+2. Emits `table_removed` change event
+3. Awaits `module.destroy()` if the module supports it, so callers see fully torn-down storage before the promise resolves
 
 Returns `true` if the table was removed. With `ifExists`, returns `false` silently when not found.
 
