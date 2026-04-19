@@ -1106,6 +1106,25 @@ ALTER TABLE table_name ALTER PRIMARY KEY (col_name [ASC|DESC] [, ...]);
 
 Replaces the table's primary key definition. All named columns must have a NOT NULL constraint. The empty-PK case `ALTER PRIMARY KEY ()` is permitted (the table reverts to an implicit rowid-style key). Modules that support re-keying in place handle the change directly; modules that cannot (including the built-in MemoryTable) use an automatic rebuild fallback that copies all rows into a new table with the updated PK and swaps it in place.
 
+**ALTER COLUMN**
+
+```sql
+ALTER TABLE table_name ALTER COLUMN col_name SET NOT NULL;
+ALTER TABLE table_name ALTER COLUMN col_name DROP NOT NULL;
+ALTER TABLE table_name ALTER COLUMN col_name SET DATA TYPE type_name;
+ALTER TABLE table_name ALTER COLUMN col_name SET DEFAULT expr;
+ALTER TABLE table_name ALTER COLUMN col_name DROP DEFAULT;
+```
+
+Changes a single column attribute. Each statement carries exactly one attribute; combine multiple attributes by issuing multiple statements. Restrictions:
+
+- `SET NOT NULL` scans existing rows. If any are NULL and the column has a literal DEFAULT, NULL rows are backfilled with that default; otherwise the statement fails with `CONSTRAINT`.
+- `DROP NOT NULL` is rejected on PRIMARY KEY columns.
+- `SET DATA TYPE` is a schema-only change when the new type shares the same physical representation; otherwise each row's value is re-validated and converted, failing with `MISMATCH` on any value that cannot be coerced. Rejected on PRIMARY KEY columns.
+- `SET/DROP DEFAULT` is schema-only; existing rows are not touched.
+
+The declarative schema differ (`diff schema`) detects column-attribute drift and emits the matching `ALTER COLUMN` statements in the order `SET DATA TYPE` → `SET/DROP DEFAULT` → `SET/DROP NOT NULL` so that a newly-declared DEFAULT is in place before any NOT NULL tightening relies on it for backfill.
+
 ## 3. Clauses and Subclauses
 
 ### 3.1 FROM Clause
@@ -3428,7 +3447,8 @@ alter_table_stmt   = "alter" "table" table_name
                      | add_column_stmt
                      | drop_column_stmt
                      | add_constraint_stmt
-                     | alter_pk_stmt ) ;
+                     | alter_pk_stmt
+                     | alter_column_stmt ) ;
 
 rename_table_stmt  = "rename" "to" new_table_name ;
 
@@ -3441,6 +3461,13 @@ drop_column_stmt   = "drop" [ "column" ] column_name ;
 add_constraint_stmt = "add" table_constraint ;
 
 alter_pk_stmt      = "alter" "primary" "key" "(" [ pk_col { "," pk_col } ] ")" ;
+
+alter_column_stmt  = "alter" "column" column_name
+                     ( "set" "not" "null"
+                     | "drop" "not" "null"
+                     | "set" "data" "type" type_name
+                     | "set" "default" expression
+                     | "drop" "default" ) ;
 
 pk_col             = column_name [ "asc" | "desc" ] ;
 
