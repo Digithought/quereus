@@ -36,6 +36,7 @@
     "build:plugins": "cd packages/sample-plugins && yarn build",
     "build:vscode": "cd packages/quereus-vscode && yarn build",
     "build:sync-coordinator": "cd packages/sync-coordinator && yarn build",
+    "build:babel-fish": "cd packages/quereus-babel-fish && yarn build",
     "build:ui": "cd packages/shared-ui && yarn build",
     "preview:web": "cd packages/quoomb-web && yarn preview",
     "pub:quereus": "node scripts/publish-package.js quereus",

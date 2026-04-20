@@ -23,6 +23,10 @@ const RAW_RUNTIME_STATE =
       "reference": "workspace:packages/quereus"\
     },\
     {\
+      "name": "@quereus/babel-fish",\
+      "reference": "workspace:packages/quereus-babel-fish"\
+    },\
+    {\
       "name": "@quereus/isolation",\
       "reference": "workspace:packages/quereus-isolation"\
     },\
@@ -83,6 +87,7 @@ const RAW_RUNTIME_STATE =
   "ignorePatternData": "(^(?:\\\\.yarn\\\\/sdks(?:\\\\/(?!\\\\.{1,2}(?:\\\\/|$))(?:(?:(?!(?:^|\\\\/)\\\\.{1,2}(?:\\\\/|$)).)*?)|$))$)",\
   "pnpZipBackend": "libzip",\
   "fallbackExclusionList": [\
+    ["@quereus/babel-fish", ["workspace:packages/quereus-babel-fish"]],\
     ["@quereus/isolation", ["virtual:1f4c598b0095fb5fbc4a1c8707ec22ce14c9b449f384ca29c9a81fbbc67db31160008d38e2595c35966d6a123432898761354e0f1fc287cce8cb17fdd1831fb4#workspace:packages/quereus-isolation", "workspace:packages/quereus-isolation"]],\
     ["@quereus/plugin-indexeddb", ["virtual:2e5c00a831a76b7e4ddc5f6fc6eb8e084c31ca447c4ff260e6231b955eec1a99901a0ad8bd453aa84d04bf950705ba5fe654ff54e846f9d2fe0102e55c4da0be#workspace:packages/quereus-plugin-indexeddb", "workspace:packages/quereus-plugin-indexeddb"]],\
     ["@quereus/plugin-leveldb", ["virtual:ba83685ab5cdef230c7e2e5417bc19ad0827740b0212045659aa3657d57b8f7fe1f04345473c131813e042c16e02718a4ce4e3efc828f3b1077e489f18b153e2#workspace:packages/quereus-plugin-leveldb", "virtual:dc34ccbc32d752981cd0e259a8bf97c9a1775e92dca1823887b48a6536a4a99fcdca5d0f55294cf5f0794569d28f6455a365964e6bf05ccff7f9ad35ff7f0e67#workspace:packages/quereus-plugin-leveldb", "workspace:packages/quereus-plugin-leveldb"]],\
@@ -2212,6 +2217,23 @@ const RAW_RUNTIME_STATE =
           ["@pkgjs/parseargs", "npm:0.11.0"]\
         ],\
         "linkType": "HARD"\
+      }]\
+    ]],\
+    ["@quereus/babel-fish", [\
+      ["workspace:packages/quereus-babel-fish", {\
+        "packageLocation": "./packages/quereus-babel-fish/",\
+        "packageDependencies": [\
+          ["@quereus/babel-fish", "workspace:packages/quereus-babel-fish"],\
+          ["@quereus/quereus", "workspace:packages/quereus"],\
+          ["@types/mocha", "npm:10.0.10"],\
+          ["@types/node", "npm:25.0.9"],\
+          ["chai", "npm:6.2.2"],\
+          ["mocha", "npm:11.7.5"],\
+          ["rimraf", "npm:6.1.2"],\
+          ["ts-node", "virtual:ba83685ab5cdef230c7e2e5417bc19ad0827740b0212045659aa3657d57b8f7fe1f04345473c131813e042c16e02718a4ce4e3efc828f3b1077e489f18b153e2#npm:10.9.2"],\
+          ["typescript", "patch:typescript@npm%3A5.9.3#optional!builtin<compat/typescript>::version=5.9.3&hash=5786d5"]\
+        ],\
+        "linkType": "SOFT"\
       }]\
     ]],\
     ["@quereus/isolation", [\
