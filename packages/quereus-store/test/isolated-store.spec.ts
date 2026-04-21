@@ -219,5 +219,64 @@ describe('Isolated Store Module', () => {
 
 			await db.exec('ROLLBACK');
 		});
+
+		it('supports UPDATE within transaction with read-your-own-writes', async () => {
+			// Seed committed state
+			await db.exec(`INSERT INTO users VALUES (1, 'Alice')`);
+
+			await db.exec('BEGIN');
+			await db.exec(`UPDATE users SET name = 'Alicia' WHERE id = 1`);
+
+			// In-transaction read sees the updated value (read-your-own-writes)
+			const inTxn = await db.get('SELECT * FROM users WHERE id = 1');
+			expect(inTxn?.name).to.equal('Alicia');
+
+			// committed.* sees the pre-transaction value
+			const committed = await db.get('SELECT * FROM committed.users WHERE id = 1');
+			expect(committed?.name).to.equal('Alice');
+
+			await db.exec('ROLLBACK');
+
+			// After rollback, underlying retains the original value
+			const afterRollback = await db.get('SELECT * FROM users WHERE id = 1');
+			expect(afterRollback?.name).to.equal('Alice');
+		});
+	});
+
+	describe('failed-commit rollback', () => {
+		beforeEach(async () => {
+			const isolatedModule = createIsolatedStoreModule({ provider });
+			db.registerModule('store', isolatedModule);
+			await db.exec(`
+				CREATE TABLE accounts (
+					id INTEGER PRIMARY KEY,
+					balance INTEGER
+				) USING store
+			`);
+			await db.exec(`INSERT INTO accounts VALUES (1, 100)`);
+			await db.exec(`CREATE ASSERTION positive_balance CHECK (NOT EXISTS (SELECT 1 FROM accounts WHERE balance < 0))`);
+		});
+
+		it('discards staged writes when a deferred assertion rejects the commit', async () => {
+			await db.exec('BEGIN');
+			await db.exec(`UPDATE accounts SET balance = -50 WHERE id = 1`);
+
+			// The violating row is visible within the transaction
+			const inTxn = await db.get('SELECT balance FROM accounts WHERE id = 1');
+			expect(inTxn?.balance).to.equal(-50);
+
+			// COMMIT should fail because the assertion evaluates the pending state
+			let commitError: Error | null = null;
+			try {
+				await db.exec('COMMIT');
+			} catch (err) {
+				commitError = err as Error;
+			}
+			expect(commitError, 'expected COMMIT to throw for deferred assertion violation').to.not.be.null;
+
+			// Underlying KV must retain the pre-transaction value
+			const afterFailedCommit = await db.get('SELECT balance FROM accounts WHERE id = 1');
+			expect(afterFailedCommit?.balance).to.equal(100);
+		});
 	});
 });

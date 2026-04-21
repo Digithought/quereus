@@ -1,4 +1,5 @@
 import type * as AST from '../parser/ast.js';
+import type { SqlValue } from '../common/types.js';
 
 /**
  * Represents the schema definition of a database view.
@@ -15,5 +16,6 @@ export interface ViewSchema {
 	selectAst: AST.SelectStmt;
 	/** Columns explicitly defined in CREATE VIEW (e.g., CREATE VIEW v(a,b) AS...) */
 	columns?: ReadonlyArray<string>; // Optional list of explicitly named columns
-	// Add any other relevant metadata later if needed
+	/** Arbitrary metadata tags (informational only, does not affect behavior or hashing) */
+	tags?: Readonly<Record<string, SqlValue>>;
 }

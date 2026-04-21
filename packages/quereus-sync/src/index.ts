@@ -60,6 +60,7 @@ export {
   // Transaction types
   type ChangeSet,
   // API types
+  type ApplyRejection,
   type ApplyResult,
   type ColumnVersionEntry,
   type TableSnapshot,
@@ -81,10 +82,21 @@ export {
   type SchemaChangeToApply,
   type ApplyToStoreResult,
   type ApplyToStoreCallback,
+  // Conflict resolution
+  type ConflictContext,
+  type ConflictResolution,
+  type ConflictResolver,
   // Configuration
   type SyncConfig,
   DEFAULT_SYNC_CONFIG,
 } from './sync/protocol.js';
+
+// Built-in conflict resolvers
+export {
+  lwwResolver,
+  localWinsResolver,
+  remoteWinsResolver,
+} from './sync/conflict-resolvers.js';
 
 // Sync manager
 export { type SyncManager, type SnapshotCheckpoint } from './sync/manager.js';

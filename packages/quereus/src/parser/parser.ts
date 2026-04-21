@@ -36,6 +36,13 @@ function _createLoc(startToken: Token, endToken: Token): AST.AstNode['loc'] {
 	};
 }
 
+/**
+ * IMPORTANT: Any changes to parsed syntax must also be reflected in the corresponding emitters:
+ *   - packages/quereus/src/emit/ast-stringify.ts          (AST-to-SQL string conversion)
+ *   - packages/quereus/src/schema/catalog.ts              (DDL generation for catalog/hashing)
+ *   - packages/quereus-store/src/common/ddl-generator.ts  (DDL generation for persistence)
+ * If only the parser is updated, SQL round-trips and persisted schemas will silently lose the new syntax.
+ */
 export class Parser {
 	private tokens: Token[] = [];
 	private current = 0;
@@ -2218,14 +2225,24 @@ export class Parser {
             }
 		}
 
-		// Parse mutation context definitions if present
+		// Parse trailing WITH clauses (CONTEXT, TAGS) in any order
 		let contextDefinitions: AST.MutationContextVar[] | undefined;
-		if (this.matchKeyword('WITH')) {
+		let tags: Record<string, SqlValue> | undefined;
+		while (this.matchKeyword('WITH')) {
 			if (this.matchKeyword('CONTEXT')) {
+				if (contextDefinitions) {
+					throw this.error(this.previous(), "Duplicate WITH CONTEXT clause");
+				}
 				contextDefinitions = this.parseMutationContextDefinitions();
+			} else if (this.matchKeyword('TAGS')) {
+				if (tags) {
+					throw this.error(this.previous(), "Duplicate WITH TAGS clause");
+				}
+				tags = this.parseTags();
 			} else {
-				// Not a WITH CONTEXT clause, backtrack
+				// Not a recognized WITH clause, backtrack
 				this.current--;
+				break;
 			}
 		}
 
@@ -2239,6 +2256,7 @@ export class Parser {
 			moduleName,
 			moduleArgs,
 			contextDefinitions,
+			tags,
 			loc: _createLoc(startToken, this.previous()),
 		};
 	}
@@ -2276,6 +2294,16 @@ export class Parser {
 			where = this.expression();
 		}
 
+		// Parse optional WITH TAGS
+		let tags: Record<string, SqlValue> | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('TAGS')) {
+				tags = this.parseTags();
+			} else {
+				this.current--;
+			}
+		}
+
 		return {
 			type: 'createIndex',
 			index,
@@ -2284,6 +2312,7 @@ export class Parser {
 			columns,
 			where,
 			isUnique,
+			tags,
 			loc: _createLoc(startToken, this.previous()),
 		};
 	}
@@ -2326,6 +2355,16 @@ export class Parser {
 		const selectStartToken = this.consume(TokenType.SELECT, "Expected 'SELECT' after 'AS' in CREATE VIEW.");
 		const select = this.selectStatement(selectStartToken, withClause);
 
+		// Parse optional WITH TAGS
+		let tags: Record<string, SqlValue> | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('TAGS')) {
+				tags = this.parseTags();
+			} else {
+				this.current--;
+			}
+		}
+
 		return {
 			type: 'createView',
 			view,
@@ -2333,6 +2372,7 @@ export class Parser {
 			columns,
 			select,
 			isTemporary,
+			tags,
 			loc: _createLoc(startToken, this.previous()),
 		};
 	}
@@ -2439,8 +2479,33 @@ export class Parser {
 			this.matchKeyword('COLUMN');
 			const name = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected column name after DROP COLUMN.");
 			action = { type: 'dropColumn', name };
+		} else if (this.peekKeyword('ALTER')) {
+			this.consumeKeyword('ALTER', "Expected ALTER.");
+			if (this.peekKeyword('COLUMN')) {
+				this.consumeKeyword('COLUMN', "Expected COLUMN.");
+				action = this.alterColumnAction();
+			} else {
+				this.consumeKeyword('PRIMARY', "Expected 'PRIMARY' or 'COLUMN' after ALTER.");
+				this.consumeKeyword('KEY', "Expected 'KEY' after PRIMARY.");
+				this.consume(TokenType.LPAREN, "Expected '(' after PRIMARY KEY.");
+				const columns: Array<{ name: string; direction?: 'asc' | 'desc' }> = [];
+				if (!this.check(TokenType.RPAREN)) {
+					do {
+						const colName = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected column name in PRIMARY KEY definition.");
+						let direction: 'asc' | 'desc' | undefined;
+						if (this.matchKeyword('ASC')) {
+							direction = 'asc';
+						} else if (this.matchKeyword('DESC')) {
+							direction = 'desc';
+						}
+						columns.push({ name: colName, direction });
+					} while (this.match(TokenType.COMMA));
+				}
+				this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY column list.");
+				action = { type: 'alterPrimaryKey', columns };
+			}
 		} else {
-			throw this.error(this.peek(), "Expected RENAME, ADD, or DROP after table name in ALTER TABLE.");
+			throw this.error(this.peek(), "Expected RENAME, ADD, DROP, or ALTER after table name in ALTER TABLE.");
 		}
 
 		return {
@@ -2449,6 +2514,74 @@ export class Parser {
 			action,
 			loc: _createLoc(startToken, this.previous()),
 		};
+	}
+
+	/**
+	 * Parse the body of ALTER TABLE ... ALTER COLUMN <name> <subcommand>.
+	 * Produces an 'alterColumn' action with exactly one attribute set.
+	 * Caller has already consumed ALTER COLUMN.
+	 */
+	private alterColumnAction(): AST.AlterTableAction {
+		const columnName = this.consumeIdentifier(
+			['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'],
+			"Expected column name after ALTER COLUMN.",
+		);
+
+		if (this.matchKeyword('SET')) {
+			if (this.matchKeyword('NOT')) {
+				this.consumeKeyword('NULL', "Expected 'NULL' after SET NOT.");
+				return { type: 'alterColumn', columnName, setNotNull: true };
+			}
+			if (this.matchKeyword('DATA')) {
+				this.consumeKeyword('TYPE', "Expected 'TYPE' after SET DATA.");
+				const dataType = this.parseDataTypeName();
+				return { type: 'alterColumn', columnName, setDataType: dataType };
+			}
+			if (this.matchKeyword('DEFAULT')) {
+				const expr = this.expression();
+				return { type: 'alterColumn', columnName, setDefault: expr };
+			}
+			throw this.error(this.peek(), "Expected NOT NULL, DATA TYPE, or DEFAULT after SET.");
+		}
+
+		if (this.matchKeyword('DROP')) {
+			if (this.matchKeyword('NOT')) {
+				this.consumeKeyword('NULL', "Expected 'NULL' after DROP NOT.");
+				return { type: 'alterColumn', columnName, setNotNull: false };
+			}
+			if (this.matchKeyword('DEFAULT')) {
+				return { type: 'alterColumn', columnName, setDefault: null };
+			}
+			throw this.error(this.peek(), "Expected NOT NULL or DEFAULT after DROP.");
+		}
+
+		throw this.error(this.peek(), "Expected SET or DROP after ALTER COLUMN name.");
+	}
+
+	/**
+	 * Parse a data-type name as used in column definitions. Supports optional
+	 * parameterized types like VARCHAR(40). Shared with columnDefinition().
+	 */
+	private parseDataTypeName(): string {
+		if (!this.check(TokenType.IDENTIFIER)) {
+			throw this.error(this.peek(), "Expected data type name.");
+		}
+		let dataType = this.advance().lexeme;
+		if (this.match(TokenType.LPAREN)) {
+			dataType += '(';
+			let parenLevel = 1;
+			while (parenLevel > 0 && !this.isAtEnd()) {
+				const token = this.peek();
+				if (token.type === TokenType.LPAREN) parenLevel++;
+				if (token.type === TokenType.RPAREN) parenLevel--;
+				if (parenLevel > 0) {
+					dataType += this.advance().lexeme;
+				}
+			}
+			dataType += ')';
+			this.consume(TokenType.RPAREN, "Expected ')' after type parameters.");
+		}
+		return dataType;
 	}
 
 	/**
@@ -2677,14 +2810,23 @@ export class Parser {
 			this.consume(TokenType.RPAREN, "Expected ')' after table definition.");
 		}
 
-		// Parse mutation context definitions if present (WITH CONTEXT clause)
+		// Parse trailing WITH clauses (CONTEXT, TAGS) in any order
 		let contextDefinitions: AST.MutationContextVar[] | undefined;
-		if (this.matchKeyword('WITH')) {
+		let tags: Record<string, SqlValue> | undefined;
+		while (this.matchKeyword('WITH')) {
 			if (this.matchKeyword('CONTEXT')) {
+				if (contextDefinitions) {
+					throw this.error(this.previous(), "Duplicate WITH CONTEXT clause");
+				}
 				contextDefinitions = this.parseMutationContextDefinitions();
+			} else if (this.matchKeyword('TAGS')) {
+				if (tags) {
+					throw this.error(this.previous(), "Duplicate WITH TAGS clause");
+				}
+				tags = this.parseTags();
 			} else {
-				// Not a WITH CONTEXT clause, backtrack
 				this.current--;
+				break;
 			}
 		}
 
@@ -2698,7 +2840,8 @@ export class Parser {
 			isTemporary: false,
 			moduleName,
 			moduleArgs,
-			contextDefinitions
+			contextDefinitions,
+			tags
 		};
 
 		return { type: 'declaredTable', tableStmt };
@@ -2712,13 +2855,24 @@ export class Parser {
 		const columns = this.indexedColumnList();
 		this.consume(TokenType.RPAREN, "Expected ')' after index columns.");
 
+		// Parse optional WITH TAGS
+		let tags: Record<string, SqlValue> | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('TAGS')) {
+				tags = this.parseTags();
+			} else {
+				this.current--;
+			}
+		}
+
 		const indexStmt: AST.CreateIndexStmt = {
 			type: 'createIndex',
 			index: { type: 'identifier', name: indexName },
 			table: { type: 'identifier', name: tableName },
 			ifNotExists: false,
 			columns,
-			isUnique: false
+			isUnique: false,
+			tags
 		};
 
 		return { type: 'declaredIndex', indexStmt };
@@ -2735,13 +2889,24 @@ export class Parser {
 		const selTok = this.consume(TokenType.SELECT, "Expected SELECT after AS in view declaration.");
 		const select = this.selectStatement(selTok);
 
+		// Parse optional WITH TAGS
+		let tags: Record<string, SqlValue> | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('TAGS')) {
+				tags = this.parseTags();
+			} else {
+				this.current--;
+			}
+		}
+
 		const viewStmt: AST.CreateViewStmt = {
 			type: 'createView',
 			view: { type: 'identifier', name: viewName },
 			ifNotExists: false,
 			columns,
 			select,
-			isTemporary: false
+			isTemporary: false,
+			tags
 		};
 
 		return { type: 'declaredView', viewStmt };
@@ -3081,7 +3246,17 @@ export class Parser {
 
 		const constraints = this.columnConstraintList();
 
-		return { name, dataType, constraints };
+		// Parse optional column-level WITH TAGS
+		let tags: Record<string, SqlValue> | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('TAGS')) {
+				tags = this.parseTags();
+			} else {
+				this.current--;
+			}
+		}
+
+		return { name, dataType, constraints, tags };
 	}
 
 	/** @internal Parses mutation context variable definitions: WITH CONTEXT (var type [NULL], ...) */
@@ -3163,9 +3338,10 @@ export class Parser {
 	 * @internal Parses trailing WITH clauses (WITH CONTEXT and/or WITH SCHEMA) in any order.
 	 * Returns both contextValues and schemaPath, or undefined if not present.
 	 */
-	private parseTrailingWithClauses(): { contextValues?: AST.ContextAssignment[], schemaPath?: string[] } {
+	private parseTrailingWithClauses(): { contextValues?: AST.ContextAssignment[], schemaPath?: string[], tags?: Record<string, SqlValue> } {
 		let contextValues: AST.ContextAssignment[] | undefined;
 		let schemaPath: string[] | undefined;
+		let tags: Record<string, SqlValue> | undefined;
 
 		// Keep trying to parse WITH clauses until we don't find any more
 		while (this.matchKeyword('WITH')) {
@@ -3184,14 +3360,68 @@ export class Parser {
 					schemas.push(schemaName);
 				} while (this.match(TokenType.COMMA));
 				schemaPath = schemas;
+			} else if (this.matchKeyword('TAGS')) {
+				if (tags) {
+					throw this.error(this.previous(), "Duplicate WITH TAGS clause");
+				}
+				tags = this.parseTags();
 			} else {
-				// Not a WITH CONTEXT or WITH SCHEMA clause, backtrack
+				// Not a recognized WITH clause, backtrack
 				this.current--;
 				break;
 			}
 		}
 
-		return { contextValues, schemaPath };
+		return { contextValues, schemaPath, tags };
+	}
+
+	/**
+	 * @internal Parses a tags list: (key = value, ...)
+	 * Called after the TAGS keyword has been consumed.
+	 * Keys are identifiers, values are literals (string, number, boolean via TRUE/FALSE, NULL).
+	 */
+	private parseTags(): Record<string, SqlValue> {
+		this.consume(TokenType.LPAREN, "Expected '(' after TAGS.");
+		const tags: Record<string, SqlValue> = {};
+
+		if (!this.check(TokenType.RPAREN)) {
+			do {
+				const key = this.consumeIdentifier("Expected tag key identifier.");
+				this.consume(TokenType.EQUAL, `Expected '=' after tag key '${key}'.`);
+				const value = this.parseTagValue();
+				tags[key] = value;
+			} while (this.match(TokenType.COMMA));
+		}
+
+		this.consume(TokenType.RPAREN, "Expected ')' after tag list.");
+		return tags;
+	}
+
+	/** @internal Parses a tag value: string, number, TRUE, FALSE, or NULL */
+	private parseTagValue(): SqlValue {
+		if (this.match(TokenType.STRING)) {
+			return this.previous().literal as string;
+		}
+		if (this.match(TokenType.INTEGER) || this.match(TokenType.FLOAT)) {
+			return this.previous().literal as number;
+		}
+		if (this.match(TokenType.TRUE)) {
+			return true;
+		}
+		if (this.match(TokenType.FALSE)) {
+			return false;
+		}
+		if (this.match(TokenType.NULL)) {
+			return null;
+		}
+		// Allow negative numbers
+		if (this.match(TokenType.MINUS)) {
+			if (this.match(TokenType.INTEGER) || this.match(TokenType.FLOAT)) {
+				return -(this.previous().literal as number);
+			}
+			throw this.error(this.peek(), "Expected number after '-' in tag value.");
+		}
+		throw this.error(this.peek(), "Expected tag value (string, number, true, false, or null).");
 	}
 
 	/** @internal Parses column constraints */
@@ -3228,65 +3458,58 @@ export class Parser {
 			endToken = this.previous();
 		}
 
+		let result: AST.ColumnConstraint;
+
 		if (this.match(TokenType.PRIMARY)) {
 			this.consume(TokenType.KEY, "Expected KEY after PRIMARY.");
 			const direction = this.match(TokenType.ASC) ? 'asc' : this.match(TokenType.DESC) ? 'desc' : undefined;
 			if (direction) endToken = this.previous();
 			const onConflict = this.parseConflictClause();
-			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
+			if (onConflict) endToken = this.previous();
 			if (this.check(TokenType.AUTOINCREMENT)) {
 				throw this.error(this.peek(), 'AUTOINCREMENT is not supported. Quereus uses key-based addressing without implicit side-effects.');
 			}
-			return { type: 'primaryKey', name, onConflict, direction, loc: _createLoc(startToken, endToken) };
+			result = { type: 'primaryKey', name, onConflict, direction, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.NOT)) {
 			this.consume(TokenType.NULL, "Expected NULL after NOT.");
 			endToken = this.previous();
 			const onConflict = this.parseConflictClause();
-			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
-			return { type: 'notNull', name, onConflict, loc: _createLoc(startToken, endToken) };
+			if (onConflict) endToken = this.previous();
+			result = { type: 'notNull', name, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.NULL)) {
 			endToken = this.previous();
 			const onConflict = this.parseConflictClause();
-			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
-			return { type: 'null', name, onConflict, loc: _createLoc(startToken, endToken) };
+			if (onConflict) endToken = this.previous();
+			result = { type: 'null', name, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.UNIQUE)) {
 			endToken = this.previous();
 			const onConflict = this.parseConflictClause();
-			if (onConflict) endToken = this.previous(); // Update endToken if conflict clause was parsed
-			return { type: 'unique', name, onConflict, loc: _createLoc(startToken, endToken) };
+			if (onConflict) endToken = this.previous();
+			result = { type: 'unique', name, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.CHECK)) {
-			// --- Parse optional ON clause before parentheses --- //
 			let operations: RowOp[] | undefined;
 			if (this.matchKeyword('ON')) {
 				operations = this.parseRowOpList();
 			}
-			// --- End Parse ON clause --- //
 			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
 			const expr = this.expression();
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			// No DEFERRABLE syntax supported; deferral is auto-detected by the planner
-			return {
-				type: 'check',
-				name,
-				expr,
-				operations,
-				loc: _createLoc(startToken, endToken)
-			};
+			result = { type: 'check', name, expr, operations, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.DEFAULT)) {
 			const expr = this.expression();
 			endToken = this.previous();
-			return { type: 'default', name, expr, loc: _createLoc(startToken, endToken) };
+			result = { type: 'default', name, expr, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.COLLATE)) {
 			if (!this.check(TokenType.IDENTIFIER)) {
 				throw this.error(this.peek(), "Expected collation name after COLLATE.");
 			}
 			const collation = this.getIdentifierValue(this.advance());
 			endToken = this.previous();
-			return { type: 'collate', name, collation, loc: _createLoc(startToken, endToken) };
+			result = { type: 'collate', name, collation, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.REFERENCES)) {
 			const fkClause = this.foreignKeyClause();
-			endToken = this.previous(); // End token is end of FK clause
-			return { type: 'foreignKey', name, foreignKey: fkClause, loc: _createLoc(startToken, endToken) };
+			endToken = this.previous();
+			result = { type: 'foreignKey', name, foreignKey: fkClause, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.GENERATED)) {
 			this.consume(TokenType.ALWAYS, "Expected ALWAYS after GENERATED.");
 			this.consume(TokenType.AS, "Expected AS after GENERATED ALWAYS.");
@@ -3301,10 +3524,21 @@ export class Parser {
 			} else if (this.match(TokenType.VIRTUAL)) {
 				endToken = this.previous();
 			}
-			return { type: 'generated', name, generated: { expr, stored }, loc: _createLoc(startToken, endToken) };
+			result = { type: 'generated', name, generated: { expr, stored }, loc: _createLoc(startToken, endToken) };
+		} else {
+			throw this.error(this.peek(), "Expected column constraint type (PRIMARY KEY, NOT NULL, UNIQUE, CHECK, DEFAULT, COLLATE, REFERENCES, GENERATED).");
 		}
 
-		throw this.error(this.peek(), "Expected column constraint type (PRIMARY KEY, NOT NULL, UNIQUE, CHECK, DEFAULT, COLLATE, REFERENCES, GENERATED).");
+		// Parse optional trailing WITH TAGS for the constraint
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('TAGS')) {
+				result.tags = this.parseTags();
+			} else {
+				this.current--;
+			}
+		}
+
+		return result;
 	}
 
 	/** @internal Parses a table constraint */
@@ -3317,6 +3551,8 @@ export class Parser {
 			name = this.consumeIdentifier("Expected constraint name after CONSTRAINT.");
 			endToken = this.previous();
 		}
+
+		let result: AST.TableConstraint;
 
 		if (this.match(TokenType.PRIMARY)) {
 			this.consume(TokenType.KEY, "Expected KEY after PRIMARY.");
@@ -3331,7 +3567,7 @@ export class Parser {
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after PRIMARY KEY columns.");
 			const onConflict = this.parseConflictClause();
 			if (onConflict) endToken = this.previous();
-			return { type: 'primaryKey', name, columns, onConflict, loc: _createLoc(startToken, endToken) };
+			result = { type: 'primaryKey', name, columns, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.UNIQUE)) {
 			this.consume(TokenType.LPAREN, "Expected '(' before UNIQUE columns.");
 			const columnsSimple = this.identifierList();
@@ -3339,36 +3575,38 @@ export class Parser {
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after UNIQUE columns.");
 			const onConflict = this.parseConflictClause();
 			if (onConflict) endToken = this.previous();
-			return { type: 'unique', name, columns, onConflict, loc: _createLoc(startToken, endToken) };
+			result = { type: 'unique', name, columns, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.CHECK)) {
-			// --- Parse optional ON clause before parentheses --- //
 			let operations: RowOp[] | undefined;
 			if (this.matchKeyword('ON')) {
 				operations = this.parseRowOpList();
 			}
-			// --- End Parse ON clause --- //
 			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
 			const expr = this.expression();
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			// No DEFERRABLE syntax supported; deferral is auto-detected by the planner
-			return {
-				type: 'check',
-				name,
-				expr,
-				operations,
-				loc: _createLoc(startToken, endToken)
-			};
+			result = { type: 'check', name, expr, operations, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.FOREIGN)) {
 			this.consume(TokenType.KEY, "Expected KEY after FOREIGN.");
 			this.consume(TokenType.LPAREN, "Expected '(' before FOREIGN KEY columns.");
 			const columns = this.identifierList().map(name => ({ name }));
 			this.consume(TokenType.RPAREN, "Expected ')' after FOREIGN KEY columns.");
 			const fkClause = this.foreignKeyClause();
-			endToken = this.previous(); // End token is end of FK clause
-			return { type: 'foreignKey', name, columns, foreignKey: fkClause, loc: _createLoc(startToken, endToken) };
+			endToken = this.previous();
+			result = { type: 'foreignKey', name, columns, foreignKey: fkClause, loc: _createLoc(startToken, endToken) };
+		} else {
+			throw this.error(this.peek(), "Expected table constraint type (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY).");
 		}
 
-		throw this.error(this.peek(), "Expected table constraint type (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY).");
+		// Parse optional trailing WITH TAGS for the constraint
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('TAGS')) {
+				result.tags = this.parseTags();
+			} else {
+				this.current--;
+			}
+		}
+
+		return result;
 	}
 
 	/** @internal Parses a foreign key clause (REFERENCES may already be consumed by caller) */
@@ -3455,7 +3693,7 @@ export class Parser {
 			return 'restrict';
 		} else if (this.match(TokenType.NO)) {
 			this.consume(TokenType.ACTION, "Expected ACTION after NO.");
-			return 'noAction';
+			return 'ignore';
 		}
 		throw this.error(this.peek(), "Expected foreign key action (SET NULL, SET DEFAULT, CASCADE, RESTRICT, NO ACTION).");
 	}

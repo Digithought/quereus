@@ -139,6 +139,13 @@ async function seedTable(db: Database, table: TableInfo, rowCount: number): Prom
 	}
 }
 
+async function setupSchema(db: Database, schema: SchemaInfo, rowsPerTable: number): Promise<void> {
+	await createSchema(db, schema);
+	for (const table of schema.tables) {
+		await seedTable(db, table, rowsPerTable);
+	}
+}
+
 // ============================================================================
 // Phase 2: SQL String Arbitraries
 // ============================================================================
@@ -547,24 +554,17 @@ describe('Grammar-Based SQL Fuzzing', function () {
 
 	let db: Database;
 
-	async function setupSchema(schema: SchemaInfo, rowsPerTable: number): Promise<void> {
-		await createSchema(db, schema);
-		for (const table of schema.tables) {
-			await seedTable(db, table, rowsPerTable);
-		}
-	}
-
 	it('SELECT queries do not crash', async function () {
 		await fc.assert(
 			fc.asyncProperty(
 				arbSchemaInfo,
 				fc.integer({ min: 0, max: 15 }),
-				async (schema, rowCount) => {
+				fc.integer({ min: 3, max: 10 }),
+				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sampleCount = 3 + Math.floor(Math.random() * 8); // 3-10
 						const sqls = fc.sample(arbs.select as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							await evalAndDrain(db, sql);
@@ -583,12 +583,12 @@ describe('Grammar-Based SQL Fuzzing', function () {
 			fc.asyncProperty(
 				arbSchemaInfo,
 				fc.integer({ min: 0, max: 10 }),
-				async (schema, rowCount) => {
+				fc.integer({ min: 2, max: 6 }),
+				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sampleCount = 2 + Math.floor(Math.random() * 5); // 2-6
 						const sqls = fc.sample(arbs.dml as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							await execAndDrain(db, sql);
@@ -607,13 +607,13 @@ describe('Grammar-Based SQL Fuzzing', function () {
 			fc.asyncProperty(
 				arbSchemaInfo,
 				fc.integer({ min: 1, max: 10 }),
-				async (schema, rowCount) => {
+				fc.integer({ min: 1, max: 4 }),
+				fc.integer({ min: 1, max: 4 }),
+				async (schema, rowCount, cteSampleCount, compoundSampleCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const cteSampleCount = 1 + Math.floor(Math.random() * 4); // 1-4
-						const compoundSampleCount = 1 + Math.floor(Math.random() * 4); // 1-4
 						const ctes = fc.sample(arbs.cte as fc.Arbitrary<string>, cteSampleCount);
 						const compounds = fc.sample(arbs.select as fc.Arbitrary<string>, compoundSampleCount);
 						for (const sql of [...ctes, ...compounds]) {
@@ -633,12 +633,12 @@ describe('Grammar-Based SQL Fuzzing', function () {
 			fc.asyncProperty(
 				arbSchemaInfo,
 				fc.integer({ min: 1, max: 10 }),
-				async (schema, rowCount) => {
+				fc.integer({ min: 2, max: 6 }),
+				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sampleCount = 2 + Math.floor(Math.random() * 5); // 2-6
 						const sqls = fc.sample(arbs.windowSelect as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							await evalAndDrain(db, sql);
@@ -657,12 +657,12 @@ describe('Grammar-Based SQL Fuzzing', function () {
 			fc.asyncProperty(
 				arbSchemaInfo,
 				fc.integer({ min: 0, max: 15 }),
-				async (schema, rowCount) => {
+				fc.integer({ min: 3, max: 10 }),
+				async (schema, rowCount, sampleCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
-						const sampleCount = 3 + Math.floor(Math.random() * 8); // 3-10
 						const sqls = fc.sample(arbs.statement as fc.Arbitrary<string>, sampleCount);
 						for (const sql of sqls) {
 							// Use eval for SELECT-like, exec for DML
@@ -690,7 +690,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						const arbs = buildSqlArbitraries(schema);
 						const sqls = fc.sample(arbs.select as fc.Arbitrary<string>, 5);
 						for (const sql of sqls) {
@@ -726,7 +726,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							const rows = await tryCollectRows(db, `select count(*) as cnt from ${table.name}`);
 							if (rows === null) continue;
@@ -753,7 +753,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount, limit) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							const rows = await tryCollectRows(db, `select * from ${table.name} limit ${limit}`);
 							if (rows === null) continue;
@@ -778,7 +778,7 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				async (schema, rowCount) => {
 					db = new Database();
 					try {
-						await setupSchema(schema, rowCount);
+						await setupSchema(db, schema, rowCount);
 						for (const table of schema.tables) {
 							for (const col of table.columns) {
 								const rows = await tryCollectRows(db, `select ${col.name} as v from ${table.name} order by ${col.name} asc`);
@@ -813,6 +813,537 @@ describe('Grammar-Based SQL Fuzzing', function () {
 				}
 			),
 			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+});
+
+// ============================================================================
+// Phase 4: Algebraic Identity Properties
+// ============================================================================
+
+describe('Algebraic Identities', function () {
+	this.timeout(120_000);
+
+	let db: Database;
+
+	it('COUNT(*) matches iteration count', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 0, max: 20 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(db, schema, rowCount);
+						for (const table of schema.tables) {
+							const countRows = await tryCollectRows(db, `select count(*) as cnt from ${table.name}`);
+							fc.pre(countRows !== null);
+							const cnt = countRows![0].cnt as number;
+
+							const allRows = await tryCollectRows(db, `select * from ${table.name}`);
+							fc.pre(allRows !== null);
+
+							if (cnt !== allRows!.length) {
+								throw new Error(
+									`COUNT(*) = ${cnt} but iteration yielded ${allRows!.length} rows for table ${table.name}`
+								);
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+
+	it('SELECT DISTINCT results are unique', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 1, max: 20 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(db, schema, rowCount);
+						for (const table of schema.tables) {
+							for (const col of table.columns) {
+								const rows = await tryCollectRows(
+									db,
+									`select distinct ${col.name} as v from ${table.name}`
+								);
+								if (rows === null) continue;
+								const serialized = rows.map(r => JSON.stringify(r.v));
+								const unique = new Set(serialized);
+								if (unique.size !== serialized.length) {
+									throw new Error(
+										`DISTINCT returned duplicates for ${table.name}.${col.name}: ${serialized.length} rows, ${unique.size} unique`
+									);
+								}
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+
+	it('UNION deduplicates, UNION ALL does not', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 1, max: 15 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(db, schema, rowCount);
+						for (const table of schema.tables) {
+							const col = table.columns[0].name;
+							const base = `select ${col} from ${table.name}`;
+
+							const baseRows = await tryCollectRows(db, base);
+							if (baseRows === null) continue;
+							const baseCount = baseRows.length;
+
+							// UNION ALL A, A should double the row count
+							const unionAllRows = await tryCollectRows(db, `${base} union all ${base}`);
+							if (unionAllRows === null) continue;
+							if (unionAllRows.length !== 2 * baseCount) {
+								throw new Error(
+									`UNION ALL: expected ${2 * baseCount} rows, got ${unionAllRows.length} for ${table.name}.${col}`
+								);
+							}
+
+							// UNION A, A should deduplicate, so count <= base count
+							const unionRows = await tryCollectRows(db, `${base} union ${base}`);
+							if (unionRows === null) continue;
+							if (unionRows.length > baseCount) {
+								throw new Error(
+									`UNION: expected <= ${baseCount} rows, got ${unionRows.length} for ${table.name}.${col}`
+								);
+							}
+						}
+
+						// Cross-table: UNION count <= UNION ALL count
+						if (schema.tables.length >= 2) {
+							const t1 = schema.tables[0];
+							const t2 = schema.tables[1];
+							const a = `select cast(${t1.columns[0].name} as text) as v from ${t1.name}`;
+							const b = `select cast(${t2.columns[0].name} as text) as v from ${t2.name}`;
+
+							const unionAllRows = await tryCollectRows(db, `${a} union all ${b}`);
+							const unionRows = await tryCollectRows(db, `${a} union ${b}`);
+							if (unionAllRows !== null && unionRows !== null) {
+								if (unionRows.length > unionAllRows.length) {
+									throw new Error(
+										`UNION row count (${unionRows.length}) > UNION ALL row count (${unionAllRows.length})`
+									);
+								}
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 75, endOnFailure: true }
+		);
+	});
+
+	it('EXCEPT + INTERSECT = original (as sets)', async function () {
+		// Use a schema generator that always produces 2+ tables
+		const arbMultiTableSchema: fc.Arbitrary<SchemaInfo> = fc.integer({ min: 2, max: 3 }).chain(tableCount =>
+			fc.tuple(...TABLE_NAMES.slice(0, tableCount).map(n => arbTableInfo(n)))
+				.map(tables => ({ tables: [...tables] }))
+		);
+
+		await fc.assert(
+			fc.asyncProperty(
+				arbMultiTableSchema,
+				fc.integer({ min: 1, max: 15 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(db, schema, rowCount);
+
+						const t1 = schema.tables[0];
+						const t2 = schema.tables[1];
+						const a = `select cast(${t1.columns[0].name} as text) as v from ${t1.name}`;
+						const b = `select cast(${t2.columns[0].name} as text) as v from ${t2.name}`;
+
+						// Get deduplicated A as the reference set
+						const aRows = await tryCollectRows(
+							db,
+							`select distinct cast(${t1.columns[0].name} as text) as v from ${t1.name}`
+						);
+						if (aRows === null) return; // query errored, skip
+
+						// (A except B) union (A intersect B) should equal distinct A
+						const combinedRows = await tryCollectRows(
+							db,
+							`(${a} except ${b}) union (${a} intersect ${b})`
+						);
+						if (combinedRows === null) return; // query errored, skip
+
+						const aSet = new Set(aRows.map(r => JSON.stringify(r.v)));
+						const combinedSet = new Set(combinedRows.map(r => JSON.stringify(r.v)));
+
+						if (aSet.size !== combinedSet.size) {
+							throw new Error(
+								`EXCEPT+INTERSECT set size ${combinedSet.size} != original set size ${aSet.size}`
+							);
+						}
+						for (const v of aSet) {
+							if (!combinedSet.has(v)) {
+								throw new Error(`Value ${v} in original but not in EXCEPT+INTERSECT result`);
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 75, endOnFailure: true }
+		);
+	});
+
+	it('A EXCEPT A returns zero rows', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 0, max: 15 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(db, schema, rowCount);
+						for (const table of schema.tables) {
+							const col = table.columns[0].name;
+							const q = `select ${col} from ${table.name}`;
+							const rows = await tryCollectRows(db, `${q} except ${q}`);
+							if (rows === null) continue;
+							if (rows.length !== 0) {
+								throw new Error(
+									`A EXCEPT A returned ${rows.length} rows for ${table.name}.${col}`
+								);
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+
+	it('SUM consistency: aggregate matches manual sum', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 0, max: 20 }),
+				async (schema, rowCount) => {
+					db = new Database();
+					try {
+						await setupSchema(db, schema, rowCount);
+						for (const table of schema.tables) {
+							for (const col of table.columns) {
+								if (col.type !== 'integer' && col.type !== 'real') continue;
+
+								const sumRows = await tryCollectRows(
+									db,
+									`select sum(${col.name}) as s from ${table.name}`
+								);
+								if (sumRows === null) continue;
+								const sqlSum = sumRows[0].s;
+
+								const valRows = await tryCollectRows(
+									db,
+									`select ${col.name} as v from ${table.name}`
+								);
+								if (valRows === null) continue;
+
+								// Manual sum: exclude NULLs; all-NULL yields NULL
+								const nonNulls = valRows
+									.filter(r => r.v !== null)
+									.map(r => r.v as number);
+
+								if (nonNulls.length === 0) {
+									if (sqlSum !== null) {
+										throw new Error(
+											`SUM of all NULLs should be NULL, got ${sqlSum} for ${table.name}.${col.name}`
+										);
+									}
+								} else {
+									const manualSum = nonNulls.reduce((acc, v) => acc + v, 0);
+									if (typeof sqlSum !== 'number' || Math.abs(sqlSum - manualSum) > 1e-6) {
+										throw new Error(
+											`SUM mismatch: SQL=${sqlSum}, manual=${manualSum} for ${table.name}.${col.name}`
+										);
+									}
+								}
+							}
+						}
+					} finally {
+						await db.close();
+					}
+				}
+			),
+			{ numRuns: 100, endOnFailure: true }
+		);
+	});
+});
+
+// ============================================================================
+// Phase 5: Optimizer Equivalence (Differential Testing)
+// ============================================================================
+
+describe('Optimizer Equivalence', function () {
+	this.timeout(120_000);
+
+	// Rule groups by category (rewrite rules only — safe to disable without
+	// preventing physical plan generation)
+	const PREDICATE_RULES = ['predicate-pushdown', 'filter-merge'];
+	const JOIN_REWRITE_RULES = ['join-greedy-commute', 'join-key-inference'];
+	const SUBQUERY_RULES = ['subquery-decorrelation'];
+	const CACHE_RULES = ['cte-optimization', 'in-subquery-cache', 'mutating-subquery-cache', 'scalar-cse'];
+	const DISTINCT_RULES = ['distinct-elimination'];
+
+	// All rewrite rules combined for the catch-all test
+	const ALL_REWRITE_RULES = [
+		...PREDICATE_RULES,
+		...JOIN_REWRITE_RULES,
+		...SUBQUERY_RULES,
+		...CACHE_RULES,
+		...DISTINCT_RULES,
+		'projection-pruning',
+	];
+
+	/**
+	 * Create paired databases with identical schema and data.
+	 * The restricted database has the specified rules disabled.
+	 */
+	async function createPairedDatabases(
+		schema: SchemaInfo,
+		rowCount: number,
+		disabledRuleIds: string[],
+	): Promise<[Database, Database]> {
+		const dbFull = new Database();
+		const dbRestricted = new Database();
+
+		// Disable rules on restricted DB
+		const baseTuning = dbRestricted.optimizer.tuning;
+		dbRestricted.optimizer.updateTuning({
+			...baseTuning,
+			disabledRules: new Set(disabledRuleIds),
+		});
+
+		// Create identical schemas
+		await createSchema(dbFull, schema);
+		await createSchema(dbRestricted, schema);
+
+		// Seed with identical data — verify both DBs agree on each insert
+		for (const table of schema.tables) {
+			const rows = fc.sample(arbSeedRow(table), rowCount);
+			for (const sql of rows) {
+				let fullOk = true;
+				let restrictedOk = true;
+				try { await dbFull.exec(sql); } catch (e) {
+					if (!(e instanceof QuereusError)) throw e;
+					fullOk = false;
+				}
+				try { await dbRestricted.exec(sql); } catch (e) {
+					if (!(e instanceof QuereusError)) throw e;
+					restrictedOk = false;
+				}
+				if (fullOk !== restrictedOk) {
+					throw new Error(
+						`Seeding diverged: insert ${fullOk ? 'succeeded' : 'failed'} on full but ` +
+						`${restrictedOk ? 'succeeded' : 'failed'} on restricted\nSQL: ${sql}`
+					);
+				}
+			}
+		}
+
+		return [dbFull, dbRestricted];
+	}
+
+	/**
+	 * Compare result sets order-independently. Throws on mismatch.
+	 * both-null (both errored) = OK; one-null = bug; both-non-null must match.
+	 */
+	function assertEqualResultSets(
+		full: Record<string, unknown>[] | null,
+		restricted: Record<string, unknown>[] | null,
+		sql: string,
+		ruleIds: string[],
+	): void {
+		if (full === null && restricted === null) return;
+
+		if (full === null || restricted === null) {
+			const which = full === null ? 'full (rules enabled)' : 'restricted (rules disabled)';
+			throw new Error(
+				`Only ${which} errored when disabling rules [${ruleIds.join(', ')}]\nSQL: ${sql}`
+			);
+		}
+
+		// Sort rows by JSON serialization for order-independent comparison
+		const normalize = (rows: Record<string, unknown>[]) =>
+			rows.map(r => JSON.stringify(r)).sort();
+		const s1 = normalize(full);
+		const s2 = normalize(restricted);
+
+		if (s1.length !== s2.length) {
+			throw new Error(
+				`Row count mismatch: ${s1.length} (full) vs ${s2.length} (restricted) ` +
+				`when disabling rules [${ruleIds.join(', ')}]\nSQL: ${sql}`
+			);
+		}
+		for (let i = 0; i < s1.length; i++) {
+			if (s1[i] !== s2[i]) {
+				throw new Error(
+					`Row mismatch at sorted position ${i} when disabling rules [${ruleIds.join(', ')}]\n` +
+					`Full:       ${s1[i]}\nRestricted: ${s2[i]}\nSQL: ${sql}`
+				);
+			}
+		}
+	}
+
+	/**
+	 * Run differential test: same queries on paired databases, compare results.
+	 */
+	async function runDifferentialTest(
+		schema: SchemaInfo,
+		rowCount: number,
+		disabledRuleIds: string[],
+		queryArbitrary: fc.Arbitrary<string>,
+		queryCount: number,
+	): Promise<void> {
+		const [dbFull, dbRestricted] = await createPairedDatabases(schema, rowCount, disabledRuleIds);
+		try {
+			const queries = fc.sample(queryArbitrary, queryCount);
+			for (const sql of queries) {
+				const fullResult = await tryCollectRows(dbFull, sql);
+				const restrictedResult = await tryCollectRows(dbRestricted, sql);
+				assertEqualResultSets(fullResult, restrictedResult, sql, disabledRuleIds);
+			}
+		} finally {
+			await dbFull.close();
+			await dbRestricted.close();
+		}
+	}
+
+	it('predicate pushdown rules produce identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					await runDifferentialTest(
+						schema, rowCount, PREDICATE_RULES,
+						arbs.select as fc.Arbitrary<string>, 5,
+					);
+				}
+			),
+			{ numRuns: 25, endOnFailure: true }
+		);
+	});
+
+	it('join rewrite rules produce identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					await runDifferentialTest(
+						schema, rowCount, JOIN_REWRITE_RULES,
+						arbs.select as fc.Arbitrary<string>, 5,
+					);
+				}
+			),
+			{ numRuns: 25, endOnFailure: true }
+		);
+	});
+
+	it('subquery decorrelation produces identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					await runDifferentialTest(
+						schema, rowCount, SUBQUERY_RULES,
+						arbs.select as fc.Arbitrary<string>, 5,
+					);
+				}
+			),
+			{ numRuns: 25, endOnFailure: true }
+		);
+	});
+
+	it('cache/CTE rules produce identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					const queryArb = fc.oneof(
+						arbs.cte as fc.Arbitrary<string>,
+						arbs.select as fc.Arbitrary<string>,
+					);
+					await runDifferentialTest(
+						schema, rowCount, CACHE_RULES,
+						queryArb, 5,
+					);
+				}
+			),
+			{ numRuns: 25, endOnFailure: true }
+		);
+	});
+
+	it('distinct elimination produces identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					await runDifferentialTest(
+						schema, rowCount, DISTINCT_RULES,
+						arbs.select as fc.Arbitrary<string>, 5,
+					);
+				}
+			),
+			{ numRuns: 25, endOnFailure: true }
+		);
+	});
+
+	it('all rewrite rules disabled produces identical results', async function () {
+		await fc.assert(
+			fc.asyncProperty(
+				arbSchemaInfo,
+				fc.integer({ min: 5, max: 15 }),
+				async (schema, rowCount) => {
+					const arbs = buildSqlArbitraries(schema);
+					const queryArb = fc.oneof(
+						arbs.select as fc.Arbitrary<string>,
+						arbs.cte as fc.Arbitrary<string>,
+						arbs.windowSelect as fc.Arbitrary<string>,
+					);
+					await runDifferentialTest(
+						schema, rowCount, ALL_REWRITE_RULES,
+						queryArb, 5,
+					);
+				}
+			),
+			{ numRuns: 20, endOnFailure: true }
 		);
 	});
 });

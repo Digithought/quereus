@@ -122,6 +122,9 @@ export class BaseLayer implements Layer {
 	getSecondaryIndexTree = (indexName: string): BTree<BTreeKeyForIndex, MemoryIndexEntry> | null =>
 		this.secondaryIndexes.get(indexName)?.data ?? null;
 
+	getSecondaryIndex = (indexName: string): MemoryIndex | undefined =>
+		this.secondaryIndexes.get(indexName);
+
 	public getPkExtractorsAndComparators(schema: TableSchema): {
 		primaryKeyExtractorFromRow: (row: Row) => BTreeKeyForPrimary;
 		primaryKeyComparator: (a: BTreeKeyForPrimary, b: BTreeKeyForPrimary) => number

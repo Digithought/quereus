@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Represents a JSON-compatible value structure
  *
@@ -13,4 +12,3 @@ export type JSONValue =
 	| null
 	| JSONValue[]
 	| { [key: string]: JSONValue };
-/* eslint-enable @typescript-eslint/no-explicit-any */

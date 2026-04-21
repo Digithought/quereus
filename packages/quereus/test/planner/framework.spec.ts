@@ -2,7 +2,7 @@
 import { expect } from 'chai';
 import { PlanNodeType } from '../../src/planner/nodes/plan-node-type.js';
 import { PlanNode, type PhysicalProperties, type Attribute } from '../../src/planner/nodes/plan-node.js';
-import type { BaseType, RelationType, ScalarType } from '../../src/common/datatype.js';
+import type { BaseType, ScalarType } from '../../src/common/datatype.js';
 import type { Scope } from '../../src/planner/scopes/scope.js';
 import type { OptContext } from '../../src/planner/framework/context.js';
 import { DEFAULT_TUNING, type OptimizerTuning } from '../../src/planner/optimizer-tuning.js';
@@ -178,7 +178,7 @@ describe('Planner Framework', () => {
 			const pass = createPass('conv', 'Convergence', '', 10, TraversalOrder.BottomUp);
 			let callCount = 0;
 
-			const rule = makeRule('always-match', PlanNodeType.Filter, (node, _ctx) => {
+			const rule = makeRule('always-match', PlanNodeType.Filter, (_node, _ctx) => {
 				callCount++;
 				// Return a new node every time (different identity)
 				return relNode({ nodeType: PlanNodeType.Filter });
@@ -237,7 +237,7 @@ describe('Planner Framework', () => {
 			const parent1 = relNode({ nodeType: PlanNodeType.Project, children: [shared] });
 
 			const pass = createPass('cache', 'Cache', '', 10, TraversalOrder.BottomUp);
-			const rule = makeRule('count-rule', PlanNodeType.Filter, (node, _ctx) => {
+			const rule = makeRule('count-rule', PlanNodeType.Filter, (_node, _ctx) => {
 				ruleApplyCount++;
 				return relNode({ nodeType: PlanNodeType.Filter });
 			});
@@ -255,7 +255,7 @@ describe('Planner Framework', () => {
 			const pass = createPass('inh', 'Inherit', '', 10, TraversalOrder.BottomUp);
 			let applyCount = 0;
 
-			const rule = makeRule('inherit-test', PlanNodeType.Filter, (node) => {
+			const rule = makeRule('inherit-test', PlanNodeType.Filter, (_node) => {
 				applyCount++;
 				return relNode({ nodeType: PlanNodeType.Filter });
 			});

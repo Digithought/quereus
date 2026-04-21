@@ -70,11 +70,8 @@ export {
   type DataChangeListener,
 } from './events.js';
 
-// DDL generation
-export {
-  generateTableDDL,
-  generateIndexDDL,
-} from './ddl-generator.js';
+// DDL generation (canonical implementation lives in @quereus/quereus)
+export { generateTableDDL, generateIndexDDL } from '@quereus/quereus';
 
 // Transaction support
 export {
@@ -97,7 +94,7 @@ export {
 export { StoreConnection } from './store-connection.js';
 
 // Generic store module
-export { StoreModule, type StoreModuleConfig } from './store-module.js';
+export { StoreModule, type StoreModuleConfig, type RehydrationResult, type RehydrationError } from './store-module.js';
 
 // Isolation layer utilities
 export {

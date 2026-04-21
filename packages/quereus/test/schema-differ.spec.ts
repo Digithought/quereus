@@ -75,6 +75,7 @@ describe('Schema Differ', () => {
 					tableName: 'table',
 					columnsToAdd: ['col1 TEXT'],
 					columnsToDrop: ['select'],
+					columnsToAlter: [],
 				}],
 				viewsToCreate: [],
 				viewsToDrop: [],

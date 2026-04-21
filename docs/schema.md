@@ -14,19 +14,23 @@ A named logical grouping of tables, views, functions, and assertions. Every data
 
 ### TableSchema
 
-Describes a table's structure: columns, primary key definition, CHECK constraints, associated virtual table module, indexes, and mutation context definitions. All tables are virtual tables — `vtabModule` and `vtabModuleName` are always present.
+Describes a table's structure: columns, primary key definition, CHECK constraints, associated virtual table module, indexes, and mutation context definitions. All tables are virtual tables — `vtabModule` and `vtabModuleName` are always present. Optional `tags` field holds arbitrary key-value metadata (see `WITH TAGS`).
 
 ### ColumnSchema
 
-Defines a single column: name, logical type, nullability, primary key membership, default value expression, collation, and whether the column is generated. Columns default to NOT NULL (Third Manifesto) unless `pragma default_column_nullability = 'nullable'` is set.
+Defines a single column: name, logical type, nullability, primary key membership, default value expression, collation, and whether the column is generated. Columns default to NOT NULL (Third Manifesto) unless `pragma default_column_nullability = 'nullable'` is set. Optional `tags` field holds arbitrary key-value metadata.
 
 ### IndexSchema / IndexColumnSchema
 
-Describes a secondary index by name and an ordered list of column references (by index into `TableSchema.columns`) with optional sort direction and collation.
+Describes a secondary index by name and an ordered list of column references (by index into `TableSchema.columns`) with optional sort direction and collation. Optional `tags` field holds arbitrary key-value metadata.
 
 ### RowConstraintSchema
 
-A CHECK constraint with an AST expression, an operation bitmask (insert/update/delete), and deferral settings.
+A CHECK constraint with an AST expression, an operation bitmask (insert/update/delete), and deferral settings. Optional `tags` field holds arbitrary key-value metadata.
+
+### ViewSchema
+
+Describes a view: name, schema, SQL text, and parsed SELECT AST. Optional `tags` field holds arbitrary key-value metadata.
 
 ## SchemaManager API
 
@@ -51,6 +55,8 @@ A CHECK constraint with an AST expression, an operation bitmask (insert/update/d
 | `getTable(schemaName, tableName)` | Retrieves a table from a specific schema |
 | `getView(schemaName, viewName)` | Retrieves a view definition |
 | `getSchemaItem(schemaName, itemName)` | Returns a table or view by name (views take priority on name conflict) |
+| `getTableTags(tableName, schemaName?)` | Returns metadata tags for a table, or `undefined` |
+| `setTableTags(tableName, tags, schemaName?)` | Sets metadata tags on a table (pass `{}` to clear) |
 | `findSchemasContainingTable(tableName)` | Returns all schema names containing the table — useful for error messages |
 | `findFunction(funcName, nArg)` | Finds a function by name and argument count |
 
@@ -77,12 +83,12 @@ Creates a secondary index from a parsed `CreateIndexStmt`:
 4. Appends the index to the table's schema
 5. Emits `table_modified` change event
 
-#### `dropTable(schemaName, tableName, ifExists?): boolean`
+#### `dropTable(schemaName, tableName, ifExists?): Promise<boolean>`
 
 Drops a table:
-1. Calls `module.destroy()` asynchronously if the module supports it
-2. Removes the table from the schema
-3. Emits `table_removed` change event
+1. Removes the table from the schema
+2. Emits `table_removed` change event
+3. Awaits `module.destroy()` if the module supports it, so callers see fully torn-down storage before the promise resolves
 
 Returns `true` if the table was removed. With `ifExists`, returns `false` silently when not found.
 
@@ -130,6 +136,35 @@ Imports existing schema objects without creating new storage. Used when connecti
 - `CREATE TABLE` calls `module.connect()` instead of `module.create()`
 - `CREATE INDEX` registers the index metadata without calling `module.createIndex()`
 - Schema change events are not emitted (these are existing objects)
+
+### DDL Generation
+
+Canonical `TableSchema` → DDL and `IndexSchema` → DDL generators are exported from the package entry point:
+
+```typescript
+import { generateTableDDL, generateIndexDDL } from '@quereus/quereus';
+
+const ddl = generateTableDDL(tableSchema, db?);        // CREATE TABLE ...
+const idxDdl = generateIndexDDL(indexSchema, tableSchema, db?);  // CREATE INDEX ...
+```
+
+Both generators accept an optional `Database` argument that provides session context. Their emission behavior depends on whether `db` is supplied:
+
+| Aspect | With `db` | Without `db` |
+|--------|-----------|--------------|
+| Schema qualification | Elided when it matches `db.schemaManager.getCurrentSchemaName()` | Always qualified (`"schema"."name"`) |
+| Column nullability | Only the annotation that differs from `default_column_nullability` is emitted | Every column is explicitly annotated (`NULL` or `NOT NULL`) |
+| `USING <module> (...)` | Elided when both module and args match `default_vtab_module` / `default_vtab_args` | Always emitted for any `vtabModuleName` |
+
+Use the no-`db` form when persisting DDL to storage, so the output survives re-parsing under any session's `default_column_nullability` setting. Use the with-`db` form for display or round-trip within the same session to produce more readable output.
+
+Feature coverage (both forms): `TEMP`, schema qualification, inline single-column `PRIMARY KEY`, table-level `PRIMARY KEY (...)` (including singleton `PRIMARY KEY ()`), `DEFAULT <expr>`, `USING <module>` with SQL-literal args, and `WITH TAGS (...)` at table, column, and index levels.
+
+`@quereus/store` re-exports these symbols for backward compatibility:
+
+```typescript
+import { generateTableDDL } from '@quereus/store';
+```
 
 ## Schema Path
 

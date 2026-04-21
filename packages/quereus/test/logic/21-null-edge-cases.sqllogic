@@ -56,6 +56,14 @@ select id, val from n1 order by val nulls last, id;
 select id, txt from n1 order by txt desc nulls first, id;
 → [{"id":3,"txt":null},{"id":4,"txt":null},{"id":2,"txt":"b"},{"id":1,"txt":"a"}]
 
+-- DESC with NULLS LAST moves NULLs to end
+select id, val from n1 order by val desc nulls last, id;
+→ [{"id":3,"val":30},{"id":1,"val":10},{"id":2,"val":null},{"id":4,"val":null}]
+
+-- DESC with NULLS LAST on text column
+select id, txt from n1 order by txt desc nulls last, id;
+→ [{"id":2,"txt":"b"},{"id":1,"txt":"a"},{"id":3,"txt":null},{"id":4,"txt":null}]
+
 -- =============================================================================
 -- NULL in CASE WHEN
 -- =============================================================================

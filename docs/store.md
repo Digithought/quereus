@@ -298,27 +298,28 @@ Non-BINARY collations: The module cannot provide collation-aware ordering. It re
 
 ## Schema Discovery
 
-When connecting to existing storage, the module reads DDL from the catalog store and uses `importCatalog()` to register tables without triggering creation hooks.
+When connecting to existing storage, the module reads DDL from the catalog store and imports it into the in-memory schema manager. The recommended entry point is `rehydrateCatalog()`, which handles loading, importing, and error tolerance in a single call.
 
-### Interface Extension
+### rehydrateCatalog
 
 ```typescript
-// Added to Database or SchemaManager
-async importCatalog(ddlStatements: string[]): Promise<void>
+const result = await storeModule.rehydrateCatalog(db);
+// result.tables:  string[]           — imported table names
+// result.indexes: string[]           — imported index names
+// result.errors:  RehydrationError[] — collected failures
 ```
 
-This method:
-1. Parses each DDL statement
-2. Calls `module.connect()` (not `create()`)
-3. Registers schema
-4. Skips creation hooks
+Each DDL entry is imported individually. A corrupt or unparseable entry is logged and skipped so that other tables still load. Call after `db.registerModule()` (and `db.setDefaultVtabName()` if DDL may lack a USING clause).
+
+Internally, `rehydrateCatalog()` delegates to `loadAllDDL()` (scan the catalog store) and `schemaManager.importCatalog()` (parse + connect). `loadAllDDL()` remains available as a lower-level escape hatch.
 
 ### Discovery Flow
 
 1. Module opens storage at configured path/database
-2. Scans catalog store (keys are `{schema}.{table}`, values are DDL)
-3. Calls `db.importCatalog(ddlStatements)`
-4. Tables become queryable
+2. `rehydrateCatalog(db)` scans catalog store (keys are `{schema}.{table}`, values are DDL)
+3. Each entry is imported via `schemaManager.importCatalog([ddl])`
+4. Parse failures are collected in `result.errors`; remaining tables load normally
+5. Tables become queryable
 
 ## Transaction Support
 
@@ -598,7 +599,7 @@ packages/quereus-plugin-indexeddb/     # Browser IndexedDB plugin
 
 ### Phase 5: Schema Persistence ✓
 - [x] Metadata storage (DDL strings in m:ddl:* keys)
-- [x] Schema discovery via `loadAllDDL()` + `importCatalog()`
+- [x] Schema discovery via `rehydrateCatalog()` (wraps `loadAllDDL()` + `importCatalog()` with error tolerance)
 - [x] DDL generation from TableSchema/IndexSchema
 - [x] Reactive hooks for schema changes (StoreEventEmitter)
 - [x] Lazy statistics refresh and persistence (~100 mutation batching)

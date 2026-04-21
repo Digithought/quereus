@@ -26,7 +26,7 @@ import type {
 	SchemaChangeInfo,
 	ColumnSchema,
 } from '@quereus/quereus';
-import { AccessPlanBuilder, QuereusError, StatusCode, buildColumnIndexMap, columnDefToSchema } from '@quereus/quereus';
+import { AccessPlanBuilder, QuereusError, StatusCode, buildColumnIndexMap, columnDefToSchema, inferType, validateAndParse } from '@quereus/quereus';
 
 import type { KVStore, KVStoreProvider } from './kv-store.js';
 import type { StoreEventEmitter } from './events.js';
@@ -37,9 +37,27 @@ import {
 	buildCatalogScanBounds,
 	buildIndexKey,
 	buildFullScanBounds,
+	buildStatsKey,
 } from './key-builder.js';
 import { deserializeRow } from './serialization.js';
-import { generateTableDDL } from './ddl-generator.js';
+import { generateTableDDL } from '@quereus/quereus';
+
+/**
+ * Result of catalog rehydration.
+ */
+export interface RehydrationResult {
+	tables: string[];
+	indexes: string[];
+	errors: RehydrationError[];
+}
+
+/**
+ * An error encountered while rehydrating a single DDL entry.
+ */
+export interface RehydrationError {
+	ddl: string;
+	error: Error;
+}
 
 /**
  * Configuration options for StoreModule tables.
@@ -252,10 +270,16 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 	): Promise<void> {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
 
+		// Clear internal maps synchronously before any await, so a concurrent
+		// create() cannot observe the stale table/store/coordinator across a
+		// microtask boundary mid-destroy.
 		const table = this.tables.get(tableKey);
+		this.tables.delete(tableKey);
+		this.stores.delete(tableKey);
+		this.coordinators.delete(tableKey);
+
 		if (table) {
 			await table.disconnect();
-			this.tables.delete(tableKey);
 		}
 
 		// Delete all stores for this table (data, indexes, stats)
@@ -265,9 +289,6 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 			// Fallback: just close the data store
 			await this.provider.closeStore(schemaName, tableName);
 		}
-
-		this.stores.delete(tableKey);
-		this.coordinators.delete(tableKey);
 
 		// Remove DDL from catalog
 		await this.removeTableDDL(schemaName, tableName);
@@ -327,6 +348,8 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		indexSchema: TableIndexSchema
 	): Promise<void> {
 		const encodeOptions = { collation: 'NOCASE' as const };
+		const pkDirections = tableSchema.primaryKeyDefinition.map(pk => !!pk.desc);
+		const indexDirections = indexSchema.columns.map(col => !!col.desc);
 
 		// Scan all data rows
 		const bounds = buildFullScanBounds();
@@ -342,7 +365,13 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 			const indexValues = indexSchema.columns.map(col => row[col.index]);
 
 			// Build and store index key
-			const indexKey = buildIndexKey(indexValues, pkValues, encodeOptions);
+			const indexKey = buildIndexKey(
+				indexValues,
+				pkValues,
+				encodeOptions,
+				indexDirections,
+				pkDirections,
+			);
 			batch.put(indexKey, new Uint8Array(0)); // Index value is empty
 		}
 
@@ -381,6 +410,17 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 				const defaultConstraint = change.columnDef.constraints?.find(c => c.type === 'default');
 				if (defaultConstraint && defaultConstraint.expr && defaultConstraint.expr.type === 'literal') {
 					defaultValue = (defaultConstraint.expr as { value: SqlValue }).value;
+				}
+
+				// Refuse NOT NULL without a literal DEFAULT on a non-empty table (SQLite-compatible).
+				if (newColSchema.notNull && defaultValue === null) {
+					if (await table.hasAnyRows()) {
+						throw new QuereusError(
+							`Cannot add NOT NULL column '${newColSchema.name}' to non-empty table `
+								+ `'${schemaName}.${tableName}' without a DEFAULT value`,
+							StatusCode.CONSTRAINT,
+						);
+					}
 				}
 
 				// Build updated schema: append new column
@@ -507,7 +547,219 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 
 				return updatedSchema;
 			}
+
+			case 'alterPrimaryKey': {
+				const newPkColumns = change.newPkColumns;
+				const updatedSchema: TableSchema = {
+					...oldSchema,
+					primaryKeyDefinition: Object.freeze(
+						newPkColumns.map(pk => ({ index: pk.index, desc: pk.desc })),
+					),
+				};
+
+				// Re-key the data store. Throws CONSTRAINT on duplicates without
+				// mutating the store, giving us all-or-nothing semantics for the
+				// validation phase.
+				await table.rekeyRows(newPkColumns);
+
+				// Secondary index keys embed the PK suffix — clear + rebuild every
+				// index against the now-rekeyed data store.
+				const dataStore = await this.getStore(tableKey, table.getConfig());
+				for (const indexSchema of oldSchema.indexes ?? []) {
+					const indexStore = await this.getIndexStore(schemaName, tableName, indexSchema.name);
+					const clearBatch = indexStore.batch();
+					for await (const entry of indexStore.iterate(buildFullScanBounds())) {
+						clearBatch.delete(entry.key);
+					}
+					await clearBatch.write();
+					await this.buildIndexEntries(dataStore, indexStore, updatedSchema, indexSchema);
+				}
+
+				table.updateSchema(updatedSchema);
+				await this.saveTableDDL(updatedSchema);
+
+				this.eventEmitter?.emitSchemaChange({
+					type: 'alter',
+					objectType: 'table',
+					schemaName,
+					objectName: tableName,
+				});
+
+				return updatedSchema;
+			}
+
+			case 'alterColumn': {
+				const colNameLower = change.columnName.toLowerCase();
+				const colIndex = oldSchema.columns.findIndex(c => c.name.toLowerCase() === colNameLower);
+				if (colIndex === -1) {
+					throw new QuereusError(`Column '${change.columnName}' not found.`, StatusCode.ERROR);
+				}
+				const oldCol = oldSchema.columns[colIndex];
+				let newCol: ColumnSchema = oldCol;
+
+				// Pull exactly one of the three attributes from the change.
+				if (change.setNotNull !== undefined) {
+					if (change.setNotNull === true && !oldCol.notNull) {
+						// Backfill NULLs from a literal DEFAULT, or throw.
+						let defaultLiteral: SqlValue | undefined;
+						const expr = oldCol.defaultValue;
+						if (expr && (expr as { type?: string }).type === 'literal') {
+							defaultLiteral = (expr as { value?: SqlValue }).value ?? null;
+						}
+						const nullCount = await table.rowsWithNullAtIndex(colIndex);
+						if (nullCount > 0) {
+							if (defaultLiteral === undefined || defaultLiteral === null) {
+								throw new QuereusError(
+									`column ${change.columnName} contains NULL values`,
+									StatusCode.CONSTRAINT,
+								);
+							}
+							const fill = defaultLiteral;
+							await table.mapRowsAtIndex(colIndex, (v) => v === null ? fill : v);
+						}
+						newCol = { ...oldCol, notNull: true };
+					} else if (change.setNotNull === false && oldCol.notNull) {
+						if (oldSchema.primaryKeyDefinition.some(def => def.index === colIndex)) {
+							throw new QuereusError(
+								`Cannot DROP NOT NULL on PRIMARY KEY column '${change.columnName}'`,
+								StatusCode.CONSTRAINT,
+							);
+						}
+						newCol = { ...oldCol, notNull: false };
+					} else {
+						return oldSchema; // already in desired state
+					}
+				} else if (change.setDataType !== undefined) {
+					const newLogicalType = inferType(change.setDataType);
+					if (newLogicalType.physicalType !== oldCol.logicalType.physicalType) {
+						// Physical conversion required — walk every row and attempt parse.
+						await table.mapRowsAtIndex(colIndex, (v) => {
+							if (v === null) return v;
+							try {
+								return validateAndParse(v, newLogicalType, change.columnName) as SqlValue;
+							} catch {
+								throw new QuereusError(
+									`Cannot convert value in '${change.columnName}' to ${change.setDataType}`,
+									StatusCode.MISMATCH,
+								);
+							}
+						});
+					}
+					newCol = { ...oldCol, logicalType: newLogicalType };
+				} else if (change.setDefault !== undefined) {
+					newCol = { ...oldCol, defaultValue: change.setDefault };
+				} else {
+					throw new QuereusError('ALTER COLUMN requires an attribute to change', StatusCode.INTERNAL);
+				}
+
+				const updatedColumns = oldSchema.columns.map((c, i) => i === colIndex ? newCol : c);
+				const updatedSchema: TableSchema = {
+					...oldSchema,
+					columns: Object.freeze(updatedColumns),
+					columnIndexMap: buildColumnIndexMap(updatedColumns),
+				};
+
+				table.updateSchema(updatedSchema);
+				await this.saveTableDDL(updatedSchema);
+
+				this.eventEmitter?.emitSchemaChange({
+					type: 'alter',
+					objectType: 'table',
+					schemaName,
+					objectName: tableName,
+				});
+
+				return updatedSchema;
+			}
 		}
+	}
+
+	/**
+	 * Rename a store-backed table.
+	 *
+	 * Drops every in-memory reference to the old name (so the coordinator, open
+	 * handles, and cached StoreTable instance don't linger with stale paths),
+	 * delegates physical storage relocation to the provider, then rewrites the
+	 * persistent catalog DDL under the new key. After this returns, the next
+	 * access to `newName` will reconnect via `connect()` and open fresh stores
+	 * against the moved directories.
+	 */
+	async renameTable(
+		db: Database,
+		schemaName: string,
+		oldName: string,
+		newName: string,
+	): Promise<void> {
+		const oldKey = `${schemaName}.${oldName}`.toLowerCase();
+		const newKey = `${schemaName}.${newName}`.toLowerCase();
+
+		if (this.tables.has(newKey)) {
+			throw new QuereusError(
+				`Store table '${newName}' already exists in schema '${schemaName}'`,
+				StatusCode.ERROR,
+			);
+		}
+
+		// Capture the current schema BEFORE we drop in-memory references, so the
+		// new catalog DDL reflects the real column set.
+		const existing = this.tables.get(oldKey);
+		const currentSchema: TableSchema | undefined =
+			existing?.getSchema() ?? db.schemaManager.getTable(schemaName, oldName);
+
+		// ALTER TABLE is effectively DDL-committing on a store-backed table:
+		// once we move the on-disk directory, prior buffered writes can no
+		// longer be rolled back through the coordinator. Flush any pending
+		// ops to the old store NOW, before its handle is closed. Subsequent
+		// commit() calls on the same coordinator are no-ops (inTransaction
+		// is cleared), which keeps the enclosing transaction safe.
+		const coordinator = this.coordinators.get(oldKey);
+		if (coordinator?.isInTransaction()) {
+			await coordinator.commit();
+		}
+
+		// Flush any lazy stats the cached handle was buffering; disconnect failures
+		// must not block the rename.
+		if (existing) {
+			try {
+				await existing.disconnect();
+			} catch {
+				/* ignore — physical rename must proceed */
+			}
+		}
+
+		this.tables.delete(oldKey);
+		this.stores.delete(oldKey);
+		this.coordinators.delete(oldKey);
+
+		// Move physical storage (data directory + index directories).
+		if (this.provider.renameTableStores) {
+			await this.provider.renameTableStores(schemaName, oldName, newName);
+		}
+
+		// Rewrite persistent catalog under the new name. Write the new DDL first
+		// so a crash mid-rename leaves the table discoverable under at least one
+		// name rather than neither.
+		if (currentSchema) {
+			const renamedSchema: TableSchema = { ...currentSchema, name: newName };
+			await this.saveTableDDL(renamedSchema);
+		}
+		await this.removeTableDDL(schemaName, oldName);
+
+		// Relocate the stats entry (unified __stats__ store, keyed by schema.table).
+		try {
+			const statsStore = await this.provider.getStatsStore(schemaName, newName);
+			const oldStatsKey = buildStatsKey(schemaName, oldName);
+			await statsStore.delete(oldStatsKey);
+		} catch {
+			/* stats are advisory — a stale entry under the old key is harmless */
+		}
+
+		this.eventEmitter?.emitSchemaChange({
+			type: 'alter',
+			objectType: 'table',
+			schemaName,
+			objectName: newName,
+		});
 	}
 
 	/**
@@ -541,16 +793,21 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 				.build();
 		}
 
-		// Check for range constraints on PK
+		// Check for range constraints on the leading PK column.
+		// The legacy access-path rule (rule-select-access-path.ts) only forwards
+		// range bounds for primaryKeyDefinition[0]; ranges on later PK columns
+		// are silently dropped if marked handled. So only claim handled=true
+		// when the range is on the first PK column.
 		const rangeOps = ['<', '<=', '>', '>='];
-		const rangeFilters = request.filters.filter(f =>
-			f.columnIndex !== undefined &&
-			pkColumns.includes(f.columnIndex) &&
-			rangeOps.includes(f.op)
-		);
+		const firstPkColumn = tableInfo.primaryKeyDefinition[0]?.index;
+		const rangeFilters = firstPkColumn !== undefined
+			? request.filters.filter(f =>
+				f.columnIndex === firstPkColumn &&
+				rangeOps.includes(f.op))
+			: [];
 
 		if (rangeFilters.length > 0) {
-			// Range scan on PK
+			// Range scan on first PK column
 			const handledFilters = request.filters.map(f =>
 				rangeFilters.some(rf => rf.columnIndex === f.columnIndex && rf.op === f.op)
 			);
@@ -671,6 +928,42 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		}
 
 		return ddlStatements;
+	}
+
+	/**
+	 * Rehydrate persisted catalog into the in-memory schema manager.
+	 *
+	 * Loads all DDL from the catalog store and imports each entry
+	 * individually. Parse failures are collected rather than fatal,
+	 * so a single corrupt entry does not prevent other tables from
+	 * loading.
+	 *
+	 * Call after `db.registerModule()` (and `db.setDefaultVtabName()`
+	 * if DDL may lack a USING clause).
+	 */
+	async rehydrateCatalog(db: Database): Promise<RehydrationResult> {
+		const ddlStatements = await this.loadAllDDL();
+		const result: RehydrationResult = { tables: [], indexes: [], errors: [] };
+
+		if (ddlStatements.length === 0) {
+			return result;
+		}
+
+		for (const ddl of ddlStatements) {
+			try {
+				const imported = await db.schemaManager.importCatalog([ddl]);
+				result.tables.push(...imported.tables);
+				result.indexes.push(...imported.indexes);
+			} catch (e: unknown) {
+				const error = e instanceof Error ? e : new Error(String(e));
+				console.warn(
+					`[StoreModule] Failed to rehydrate DDL entry, skipping: ${error.message}\n  DDL: ${ddl.substring(0, 120)}`
+				);
+				result.errors.push({ ddl, error });
+			}
+		}
+
+		return result;
 	}
 
 	/**

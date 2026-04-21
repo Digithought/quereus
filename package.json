@@ -1,6 +1,6 @@
 {
   "name": "quereus-workspace",
-  "version": "1.3.1",
+  "version": "2.6.0",
   "private": true,
   "packageManager": "yarn@4.12.0",
   "description": "Quereus monorepo - Pure TypeScript SQL engine with CRDT sync. No WASM, no native bindings.",
@@ -10,11 +10,14 @@
   "scripts": {
     "clean": "rimraf packages/*/dist packages/quereus-vscode/client/out packages/quereus-vscode/server/dist",
     "bump": "bumpp --recursive",
-    "release": "yarn bump && yarn pub",
+    "gh-release": "gh release create v$(node -p \"require('./package.json').version\") --generate-notes",
+    "release": "yarn bump && yarn pub && yarn gh-release",
     "build": "yarn clean && yarn build:engine && yarn build:loader && yarn build:isolation && yarn build:store && yarn build:plugin-indexeddb && yarn build:plugin-leveldb && yarn build:plugin-rn && yarn build:plugin-ns && yarn build:sync && yarn build:sync-client && yarn build:sync-coordinator && yarn build:ui && yarn build:plugins && yarn build:vscode && yarn build:cli && yarn build:web",
     "lint": "yarn workspaces foreach -A --exclude quereus-workspace run lint",
     "test": "yarn workspaces foreach -A --exclude quereus-workspace run test",
     "test:all": "yarn workspaces foreach -A --exclude quereus-workspace run test:all",
+    "test:store": "cd packages/quereus && yarn test:store",
+    "test:full": "yarn test && yarn test:store",
     "dep-check": "yarn workspaces foreach -A --exclude quereus-workspace run dep-check",
     "doc": "yarn workspaces foreach -A --exclude quereus-workspace run doc",
     "typecheck": "yarn workspaces foreach -A --exclude quereus-workspace run typecheck",

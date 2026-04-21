@@ -12,9 +12,6 @@ import {
 	compareTypedValues,
 	createTypedComparator,
 	compareWithOrderBy,
-	compareWithOrderByFast,
-	createOrderByComparator,
-	createOrderByComparatorFast,
 	SortDirection,
 	NullsOrdering,
 	isTruthy,
@@ -34,7 +31,6 @@ import {
 	isNumericValue,
 	// Type system
 	INTEGER_TYPE,
-	TEXT_TYPE,
 } from '../src/index.js';
 
 describe('Public API Exports', () => {

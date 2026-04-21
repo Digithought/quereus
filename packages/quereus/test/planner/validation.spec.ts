@@ -97,30 +97,6 @@ function relNode(opts: {
 	});
 }
 
-/** Create a scalar mock node */
-function scalarNode(opts: {
-	nodeType?: PlanNodeType;
-	children?: PlanNode[];
-	physical?: Partial<PhysicalProperties>;
-} = {}): MockPlanNode {
-	return new MockPlanNode({
-		...opts,
-		type: INT_TYPE,
-	});
-}
-
-/** Create a void mock node (DDL-like) */
-function voidNode(opts: {
-	nodeType?: PlanNodeType;
-	children?: PlanNode[];
-	physical?: Partial<PhysicalProperties>;
-} = {}): MockPlanNode {
-	return new MockPlanNode({
-		...opts,
-		type: { typeClass: 'void' },
-	});
-}
-
 function makeAttr(id: number, name = `col_${id}`, sourceRelation = 'test.t'): Attribute {
 	return { id, name, type: INT_TYPE, sourceRelation, relationName: 't' };
 }

@@ -3,8 +3,7 @@
  */
 
 import { expect } from 'chai';
-import { generateTableDDL, generateIndexDDL } from '../src/common/ddl-generator.js';
-import { INTEGER_TYPE, TEXT_TYPE, REAL_TYPE } from '@quereus/quereus';
+import { generateTableDDL, generateIndexDDL, INTEGER_TYPE, TEXT_TYPE, REAL_TYPE } from '@quereus/quereus';
 import type { TableSchema, TableIndexSchema, ColumnSchema } from '@quereus/quereus';
 
 /** Helper to build a minimal TableSchema for testing. */
@@ -52,8 +51,24 @@ describe('DDL generator', () => {
 			const ddl = generateTableDDL(schema);
 			expect(ddl).to.include('CREATE TABLE');
 			expect(ddl).to.include('"users"');
-			expect(ddl).to.include('"id" INTEGER PRIMARY KEY');
-			expect(ddl).to.include('"name" TEXT');
+			// Without a db context the generator annotates nullability explicitly.
+			expect(ddl).to.include('"id" INTEGER NOT NULL PRIMARY KEY');
+			expect(ddl).to.include('"name" TEXT NOT NULL');
+		});
+
+		it('generates singleton PRIMARY KEY () for empty PK definition', () => {
+			const schema = makeTableSchema({
+				name: 'settings',
+				columns: [
+					makeColumn('name', TEXT_TYPE, { notNull: false }),
+					makeColumn('val', TEXT_TYPE, { notNull: false }),
+				],
+				primaryKeyDefinition: [],
+			});
+			const ddl = generateTableDDL(schema);
+			expect(ddl).to.include('PRIMARY KEY ()');
+			// No column-level PK annotation should leak in.
+			expect(ddl).not.to.match(/\bPRIMARY KEY\b(?!\s*\()/);
 		});
 
 		it('generates composite PK as table constraint', () => {
@@ -110,6 +125,79 @@ describe('DDL generator', () => {
 			const ddl = generateTableDDL(schema);
 			expect(ddl).to.include('"notes" TEXT NULL');
 		});
+
+		it('emits table-level WITH TAGS', () => {
+			const schema = makeTableSchema({
+				name: 'tagged',
+				columns: [makeColumn('id', INTEGER_TYPE, { primaryKey: true })],
+				primaryKeyDefinition: [{ index: 0 }],
+				tags: { display_name: 'Tagged Table', audit: true },
+			});
+			const ddl = generateTableDDL(schema);
+			expect(ddl).to.include('WITH TAGS');
+			expect(ddl).to.include("display_name = 'Tagged Table'");
+			expect(ddl).to.include('audit = TRUE');
+		});
+
+		it('emits column-level WITH TAGS', () => {
+			const schema = makeTableSchema({
+				name: 'col_tagged',
+				columns: [
+					makeColumn('id', INTEGER_TYPE, { primaryKey: true }),
+					makeColumn('name', TEXT_TYPE, { tags: { display_name: 'Name', searchable: true } }),
+				],
+				primaryKeyDefinition: [{ index: 0 }],
+			});
+			const ddl = generateTableDDL(schema);
+			expect(ddl).to.include('"name" TEXT NOT NULL WITH TAGS');
+			expect(ddl).to.include("display_name = 'Name'");
+		});
+
+		it('quotes tag keys that are reserved words', () => {
+			const schema = makeTableSchema({
+				name: 'reserved_tags',
+				columns: [makeColumn('id', INTEGER_TYPE)],
+				tags: { select: 'yes', order: 42 },
+			});
+			const ddl = generateTableDDL(schema);
+			expect(ddl).to.include('"select"');
+			expect(ddl).to.include('"order"');
+		});
+
+		it('does not emit WITH TAGS when tags are empty', () => {
+			const schema = makeTableSchema({
+				name: 'no_tags',
+				columns: [makeColumn('id', INTEGER_TYPE, { tags: {} })],
+				tags: {},
+			});
+			const ddl = generateTableDDL(schema);
+			expect(ddl).not.to.include('WITH TAGS');
+		});
+
+		it('without db context: always qualifies, annotates, and emits USING with custom args', () => {
+			const schema = makeTableSchema({
+				name: 'events',
+				schemaName: 'audit',
+				columns: [
+					makeColumn('id', INTEGER_TYPE, { primaryKey: true, pkOrder: 0 }),
+					makeColumn('note', TEXT_TYPE, { notNull: false }),
+				],
+				primaryKeyDefinition: [{ index: 0 }],
+				vtabModuleName: 'store',
+				vtabArgs: { collation: 'NOCASE', cache_size: 100 },
+			});
+			const ddl = generateTableDDL(schema);
+			// Schema qualification even for a module that might be the session default.
+			expect(ddl).to.include('"audit"."events"');
+			// Every column's nullability is explicit.
+			expect(ddl).to.include('"id" INTEGER NOT NULL PRIMARY KEY');
+			expect(ddl).to.include('"note" TEXT NULL');
+			// USING emitted unconditionally when no db is available.
+			expect(ddl).to.include('USING store');
+			// Args emitted as SQL literals (strings quoted, numbers bare) - not JSON.
+			expect(ddl).to.include("collation = 'NOCASE'");
+			expect(ddl).to.include('cache_size = 100');
+		});
 	});
 
 	describe('generateIndexDDL', () => {
@@ -126,7 +214,8 @@ describe('DDL generator', () => {
 			const idx: TableIndexSchema = { name: 'idx_email', columns: [{ index: 1 }] };
 			const ddl = generateIndexDDL(idx, tableSchema);
 			expect(ddl).to.include('CREATE INDEX "idx_email"');
-			expect(ddl).to.include('ON "users"');
+			// Without a db context, the generator qualifies the table name unconditionally.
+			expect(ddl).to.include('ON "main"."users"');
 			expect(ddl).to.include('"email"');
 		});
 
@@ -151,6 +240,18 @@ describe('DDL generator', () => {
 			const idx: TableIndexSchema = { name: 'idx_email', columns: [{ index: 0 }] };
 			const ddl = generateIndexDDL(idx, schemaQualified);
 			expect(ddl).to.include('"auth"."users"');
+		});
+
+		it('emits index-level WITH TAGS', () => {
+			const idx: TableIndexSchema = {
+				name: 'idx_email',
+				columns: [{ index: 1 }],
+				tags: { label: 'email index', priority: 1 },
+			};
+			const ddl = generateIndexDDL(idx, tableSchema);
+			expect(ddl).to.include('WITH TAGS');
+			expect(ddl).to.include("label = 'email index'");
+			expect(ddl).to.include('priority = 1');
 		});
 	});
 });

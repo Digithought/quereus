@@ -385,6 +385,41 @@ export class SchemaManager {
 	}
 
 	/**
+	 * Gets metadata tags for a table.
+	 *
+	 * @param tableName The table name
+	 * @param schemaName Optional schema name (defaults to current schema)
+	 * @returns The tags record or undefined if no tags are set
+	 */
+	getTableTags(tableName: string, schemaName?: string): Readonly<Record<string, SqlValue>> | undefined {
+		const targetSchemaName = schemaName ?? this.getCurrentSchemaName();
+		const tableSchema = this.getTable(targetSchemaName, tableName);
+		return tableSchema?.tags;
+	}
+
+	/**
+	 * Sets metadata tags on an existing table, replacing any existing tags.
+	 *
+	 * @param tableName The table name
+	 * @param tags The tags to set (pass empty object to clear)
+	 * @param schemaName Optional schema name (defaults to current schema)
+	 */
+	setTableTags(tableName: string, tags: Record<string, SqlValue>, schemaName?: string): void {
+		const targetSchemaName = schemaName ?? this.getCurrentSchemaName();
+		const tableSchema = this.getTable(targetSchemaName, tableName);
+		if (!tableSchema) {
+			throw new QuereusError(`Table '${tableName}' not found in schema '${targetSchemaName}'`, StatusCode.NOTFOUND);
+		}
+		const hasTags = Object.keys(tags).length > 0;
+		const updatedSchema: TableSchema = {
+			...tableSchema,
+			tags: hasTags ? Object.freeze({ ...tags }) : undefined,
+		};
+		const schema = this.getSchemaOrFail(targetSchemaName);
+		schema.addTable(updatedSchema);
+	}
+
+	/**
 	 * Drops a table from the specified schema
 	 *
 	 * @param schemaName The name of the schema
@@ -392,7 +427,7 @@ export class SchemaManager {
 	 * @param ifExists If true, do not throw an error if the table does not exist.
 	 * @returns True if the table was found and dropped, false otherwise.
 	 */
-	dropTable(schemaName: string, tableName: string, ifExists: boolean = false): boolean {
+	async dropTable(schemaName: string, tableName: string, ifExists: boolean = false): Promise<boolean> {
 		const schema = this.schemas.get(schemaName.toLowerCase()); // Ensure schemaName is lowercased for lookup
 		if (!schema) {
 			if (ifExists) return false; // Schema not found, but IF EXISTS specified
@@ -465,9 +500,10 @@ export class SchemaManager {
 			}
 		}
 
-		// Process destruction asynchronously
+		// Await destruction so subsequent DDL/DML sees a clean slate
 		if (destroyPromise) {
-			void destroyPromise.then(() => log(`destroy completed for VTab %s.%s`, schemaName, tableName));
+			await destroyPromise;
+			log(`destroy completed for VTab %s.%s`, schemaName, tableName);
 		}
 
 		return removed; // True if removed from schema, false if not found and ifExists was true.
@@ -604,7 +640,8 @@ export class SchemaManager {
 						expr: con.expr,
 						operations: opsToMask(con.operations),
 						deferrable: con.deferrable,
-						initiallyDeferred: con.initiallyDeferred
+						initiallyDeferred: con.initiallyDeferred,
+						tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 					});
 				}
 			}
@@ -617,7 +654,8 @@ export class SchemaManager {
 					expr: con.expr,
 					operations: opsToMask(con.operations),
 					deferrable: con.deferrable,
-					initiallyDeferred: con.initiallyDeferred
+					initiallyDeferred: con.initiallyDeferred,
+					tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 				});
 			}
 		}
@@ -658,9 +696,10 @@ export class SchemaManager {
 						referencedSchema: schemaName,
 						referencedColumns: Object.freeze([]), // resolved at enforcement time
 						referencedColumnNames: fk.columns, // deferred resolution via resolveReferencedColumns
-						onDelete: fk.onDelete ?? 'noAction',
-						onUpdate: fk.onUpdate ?? 'noAction',
+						onDelete: fk.onDelete ?? 'ignore',
+						onUpdate: fk.onUpdate ?? 'ignore',
 						deferred: fk.initiallyDeferred ?? false,
+						tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 					});
 				}
 			}
@@ -685,9 +724,10 @@ export class SchemaManager {
 					referencedSchema: schemaName,
 					referencedColumns: Object.freeze([]), // resolved at enforcement time
 					referencedColumnNames: fk.columns, // deferred resolution via resolveReferencedColumns
-					onDelete: fk.onDelete ?? 'noAction',
-					onUpdate: fk.onUpdate ?? 'noAction',
+					onDelete: fk.onDelete ?? 'ignore',
+					onUpdate: fk.onUpdate ?? 'ignore',
 					deferred: fk.initiallyDeferred ?? false,
+					tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 				});
 			}
 		}
@@ -715,6 +755,7 @@ export class SchemaManager {
 						result.push({
 							name: con.name,
 							columns: Object.freeze([colIndex]),
+							tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 						});
 					}
 				}
@@ -734,6 +775,7 @@ export class SchemaManager {
 				result.push({
 					name: con.name,
 					columns: Object.freeze(colIndices),
+					tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 				});
 			}
 		}
@@ -785,6 +827,7 @@ export class SchemaManager {
 			vtabAuxData: moduleInfo.auxData,
 			estimatedRows: 0,
 			mutationContext: mutationContextSchemas ? Object.freeze(mutationContextSchemas) : undefined,
+			tags: stmt.tags && Object.keys(stmt.tags).length > 0 ? Object.freeze({ ...stmt.tags }) : undefined,
 		};
 	}
 
@@ -965,6 +1008,7 @@ export class SchemaManager {
 		return {
 			name: indexName,
 			columns: Object.freeze(indexColumns),
+			tags: stmt.tags && Object.keys(stmt.tags).length > 0 ? Object.freeze({ ...stmt.tags }) : undefined,
 		};
 	}
 
@@ -1264,6 +1308,7 @@ export class SchemaManager {
 		const indexSchema: IndexSchema = {
 			name: indexName,
 			columns: Object.freeze(indexColumns),
+			tags: stmt.tags && Object.keys(stmt.tags).length > 0 ? Object.freeze({ ...stmt.tags }) : undefined,
 		};
 
 		// Add index to table without calling module.createIndex()

@@ -1,40 +1,38 @@
-# Golden Plan Tests
+# Plan Tests
 
-This directory contains golden plan tests that capture expected query plan structures for regression testing.
+This directory contains two kinds of optimizer regression tests: **golden-plan tests** (snapshot-based) and **plan-shape tests** (assertion-based).
 
-## File Structure
+Run all plan tests:
+```bash
+yarn test:plans
+```
+
+## Golden Plan Tests
+
+Capture exact plan structures as JSON snapshots for regression testing.
 
 Each test consists of three files:
 - `{test-name}.sql` - The SQL query to test
 - `{test-name}.logical.json` - Expected logical plan structure
 - `{test-name}.physical.json` - Expected physical plan structure after optimization
 
-## Test Runner
-
-Run all golden plan tests:
-```bash
-yarn test:plans
-```
-
-Update golden files when plans change:
+Update golden files when plans intentionally change:
 ```bash
 UPDATE_PLANS=true yarn test:plans
 ```
 
-## Adding New Tests
+Tests are organized in subdirectories by query pattern (`basic/`, `joins/`, `aggregates/`, etc.).
 
-1. Create a `.sql` file with your test query
-2. Run with `UPDATE_PLANS=true` to generate initial golden files
-3. Review the generated plans to ensure they're correct
-4. Commit all three files
+## Plan-Shape Tests
 
-## Test Categories
+Assert that the optimizer picks expected physical operators (join type, aggregate strategy, index access, etc.) without pinning the full plan tree. Each `*.spec.ts` file covers one optimizer category:
 
-Tests are organized by query pattern:
-- `basic/` - Simple SELECT queries
-- `joins/` - Various join types and patterns
-- `aggregates/` - GROUP BY and aggregate functions
-- `subqueries/` - Correlated and uncorrelated subqueries
-- `window/` - Window function queries
-- `cte/` - Common Table Expressions
-- `complex/` - Multi-table, complex queries 
+- **predicate-pushdown** — FILTER placement relative to JOINs and projections; PK pushdown through views
+- **join-selection** — HashJoin for equi-joins on non-ordered keys; MergeJoin/HashJoin for PK-to-PK; generic JOIN for cross joins
+- **aggregate-strategy** — StreamAggregate for pre-sorted/scalar; HashAggregate for unsorted GROUP BY
+- **subquery-decorrelation** — EXISTS/IN/NOT EXISTS decorrelation into joins
+- **cte-materialization** — Single-ref inlining; multi-ref CTE references; RECURSIVECTE node
+- **constant-folding** — Literal arithmetic/predicate/VALUES folding; deterministic function folding
+- **index-selection** — IndexSeek/IndexScan for equality/range on indexed columns; SeqScan fallback
+
+Shared test helpers live in `_helpers.ts`.

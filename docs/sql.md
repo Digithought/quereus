@@ -219,6 +219,8 @@ select [distinct | all] select_expr [, select_expr ...]
 - `except`: Rows in left not in right (set semantics)
 - `diff`: Symmetric difference = (A except B) union (B except A) (set semantics)
 
+> **Note:** Chained set operations are right-associative: `A except B union C` evaluates as `A except (B union C)`, not `(A except B) union C`. Use CTEs or subqueries to force left-to-right evaluation when needed.
+
 **Examples:**
 ```sql
 -- Basic select with where clause
@@ -773,11 +775,12 @@ create [temp | temporary] table [if not exists] table_name (
   [, table_constraint...]
 )
 [using module_name [(module_args...)]]
+[with tags (key = value [, ...])]
 ```
 
 **Column Definition:**
 ```sql
-column_name [data_type] [column_constraint...]
+column_name [data_type] [column_constraint...] [with tags (key = value [, ...])]
 ```
 
 **Column Constraints:**
@@ -791,6 +794,7 @@ column_name [data_type] [column_constraint...]
 | collate collation_name
 | references foreign_table [(column[,...])] [ref_actions]
 | generated always as (expr) [stored | virtual] }
+[with tags (key = value [, ...])]
 ```
 
 **Table Constraints:**
@@ -800,6 +804,7 @@ column_name [data_type] [column_constraint...]
 | unique (column[,...]) [conflict_clause]
 | check [on {insert | update | delete}[,...]] (expr)
 | foreign key (column[,...]) references foreign_table [(column[,...])] [ref_actions] }
+[with tags (key = value [, ...])]
 ```
 
 **Conflict Clause:**
@@ -1015,6 +1020,42 @@ where user_id = 42;  -- Passes: requester_id matches
 - Combine with user-defined functions for custom verification logic
 - Context is required when defaults or constraints reference context variables
 
+### 2.6.3 Metadata Tags
+
+Quereus supports arbitrary key-value metadata tags on schema objects via `WITH TAGS`. Tags are informational only -- the engine does not derive behavior from them. They do not affect schema hashing.
+
+**Syntax:**
+```sql
+-- Table-level tags
+create table Orders (
+  id integer primary key,
+  name text not null
+) with tags (display_name = 'Customer Orders', audit = true);
+
+-- Column-level tags
+create table Products (
+  id integer primary key with tags (display_name = 'Product ID'),
+  name text not null with tags (searchable = true)
+);
+
+-- Constraint-level tags
+create table Employees (
+  id integer primary key,
+  email text not null,
+  constraint uq_email unique (email) with tags (error_message = 'Email must be unique')
+);
+
+-- View and index tags
+create view ActiveUsers as select * from Users where active = 1
+  with tags (cacheable = true);
+
+create index idx_name on Products (name) with tags (purpose = 'search optimization');
+```
+
+Tag values can be strings, numbers, booleans (`true`/`false`), or `null`. Tag keys are identifiers. `TAGS` is a contextual keyword and can still be used as a regular identifier. `WITH TAGS` can appear alongside `WITH CONTEXT` in any order.
+
+Tags are available on the schema interfaces (`TableSchema.tags`, `ColumnSchema.tags`, etc.) and via the programmatic API (`SchemaManager.getTableTags()`, `SchemaManager.setTableTags()`).
+
 ### 2.7 ALTER TABLE Statement
 
 Modifies an existing table's structure or name.
@@ -1056,6 +1097,33 @@ Removes a column from the table and all its data. Restrictions:
 
 - Cannot drop a PRIMARY KEY column.
 - Cannot drop the last remaining column.
+
+**ALTER PRIMARY KEY**
+
+```sql
+ALTER TABLE table_name ALTER PRIMARY KEY (col_name [ASC|DESC] [, ...]);
+```
+
+Replaces the table's primary key definition. All named columns must have a NOT NULL constraint. The empty-PK case `ALTER PRIMARY KEY ()` is permitted (the table reverts to an implicit rowid-style key). Modules that support re-keying in place handle the change directly; modules that cannot (including the built-in MemoryTable) use an automatic rebuild fallback that copies all rows into a new table with the updated PK and swaps it in place.
+
+**ALTER COLUMN**
+
+```sql
+ALTER TABLE table_name ALTER COLUMN col_name SET NOT NULL;
+ALTER TABLE table_name ALTER COLUMN col_name DROP NOT NULL;
+ALTER TABLE table_name ALTER COLUMN col_name SET DATA TYPE type_name;
+ALTER TABLE table_name ALTER COLUMN col_name SET DEFAULT expr;
+ALTER TABLE table_name ALTER COLUMN col_name DROP DEFAULT;
+```
+
+Changes a single column attribute. Each statement carries exactly one attribute; combine multiple attributes by issuing multiple statements. Restrictions:
+
+- `SET NOT NULL` scans existing rows. If any are NULL and the column has a literal DEFAULT, NULL rows are backfilled with that default; otherwise the statement fails with `CONSTRAINT`.
+- `DROP NOT NULL` is rejected on PRIMARY KEY columns.
+- `SET DATA TYPE` is a schema-only change when the new type shares the same physical representation; otherwise each row's value is re-validated and converted, failing with `MISMATCH` on any value that cannot be coerced. Rejected on PRIMARY KEY columns.
+- `SET/DROP DEFAULT` is schema-only; existing rows are not touched.
+
+The declarative schema differ (`diff schema`) detects column-attribute drift and emits the matching `ALTER COLUMN` statements in the order `SET DATA TYPE` → `SET/DROP DEFAULT` → `SET/DROP NOT NULL` so that a newly-declared DEFAULT is in place before any NOT NULL tightening relies on it for backfill.
 
 ## 3. Clauses and Subclauses
 
@@ -2207,7 +2275,7 @@ Table-valued functions return a result set that can be queried like a table.
 - `split_string(str, delimiter)`: Splits a string into rows based on a delimiter
 
 **Schema Introspection Functions:**
-- `schema()`: Returns information about all tables, views, and functions in the database
+- `schema()`: Returns information about all tables, views, and functions across all schemas (columns: `schema`, `type`, `name`, `tbl_name`, `sql`)
 - `table_info(table_name)`: Returns column information for a specific table
 - `function_info([function_name])`: Returns information about all registered functions, or a given registered function
 
@@ -2225,7 +2293,7 @@ Table-valued functions return a result set that can be queried like a table.
 select value from generate_series(1, 10);
 
 -- Get schema information
-select type, name, sql from schema() where type = 'table';
+select schema, type, name, sql from schema() where type = 'table';
 
 -- Get column information for a table
 select cid, name, type, notnull, pk from table_info('users');
@@ -2551,12 +2619,14 @@ create table audit_records (
 
 The foreign key constraint links tables together and ensures referential integrity.
 
-Foreign key enforcement is controlled by the `foreign_keys` pragma (default: off for backwards compatibility):
+Foreign key enforcement is controlled by the `foreign_keys` pragma (default: on):
 
 ```sql
-pragma foreign_keys = on;   -- enable FK enforcement
-pragma foreign_keys = off;  -- parse but don't enforce (default)
+pragma foreign_keys = on;   -- enable FK enforcement (default)
+pragma foreign_keys = off;  -- parse but don't enforce
 ```
+
+When no `ON DELETE` or `ON UPDATE` clause is specified, the default action is `IGNORE` (no enforcement). This means FKs are only enforced when you explicitly specify an action like `CASCADE`, `RESTRICT`, `SET NULL`, or `SET DEFAULT`.
 
 **Syntax - Column Constraint:**
 ```sql
@@ -2578,15 +2648,15 @@ Where `action` can be:
 - `set default` — set child FK columns to their default values
 - `cascade` — delete/update child rows when parent row is deleted/updated
 - `restrict` — immediately reject delete/update if child rows exist
-- `no action` (default) — same as RESTRICT but deferred to commit time
+- `no action` / `ignore` (default) — no enforcement; the FK is informational only
 
 **Enforcement Semantics:**
 
-When `pragma foreign_keys = on`:
+When `pragma foreign_keys = on` (the default):
 
-- **Child-side (INSERT/UPDATE):** Validates that referenced parent rows exist. These checks are deferred to commit time (they use cross-table subqueries).
+- **IGNORE / NO ACTION (default):** No enforcement. The FK is stored in the schema for metadata/introspection but does not generate any constraint checks or cascading actions.
+- **Child-side (INSERT/UPDATE):** For FKs with at least one non-ignore action, validates that referenced parent rows exist. These checks are deferred to commit time (they use cross-table subqueries). Uses MATCH SIMPLE semantics (SQL default): if any FK column is NULL, the constraint is satisfied without checking the parent table.
 - **Parent-side DELETE/UPDATE with RESTRICT:** Immediately rejects the operation if child rows reference the parent row being modified.
-- **Parent-side DELETE/UPDATE with NO ACTION:** Same check as RESTRICT, but deferred to commit time. Within a transaction, you can delete the parent first and fix the children before committing.
 - **Parent-side DELETE/UPDATE with CASCADE:** Automatically deletes or updates matching child rows.
 - **Parent-side DELETE/UPDATE with SET NULL:** Sets child FK columns to NULL.
 - **Parent-side DELETE/UPDATE with SET DEFAULT:** Sets child FK columns to their default values.
@@ -2595,16 +2665,14 @@ Cascade cycle detection prevents infinite recursion when cascading actions chain
 
 **Examples:**
 ```sql
-pragma foreign_keys = on;
-
--- Column-level foreign key
+-- Column-level foreign key (no action clause = informational only)
 create table posts (
   id integer primary key,
   user_id integer references users(id),
   title text not null
 );
 
--- Table-level foreign key with actions
+-- Table-level foreign key with explicit actions (enforced)
 create table comments (
   id integer primary key,
   post_id integer,
@@ -3099,7 +3167,7 @@ While Quereus supports similar SQL syntax, it has evolved into a distinct system
 | **Virtual Tables** | Central to design; all tables are virtual | Additional feature |
 | **Triggers** | Not supported | Supported |
 | **Views** | Basic support | Full support |
-| **Foreign Keys** | Supported (via `pragma foreign_keys = on`) | Full support (when enabled) |
+| **Foreign Keys** | Supported (on by default; requires explicit action clauses) | Full support (when enabled) |
 | **Window Functions** | Phase 1 Complete (ranking, aggregates, partitioning) | Full support |
 | **Recursive CTEs** | Basic support | Full support |
 | **JSON Functions** | Extensive support with native JSON type | Available as extension |
@@ -3307,13 +3375,19 @@ qualifier          = "old" | "new" ;
 create_table_stmt  = "create" [ "temp" | "temporary" ] "table" [ "if" "not" "exists" ]
                      table_name "(" column_def { "," ( column_def | table_constraint ) } ")"
                      [ "using" module_name [ "(" module_arg { "," module_arg } ")" ] ]
-                     [ context_def_clause ] ;
+                     { context_def_clause | tags_clause } ;
 
 context_def_clause = "with" "context" "(" context_var_def { "," context_var_def } ")" ;
 
 context_var_def    = identifier type_name [ "null" ] ;
 
-column_def         = column_name [ type_name ] { column_constraint } ;
+tags_clause        = "with" "tags" "(" tag_entry { "," tag_entry } ")" ;
+
+tag_entry          = identifier "=" tag_value ;
+
+tag_value          = string_literal | signed_number | "true" | "false" | "null" ;
+
+column_def         = column_name [ type_name ] { column_constraint } [ tags_clause ] ;
 
 type_name          = identifier [ "(" signed_number [ "," signed_number ] ")" ] ;
 
@@ -3325,7 +3399,8 @@ column_constraint  = [ "constraint" name ]
                      | "default" ( signed_number | literal_value | "(" expr ")" )
                      | "collate" collation_name
                      | foreign_key_clause
-                     | "generated" "always" "as" "(" expr ")" [ "stored" | "virtual" ] ) ;
+                     | "generated" "always" "as" "(" expr ")" [ "stored" | "virtual" ] )
+                     [ tags_clause ] ;
 
 primary_key_clause = "primary" "key" [ ( "asc" | "desc" ) ] [ conflict_clause ] [ "autoincrement" ] ;
 
@@ -3333,7 +3408,8 @@ table_constraint   = [ "constraint" name ]
                      ( "primary" "key" "(" indexed_column { "," indexed_column } ")" [ conflict_clause ]
                      | "unique" "(" column_name { "," column_name } ")" [ conflict_clause ]
                      | "check" [ "on" row_op_list ] "(" expr ")"
-                     | "foreign" "key" "(" column_name { "," column_name } ")" foreign_key_clause ) ;
+                     | "foreign" "key" "(" column_name { "," column_name } ")" foreign_key_clause )
+                     [ tags_clause ] ;
 
 foreign_key_clause = "references" foreign_table [ "(" column_name { "," column_name } ")" ]
                      { [ "on" ( "delete" | "update" ) ( "set" "null" | "set" "default" | "cascade" | "restrict" | "no" "action" ) ]
@@ -3349,13 +3425,14 @@ row_op             = "insert" | "update" | "delete" ;
 /* CREATE INDEX statement */
 create_index_stmt  = "create" [ "unique" ] "index" [ "if" "not" "exists" ]
                      index_name "on" table_name "(" indexed_column { "," indexed_column } ")"
-                     [ "where" expr ] ;
+                     [ "where" expr ] [ tags_clause ] ;
 
 indexed_column     = column_name [ "collate" collation_name ] [ "asc" | "desc" ] ;
 
 /* CREATE VIEW statement */
 create_view_stmt   = "create" [ "temp" | "temporary" ] "view" [ "if" "not" "exists" ]
-                     view_name [ "(" column_name { "," column_name } ")" ] "as" select_stmt ;
+                     view_name [ "(" column_name { "," column_name } ")" ] "as" select_stmt
+                     [ tags_clause ] ;
 
 /* CREATE ASSERTION statement */
 create_assertion_stmt = "create" "assertion" assertion_name "check" "(" expr ")" ;
@@ -3369,7 +3446,9 @@ alter_table_stmt   = "alter" "table" table_name
                      | rename_column_stmt
                      | add_column_stmt
                      | drop_column_stmt
-                     | add_constraint_stmt ) ;
+                     | add_constraint_stmt
+                     | alter_pk_stmt
+                     | alter_column_stmt ) ;
 
 rename_table_stmt  = "rename" "to" new_table_name ;
 
@@ -3380,6 +3459,17 @@ add_column_stmt    = "add" [ "column" ] column_def ;
 drop_column_stmt   = "drop" [ "column" ] column_name ;
 
 add_constraint_stmt = "add" table_constraint ;
+
+alter_pk_stmt      = "alter" "primary" "key" "(" [ pk_col { "," pk_col } ] ")" ;
+
+alter_column_stmt  = "alter" "column" column_name
+                     ( "set" "not" "null"
+                     | "drop" "not" "null"
+                     | "set" "data" "type" type_name
+                     | "set" "default" expression
+                     | "drop" "default" ) ;
+
+pk_col             = column_name [ "asc" | "desc" ] ;
 
 /* Transaction statements */
 begin_stmt         = "begin" [ "deferred" | "immediate" | "exclusive" ] [ "transaction" ] ;

@@ -126,12 +126,14 @@ export {
 export { Parser } from './parser/parser.js';
 export { Lexer, TokenType, KEYWORDS } from './parser/lexer.js';
 export { ParseError } from './parser/parser.js';
+export { quoteIdentifier } from './emit/ast-stringify.js';
 
 // Schema management
 export { SchemaManager } from './schema/manager.js';
 export { buildColumnIndexMap, columnDefToSchema } from './schema/table.js';
 export type { TableSchema, IndexSchema as TableIndexSchema } from './schema/table.js';
 export type { ColumnSchema } from './schema/column.js';
+export { generateTableDDL, generateIndexDDL } from './schema/ddl-generator.js';
 
 // Runtime utilities
 export { isAsyncIterable, getAsyncIterator, asyncIterableToArray } from './runtime/utils.js';

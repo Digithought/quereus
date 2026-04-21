@@ -1,6 +1,6 @@
 import { expect } from 'chai';
 import { parse } from '../src/parser/index.js';
-import { traverseAst, type AstVisitorCallbacks } from '../src/parser/visitor.js';
+import { traverseAst } from '../src/parser/visitor.js';
 import type { AstNode } from '../src/parser/ast.js';
 
 /** Collect all node types visited via enterNode */
@@ -154,6 +154,153 @@ describe('traverseAst', () => {
 			const selects = types.filter(t => t === 'select');
 			// The outer select and the CTE select
 			expect(selects.length).to.equal(2);
+		});
+	});
+
+	describe('statement node types', () => {
+		it('traverses INSERT with VALUES', () => {
+			const types = collectTypes('insert into t (a, b) values (1, 2), (3, 4)');
+			expect(types).to.include('insert');
+			expect(types).to.include('literal');
+			const literals = types.filter(t => t === 'literal');
+			expect(literals.length).to.be.greaterThanOrEqual(4);
+		});
+
+		it('traverses INSERT with SELECT', () => {
+			const types = collectTypes('insert into t (a) select x from t2');
+			expect(types).to.include('insert');
+			expect(types).to.include('select');
+		});
+
+		it('traverses INSERT with CTE', () => {
+			const types = collectTypes('with cte as (select 1 as x) insert into t (a) select x from cte');
+			expect(types).to.include('insert');
+			const selects = types.filter(t => t === 'select');
+			expect(selects.length).to.equal(2);
+		});
+
+		it('traverses UPDATE with WHERE', () => {
+			const types = collectTypes('update t set a = 1 where b > 2');
+			expect(types).to.include('update');
+			expect(types).to.include('binary'); // b > 2
+			expect(types).to.include('literal');
+		});
+
+		it('traverses UPDATE with CTE', () => {
+			const types = collectTypes('with cte as (select 1 as x) update t set a = (select x from cte)');
+			expect(types).to.include('update');
+			const selects = types.filter(t => t === 'select');
+			expect(selects.length).to.be.greaterThanOrEqual(1);
+		});
+
+		it('traverses DELETE with WHERE', () => {
+			const types = collectTypes('delete from t where x = 1');
+			expect(types).to.include('delete');
+			expect(types).to.include('binary'); // x = 1
+		});
+
+		it('traverses DELETE with CTE', () => {
+			const types = collectTypes('with cte as (select 1 as x) delete from t where x in (select x from cte)');
+			expect(types).to.include('delete');
+			expect(types).to.include('in');
+		});
+
+		it('traverses VALUES statement', () => {
+			const types = collectTypes('values (1, 2), (3, 4)');
+			expect(types).to.include('values');
+			const literals = types.filter(t => t === 'literal');
+			expect(literals.length).to.be.greaterThanOrEqual(4);
+		});
+	});
+
+	describe('source node types', () => {
+		it('traverses JOIN clause', () => {
+			const types = collectTypes('select * from t1 join t2 on t1.id = t2.id');
+			expect(types).to.include('join');
+			expect(types).to.include('binary'); // ON condition
+		});
+
+		it('traverses function source', () => {
+			const types = collectTypes('select * from json_each(\'[1,2,3]\')');
+			expect(types).to.include('functionSource');
+		});
+
+		it('traverses subquery source', () => {
+			const types = collectTypes('select * from (select 1 as x) as sub');
+			expect(types).to.include('subquerySource');
+			const selects = types.filter(t => t === 'select');
+			expect(selects.length).to.equal(2);
+		});
+	});
+
+	describe('expression node types - additional', () => {
+		it('traverses CAST expression', () => {
+			const types = collectTypes('select cast(1 as text) from t');
+			expect(types).to.include('cast');
+			expect(types).to.include('literal');
+		});
+
+		it('traverses COLLATE expression', () => {
+			const types = collectTypes('select x collate nocase from t');
+			expect(types).to.include('collate');
+		});
+
+		it('traverses function expression', () => {
+			const types = collectTypes('select upper(x) from t');
+			expect(types).to.include('function');
+		});
+
+		it('traverses subquery expression', () => {
+			const types = collectTypes('select (select 1) from t');
+			expect(types).to.include('subquery');
+		});
+
+		it('traverses unary expression', () => {
+			const types = collectTypes('select -1 from t');
+			expect(types).to.include('unary');
+		});
+
+		it('traverses identifier/column/parameter nodes', () => {
+			const types = collectTypes('select x from t');
+			expect(types).to.include('column');
+		});
+
+		it('traverses SELECT with GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET', () => {
+			const types = collectTypes('select x, count(*) from t group by x having count(*) > 1 order by x limit 10 offset 5');
+			expect(types).to.include('select');
+			// GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET expressions should all be traversed
+			const literals = types.filter(t => t === 'literal');
+			expect(literals.length).to.be.greaterThanOrEqual(3); // 1, 10, 5
+		});
+
+		it('traverses UNION', () => {
+			const types = collectTypes('select 1 union select 2');
+			// The union branch is traversed (second select may be stored differently)
+			expect(types).to.include('select');
+			const literals = types.filter(t => t === 'literal');
+			expect(literals.length).to.be.greaterThanOrEqual(1);
+		});
+	});
+
+	describe('DDL node types are handled without error', () => {
+		it('handles CREATE TABLE', () => {
+			const types = collectTypes('create table t (id integer primary key, name text)');
+			expect(types).to.include('createTable');
+		});
+
+		it('handles CREATE INDEX', () => {
+			const types = collectTypes('create index idx on t (name)');
+			expect(types).to.include('createIndex');
+		});
+
+		it('handles CREATE VIEW', () => {
+			const types = collectTypes('create view v as select 1');
+			expect(types).to.include('createView');
+		});
+
+		it('handles DROP statement', () => {
+			const types = collectTypes('drop table t');
+			expect(types).to.include('drop');
 		});
 	});
 

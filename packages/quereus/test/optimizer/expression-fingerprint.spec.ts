@@ -8,9 +8,11 @@ import { AggregateFunctionCallNode } from '../../src/planner/nodes/aggregate-fun
 import type { ScalarPlanNode } from '../../src/planner/nodes/plan-node.js';
 import type * as AST from '../../src/parser/ast.js';
 import type { ScalarFunctionSchema, AggregateFunctionSchema } from '../../src/schema/function.js';
-import { TEXT_TYPE, INTEGER_TYPE, REAL_TYPE } from '../../src/types/builtin-types.js';
+import { TEXT_TYPE, INTEGER_TYPE } from '../../src/types/builtin-types.js';
 import { FunctionFlags } from '../../src/common/constants.js';
 import type { ScalarType } from '../../src/common/datatype.js';
+import { WindowFunctionCallNode } from '../../src/planner/nodes/window-function.js';
+import { ArrayIndexNode } from '../../src/planner/nodes/array-index-node.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const scope = EmptyScope.instance as any;
@@ -312,6 +314,325 @@ describe('Expression fingerprinting', () => {
 			const mul2 = binOp('*', add2, sub2);
 
 			expect(fingerprintExpression(mul)).to.equal(fingerprintExpression(mul2));
+		});
+	});
+
+	describe('Commutative operator ordering (mutation-killing)', () => {
+		it('swap actually happens when rightFp < leftFp for commutative op', () => {
+			// Construct so that right fingerprint is lexicographically less than left
+			// CR:1 < CR:2 lexicographically, so binOp('+', colRef(2), colRef(1)) should swap
+			const normal = binOp('+', colRef(1), colRef(2));
+			const swapped = binOp('+', colRef(2), colRef(1));
+			const fpNormal = fingerprintExpression(normal);
+			const fpSwapped = fingerprintExpression(swapped);
+			expect(fpNormal).to.equal(fpSwapped);
+			// Both should have CR:1 before CR:2 after canonical ordering
+			expect(fpNormal).to.equal('BO:+(CR:1,CR:2)');
+		});
+
+		it('does NOT swap when rightFp >= leftFp for commutative op', () => {
+			// CR:1 < CR:2, so binOp('+', colRef(1), colRef(2)) should NOT swap
+			const fp = fingerprintExpression(binOp('+', colRef(1), colRef(2)));
+			expect(fp).to.equal('BO:+(CR:1,CR:2)');
+		});
+
+		it('does NOT swap operands for non-commutative operator', () => {
+			// '-' is not commutative
+			const fp = fingerprintExpression(binOp('-', colRef(2), colRef(1)));
+			expect(fp).to.equal('BO:-(CR:2,CR:1)');
+		});
+
+		it('AND is commutative', () => {
+			const a = binOp('AND', colRef(10), colRef(1));
+			const b = binOp('AND', colRef(1), colRef(10));
+			expect(fingerprintExpression(a)).to.equal(fingerprintExpression(b));
+		});
+
+		it('OR is commutative', () => {
+			const a = binOp('OR', colRef(10), colRef(1));
+			const b = binOp('OR', colRef(1), colRef(10));
+			expect(fingerprintExpression(a)).to.equal(fingerprintExpression(b));
+		});
+
+		it('!= is commutative', () => {
+			const a = binOp('!=', colRef(10), colRef(1));
+			const b = binOp('!=', colRef(1), colRef(10));
+			expect(fingerprintExpression(a)).to.equal(fingerprintExpression(b));
+		});
+
+		it('<> is commutative', () => {
+			const a = binOp('<>', colRef(10), colRef(1));
+			const b = binOp('<>', colRef(1), colRef(10));
+			expect(fingerprintExpression(a)).to.equal(fingerprintExpression(b));
+		});
+
+		it('< is NOT commutative', () => {
+			const a = binOp('<', colRef(1), colRef(2));
+			const b = binOp('<', colRef(2), colRef(1));
+			expect(fingerprintExpression(a)).to.not.equal(fingerprintExpression(b));
+		});
+	});
+
+	describe('BETWEEN fingerprint NOT flag (mutation-killing)', () => {
+		it('NOT BETWEEN produces ! in fingerprint', () => {
+			const nbw = new BetweenNode(
+				scope,
+				{ type: 'between', not: true } as unknown as AST.BetweenExpr,
+				colRef(5), lit(1n), lit(10n)
+			);
+			expect(fingerprintExpression(nbw)).to.equal('BW:!(CR:5,LI:1n,LI:10n)');
+		});
+
+		it('BETWEEN without NOT does not have ! prefix', () => {
+			const bw = new BetweenNode(
+				scope,
+				{ type: 'between', not: false } as unknown as AST.BetweenExpr,
+				colRef(5), lit(1n), lit(10n)
+			);
+			expect(fingerprintExpression(bw)).to.equal('BW:(CR:5,LI:1n,LI:10n)');
+			expect(fingerprintExpression(bw)).to.not.contain('!');
+		});
+	});
+
+	describe('Window function fingerprint (mutation-killing)', () => {
+		it('includes function name in fingerprint', () => {
+			const wf = new WindowFunctionCallNode(
+				scope,
+				{ type: 'windowFunction', function: { type: 'function', name: 'row_number', args: [] } } as unknown as AST.WindowFunctionExpr,
+				'row_number',
+				false,
+			);
+			const fp = fingerprintExpression(wf);
+			expect(fp).to.match(/^WF:row_number:/);
+		});
+
+		it('includes isDistinct in fingerprint', () => {
+			const wfDistinct = new WindowFunctionCallNode(
+				scope,
+				{ type: 'windowFunction', function: { type: 'function', name: 'sum', args: [] } } as unknown as AST.WindowFunctionExpr,
+				'sum',
+				true,
+			);
+			const wfNonDistinct = new WindowFunctionCallNode(
+				scope,
+				{ type: 'windowFunction', function: { type: 'function', name: 'sum', args: [] } } as unknown as AST.WindowFunctionExpr,
+				'sum',
+				false,
+			);
+			const fpD = fingerprintExpression(wfDistinct);
+			const fpND = fingerprintExpression(wfNonDistinct);
+			expect(fpD).to.contain(':true:');
+			expect(fpND).to.contain(':false:');
+			// They differ because of isDistinct AND unique node ids
+			expect(fpD).to.not.equal(fpND);
+		});
+
+		it('uses unique node id so two window functions are never equal', () => {
+			const wf1 = new WindowFunctionCallNode(
+				scope,
+				{ type: 'windowFunction', function: { type: 'function', name: 'row_number', args: [] } } as unknown as AST.WindowFunctionExpr,
+				'row_number',
+				false,
+			);
+			const wf2 = new WindowFunctionCallNode(
+				scope,
+				{ type: 'windowFunction', function: { type: 'function', name: 'row_number', args: [] } } as unknown as AST.WindowFunctionExpr,
+				'row_number',
+				false,
+			);
+			expect(fingerprintExpression(wf1)).to.not.equal(fingerprintExpression(wf2));
+		});
+	});
+
+	describe('Literal edge cases (mutation-killing)', () => {
+		it('false boolean literal', () => {
+			expect(fingerprintExpression(lit(false))).to.equal('LI:false');
+		});
+
+		it('distinguishes null from string "null"', () => {
+			expect(fingerprintExpression(lit(null))).to.not.equal(fingerprintExpression(lit('null')));
+		});
+
+		it('distinguishes boolean true from string "true"', () => {
+			expect(fingerprintExpression(lit(true))).to.not.equal(fingerprintExpression(lit('true')));
+		});
+
+		it('zero-length blob', () => {
+			const blob = new Uint8Array([]);
+			expect(fingerprintExpression(lit(blob))).to.equal('LI:x');
+		});
+
+		it('single-byte blob with leading zero', () => {
+			const blob = new Uint8Array([0x0a]);
+			expect(fingerprintExpression(lit(blob))).to.equal('LI:x0a');
+		});
+
+		it('bigint zero', () => {
+			expect(fingerprintExpression(lit(0n))).to.equal('LI:0n');
+		});
+
+		it('negative number', () => {
+			expect(fingerprintExpression(lit(-1.5))).to.equal('LI:-1.5f');
+		});
+
+		it('empty string', () => {
+			expect(fingerprintExpression(lit(''))).to.equal("LI:''");
+		});
+
+		it('unknown literal type fallback', () => {
+			// Passing a Symbol or similar type that matches none of the type checks
+			const fp = fingerprintExpression(lit(Symbol('test')));
+			expect(fp).to.match(/^LI:\?/);
+		});
+	});
+
+	describe('ArrayIndex fingerprint (mutation-killing)', () => {
+		it('includes the index value', () => {
+			const ai = new ArrayIndexNode(scope, 3, textType);
+			expect(fingerprintExpression(ai)).to.equal('AI:3');
+		});
+
+		it('different indices produce different fingerprints', () => {
+			const ai0 = new ArrayIndexNode(scope, 0, textType);
+			const ai1 = new ArrayIndexNode(scope, 1, textType);
+			expect(fingerprintExpression(ai0)).to.not.equal(fingerprintExpression(ai1));
+		});
+	});
+
+	describe('Aggregate function fingerprint (mutation-killing)', () => {
+		it('distinct aggregate includes D tag', () => {
+			const fp = fingerprintExpression(aggCall('sum', [colRef(1)], true));
+			expect(fp).to.equal('AG:sumD(CR:1)');
+		});
+
+		it('non-distinct aggregate does not include D tag', () => {
+			const fp = fingerprintExpression(aggCall('sum', [colRef(1)], false));
+			expect(fp).to.equal('AG:sum(CR:1)');
+		});
+
+		it('multi-arg aggregate', () => {
+			const fp = fingerprintExpression(aggCall('group_concat', [colRef(1), colRef(2)], false));
+			expect(fp).to.equal('AG:group_concat(CR:1,CR:2)');
+		});
+	});
+
+	describe('Scalar function call fingerprint (mutation-killing)', () => {
+		it('zero-arg function', () => {
+			const fp = fingerprintExpression(fnCall('now', []));
+			expect(fp).to.equal('FN:now()');
+		});
+
+		it('multi-arg function', () => {
+			const fp = fingerprintExpression(fnCall('substr', [colRef(1), lit(2n), lit(5n)]));
+			expect(fp).to.equal('FN:substr(CR:1,LI:2n,LI:5n)');
+		});
+	});
+
+	describe('CASE expression fingerprint details (mutation-killing)', () => {
+		it('CASE with base expression', () => {
+			const caseNode = new CaseExprNode(
+				scope,
+				{ type: 'case' } as unknown as AST.CaseExpr,
+				colRef(1), // base expression present
+				[{ when: lit(1n), then: lit('one') }],
+				undefined
+			);
+			const fp = fingerprintExpression(caseNode);
+			// base expression fingerprint should appear first
+			expect(fp).to.equal('CE(CR:1,W:LI:1n,T:LI:\'one\')');
+		});
+
+		it('CASE without base expression', () => {
+			const caseNode = new CaseExprNode(
+				scope,
+				{ type: 'case' } as unknown as AST.CaseExpr,
+				undefined, // no base expression
+				[{ when: binOp('>', colRef(1), lit(0n)), then: lit('positive') }],
+				undefined
+			);
+			const fp = fingerprintExpression(caseNode);
+			// Should NOT include a base expression fingerprint
+			expect(fp).to.not.contain('CR:1,W:');
+			expect(fp).to.contain('W:');
+			expect(fp).to.contain('T:');
+		});
+
+		it('CASE without else', () => {
+			const caseNode = new CaseExprNode(
+				scope,
+				{ type: 'case' } as unknown as AST.CaseExpr,
+				undefined,
+				[{ when: lit(true), then: lit('yes') }],
+				undefined // no else
+			);
+			const fp = fingerprintExpression(caseNode);
+			expect(fp).to.not.contain('E:');
+		});
+
+		it('CASE with else', () => {
+			const caseNode = new CaseExprNode(
+				scope,
+				{ type: 'case' } as unknown as AST.CaseExpr,
+				undefined,
+				[{ when: lit(true), then: lit('yes') }],
+				lit('no')
+			);
+			const fp = fingerprintExpression(caseNode);
+			expect(fp).to.contain("E:LI:'no'");
+		});
+
+		it('CASE with multiple when/then clauses', () => {
+			const caseNode = new CaseExprNode(
+				scope,
+				{ type: 'case' } as unknown as AST.CaseExpr,
+				undefined,
+				[
+					{ when: lit(1n), then: lit('one') },
+					{ when: lit(2n), then: lit('two') },
+				],
+				lit('other')
+			);
+			const fp = fingerprintExpression(caseNode);
+			expect(fp).to.contain("W:LI:1n");
+			expect(fp).to.contain("T:LI:'one'");
+			expect(fp).to.contain("W:LI:2n");
+			expect(fp).to.contain("T:LI:'two'");
+			expect(fp).to.contain("E:LI:'other'");
+		});
+	});
+
+	describe('Non-deterministic guard (mutation-killing)', () => {
+		it('non-deterministic node fingerprint starts with _ND:', () => {
+			const nd = fnCall('random', [], false);
+			const fp = fingerprintExpression(nd);
+			expect(fp.startsWith('_ND:')).to.be.true;
+		});
+
+		it('non-deterministic node includes its unique id', () => {
+			const nd = fnCall('random', [], false);
+			const fp = fingerprintExpression(nd);
+			expect(fp).to.equal(`_ND:${nd.id}`);
+		});
+
+		it('deterministic node does NOT start with _ND:', () => {
+			const d = fnCall('length', [colRef(1)], true);
+			const fp = fingerprintExpression(d);
+			expect(fp.startsWith('_ND:')).to.be.false;
+		});
+	});
+
+	describe('Subquery-bearing nodes (mutation-killing)', () => {
+		// These are tested indirectly via integration, but we verify the format here
+		// by checking that non-deterministic nodes produce unique id-based fingerprints.
+		// Subquery nodes (ScalarSubquery, In, Exists) also produce unique fingerprints.
+		// We can't easily construct those directly without a full plan, so we verify
+		// the non-det guard pattern holds.
+		it('two non-deterministic calls never share a fingerprint', () => {
+			const fps = new Set<string>();
+			for (let i = 0; i < 10; i++) {
+				fps.add(fingerprintExpression(fnCall('random', [], false)));
+			}
+			expect(fps.size).to.equal(10);
 		});
 	});
 });

@@ -171,6 +171,10 @@ export class TransactionLayer implements Layer {
 		return this.secondaryIndexes.get(indexName)?.data ?? null;
 	}
 
+	getSecondaryIndex(indexName: string): MemoryIndex | undefined {
+		return this.secondaryIndexes.get(indexName);
+	}
+
 	/** Records an insert or update in this transaction layer */
 	recordUpsert(primaryKey: BTreeKeyForPrimary, newRowData: Row, oldRowDataIfUpdate?: Row | null): void {
 		if (this._isCommitted) throw new QuereusError("Cannot modify a committed layer");

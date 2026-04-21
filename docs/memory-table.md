@@ -52,6 +52,7 @@ The `MemoryTable` implementation (`src/vtab/memory/`) provides a sophisticated, 
 
 ### **Schema Evolution:**
 *   **Dynamic Schema Changes:** `ALTER TABLE` support for adding, dropping, and renaming columns
+*   **Primary Key Alteration:** `ALTER TABLE ... ALTER PRIMARY KEY` is supported via an automatic table rebuild. The rebuild creates a new table with the new PK definition, copies all rows, and swaps it in place. If duplicate-key violations occur during the rebuild, the operation fails cleanly without data loss (the original table is unchanged).
 *   **Index Management:** Runtime creation and deletion of secondary indexes
 *   **Schema Safety:** Operations ensure consistency across all active transactions
 
@@ -159,7 +160,7 @@ await db.exec("alter table users rename column created_at to registration_date")
 
 ## **Current Limitations:**
 
-*   **Constraint Enforcement:** Primary key `UNIQUE`, `NOT NULL`, `CHECK`, and `FOREIGN KEY` constraints are enforced at the engine level. `DEFAULT` values are applied during DML operations. FK enforcement requires `pragma foreign_keys = on`.
+*   **Constraint Enforcement:** `UNIQUE` (both primary key and secondary), `NOT NULL`, `CHECK`, and `FOREIGN KEY` constraints are enforced at the engine level. Secondary `UNIQUE` constraints auto-create backing indexes for O(log n) enforcement; NULL values in UNIQUE columns are allowed per SQL standard. `DEFAULT` values are applied during DML operations. FK enforcement is on by default (`pragma foreign_keys = on`); FKs require explicit action clauses (e.g. `ON DELETE CASCADE`) to be enforced — the default action is `IGNORE`.
 *   **Advanced Query Planning:** Composite index `IN` multi-seek is supported (cross-product of `IN` lists across index columns). Prefix-equality + trailing-range scans are supported on composite indexes (e.g., `WHERE a = 1 AND b > 5` on `idx(a, b)`). OR disjunctions with range predicates on the same indexed column use multi-range index seek (e.g., `WHERE price > 1000 OR price < 10`).
 *   **IS NULL Optimization:** `IS NULL` on NOT NULL columns produces an `EmptyResult` plan (zero-cost short-circuit); `IS NOT NULL` on NOT NULL columns is eliminated as a tautology. For nullable columns, `IS NULL` / `IS NOT NULL` are still handled as residual filters.
 *   **Expression Indexes:** Expression-based indexes are not implemented — see `tasks/plan/2-expression-indexes.md`

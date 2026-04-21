@@ -1,6 +1,5 @@
-import { IndexedDBProvider, IndexedDBStore } from '@quereus/plugin-indexeddb';
-import { dynamicLoadModule } from '@quereus/plugin-loader';
-import { Database, type SqlValue } from '@quereus/quereus';
+import * as Comlink from 'comlink';
+import { Database, generateTableDDL, type SqlValue, type DatabaseDataChangeEvent, type DatabaseSchemaChangeEvent } from '@quereus/quereus';
 import { expressionToString } from '@quereus/quereus/emit';
 import type { Expression } from '@quereus/quereus/parser';
 import { StoreEventEmitter, StoreModule, type KVStore } from '@quereus/store';
@@ -365,7 +364,7 @@ class QuereusWorker implements QuereusWorkerAPI {
         return {
           name: tableSchema.name,
           type: tableSchema.isView ? 'view' : 'table',
-          sql: this.generateTableDDL(tableSchema),
+          sql: generateTableDDL(tableSchema, db),
           columns,
         };
       }
@@ -394,44 +393,6 @@ class QuereusWorker implements QuereusWorkerAPI {
     } catch (error) {
       throw new Error(`Failed to get table schema: ${error instanceof Error ? error.message : error}`);
     }
-  }
-
-  private generateTableDDL(tableSchema: { name: string; isTemporary?: boolean; columns: ReadonlyArray<{ name: string; logicalType: { name: string }; notNull: boolean; primaryKey: boolean }>; primaryKeyDefinition: ReadonlyArray<{ index: number }>; vtabModuleName?: string; vtabArgs?: Record<string, SqlValue> }): string {
-    const parts: string[] = ['CREATE'];
-    if (tableSchema.isTemporary) parts.push('TEMP');
-    parts.push('TABLE', `"${tableSchema.name}"`);
-
-    const columnDefs: string[] = [];
-    for (const col of tableSchema.columns) {
-      let colDef = `"${col.name}"`;
-      if (col.logicalType) colDef += ` ${col.logicalType.name}`;
-      if (col.notNull) colDef += ' NOT NULL';
-      if (col.primaryKey && tableSchema.primaryKeyDefinition.length === 1) {
-        colDef += ' PRIMARY KEY';
-      }
-      columnDefs.push(colDef);
-    }
-
-    if (tableSchema.primaryKeyDefinition.length > 1) {
-      const pkCols = tableSchema.primaryKeyDefinition
-        .map(pk => `"${tableSchema.columns[pk.index].name}"`)
-        .join(', ');
-      columnDefs.push(`PRIMARY KEY (${pkCols})`);
-    }
-
-    parts.push(`(${columnDefs.join(', ')})`);
-
-    if (tableSchema.vtabModuleName) {
-      parts.push('USING', tableSchema.vtabModuleName);
-      if (tableSchema.vtabArgs && Object.keys(tableSchema.vtabArgs).length > 0) {
-        const args = Object.entries(tableSchema.vtabArgs)
-          .map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
-          .join(', ');
-        parts.push(`(${args})`);
-      }
-    }
-
-    return parts.join(' ');
   }
 
   async previewCsv(csvData: string): Promise<CsvPreview> {
@@ -646,23 +607,12 @@ class QuereusWorker implements QuereusWorkerAPI {
     // Open a default KV store for sync metadata
     this.kvStore = await IndexedDBStore.openForTable('quoomb', 'sync_meta');
 
-    // Restore persisted tables from IndexedDB
-    await this.restorePersistedTables();
-  }
-
-  private async restorePersistedTables(): Promise<void> {
-    const db = this.db;
-    if (!db || !this.storeModule) {
-      return;
-    }
-
-    // Load DDL from the central catalog store
-    const ddlStatements = await this.storeModule.loadAllDDL();
-
-    if (ddlStatements.length > 0) {
-      // Import the catalog into the schema manager
-      // This calls connect() on the module instead of create()
-      await db.schemaManager.importCatalog(ddlStatements);
+    // Rehydrate persisted catalog from IndexedDB
+    const rehydration = await this.storeModule.rehydrateCatalog(db);
+    if (rehydration.errors.length > 0) {
+      console.warn(
+        `[quoomb-web] ${rehydration.errors.length} catalog entries failed to rehydrate`
+      );
     }
   }
 

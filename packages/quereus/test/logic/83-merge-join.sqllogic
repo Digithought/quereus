@@ -93,6 +93,87 @@ SELECT l.id, r.id FROM mj_nocase_l l JOIN mj_nocase_r r ON l.name = r.name ORDER
 SELECT l.id, l.name, r.id AS rid FROM mj_nocase_l l LEFT JOIN mj_nocase_r r ON l.name = r.name ORDER BY l.id;
 → [{"id":1,"name":"Alice","rid":10},{"id":2,"name":"Bob","rid":20},{"id":3,"name":"Charlie","rid":null}]
 
+-- ===== PK-equi-join tests (trigger MergeJoin via inherent PK ordering) =====
+
+-- Setup: single-column PK tables
+CREATE TABLE mj_pk_a (id INTEGER PRIMARY KEY, x TEXT);
+CREATE TABLE mj_pk_b (id INTEGER PRIMARY KEY, y TEXT);
+INSERT INTO mj_pk_a VALUES (1,'a'),(2,'b'),(3,'c');
+INSERT INTO mj_pk_b VALUES (1,'x'),(2,'y'),(3,'z');
+
+-- Plan shape: PK-equi-join must use MergeJoin (cost 0.6N beats hash 1.2N)
+SELECT node_type FROM query_plan('SELECT * FROM mj_pk_a JOIN mj_pk_b ON mj_pk_a.id = mj_pk_b.id') WHERE node_type LIKE '%Join%';
+→ [{"node_type":"MergeJoin"}]
+
+-- INNER JOIN on PK
+SELECT a.id, a.x, b.y FROM mj_pk_a a JOIN mj_pk_b b ON a.id = b.id ORDER BY a.id;
+→ [{"id":1,"x":"a","y":"x"},{"id":2,"x":"b","y":"y"},{"id":3,"x":"c","y":"z"}]
+
+-- LEFT JOIN on PK
+SELECT node_type FROM query_plan('SELECT * FROM mj_pk_a LEFT JOIN mj_pk_b ON mj_pk_a.id = mj_pk_b.id') WHERE node_type LIKE '%Join%';
+→ [{"node_type":"MergeJoin"}]
+
+INSERT INTO mj_pk_a VALUES (4,'d');
+
+SELECT a.id, a.x, b.y FROM mj_pk_a a LEFT JOIN mj_pk_b b ON a.id = b.id ORDER BY a.id;
+→ [{"id":1,"x":"a","y":"x"},{"id":2,"x":"b","y":"y"},{"id":3,"x":"c","y":"z"},{"id":4,"x":"d","y":null}]
+
+DELETE FROM mj_pk_a WHERE id = 4;
+
+-- SEMI JOIN (via EXISTS) on PK
+SELECT a.id, a.x FROM mj_pk_a a WHERE EXISTS (SELECT 1 FROM mj_pk_b b WHERE b.id = a.id) ORDER BY a.id;
+→ [{"id":1,"x":"a"},{"id":2,"x":"b"},{"id":3,"x":"c"}]
+
+-- ANTI JOIN (via NOT EXISTS) on PK
+INSERT INTO mj_pk_a VALUES (99,'no-match');
+
+SELECT a.id, a.x FROM mj_pk_a a WHERE NOT EXISTS (SELECT 1 FROM mj_pk_b b WHERE b.id = a.id) ORDER BY a.id;
+→ [{"id":99,"x":"no-match"}]
+
+DELETE FROM mj_pk_a WHERE id = 99;
+
+-- Partial overlap: some PKs don't match
+DELETE FROM mj_pk_b WHERE id = 2;
+INSERT INTO mj_pk_b VALUES (5,'v');
+
+SELECT a.id, b.id AS bid FROM mj_pk_a a JOIN mj_pk_b b ON a.id = b.id ORDER BY a.id;
+→ [{"id":1,"bid":1},{"id":3,"bid":3}]
+
+SELECT a.id, b.id AS bid FROM mj_pk_a a LEFT JOIN mj_pk_b b ON a.id = b.id ORDER BY a.id;
+→ [{"id":1,"bid":1},{"id":2,"bid":null},{"id":3,"bid":3}]
+
+-- Multi-column PK merge join
+CREATE TABLE mj_mc_pk1 (k1 INTEGER, k2 INTEGER, v TEXT, PRIMARY KEY (k1, k2));
+CREATE TABLE mj_mc_pk2 (k1 INTEGER, k2 INTEGER, w TEXT, PRIMARY KEY (k1, k2));
+INSERT INTO mj_mc_pk1 VALUES (1,10,'alpha'),(1,20,'beta'),(2,10,'gamma'),(3,30,'delta');
+INSERT INTO mj_mc_pk2 VALUES (1,10,'one'),(1,20,'two'),(2,10,'three'),(9,99,'nine');
+
+-- Plan shape: multi-column PK join should also use MergeJoin
+SELECT node_type FROM query_plan('SELECT * FROM mj_mc_pk1 JOIN mj_mc_pk2 ON mj_mc_pk1.k1 = mj_mc_pk2.k1 AND mj_mc_pk1.k2 = mj_mc_pk2.k2') WHERE node_type LIKE '%Join%';
+→ [{"node_type":"MergeJoin"}]
+
+SELECT m1.v, m2.w FROM mj_mc_pk1 m1 JOIN mj_mc_pk2 m2 ON m1.k1 = m2.k1 AND m1.k2 = m2.k2 ORDER BY m1.k1, m1.k2;
+→ [{"v":"alpha","w":"one"},{"v":"beta","w":"two"},{"v":"gamma","w":"three"}]
+
+SELECT m1.v, m2.w FROM mj_mc_pk1 m1 LEFT JOIN mj_mc_pk2 m2 ON m1.k1 = m2.k1 AND m1.k2 = m2.k2 ORDER BY m1.k1, m1.k2;
+→ [{"v":"alpha","w":"one"},{"v":"beta","w":"two"},{"v":"gamma","w":"three"},{"v":"delta","w":null}]
+
+-- Empty table edge case with PK merge join
+CREATE TABLE mj_pk_empty (id INTEGER PRIMARY KEY, z TEXT);
+
+SELECT a.id FROM mj_pk_a a JOIN mj_pk_empty e ON a.id = e.id;
+→ []
+
+SELECT a.id, e.z FROM mj_pk_a a LEFT JOIN mj_pk_empty e ON a.id = e.id ORDER BY a.id;
+→ [{"id":1,"z":null},{"id":2,"z":null},{"id":3,"z":null}]
+
+-- Cleanup PK tables
+DROP TABLE mj_pk_a;
+DROP TABLE mj_pk_b;
+DROP TABLE mj_mc_pk1;
+DROP TABLE mj_mc_pk2;
+DROP TABLE mj_pk_empty;
+
 -- Cleanup
 DROP TABLE mj_left;
 DROP TABLE mj_right;

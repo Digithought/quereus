@@ -348,6 +348,7 @@ export class CoordinatorService {
 
     // Validate changes
     let approvedChanges = changes;
+    let hookRejections: { reason: string; code?: string; table?: string; column?: string }[] | undefined;
     if (this.hooks.onBeforeApplyChanges) {
       const result = await this.hooks.onBeforeApplyChanges(client, changes);
       approvedChanges = result.approved;
@@ -356,6 +357,10 @@ export class CoordinatorService {
           result.rejected.length,
           siteIdToBase64(client.siteId));
         this.metrics.registry.incCounter(this.metrics.changesRejectedTotal, {}, result.rejected.length);
+        hookRejections = result.rejected.map(r => ({
+          reason: r.reason,
+          code: r.code,
+        }));
       }
     }
 
@@ -420,6 +425,9 @@ export class CoordinatorService {
         serviceLog('No changes applied, not broadcasting');
       }
 
+      if (hookRejections) {
+        return { ...result, rejected: hookRejections };
+      }
       return result;
     } finally {
       this.releaseStore(databaseId);

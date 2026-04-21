@@ -58,18 +58,32 @@ function synthesizeExistsCheck(
 	parentTable: TableSchema,
 	parentColIndices: number[],
 	qualifier: 'new' | 'old',
-): AST.ExistsExpr {
+): AST.Expression {
+	const qualifierUpper = qualifier.toUpperCase();
 	const pairs = fk.columns.map((childColIdx, i) => ({
 		leftTable: parentTable.name,
 		leftCol: parentTable.columns[parentColIndices[i]].name,
-		rightTable: qualifier.toUpperCase(),
+		rightTable: qualifierUpper,
 		rightCol: childTable.columns[childColIdx].name,
 	}));
 
-	return {
+	const existsExpr: AST.ExistsExpr = {
 		type: 'exists',
 		subquery: synthesizeFKSubquery(parentTable.name, pairs),
 	};
+
+	// MATCH SIMPLE (SQL default): FK is satisfied when any referencing column is NULL.
+	// Wrap EXISTS with OR-chained IS NULL guards to skip the subquery in that case.
+	const nullGuards: AST.UnaryExpr[] = fk.columns.map((childColIdx) => ({
+		type: 'unary',
+		operator: 'IS NULL',
+		expr: { type: 'column', name: childTable.columns[childColIdx].name, table: qualifierUpper } as AST.ColumnExpr,
+	}));
+
+	return nullGuards.reduceRight<AST.Expression>(
+		(acc, guard) => ({ type: 'binary', operator: 'OR', left: guard, right: acc } as AST.BinaryExpr),
+		existsExpr,
+	);
 }
 
 /**
@@ -120,6 +134,9 @@ export function buildChildSideFKChecks(
 	const checks: ConstraintCheck[] = [];
 
 	for (const fk of tableSchema.foreignKeys) {
+		// Skip entirely-ignored FKs (both actions are 'ignore' = no enforcement)
+		if (fk.onDelete === 'ignore' && fk.onUpdate === 'ignore') continue;
+
 		// Resolve parent table
 		const parentSchema = ctx.schemaManager.findTable(
 			fk.referencedTable,
@@ -253,9 +270,10 @@ export function buildParentSideFKChecks(
 
 				const action = operation === RowOpFlag.DELETE ? fk.onDelete : fk.onUpdate;
 
-				// Only RESTRICT and NO ACTION generate parent-side checks
-				// CASCADE, SET NULL, SET DEFAULT are handled by cascading actions (Phase 2)
-				if (action !== 'restrict' && action !== 'noAction') continue;
+				// Only RESTRICT generates parent-side checks
+				// CASCADE, SET NULL, SET DEFAULT are handled by cascading actions
+				// IGNORE means no enforcement at all
+				if (action !== 'restrict') continue;
 
 				const parentColIndices = resolveReferencedColumns(fk, tableSchema);
 				if (parentColIndices.length !== fk.columns.length) continue;

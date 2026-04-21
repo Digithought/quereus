@@ -456,17 +456,23 @@ describe('Utility Edge Cases', () => {
 			expect(compareWithOrderBy(null, 1, 'asc', 'first')).to.be.lessThan(0);
 			// Explicit NULLS FIRST is absolute — not affected by DESC
 			expect(compareWithOrderBy(null, 1, 'desc', 'first')).to.be.lessThan(0);
+			// b === null branch
+			expect(compareWithOrderBy(1, null, 'asc', 'first')).to.be.greaterThan(0);
+			expect(compareWithOrderBy(1, null, 'desc', 'first')).to.be.greaterThan(0);
 		});
 
 		it('should respect NULLS LAST', () => {
 			expect(compareWithOrderBy(null, 1, 'asc', 'last')).to.be.greaterThan(0);
 			// Explicit NULLS LAST is absolute — not affected by DESC
 			expect(compareWithOrderBy(null, 1, 'desc', 'last')).to.be.greaterThan(0);
+			// b === null branch
+			expect(compareWithOrderBy(1, null, 'asc', 'last')).to.be.lessThan(0);
+			expect(compareWithOrderBy(1, null, 'desc', 'last')).to.be.lessThan(0);
 		});
 
-		it('should default nulls first for ASC, nulls last for DESC', () => {
+		it('should default nulls first for both ASC and DESC', () => {
 			expect(compareWithOrderBy(null, 1, 'asc')).to.be.lessThan(0);
-			// Default: nulls last for DESC; comparison=1, then DESC reversal → -1
+			// Default: nulls first for DESC too
 			expect(compareWithOrderBy(null, 1, 'desc')).to.be.lessThan(0);
 		});
 	});

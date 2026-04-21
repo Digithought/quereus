@@ -1,5 +1,5 @@
-import type { Database, VirtualTableModule, BaseModuleConfig, TableSchema, TableIndexSchema as IndexSchema, ModuleCapabilities, VirtualTable, BestAccessPlanRequest, BestAccessPlanResult } from '@quereus/quereus';
-import { MemoryTableModule, PhysicalType } from '@quereus/quereus';
+import type { Database, VirtualTableModule, BaseModuleConfig, TableSchema, TableIndexSchema as IndexSchema, ModuleCapabilities, VirtualTable, BestAccessPlanRequest, BestAccessPlanResult, SchemaChangeInfo } from '@quereus/quereus';
+import { MemoryTableModule, PhysicalType, QuereusError, StatusCode } from '@quereus/quereus';
 import type { IsolationModuleConfig } from './isolation-types.js';
 import { IsolatedTable } from './isolated-table.js';
 
@@ -49,7 +49,7 @@ export interface ConnectionOverlayState {
  * - Savepoint support via overlay module's transaction support
  */
 export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseModuleConfig> {
-	private readonly underlying: VirtualTableModule<any, any>;
+	readonly underlying: VirtualTableModule<any, any>;
 	readonly overlayModule: VirtualTableModule<any, any>;
 	readonly tombstoneColumn: string;
 
@@ -226,9 +226,13 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 			this.setUnderlyingState(schemaName, tableName, state);
 		}
 
+		// When the planner requested a committed-snapshot read (committed.<table>), bypass
+		// the per-connection overlay so reads reflect only persisted underlying state.
+		const readCommitted = (options as { _readCommitted?: boolean } | undefined)?._readCommitted === true;
+
 		// Return a fresh IsolatedTable instance that will look up its overlay
 		// from connection-scoped storage (shared with other instances in same transaction)
-		return new IsolatedTable(db, this, state.underlyingTable);
+		return new IsolatedTable(db, this, state.underlyingTable, readCommitted);
 	}
 
 	/**
@@ -243,6 +247,19 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 	): Promise<void> {
 		this.removeUnderlyingState(schemaName, tableName);
 		await this.underlying.destroy(db, pAux, moduleName, schemaName, tableName);
+	}
+
+	/**
+	 * Closes all resources held by the underlying module (if it supports closeAll).
+	 * Also clears connection overlay state.
+	 */
+	async closeAll(): Promise<void> {
+		this.connectionOverlays.clear();
+		this.underlyingTables.clear();
+		const underlyingWithClose = this.underlying as { closeAll?: () => Promise<void> };
+		if (typeof underlyingWithClose.closeAll === 'function') {
+			await underlyingWithClose.closeAll();
+		}
 	}
 
 	/**
@@ -268,6 +285,39 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 		} else if (this.underlying.createIndex) {
 			await this.underlying.createIndex(db, schemaName, tableName, indexSchema);
 		}
+	}
+
+	/**
+	 * Delegates ALTER TABLE to the underlying module. ADD/DROP/RENAME COLUMN
+	 * mutates the underlying TableSchema in place; any per-connection overlays
+	 * derived from the pre-alter schema are invalidated here.
+	 */
+	async alterTable(
+		db: Database,
+		schemaName: string,
+		tableName: string,
+		change: SchemaChangeInfo,
+	): Promise<TableSchema> {
+		if (!this.underlying.alterTable) {
+			throw new QuereusError(
+				`Underlying module does not support ALTER TABLE for '${schemaName}.${tableName}'`,
+				StatusCode.UNSUPPORTED,
+			);
+		}
+
+		const updated = await this.underlying.alterTable(db, schemaName, tableName, change);
+
+		// Invalidate any per-connection overlays derived from the pre-alter schema.
+		// Overlay tables carry columns copied from the underlying schema + tombstone,
+		// so their shape is stale after ADD/DROP/RENAME.
+		const suffix = `:${schemaName}.${tableName}`.toLowerCase();
+		for (const key of [...this.connectionOverlays.keys()]) {
+			if (key.endsWith(suffix)) {
+				this.connectionOverlays.delete(key);
+			}
+		}
+
+		return updated;
 	}
 
 	/**

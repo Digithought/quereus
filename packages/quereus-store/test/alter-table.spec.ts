@@ -58,6 +58,25 @@ function createInMemoryProvider(): KVStoreProvider {
 			}
 			stores.clear();
 		},
+		async renameTableStores(schemaName: string, oldName: string, newName: string) {
+			const oldKey = `${schemaName}.${oldName}`;
+			const newKey = `${schemaName}.${newName}`;
+			const dataStore = stores.get(oldKey);
+			if (dataStore) {
+				stores.delete(oldKey);
+				stores.set(newKey, dataStore);
+			}
+			const oldIndexPrefix = `${schemaName}.${oldName}_idx_`;
+			const newIndexPrefix = `${schemaName}.${newName}_idx_`;
+			for (const key of Array.from(stores.keys())) {
+				if (key.startsWith(oldIndexPrefix)) {
+					const suffix = key.substring(oldIndexPrefix.length);
+					const store = stores.get(key)!;
+					stores.delete(key);
+					stores.set(newIndexPrefix + suffix, store);
+				}
+			}
+		},
 	};
 }
 
@@ -140,6 +159,59 @@ describe('Store ALTER TABLE', () => {
 
 			const row = await db.get('select * from items where id = 1');
 			expect(row).to.deep.equal({ id: 1, name: 'test', extra: 'val' });
+		});
+
+		it('allows NOT NULL without DEFAULT on an empty table', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+
+			await db.exec(`ALTER TABLE items ADD COLUMN rank INTEGER NOT NULL`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Alice', 10)`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, name: 'Alice', rank: 10 });
+		});
+
+		it('refuses NOT NULL without DEFAULT on a non-empty table', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Alice')`);
+
+			let caught: unknown = null;
+			try {
+				await db.exec(`ALTER TABLE items ADD COLUMN rank INTEGER NOT NULL`);
+			} catch (e) {
+				caught = e;
+			}
+
+			expect(caught).to.be.instanceOf(Error);
+			const message = (caught as Error).message;
+			expect(message).to.include(`'rank'`);
+			expect(message).to.include('main.items');
+			expect(message).to.not.include('__rekey_');
+		});
+
+		it('allows NOT NULL with literal DEFAULT on a non-empty table', async () => {
+			await db.exec(`
+				CREATE TABLE items (
+					id INTEGER PRIMARY KEY,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO items VALUES (1, 'Alice')`);
+
+			await db.exec(`ALTER TABLE items ADD COLUMN score INTEGER NOT NULL DEFAULT 0`);
+
+			const row = await db.get('select * from items where id = 1');
+			expect(row).to.deep.equal({ id: 1, name: 'Alice', score: 0 });
 		});
 	});
 
@@ -255,6 +327,97 @@ describe('Store ALTER TABLE', () => {
 		});
 	});
 
+	describe('RENAME TABLE', () => {
+		it('renames a populated table and preserves data', async () => {
+			await db.exec(`
+				CREATE TABLE t_rename (
+					id INTEGER PRIMARY KEY,
+					val TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO t_rename VALUES (1, 'a'), (2, 'b')`);
+
+			await db.exec(`ALTER TABLE t_rename RENAME TO t_renamed`);
+
+			const rows = await asyncIterableToArray(db.eval('select * from t_renamed order by id'));
+			expect(rows).to.have.lengthOf(2);
+			expect(rows[0]).to.deep.equal({ id: 1, val: 'a' });
+			expect(rows[1]).to.deep.equal({ id: 2, val: 'b' });
+		});
+
+		it('allows inserts under the new name after rename', async () => {
+			await db.exec(`
+				CREATE TABLE t_rename (
+					id INTEGER PRIMARY KEY,
+					val TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO t_rename VALUES (1, 'a')`);
+
+			await db.exec(`ALTER TABLE t_rename RENAME TO t_renamed`);
+			await db.exec(`INSERT INTO t_renamed VALUES (2, 'b')`);
+
+			const rows = await asyncIterableToArray(db.eval('select * from t_renamed order by id'));
+			expect(rows).to.have.lengthOf(2);
+			expect(rows[0]).to.deep.equal({ id: 1, val: 'a' });
+			expect(rows[1]).to.deep.equal({ id: 2, val: 'b' });
+		});
+
+		it('rejects renaming the old name after rename', async () => {
+			await db.exec(`
+				CREATE TABLE t_rename (
+					id INTEGER PRIMARY KEY,
+					val TEXT
+				) USING store
+			`);
+			await db.exec(`ALTER TABLE t_rename RENAME TO t_renamed`);
+
+			let caught: unknown = null;
+			try {
+				await db.exec(`SELECT * FROM t_rename`);
+			} catch (e) {
+				caught = e;
+			}
+			expect(caught).to.be.instanceOf(Error);
+		});
+
+		it('rejects rename to an existing table', async () => {
+			await db.exec(`
+				CREATE TABLE t_a (id INTEGER PRIMARY KEY) USING store
+			`);
+			await db.exec(`
+				CREATE TABLE t_b (id INTEGER PRIMARY KEY) USING store
+			`);
+
+			let caught: unknown = null;
+			try {
+				await db.exec(`ALTER TABLE t_a RENAME TO t_b`);
+			} catch (e) {
+				caught = e;
+			}
+			expect(caught).to.be.instanceOf(Error);
+			expect((caught as Error).message).to.match(/already exists/i);
+		});
+
+		it('rewrites the persistent catalog DDL under the new name', async () => {
+			const storeModule = new StoreModule(provider);
+			db.registerModule('store_rename_ddl', storeModule);
+
+			await db.exec(`
+				CREATE TABLE t_before (
+					id INTEGER PRIMARY KEY,
+					val TEXT
+				) USING store_rename_ddl
+			`);
+			await db.exec(`ALTER TABLE t_before RENAME TO t_after`);
+
+			const ddlStatements = await storeModule.loadAllDDL();
+			expect(ddlStatements).to.have.lengthOf(1);
+			expect(ddlStatements[0].toLowerCase()).to.include('t_after');
+			expect(ddlStatements[0].toLowerCase()).to.not.include('t_before');
+		});
+	});
+
 	describe('sequential ALTER TABLE operations', () => {
 		it('handles add, rename, then drop in sequence', async () => {
 			await db.exec(`
@@ -311,6 +474,92 @@ describe('Store ALTER TABLE', () => {
 
 			const row = await db.get('select * from items where id = 1');
 			expect(row).to.deep.equal({ id: 1, name: 'Widget' });
+		});
+	});
+
+	describe('ALTER PRIMARY KEY', () => {
+		it('re-keys an empty table', async () => {
+			await db.exec(`
+				CREATE TABLE t_pk (
+					id INTEGER PRIMARY KEY,
+					code INTEGER NOT NULL
+				) USING store
+			`);
+
+			await db.exec(`ALTER TABLE t_pk ALTER PRIMARY KEY (code)`);
+			await db.exec(`INSERT INTO t_pk VALUES (1, 100), (2, 200)`);
+
+			const row = await db.get('select id, code from t_pk where code = 100');
+			expect(row).to.deep.equal({ id: 1, code: 100 });
+		});
+
+		it('re-keys a populated table and preserves row count and data', async () => {
+			await db.exec(`
+				CREATE TABLE t_pk (
+					id INTEGER PRIMARY KEY,
+					code INTEGER NOT NULL,
+					name TEXT
+				) USING store
+			`);
+			await db.exec(`INSERT INTO t_pk VALUES (1, 100, 'Alice'), (2, 200, 'Bob'), (3, 300, 'Charlie')`);
+
+			await db.exec(`ALTER TABLE t_pk ALTER PRIMARY KEY (code)`);
+
+			const rows = await asyncIterableToArray(db.eval('select * from t_pk order by code'));
+			expect(rows).to.have.lengthOf(3);
+			expect(rows[0]).to.deep.equal({ id: 1, code: 100, name: 'Alice' });
+			expect(rows[2]).to.deep.equal({ id: 3, code: 300, name: 'Charlie' });
+
+			// Point lookup under the new PK
+			const hit = await db.get('select id, name from t_pk where code = 200');
+			expect(hit).to.deep.equal({ id: 2, name: 'Bob' });
+		});
+
+		it('rejects a re-key that would duplicate primary keys and leaves the table unchanged', async () => {
+			await db.exec(`
+				CREATE TABLE t_pk (
+					id INTEGER PRIMARY KEY,
+					category INTEGER NOT NULL
+				) USING store
+			`);
+			await db.exec(`INSERT INTO t_pk VALUES (1, 10), (2, 10), (3, 20)`);
+
+			let caught: unknown = null;
+			try {
+				await db.exec(`ALTER TABLE t_pk ALTER PRIMARY KEY (category)`);
+			} catch (e) {
+				caught = e;
+			}
+			expect(caught).to.be.instanceOf(Error);
+
+			// Table must still be readable under the original PK, with the same row count.
+			const cnt = await db.get('select count(*) as cnt from t_pk');
+			expect(cnt).to.deep.equal({ cnt: 3 });
+
+			const row = await db.get('select * from t_pk where id = 2');
+			expect(row).to.deep.equal({ id: 2, category: 10 });
+		});
+
+		it('rebuilds secondary indexes after a re-key', async () => {
+			await db.exec(`
+				CREATE TABLE t_pk (
+					id INTEGER PRIMARY KEY,
+					code INTEGER NOT NULL,
+					label TEXT
+				) USING store
+			`);
+			await db.exec(`CREATE INDEX idx_label ON t_pk (label)`);
+			await db.exec(`INSERT INTO t_pk VALUES (1, 100, 'alpha'), (2, 200, 'beta'), (3, 300, 'gamma')`);
+
+			await db.exec(`ALTER TABLE t_pk ALTER PRIMARY KEY (code)`);
+
+			// Query that benefits from the rebuilt secondary index
+			const row = await db.get(`select id, code from t_pk where label = 'beta'`);
+			expect(row).to.deep.equal({ id: 2, code: 200 });
+
+			// Full row set still intact
+			const rows = await asyncIterableToArray(db.eval('select * from t_pk order by code'));
+			expect(rows).to.have.lengthOf(3);
 		});
 	});
 

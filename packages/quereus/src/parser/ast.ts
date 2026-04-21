@@ -264,6 +264,7 @@ export interface CreateTableStmt extends AstNode {
 	moduleName?: string;   // Optional module name from USING clause
 	moduleArgs?: Record<string, SqlValue>; // Optional module arguments from USING clause
 	contextDefinitions?: MutationContextVar[]; // Optional mutation context variables
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // CREATE INDEX statement
@@ -275,6 +276,7 @@ export interface CreateIndexStmt extends AstNode {
 	columns: IndexedColumn[];
 	where?: Expression;
 	isUnique?: boolean;
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // CREATE ASSERTION statement
@@ -292,6 +294,7 @@ export interface CreateViewStmt extends AstNode {
 	columns?: string[];
 	select: SelectStmt;
 	isTemporary?: boolean;
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // ALTER TABLE statement
@@ -395,6 +398,7 @@ export interface ColumnDef {
 	name: string;
 	dataType?: string;
 	constraints: ColumnConstraint[];
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // Mutation context variable definition
@@ -426,6 +430,7 @@ export interface ColumnConstraint extends AstNode {
 	};
 	deferrable?: boolean;
 	initiallyDeferred?: boolean;
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // Table constraint (PRIMARY KEY, UNIQUE, etc.)
@@ -439,6 +444,7 @@ export interface TableConstraint extends AstNode {
 	foreignKey?: ForeignKeyClause;
 	deferrable?: boolean;
 	initiallyDeferred?: boolean;
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
 // Foreign key clause
@@ -452,7 +458,7 @@ export interface ForeignKeyClause {
 }
 
 // Foreign key action
-export type ForeignKeyAction = 'setNull' | 'setDefault' | 'cascade' | 'restrict' | 'noAction';
+export type ForeignKeyAction = 'setNull' | 'setDefault' | 'cascade' | 'restrict' | 'ignore';
 
 // Column in index definition
 export interface IndexedColumn {
@@ -468,7 +474,19 @@ export type AlterTableAction =
 	| { type: 'renameColumn', oldName: string, newName: string }
 	| { type: 'addColumn', column: ColumnDef }
 	| { type: 'dropColumn', name: string }
-	| { type: 'addConstraint', constraint: TableConstraint };
+	| { type: 'addConstraint', constraint: TableConstraint }
+	| { type: 'alterPrimaryKey', columns: Array<{ name: string; direction?: 'asc' | 'desc' }> }
+	| {
+		/**
+		 * ALTER COLUMN <name> [SET NOT NULL | DROP NOT NULL | SET DATA TYPE <type> | SET DEFAULT <expr> | DROP DEFAULT].
+		 * Each statement sets exactly one attribute — only one of the optional fields is populated.
+		 */
+		type: 'alterColumn',
+		columnName: string,
+		setNotNull?: boolean,          // true = SET NOT NULL, false = DROP NOT NULL
+		setDataType?: string,
+		setDefault?: Expression | null // null = DROP DEFAULT, Expression = SET DEFAULT
+	};
 
 // Add PragmaStmt interface
 export interface PragmaStmt extends AstNode {

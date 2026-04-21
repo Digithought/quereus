@@ -131,7 +131,7 @@ describe('Documentation Validation', () => {
 	});
 
 	describe('Core API surface matches documentation', () => {
-		it('should export Database with documented methods', () => {
+		it('should export Database with documented methods', async () => {
 			const db = new Database();
 			// Methods documented in README and usage.md
 			expect(db.exec).to.be.a('function');
@@ -142,7 +142,7 @@ describe('Documentation Validation', () => {
 			expect(db.onDataChange).to.be.a('function');
 			expect(db.onSchemaChange).to.be.a('function');
 			expect(db.registerModule).to.be.a('function');
-			db.close();
+			await db.close();
 		});
 	});
 });

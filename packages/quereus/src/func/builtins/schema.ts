@@ -33,6 +33,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 			isReadOnly: true,
 			isSet: false,
 			columns: [
+				{ name: 'schema', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'type', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'name', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
 				{ name: 'tbl_name', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
@@ -47,6 +48,8 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 			const schemaManager = db.schemaManager;
 
 			const processSchemaInstance = function* (schemaInstance: Schema) {
+				const schemaName = schemaInstance.name;
+
 				// Process Tables
 				for (const tableSchema of schemaInstance.getAllTables()) {
 					let createSql: string | null = null;
@@ -59,6 +62,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 					}
 
 					yield [
+						schemaName,
 						tableSchema.isView ? 'view' : 'table',
 						tableSchema.name,
 						tableSchema.name,
@@ -87,6 +91,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 							}
 
 							yield [
+								schemaName,
 								'index',
 								indexSchema.name,
 								tableSchema.name,
@@ -99,6 +104,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 				// Process Views
 				for (const viewSchema of schemaInstance.getAllViews()) {
 					yield [
+						schemaName,
 						'view',
 						viewSchema.name,
 						viewSchema.name,
@@ -109,6 +115,7 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 				// Process Functions
 				for (const funcSchema of schemaInstance._getAllFunctions()) {
 					yield [
+						schemaName,
 						'function',
 						funcSchema.name,
 						funcSchema.name,
@@ -117,16 +124,15 @@ export const schemaFunc = createIntegratedTableValuedFunction(
 				}
 			};
 
-			// Process main schema
-			yield* processSchemaInstance(schemaManager.getMainSchema());
-
-			// Process temp schema
-			yield* processSchemaInstance(schemaManager.getTempSchema());
+			// Process all schemas
+			for (const schemaInstance of schemaManager._getAllSchemas()) {
+				yield* processSchemaInstance(schemaInstance);
+			}
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {
 			// If schema introspection fails, yield an error row
-			yield ['error', 'schema_error', 'schema_error', `Failed to introspect schema: ${error.message}`];
+			yield ['', 'error', 'schema_error', 'schema_error', `Failed to introspect schema: ${error.message}`];
 		}
 	}
 );
@@ -185,6 +191,82 @@ export const tableInfoFunc = createIntegratedTableValuedFunction(
 	}
 );
 
+// Foreign key information function (table-valued function)
+export const foreignKeyInfoFunc = createIntegratedTableValuedFunction(
+	{
+		name: 'foreign_key_info',
+		numArgs: 1,
+		deterministic: false,
+		returnType: {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: false,
+			columns: [
+				{ name: 'id', type: { typeClass: 'scalar', logicalType: INTEGER_TYPE, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'name', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'table', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'from', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'referenced_table', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'referenced_schema', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: true, isReadOnly: true }, generated: true },
+				{ name: 'to', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'on_update', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'on_delete', type: { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'deferred', type: { typeClass: 'scalar', logicalType: INTEGER_TYPE, nullable: false, isReadOnly: true }, generated: true },
+				{ name: 'seq', type: { typeClass: 'scalar', logicalType: INTEGER_TYPE, nullable: false, isReadOnly: true }, generated: true },
+			],
+			keys: [],
+			rowConstraints: []
+		}
+	},
+	async function* (db: Database, tableName: SqlValue): AsyncIterable<Row> {
+		if (typeof tableName !== 'string') {
+			throw new QuereusError('foreign_key_info() requires a table name string argument', StatusCode.ERROR);
+		}
+
+		const table = db._findTable(tableName);
+		if (!table) {
+			throw new QuereusError(`Table '${tableName}' not found`, StatusCode.ERROR);
+		}
+
+		const foreignKeys = table.foreignKeys;
+		if (!foreignKeys) return;
+
+		for (let fkIdx = 0; fkIdx < foreignKeys.length; fkIdx++) {
+			const fk = foreignKeys[fkIdx];
+			for (let seq = 0; seq < fk.columns.length; seq++) {
+				const fromCol = table.columns[fk.columns[seq]];
+
+				// Resolve parent column name
+				let toColName: string;
+				if (fk.referencedColumnNames && fk.referencedColumnNames[seq]) {
+					toColName = fk.referencedColumnNames[seq];
+				} else {
+					const parentTable = db._findTable(fk.referencedTable);
+					if (parentTable) {
+						toColName = parentTable.columns[fk.referencedColumns[seq]].name;
+					} else {
+						toColName = String(fk.referencedColumns[seq]);
+					}
+				}
+
+				yield [
+					fkIdx,                              // id
+					fk.name ?? null,                    // name
+					table.name,                         // table
+					fromCol.name,                       // from
+					fk.referencedTable,                 // referenced_table
+					fk.referencedSchema ?? null,        // referenced_schema
+					toColName,                          // to
+					fk.onUpdate,                        // on_update
+					fk.onDelete,                        // on_delete
+					fk.deferred ? 1 : 0,                // deferred
+					seq,                                 // seq
+				];
+			}
+		}
+	}
+);
+
 export function classifyFunction(funcSchema: FunctionSchema): string {
 	if (isWindowFunction(funcSchema.name)) return 'window';
 	if (isScalarFunctionSchema(funcSchema)) return 'scalar';
@@ -233,15 +315,12 @@ export const functionInfoFunc = createIntegratedTableValuedFunction(
 		try {
 			const schemaManager = db.schemaManager;
 
-			const processFunctions = function* (schemaInstance: Schema) {
+			for (const schemaInstance of schemaManager._getAllSchemas()) {
 				for (const funcSchema of schemaInstance._getAllFunctions()) {
 					if (nameFilter !== null && funcSchema.name.toLowerCase() !== nameFilter) continue;
 					yield* yieldFunctionRow(funcSchema);
 				}
-			};
-
-			yield* processFunctions(schemaManager.getMainSchema());
-			yield* processFunctions(schemaManager.getTempSchema());
+			}
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} catch (error: any) {

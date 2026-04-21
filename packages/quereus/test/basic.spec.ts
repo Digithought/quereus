@@ -452,7 +452,7 @@ describe(`Basic query`, () => {
 			let errorThrown = false;
 			try {
 				await stmt.run();
-			} catch (e) {
+			} catch {
 				errorThrown = true;
 			}
 			await stmt.finalize();

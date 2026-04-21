@@ -99,6 +99,14 @@ export interface ChangeSet {
 /**
  * Result of applying changes from a peer.
  */
+/** Rejection detail for a change that failed server-side validation. */
+export interface ApplyRejection {
+  reason: string;
+  code?: string;
+  table?: string;
+  column?: string;
+}
+
 export interface ApplyResult {
   /** Changes successfully applied (winner was remote) */
   applied: number;
@@ -108,6 +116,8 @@ export interface ApplyResult {
   conflicts: number;
   /** Number of transactions processed */
   transactions: number;
+  /** Changes rejected by server-side validation hooks */
+  rejected?: ApplyRejection[];
 }
 
 /**
@@ -325,6 +335,35 @@ export interface PeerSyncState {
 }
 
 // ============================================================================
+// Conflict Resolution
+// ============================================================================
+
+/**
+ * Context passed to a custom conflict resolver for a single column conflict.
+ */
+export interface ConflictContext {
+  readonly schema: string;
+  readonly table: string;
+  readonly pk: SqlValue[];
+  readonly column: string;
+  readonly localValue: SqlValue;
+  readonly localHlc: HLC;
+  readonly remoteValue: SqlValue;
+  readonly remoteHlc: HLC;
+}
+
+/**
+ * Result of a conflict resolution: keep the local value or accept the remote one.
+ */
+export type ConflictResolution = 'local' | 'remote';
+
+/**
+ * A function that decides which side wins when a remote column change
+ * conflicts with an existing local value.
+ */
+export type ConflictResolver = (ctx: ConflictContext) => ConflictResolution;
+
+// ============================================================================
 // Configuration
 // ============================================================================
 
@@ -356,6 +395,14 @@ export interface SyncConfig {
    * Pre-configured site ID. If not provided, one will be generated.
    */
   siteId?: SiteId;
+
+  /**
+   * Custom conflict resolver for column-level conflicts.
+   * When absent, the fast-path HLC comparison (LWW) is used directly.
+   * When present, both the local and remote values/HLCs are fetched and
+   * passed to this function for every conflicting column write.
+   */
+  conflictResolver?: ConflictResolver;
 }
 
 /**

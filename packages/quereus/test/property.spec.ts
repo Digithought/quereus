@@ -266,6 +266,58 @@ describe('Property-Based Tests', () => {
 				}
 			}), { numRuns: 200 });
 		});
+
+		it('should handle JSON edge values through json_extract', async () => {
+			// Deeply nested object (12 levels)
+			let deepObj: any = { value: 42 };
+			for (let i = 0; i < 12; i++) {
+				deepObj = { nested: deepObj };
+			}
+
+			// Large array (1000 elements)
+			const largeArray = Array.from({ length: 1000 }, (_, i) => i);
+
+			// Object with empty-string key
+			const emptyKeyObj = { '': 'empty-key-value', 'normal': 'value' };
+
+			// Mixed-type values in one object
+			const mixedObj = {
+				str: 'hello',
+				num: 42,
+				float: 3.14,
+				bool: true,
+				nil: null,
+				arr: [1, 'two', null, false],
+				obj: { a: 1 },
+			};
+
+			const edgeCases: Array<{ label: string; value: any }> = [
+				{ label: 'deeply nested object', value: deepObj },
+				{ label: 'large array (1000 elements)', value: largeArray },
+				{ label: 'empty-string key object', value: emptyKeyObj },
+				{ label: 'mixed-type object', value: mixedObj },
+				{ label: 'empty object', value: {} },
+				{ label: 'empty array', value: [] },
+				{ label: 'nested arrays', value: [[1, 2], [3, [4, 5]]] },
+			];
+
+			for (const { label, value } of edgeCases) {
+				const jsonStr = JSON.stringify(value);
+				let resultRow: Record<string, any> | undefined;
+				for await (const row of db.eval("select json_extract(?, '$') as result", [jsonStr])) {
+					resultRow = row;
+					break;
+				}
+
+				expect(resultRow).to.not.be.undefined;
+				// json_extract returns objects/arrays as JSON strings
+				const parsed = typeof resultRow!.result === 'string'
+					? JSON.parse(resultRow!.result)
+					: resultRow!.result;
+				const isEqual = deepEqualIgnoringZeroSign(parsed, value);
+				expect(isEqual, `JSON edge roundtrip failed for ${label}`).to.be.true;
+			}
+		});
 	});
 
 	// --- 4. Mixed Type Arithmetic Edge Cases ---
@@ -645,9 +697,424 @@ describe('Property-Based Tests', () => {
 				}
 			}), { numRuns: 100 });
 		});
+
+		it('should roundtrip integer boundary values', async () => {
+			await db.exec('CREATE TABLE rt_int_bounds (id INTEGER PRIMARY KEY, v INTEGER) USING memory');
+
+			const boundaries = [
+				Number.MAX_SAFE_INTEGER,   // 2^53-1
+				Number.MIN_SAFE_INTEGER,   // -(2^53-1)
+				0,
+				-1,
+				1,
+				2 ** 31 - 1,               // INT32_MAX
+				-(2 ** 31),                 // INT32_MIN
+				2 ** 32 - 1,               // UINT32_MAX
+			];
+
+			for (const val of boundaries) {
+				await db.exec('DELETE FROM rt_int_bounds');
+				const stmt = db.prepare('INSERT INTO rt_int_bounds (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_int_bounds')) {
+					expect(row.v).to.equal(val,
+						`Integer boundary roundtrip failed for ${val}`);
+				}
+			}
+		});
+
+		it('should roundtrip bigint boundary values', async () => {
+			await db.exec('CREATE TABLE rt_bigint_bounds (id INTEGER PRIMARY KEY, v INTEGER) USING memory');
+
+			const boundaries: bigint[] = [
+				BigInt('9223372036854775807'),   // 2^63-1 (INT64_MAX)
+				BigInt('-9223372036854775808'),   // -2^63 (INT64_MIN)
+				0n,
+				1n,
+				-1n,
+				BigInt(Number.MAX_SAFE_INTEGER),
+				BigInt(Number.MIN_SAFE_INTEGER),
+			];
+
+			for (const val of boundaries) {
+				await db.exec('DELETE FROM rt_bigint_bounds');
+				const stmt = db.prepare('INSERT INTO rt_bigint_bounds (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_bigint_bounds')) {
+					// Values within safe integer range may come back as number
+					if (val >= BigInt(Number.MIN_SAFE_INTEGER) && val <= BigInt(Number.MAX_SAFE_INTEGER)) {
+						const actual = typeof row.v === 'bigint' ? row.v : BigInt(row.v as number);
+						expect(actual).to.equal(val,
+							`BigInt boundary roundtrip failed for ${val}: got ${row.v} (${typeof row.v})`);
+					} else {
+						expect(row.v).to.equal(val,
+							`BigInt boundary roundtrip failed for ${val}`);
+					}
+				}
+			}
+		});
+
+		it('should roundtrip special and edge-case strings', async () => {
+			await db.exec('CREATE TABLE rt_str_edge (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+
+			const edgeStrings = [
+				'',                                         // empty string
+				'   ',                                      // whitespace only
+				'\t\n\r',                                   // control whitespace
+				'hello\0world',                             // embedded NUL
+				'\0',                                       // just NUL
+				'a'.repeat(10000),                          // 10K chars
+				'123',                                      // numeric-looking
+				'1.5e10',                                   // scientific notation string
+				'NaN',                                      // NaN string
+				'Infinity',                                 // Infinity string
+				'-Infinity',                                // negative infinity string
+				'0',                                        // zero string
+				'-0',                                       // negative zero string
+				'\u{1F600}',                                // emoji (😀)
+				'\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}', // ZWJ family emoji
+				'\u200F\u200E',                             // RTL/LTR marks
+				'\u200B\u200C\u200D',                       // zero-width chars
+				'مرحبا',                                    // Arabic (RTL)
+				'SELECT * FROM t; DROP TABLE t; --',        // SQL injection attempt
+				"it's a test",                              // single quote
+				'say "hello"',                              // double quotes
+			];
+
+			for (const val of edgeStrings) {
+				await db.exec('DELETE FROM rt_str_edge');
+				const stmt = db.prepare('INSERT INTO rt_str_edge (id, v) VALUES (1, ?)');
+				try { await stmt.run([val]); } finally { await stmt.finalize(); }
+
+				for await (const row of db.eval('SELECT v FROM rt_str_edge')) {
+					expect(row.v).to.equal(val,
+						`String roundtrip failed for ${JSON.stringify(val)}`);
+				}
+			}
+		});
+
+		it('should roundtrip empty blob', async () => {
+			await db.exec('CREATE TABLE rt_blob_empty (id INTEGER PRIMARY KEY, v BLOB) USING memory');
+
+			const emptyBlob = new Uint8Array(0);
+			const stmt = db.prepare('INSERT INTO rt_blob_empty (id, v) VALUES (1, ?)');
+			try { await stmt.run([emptyBlob]); } finally { await stmt.finalize(); }
+
+			for await (const row of db.eval('SELECT v FROM rt_blob_empty')) {
+				expect(row.v).to.be.instanceOf(Uint8Array);
+				expect((row.v as Uint8Array).length).to.equal(0,
+					'Empty blob should roundtrip with length 0');
+			}
+		});
+
+		it('should roundtrip NULL-heavy rows', async () => {
+			await db.exec(`CREATE TABLE rt_nulls (
+				id INTEGER PRIMARY KEY,
+				int_col INTEGER null,
+				real_col REAL null,
+				text_col TEXT null,
+				blob_col BLOB null,
+				any_col ANY null
+			) USING memory`);
+
+			// Insert a row where every nullable column is NULL
+			const stmt = db.prepare(
+				'INSERT INTO rt_nulls (id, int_col, real_col, text_col, blob_col, any_col) VALUES (1, ?, ?, ?, ?, ?)'
+			);
+			try { await stmt.run([null, null, null, null, null]); } finally { await stmt.finalize(); }
+
+			for await (const row of db.eval('SELECT int_col, real_col, text_col, blob_col, any_col FROM rt_nulls')) {
+				expect(row.int_col).to.be.null;
+				expect(row.real_col).to.be.null;
+				expect(row.text_col).to.be.null;
+				expect(row.blob_col).to.be.null;
+				expect(row.any_col).to.be.null;
+			}
+
+			// Also test with multiple all-NULL rows
+			await db.exec('DELETE FROM rt_nulls');
+			for (let i = 1; i <= 10; i++) {
+				const s = db.prepare(
+					'INSERT INTO rt_nulls (id, int_col, real_col, text_col, blob_col, any_col) VALUES (?, ?, ?, ?, ?, ?)'
+				);
+				try { await s.run([i, null, null, null, null, null]); } finally { await s.finalize(); }
+			}
+
+			let rowCount = 0;
+			for await (const row of db.eval('SELECT * FROM rt_nulls')) {
+				rowCount++;
+				expect(row.int_col).to.be.null;
+				expect(row.real_col).to.be.null;
+				expect(row.text_col).to.be.null;
+				expect(row.blob_col).to.be.null;
+				expect(row.any_col).to.be.null;
+			}
+			expect(rowCount).to.equal(10, 'Should have 10 all-NULL rows');
+		});
 	});
 
-	// --- 9. ORDER BY Stability ---
+	// --- 9. Temporal Roundtrip ---
+	describe('Temporal Roundtrip', () => {
+		it('should roundtrip DATE values through date(text(date))', async () => {
+			// Generate valid year/month/day combinations
+			const dateArb = fc.tuple(
+				fc.integer({ min: 1970, max: 2100 }),
+				fc.integer({ min: 1, max: 12 }),
+				fc.integer({ min: 1, max: 28 }) // Use 28 to avoid month-length issues
+			).map(([y, m, d]) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+
+			await fc.assert(fc.asyncProperty(dateArb, async (dateStr) => {
+				let result: any;
+				for await (const row of db.eval(`select date('${dateStr}') as r`)) {
+					result = row.r;
+					break;
+				}
+				// date() should return the same normalized ISO date
+				expect(result).to.equal(dateStr,
+					`DATE roundtrip failed for ${dateStr}: got ${result}`);
+			}), { numRuns: 100 });
+		});
+
+		it('should roundtrip TIME values through time(text)', async () => {
+			const timeArb = fc.tuple(
+				fc.integer({ min: 0, max: 23 }),
+				fc.integer({ min: 0, max: 59 }),
+				fc.integer({ min: 0, max: 59 })
+			).map(([h, m, s]) =>
+				`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+			);
+
+			await fc.assert(fc.asyncProperty(timeArb, async (timeStr) => {
+				let result: any;
+				for await (const row of db.eval(`select time('${timeStr}') as r`)) {
+					result = row.r;
+					break;
+				}
+				expect(result).to.equal(timeStr,
+					`TIME roundtrip failed for ${timeStr}: got ${result}`);
+			}), { numRuns: 100 });
+		});
+
+		it('should roundtrip DATE boundary values', async () => {
+			const boundaryDates = [
+				'0001-01-01',    // earliest representable date
+				'9999-12-31',    // latest representable date
+				'2000-02-29',    // leap year (2000 is leap)
+				'1900-02-28',    // non-leap year (1900 is not leap despite /100)
+				'2024-02-29',    // recent leap year
+				'1970-01-01',    // Unix epoch
+			];
+
+			for (const dateStr of boundaryDates) {
+				let result: any;
+				for await (const row of db.eval(`select date('${dateStr}') as r`)) {
+					result = row.r;
+					break;
+				}
+				expect(result).to.equal(dateStr,
+					`DATE boundary roundtrip failed for ${dateStr}: got ${result}`);
+			}
+		});
+
+		it('should roundtrip TIME boundary values', async () => {
+			const boundaryTimes: Array<[string, string]> = [
+				['00:00:00', '00:00:00'],             // midnight
+				['23:59:59', '23:59:59'],             // last second of day
+				['12:00:00', '12:00:00'],             // noon
+				['12:00:00.000', '12:00:00'],         // fractional zeros normalize
+				['23:59:59.999', '23:59:59.999'],     // last millisecond
+			];
+
+			for (const [timeStr, expected] of boundaryTimes) {
+				let result: any;
+				for await (const row of db.eval(`select time('${timeStr}') as r`)) {
+					result = row.r;
+					break;
+				}
+				expect(result).to.equal(expected,
+					`TIME boundary roundtrip failed for ${timeStr}: got ${result}`);
+			}
+		});
+
+		it('should roundtrip DATETIME boundary values', async () => {
+			const boundaryDatetimes: Array<[string, string]> = [
+				['0001-01-01 00:00:00', '0001-01-01T00:00:00'],
+				['9999-12-31 23:59:59', '9999-12-31T23:59:59'],
+				['1970-01-01 00:00:00', '1970-01-01T00:00:00'],
+				['2000-02-29 12:30:45', '2000-02-29T12:30:45'],
+			];
+
+			for (const [dtStr, expected] of boundaryDatetimes) {
+				let result: any;
+				for await (const row of db.eval(`select datetime('${dtStr}') as r`)) {
+					result = row.r;
+					break;
+				}
+				expect(result).to.equal(expected,
+					`DATETIME boundary roundtrip failed for ${dtStr}: got ${result}`);
+			}
+		});
+	});
+
+	// --- 10. Conversion Idempotency ---
+	describe('Conversion Idempotency', () => {
+		it('integer(integer(x)) = integer(x) for valid integers', async () => {
+			await fc.assert(fc.asyncProperty(fc.integer({ min: -1000000, max: 1000000 }), async (val) => {
+				let single: any;
+				for await (const row of db.eval(`select integer(${val}) as r`)) {
+					single = row.r;
+					break;
+				}
+				let double: any;
+				for await (const row of db.eval(`select integer(integer(${val})) as r`)) {
+					double = row.r;
+					break;
+				}
+				expect(double).to.equal(single,
+					`Idempotency violated: integer(integer(${val})) = ${double}, integer(${val}) = ${single}`);
+			}), { numRuns: 100 });
+		});
+
+		it('real(real(x)) = real(x) for valid reals', async () => {
+			await fc.assert(fc.asyncProperty(
+				fc.float({ min: -1000, max: 1000, noNaN: true, noDefaultInfinity: true }),
+				async (val) => {
+					let single: any;
+					for await (const row of db.eval(`select real(${val}) as r`)) {
+						single = row.r;
+						break;
+					}
+					let double: any;
+					for await (const row of db.eval(`select real(real(${val})) as r`)) {
+						double = row.r;
+						break;
+					}
+					if (single === null) {
+						expect(double).to.be.null;
+					} else if (typeof single === 'number' && single === 0) {
+						expect(double).to.equal(0);
+					} else {
+						expect(double).to.equal(single,
+							`Idempotency violated: real(real(${val})) = ${double}, real(${val}) = ${single}`);
+					}
+				}
+			), { numRuns: 100 });
+		});
+
+		it('text(text(x)) = text(x) for strings', async () => {
+			await fc.assert(fc.asyncProperty(
+				fc.string({ minLength: 0, maxLength: 50 }),
+				async (val) => {
+					// Use parameterized query to avoid SQL injection issues with special chars
+					let single: any;
+					for await (const row of db.eval('select text(?) as r', [val])) {
+						single = row.r;
+						break;
+					}
+					let double: any;
+					for await (const row of db.eval('select text(text(?)) as r', [val])) {
+						double = row.r;
+						break;
+					}
+					expect(double).to.equal(single,
+						`Idempotency violated for text('${val}')`);
+				}
+			), { numRuns: 100 });
+		});
+	});
+
+	// --- 11. Transaction Isolation ---
+	describe('Transaction Isolation', () => {
+		it('should never see partial transaction state via read after commit', async () => {
+			await db.exec('CREATE TABLE iso_t (id INTEGER PRIMARY KEY, val INTEGER) USING memory');
+
+			// Seed initial rows
+			for (let i = 1; i <= 5; i++) {
+				await db.exec(`INSERT INTO iso_t VALUES (${i}, ${i * 10})`);
+			}
+
+			await fc.assert(fc.asyncProperty(
+				// Generate a random set of mutations per transaction
+				fc.array(fc.tuple(
+					fc.constantFrom('insert', 'update', 'delete'),
+					fc.integer({ min: 1, max: 20 }),
+					fc.integer({ min: 0, max: 100 }),
+				), { minLength: 1, maxLength: 5 }),
+				async (mutations) => {
+					// Start explicit transaction
+					await db.exec('BEGIN');
+
+					try {
+						for (const [op, id, val] of mutations) {
+							try {
+								if (op === 'insert') {
+									await db.exec(`INSERT OR IGNORE INTO iso_t VALUES (${id}, ${val})`);
+								} else if (op === 'update') {
+									await db.exec(`UPDATE iso_t SET val = ${val} WHERE id = ${id}`);
+								} else {
+									await db.exec(`DELETE FROM iso_t WHERE id = ${id}`);
+								}
+							} catch {
+								// Constraint violations are expected — continue
+							}
+						}
+					} finally {
+						await db.exec('ROLLBACK');
+					}
+
+					// After rollback, all rows should match their original values
+					const rows: Array<{ id: number; val: number }> = [];
+					for await (const row of db.eval('SELECT id, val FROM iso_t ORDER BY id')) {
+						rows.push(row as { id: number; val: number });
+					}
+
+					// Exactly the original 5 rows with original values
+					expect(rows).to.have.length(5);
+					for (const row of rows) {
+						expect(row.val).to.equal(row.id * 10,
+							`Row ${row.id} has wrong value after rollback: expected ${row.id * 10}, got ${row.val}`);
+					}
+				}
+			), { numRuns: 50 });
+		});
+
+		it('should preserve schema DDL through rollback', async () => {
+			await fc.assert(fc.asyncProperty(
+				fc.integer({ min: 1, max: 100 }),
+				async (tableId) => {
+					const tableName = `ddl_test_${tableId}`;
+
+					// Ensure clean state
+					await db.exec(`DROP TABLE IF EXISTS ${tableName}`);
+
+					// Create in committed context
+					await db.exec(`CREATE TABLE ${tableName} (id INTEGER PRIMARY KEY, val TEXT)`);
+
+					// Start transaction, insert data, rollback
+					await db.exec('BEGIN');
+					try {
+						await db.exec(`INSERT INTO ${tableName} VALUES (1, 'test')`);
+					} finally {
+						await db.exec('ROLLBACK');
+					}
+
+					// Table should still exist but be empty
+					const rows: unknown[] = [];
+					for await (const row of db.eval(`SELECT * FROM ${tableName}`)) {
+						rows.push(row);
+					}
+					expect(rows).to.have.length(0);
+
+					// Cleanup
+					await db.exec(`DROP TABLE ${tableName}`);
+				}
+			), { numRuns: 20 });
+		});
+	});
+
+	// --- 12. ORDER BY Stability ---
 	describe('ORDER BY Stability', () => {
 		it('should produce identical results for repeated ORDER BY on same data', async () => {
 			await db.exec('CREATE TABLE stab_t (id INTEGER PRIMARY KEY, sort_key INTEGER, payload TEXT) USING memory');
@@ -679,6 +1146,222 @@ describe('Property-Based Tests', () => {
 					expect(run1).to.deep.equal(run2, 'ORDER BY should produce identical results across repeated executions');
 				}
 			), { numRuns: 100 });
+		});
+	});
+
+	// --- 13. Window Function Invariants ---
+	describe('Window Function Invariants', () => {
+		it('row_number() produces contiguous 1..N (unpartitioned)', async () => {
+			await db.exec('CREATE TABLE wf_rn (id INTEGER PRIMARY KEY, val INTEGER) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(fc.integer({ min: -1000, max: 1000 }), { minLength: 1, maxLength: 50 }),
+				async (values) => {
+					await db.exec('DELETE FROM wf_rn');
+					const stmt = db.prepare('INSERT INTO wf_rn (id, val) VALUES (?, ?)');
+					try {
+						for (let i = 0; i < values.length; i++) {
+							await stmt.run([i + 1, values[i]]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					const rowNums: number[] = [];
+					for await (const row of db.eval('select row_number() over (order by id) as rn from wf_rn')) {
+						rowNums.push(row.rn as number);
+					}
+
+					expect(rowNums.length).to.equal(values.length);
+					const expected = Array.from({ length: values.length }, (_, i) => i + 1);
+					expect(rowNums).to.deep.equal(expected,
+						`row_number() should produce contiguous 1..${values.length}, got ${JSON.stringify(rowNums)}`);
+				}
+			), { numRuns: 50 });
+		});
+
+		it('partitioned row_number() produces 1..K per partition', async () => {
+			await db.exec('CREATE TABLE wf_prn (id INTEGER PRIMARY KEY, grp INTEGER NOT NULL, val INTEGER) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(
+					fc.record({
+						grp: fc.integer({ min: 1, max: 3 }),
+						val: fc.integer({ min: -1000, max: 1000 }),
+					}),
+					{ minLength: 1, maxLength: 50 }
+				),
+				async (rows) => {
+					await db.exec('DELETE FROM wf_prn');
+					const stmt = db.prepare('INSERT INTO wf_prn (id, grp, val) VALUES (?, ?, ?)');
+					try {
+						for (let i = 0; i < rows.length; i++) {
+							await stmt.run([i + 1, rows[i].grp, rows[i].val]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					const results: Array<{ grp: number; rn: number }> = [];
+					for await (const row of db.eval(
+						'select grp, row_number() over (partition by grp order by id) as rn from wf_prn'
+					)) {
+						results.push({ grp: row.grp as number, rn: row.rn as number });
+					}
+
+					// Group results by partition
+					const partitions = new Map<number, number[]>();
+					for (const r of results) {
+						const arr = partitions.get(r.grp) ?? [];
+						arr.push(r.rn);
+						partitions.set(r.grp, arr);
+					}
+
+					// Each partition should have contiguous 1..K
+					for (const [grp, rns] of partitions) {
+						const expected = Array.from({ length: rns.length }, (_, i) => i + 1);
+						expect(rns).to.deep.equal(expected,
+							`Partition ${grp}: row_number() should be 1..${rns.length}, got ${JSON.stringify(rns)}`);
+					}
+				}
+			), { numRuns: 50 });
+		});
+
+		it('running sum via window equals cumulative sum', async () => {
+			await db.exec('CREATE TABLE wf_rsum (id INTEGER PRIMARY KEY, val INTEGER NOT NULL) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(fc.integer({ min: -100, max: 100 }), { minLength: 1, maxLength: 50 }),
+				async (values) => {
+					await db.exec('DELETE FROM wf_rsum');
+					const stmt = db.prepare('INSERT INTO wf_rsum (id, val) VALUES (?, ?)');
+					try {
+						for (let i = 0; i < values.length; i++) {
+							await stmt.run([i + 1, values[i]]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					const windowSums: number[] = [];
+					for await (const row of db.eval(
+						'select val, sum(val) over (order by id rows between unbounded preceding and current row) as running from wf_rsum order by id'
+					)) {
+						windowSums.push(row.running as number);
+					}
+
+					// Compute expected cumulative sums independently
+					const expectedSums: number[] = [];
+					let cumSum = 0;
+					for (const v of values) {
+						cumSum += v;
+						expectedSums.push(cumSum);
+					}
+
+					expect(windowSums).to.deep.equal(expectedSums,
+						`Running sum mismatch: window=${JSON.stringify(windowSums)}, expected=${JSON.stringify(expectedSums)}`);
+				}
+			), { numRuns: 50 });
+		});
+
+		it('total window sum equals aggregate sum', async () => {
+			await db.exec('CREATE TABLE wf_tsum (id INTEGER PRIMARY KEY, val INTEGER NOT NULL) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(fc.integer({ min: -100, max: 100 }), { minLength: 1, maxLength: 50 }),
+				async (values) => {
+					await db.exec('DELETE FROM wf_tsum');
+					const stmt = db.prepare('INSERT INTO wf_tsum (id, val) VALUES (?, ?)');
+					try {
+						for (let i = 0; i < values.length; i++) {
+							await stmt.run([i + 1, values[i]]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					// Get aggregate sum
+					let aggSum: number | null = null;
+					for await (const row of db.eval('select sum(val) as s from wf_tsum')) {
+						aggSum = row.s as number;
+					}
+
+					// Get window sum on every row (unpartitioned, no order = full frame)
+					const windowSums: number[] = [];
+					for await (const row of db.eval('select sum(val) over () as wsum from wf_tsum')) {
+						windowSums.push(row.wsum as number);
+					}
+
+					expect(windowSums.length).to.equal(values.length);
+					for (let i = 0; i < windowSums.length; i++) {
+						expect(windowSums[i]).to.equal(aggSum,
+							`Row ${i}: window sum(val) over () = ${windowSums[i]}, but aggregate sum = ${aggSum}`);
+					}
+				}
+			), { numRuns: 50 });
+		});
+
+		it('rank() and dense_rank() tie consistency', async () => {
+			await db.exec('CREATE TABLE wf_rank (id INTEGER PRIMARY KEY, sort_key INTEGER NOT NULL) USING memory');
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(fc.integer({ min: 1, max: 10 }), { minLength: 2, maxLength: 50 }),
+				async (keys) => {
+					await db.exec('DELETE FROM wf_rank');
+					const stmt = db.prepare('INSERT INTO wf_rank (id, sort_key) VALUES (?, ?)');
+					try {
+						for (let i = 0; i < keys.length; i++) {
+							await stmt.run([i + 1, keys[i]]);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+
+					const results: Array<{ sort_key: number; rnk: number; drnk: number }> = [];
+					for await (const row of db.eval(
+						'select sort_key, rank() over (order by sort_key) as rnk, dense_rank() over (order by sort_key) as drnk from wf_rank'
+					)) {
+						results.push({
+							sort_key: row.sort_key as number,
+							rnk: row.rnk as number,
+							drnk: row.drnk as number,
+						});
+					}
+
+					// Verify: rows with the same sort_key must have the same rank and dense_rank
+					const rankByKey = new Map<number, number>();
+					const denseRankByKey = new Map<number, number>();
+					for (const r of results) {
+						if (rankByKey.has(r.sort_key)) {
+							expect(r.rnk).to.equal(rankByKey.get(r.sort_key),
+								`rank() inconsistent for sort_key=${r.sort_key}`);
+						} else {
+							rankByKey.set(r.sort_key, r.rnk);
+						}
+						if (denseRankByKey.has(r.sort_key)) {
+							expect(r.drnk).to.equal(denseRankByKey.get(r.sort_key),
+								`dense_rank() inconsistent for sort_key=${r.sort_key}`);
+						} else {
+							denseRankByKey.set(r.sort_key, r.drnk);
+						}
+					}
+
+					// Verify: dense_rank values have no gaps (should be 1, 2, 3, ...)
+					const distinctDenseRanks = [...new Set(results.map(r => r.drnk))].sort((a, b) => a - b);
+					const expectedDenseRanks = Array.from({ length: distinctDenseRanks.length }, (_, i) => i + 1);
+					expect(distinctDenseRanks).to.deep.equal(expectedDenseRanks,
+						`dense_rank() should have no gaps: got ${JSON.stringify(distinctDenseRanks)}`);
+
+					// Verify: rank() of first occurrence matches position
+					// rank(x) = 1 + count of rows with sort_key < x
+					const sortedKeys = [...keys].sort((a, b) => a - b);
+					for (const [key, rnk] of rankByKey) {
+						const expectedRank = sortedKeys.indexOf(key) + 1;
+						expect(rnk).to.equal(expectedRank,
+							`rank() for sort_key=${key}: expected ${expectedRank}, got ${rnk}`);
+					}
+				}
+			), { numRuns: 50 });
 		});
 	});
 

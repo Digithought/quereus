@@ -15,6 +15,7 @@ import type * as AST from '../parser/ast.js';
 import { ConflictResolution } from '../common/constants.js';
 import { KEYWORDS } from '../parser/lexer.js';
 import { uint8ArrayToHex } from '../util/serialization.js';
+import type { SqlValue } from '../common/types.js';
 
 // --- Identifier Quoting Logic ---
 
@@ -714,6 +715,9 @@ export function createIndexToString(stmt: AST.CreateIndexStmt): string {
 		parts.push('where', expressionToString(stmt.where));
 	}
 
+	const indexTagStr = tagsClauseToString(stmt.tags);
+	if (indexTagStr) parts.push(indexTagStr.trimStart());
+
 	return parts.join(' ');
 }
 
@@ -730,6 +734,9 @@ export function createViewToString(stmt: AST.CreateViewStmt): string {
 	}
 
 	parts.push('as', selectToString(stmt.select));
+
+	const viewTagStr = tagsClauseToString(stmt.tags);
+	if (viewTagStr) parts.push(viewTagStr.trimStart());
 
 	return parts.join(' ');
 }
@@ -751,6 +758,34 @@ function alterTableToString(stmt: AST.AlterTableStmt): string {
 			return `alter table ${table} drop column ${quoteIdentifier(stmt.action.name)}`;
 		case 'addConstraint':
 			return `alter table ${table} add ${tableConstraintsToString([stmt.action.constraint])}`;
+		case 'alterPrimaryKey': {
+			const cols = stmt.action.columns
+				.map(c => {
+					let s = quoteIdentifier(c.name);
+					if (c.direction === 'desc') s += ' desc';
+					return s;
+				})
+				.join(', ');
+			return `alter table ${table} alter primary key (${cols})`;
+		}
+		case 'alterColumn': {
+			const colName = quoteIdentifier(stmt.action.columnName);
+			const a = stmt.action;
+			if (a.setDataType !== undefined) {
+				return `alter table ${table} alter column ${colName} set data type ${a.setDataType}`;
+			}
+			if (a.setDefault !== undefined) {
+				return a.setDefault === null
+					? `alter table ${table} alter column ${colName} drop default`
+					: `alter table ${table} alter column ${colName} set default ${expressionToString(a.setDefault)}`;
+			}
+			if (a.setNotNull !== undefined) {
+				return a.setNotNull
+					? `alter table ${table} alter column ${colName} set not null`
+					: `alter table ${table} alter column ${colName} drop not null`;
+			}
+			return `alter table ${table} alter column ${colName}`;
+		}
 	}
 }
 
@@ -895,6 +930,7 @@ function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string 
 				if (c.generated!.stored) s += ' stored';
 				break;
 		}
+		s += tagsClauseToString(c.tags);
 		return s;
 	}).filter(s => s.length > 0).join(' ');
 }
@@ -929,6 +965,7 @@ function tableConstraintsToString(constraints: AST.TableConstraint[]): string {
 				}
 				break;
 		}
+		s += tagsClauseToString(c.tags);
 		return s;
 	}).filter(s => s.length > 0).join(', ');
 }
@@ -939,8 +976,26 @@ function foreignKeyActionToString(action: AST.ForeignKeyAction): string {
 		case 'setDefault': return 'set default';
 		case 'cascade': return 'cascade';
 		case 'restrict': return 'restrict';
-		case 'noAction': return 'no action';
+		case 'ignore': return 'no action';
 	}
+}
+
+/** Formats a tag value as a SQL literal */
+function tagValueToString(value: SqlValue): string {
+	if (value === null) return 'null';
+	if (typeof value === 'boolean') return value ? 'true' : 'false';
+	if (typeof value === 'number') return String(value);
+	if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+	return String(value);
+}
+
+/** Formats a tags record as a WITH TAGS (...) clause */
+function tagsClauseToString(tags: Record<string, SqlValue> | undefined): string {
+	if (!tags || Object.keys(tags).length === 0) return '';
+	const entries = Object.entries(tags)
+		.map(([key, value]) => `${quoteIdentifier(key)} = ${tagValueToString(value)}`)
+		.join(', ');
+	return ` with tags (${entries})`;
 }
 
 export function columnDefToString(col: AST.ColumnDef): string {
@@ -948,6 +1003,7 @@ export function columnDefToString(col: AST.ColumnDef): string {
 	if (col.dataType) colDef += ` ${col.dataType}`;
 	const constraints = columnConstraintsToString(col.constraints);
 	if (constraints) colDef += ` ${constraints}`;
+	colDef += tagsClauseToString(col.tags);
 	return colDef;
 }
 
@@ -988,6 +1044,10 @@ export function createTableToString(stmt: AST.CreateTableStmt): string {
 		}).join(', ');
 		parts.push('with context', `(${contextVars})`);
 	}
+
+	// Add WITH TAGS clause if present
+	const tagStr = tagsClauseToString(stmt.tags);
+	if (tagStr) parts.push(tagStr.trimStart());
 
 	return parts.join(' ');
 }

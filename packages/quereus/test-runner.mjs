@@ -21,6 +21,9 @@ while (i < args.length) {
 		case '--trace-plan-stack':
 			env.QUEREUS_TEST_TRACE_PLAN_STACK = 'true';
 			break;
+		case '--store':
+			env.QUEREUS_TEST_STORE = 'true';
+			break;
 		case '--show-plan':
 			env.QUEREUS_TEST_SHOW_PLAN = 'true';
 			break;

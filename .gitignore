@@ -15,3 +15,8 @@ packages/quereus/bench/results/
 
 # Code coverage
 coverage/
+
+# Stryker mutation testing
+.stryker-tmp/
+packages/quereus/reports/mutation/
+packages/quereus/.stryker-tmp/

@@ -137,9 +137,26 @@ export function encodeValue(value: SqlValue, options?: EncodeOptions): Uint8Arra
 
 /**
  * Encode a composite key (multiple values) into a single byte array.
+ *
+ * When `directions` is provided, each position flagged `true` (DESC) has its
+ * encoded bytes bit-inverted (`^0xff`). Bit-inversion of a fixed-width sortable
+ * encoding preserves inverse byte-lex order, so natural iteration over the KV
+ * store yields DESC order for those components.
  */
-export function encodeCompositeKey(values: SqlValue[], options?: EncodeOptions): Uint8Array {
-  const parts = values.map(v => encodeValue(v, options));
+export function encodeCompositeKey(
+  values: SqlValue[],
+  options?: EncodeOptions,
+  directions?: ReadonlyArray<boolean>,
+): Uint8Array {
+  const parts = values.map((v, i) => {
+    const encoded = encodeValue(v, options);
+    if (directions && directions[i]) {
+      for (let j = 0; j < encoded.length; j++) {
+        encoded[j] ^= 0xff;
+      }
+    }
+    return encoded;
+  });
   const totalLength = parts.reduce((sum, p) => sum + p.length, 0);
   const result = new Uint8Array(totalLength);
   let offset = 0;

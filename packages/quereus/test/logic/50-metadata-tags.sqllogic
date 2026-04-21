@@ -1,0 +1,161 @@
+-- metadata-tags.sqllogic - Testing WITH TAGS metadata on schema objects
+
+-- ===================================================================
+-- Phase 1: Table-level tags
+-- ===================================================================
+
+-- Table with tags
+CREATE TABLE Orders (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+) WITH TAGS (display_name = 'Customer Orders', audit = true);
+
+-- Verify the table works normally with tags
+INSERT INTO Orders VALUES (1, 'Order A'), (2, 'Order B');
+SELECT * FROM Orders ORDER BY id;
+→ [{"id":1,"name":"Order A"},{"id":2,"name":"Order B"}]
+
+-- ===================================================================
+-- Phase 2: Column-level tags
+-- ===================================================================
+
+CREATE TABLE Products (
+    id INTEGER PRIMARY KEY WITH TAGS (display_name = 'Product ID'),
+    name TEXT NOT NULL WITH TAGS (searchable = true, display_name = 'Product Name'),
+    price REAL NOT NULL
+);
+
+INSERT INTO Products VALUES (1, 'Widget', 9.99), (2, 'Gadget', 19.99);
+SELECT name, price FROM Products ORDER BY name;
+→ [{"name":"Gadget","price":19.99},{"name":"Widget","price":9.99}]
+
+-- ===================================================================
+-- Phase 3: Constraint-level tags
+-- ===================================================================
+
+-- CHECK constraint with tags
+CREATE TABLE Items (
+    id INTEGER PRIMARY KEY,
+    quantity INTEGER NOT NULL CHECK (quantity > 0) WITH TAGS (error_message = 'Quantity must be positive')
+);
+
+INSERT INTO Items VALUES (1, 5);
+SELECT * FROM Items;
+→ [{"id":1,"quantity":5}]
+
+-- Verify CHECK still works
+INSERT INTO Items VALUES (2, -1);
+-- error: CHECK constraint failed
+
+-- UNIQUE constraint with tags (table-level)
+CREATE TABLE Employees (
+    id INTEGER PRIMARY KEY,
+    email TEXT NOT NULL,
+    CONSTRAINT uq_email UNIQUE (email) WITH TAGS (error_message = 'Email must be unique')
+);
+
+INSERT INTO Employees VALUES (1, 'alice@test.com'), (2, 'bob@test.com');
+SELECT * FROM Employees ORDER BY id;
+→ [{"id":1,"email":"alice@test.com"},{"id":2,"email":"bob@test.com"}]
+
+-- ===================================================================
+-- Phase 4: View-level tags
+-- ===================================================================
+
+CREATE VIEW ActiveOrders AS SELECT * FROM Orders WHERE id > 0
+    WITH TAGS (cacheable = true, purpose = 'active orders filter');
+
+SELECT * FROM ActiveOrders ORDER BY id;
+→ [{"id":1,"name":"Order A"},{"id":2,"name":"Order B"}]
+
+-- ===================================================================
+-- Phase 5: Index-level tags
+-- ===================================================================
+
+CREATE INDEX idx_product_name ON Products (name)
+    WITH TAGS (purpose = 'search optimization');
+
+-- Verify index works
+SELECT name FROM Products WHERE name = 'Widget';
+→ [{"name":"Widget"}]
+
+-- ===================================================================
+-- Phase 6: Tag value types
+-- ===================================================================
+
+CREATE TABLE TagTypes (
+    id INTEGER PRIMARY KEY WITH TAGS (
+        str_tag = 'hello',
+        num_tag = 42,
+        float_tag = 3.14,
+        bool_true = true,
+        bool_false = false,
+        null_tag = null,
+        negative = -10
+    )
+);
+
+INSERT INTO TagTypes VALUES (1);
+SELECT * FROM TagTypes;
+→ [{"id":1}]
+
+-- ===================================================================
+-- Phase 7: Combined WITH TAGS and WITH CONTEXT
+-- ===================================================================
+
+-- Tags combined with context in any order
+CREATE TABLE AuditLog (
+    id INTEGER PRIMARY KEY,
+    message TEXT NOT NULL
+) WITH CONTEXT (user_name TEXT) WITH TAGS (audit = true, display_name = 'Audit Log');
+
+INSERT INTO AuditLog VALUES (1, 'action') WITH CONTEXT user_name = 'admin';
+SELECT * FROM AuditLog;
+→ [{"id":1,"message":"action"}]
+
+-- Tags before context
+CREATE TABLE AuditLog2 (
+    id INTEGER PRIMARY KEY,
+    message TEXT NOT NULL
+) WITH TAGS (audit = true) WITH CONTEXT (user_name TEXT);
+
+INSERT INTO AuditLog2 VALUES (1, 'action') WITH CONTEXT user_name = 'admin';
+SELECT * FROM AuditLog2;
+→ [{"id":1,"message":"action"}]
+
+-- ===================================================================
+-- Phase 8: TAGS as a regular identifier (contextual keyword test)
+-- ===================================================================
+
+CREATE TABLE TagsTable (
+    tags TEXT PRIMARY KEY
+);
+
+INSERT INTO TagsTable VALUES ('test');
+SELECT tags FROM TagsTable;
+→ [{"tags":"test"}]
+
+-- ===================================================================
+-- Phase 9: Empty tags (edge case)
+-- ===================================================================
+
+-- Table with single tag
+CREATE TABLE SingleTag (
+    id INTEGER PRIMARY KEY
+) WITH TAGS (label = 'solo');
+
+INSERT INTO SingleTag VALUES (1);
+SELECT * FROM SingleTag;
+→ [{"id":1}]
+
+-- ===================================================================
+-- Phase 10: Tags with special string values
+-- ===================================================================
+
+CREATE TABLE SpecialTags (
+    id INTEGER PRIMARY KEY
+) WITH TAGS (description = 'it''s a "test"', empty = '');
+
+INSERT INTO SpecialTags VALUES (1);
+SELECT * FROM SpecialTags;
+→ [{"id":1}]

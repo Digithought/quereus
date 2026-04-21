@@ -18,7 +18,7 @@ describe('Per-database collation isolation', () => {
 		// NOCASE should sort case-insensitively
 		const rows = await collect(db.eval('SELECT name FROM t ORDER BY name COLLATE NOCASE'));
 		expect(rows.map(r => r.name)).to.deep.equal(['apple', 'Banana', 'Cherry']);
-		db.close();
+		await db.close();
 	});
 
 	it('custom collation registered on one Database is not visible from another', async () => {
@@ -48,8 +48,8 @@ describe('Per-database collation isolation', () => {
 		// Falls back to BINARY: 'abc', 'mna', 'xyz'
 		expect(rows2.map(r => r.name)).to.deep.equal(['abc', 'mna', 'xyz']);
 
-		db1.close();
-		db2.close();
+		await db1.close();
+		await db2.close();
 	});
 
 	it('overriding a built-in collation on one Database does not affect another', async () => {
@@ -76,7 +76,7 @@ describe('Per-database collation isolation', () => {
 		const rows2 = await collect(db2.eval('SELECT val FROM t ORDER BY val COLLATE NOCASE'));
 		expect(rows2.map(r => r.val)).to.deep.equal(['a', 'B', 'C']);
 
-		db1.close();
-		db2.close();
+		await db1.close();
+		await db2.close();
 	});
 });

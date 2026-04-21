@@ -18,7 +18,6 @@ import type {
 	SchemaChangeToApply,
 	SchemaMigration,
 } from './protocol.js';
-import type { ConflictEvent } from './events.js';
 import type { SyncContext } from './sync-context.js';
 import { persistHLCState, toError } from './sync-context.js';
 
@@ -208,25 +207,31 @@ export async function resolveChange(
 			},
 		};
 	} else {
-		// Column change
-		const shouldApply = await ctx.columnVersions.shouldApplyWrite(
+		// Column change: single getColumnVersion read, then decide via resolver or HLC
+		const localVersion = await ctx.columnVersions.getColumnVersion(
 			change.schema,
 			change.table,
 			change.pk,
 			change.column,
-			change.hlc,
 		);
 
-		if (!shouldApply) {
-			const localVersion = await ctx.columnVersions.getColumnVersion(
-				change.schema,
-				change.table,
-				change.pk,
-				change.column,
-			);
+		if (localVersion) {
+			const remoteWins = ctx.config.conflictResolver
+				? ctx.config.conflictResolver({
+					schema: change.schema,
+					table: change.table,
+					pk: change.pk,
+					column: change.column,
+					localValue: localVersion.value,
+					localHlc: localVersion.hlc,
+					remoteValue: change.value,
+					remoteHlc: change.hlc,
+				}) === 'remote'
+				: compareHLC(change.hlc, localVersion.hlc) > 0;
 
-			if (localVersion) {
-				const conflictEvent: ConflictEvent = {
+			if (!remoteWins) {
+				ctx.syncEvents.emitConflictResolved({
+					schema: change.schema,
 					table: change.table,
 					pk: change.pk,
 					column: change.column,
@@ -234,14 +239,12 @@ export async function resolveChange(
 					remoteValue: change.value,
 					winner: 'local',
 					winningHLC: localVersion.hlc,
-				};
-				ctx.syncEvents.emitConflictResolved(conflictEvent);
+				});
+				return { outcome: 'conflict', change };
 			}
-
-			return { outcome: 'conflict', change };
 		}
 
-		// Check for tombstone blocking
+		// Remote wins or no local version — check tombstone blocking
 		const isBlocked = await ctx.tombstones.isDeletedAndBlocking(
 			change.schema,
 			change.table,
@@ -254,31 +257,23 @@ export async function resolveChange(
 			return { outcome: 'skipped', change };
 		}
 
-		const oldColumnVersion = await ctx.columnVersions.getColumnVersion(
-			change.schema,
-			change.table,
-			change.pk,
-			change.column,
-		) ?? undefined;
-
-		// Emit conflict event when remote overwrites an existing local version
-		if (oldColumnVersion) {
-			const conflictEvent: ConflictEvent = {
+		if (localVersion) {
+			ctx.syncEvents.emitConflictResolved({
+				schema: change.schema,
 				table: change.table,
 				pk: change.pk,
 				column: change.column,
-				localValue: oldColumnVersion.value,
+				localValue: localVersion.value,
 				remoteValue: change.value,
 				winner: 'remote',
 				winningHLC: change.hlc,
-			};
-			ctx.syncEvents.emitConflictResolved(conflictEvent);
+			});
 		}
 
 		return {
 			outcome: 'applied',
 			change,
-			oldColumnVersion,
+			oldColumnVersion: localVersion ?? undefined,
 			dataChange: {
 				type: 'update',
 				schema: change.schema,

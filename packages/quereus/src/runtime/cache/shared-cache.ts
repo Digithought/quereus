@@ -60,12 +60,14 @@ export async function* streamWithCache(
 ): AsyncIterable<Row> {
 	const { threshold, name = 'cache' } = config;
 
-	// If we already have cached data, return it
+	// If we already have cached data, return copies (same deep-copy as build path)
 	if (state.cachedResult) {
 		state.consumeCount++;
 		log('Serving %s from cache (access #%d, %d rows)',
 			name, state.consumeCount, state.cachedResult.length);
-		yield* state.cachedResult;
+		for (const row of state.cachedResult) {
+			yield [...row] as Row;
+		}
 		return;
 	}
 

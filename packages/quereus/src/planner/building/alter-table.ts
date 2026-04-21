@@ -56,6 +56,21 @@ export function buildAlterTableStmt(
         name: stmt.action.name,
       });
 
+    case 'alterPrimaryKey':
+      return new AlterTableNode(ctx.scope, tableReference, {
+        type: 'alterPrimaryKey',
+        columns: stmt.action.columns,
+      });
+
+    case 'alterColumn':
+      return new AlterTableNode(ctx.scope, tableReference, {
+        type: 'alterColumn',
+        columnName: stmt.action.columnName,
+        setNotNull: stmt.action.setNotNull,
+        setDataType: stmt.action.setDataType,
+        setDefault: stmt.action.setDefault,
+      });
+
     default:
       throw new QuereusError(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

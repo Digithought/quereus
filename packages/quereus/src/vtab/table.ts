@@ -25,6 +25,14 @@ export interface UpdateArgs {
 	onConflict?: ConflictResolution;
 	/** Optional: Deterministic SQL statement that reproduces this mutation (if logMutations is enabled) */
 	mutationStatement?: string;
+	/**
+	 * If true, `values` is already coerced to the table's declared column logical
+	 * types (e.g. flushed from an overlay that coerced on write). The vtab may skip
+	 * its own coercion pass. Used by the isolation layer's overlay→underlying flush
+	 * to avoid double-parsing values that are not idempotent under parse (e.g.
+	 * JSON scalar strings).
+	 */
+	preCoerced?: boolean;
 }
 
 /**

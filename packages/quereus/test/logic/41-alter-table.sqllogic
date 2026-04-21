@@ -131,13 +131,33 @@ insert into t_notnull values (1), (2);
 alter table t_notnull add column required text;
 -- error: NOT NULL
 
+-- Error message should name the column and qualified table
+alter table t_notnull add column rank integer not null;
+-- error: 'rank'
+
+alter table t_notnull add column rank integer not null;
+-- error: main.t_notnull
+
 -- NOT NULL with DEFAULT should succeed
 alter table t_notnull add column required text not null default 'default_val';
 
 select required from t_notnull where id = 1;
 → [{"required": "default_val"}]
 
+-- NULL (no DEFAULT) on non-empty table is allowed
+alter table t_notnull add column nickname text null;
+select nickname from t_notnull where id = 1;
+→ [{"nickname": null}]
+
 drop table t_notnull;
+
+-- NOT NULL without DEFAULT is allowed on an empty table
+create table t_notnull_empty (id integer primary key, name text);
+alter table t_notnull_empty add column rank integer not null;
+insert into t_notnull_empty values (1, 'Alice', 10);
+select * from t_notnull_empty;
+→ [{"id": 1, "name": "Alice", "rank": 10}]
+drop table t_notnull_empty;
 
 -- ===================================
 -- 6. Combined operations

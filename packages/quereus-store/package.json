@@ -1,6 +1,6 @@
 {
   "name": "@quereus/store",
-  "version": "1.3.1",
+  "version": "2.6.0",
   "type": "module",
   "description": "Abstract key-value storage module for Quereus",
   "keywords": [

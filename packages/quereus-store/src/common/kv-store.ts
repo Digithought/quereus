@@ -203,4 +203,17 @@ export interface KVStoreProvider {
 	 * @param tableName - The table name
 	 */
 	deleteTableStores?(schemaName: string, tableName: string): Promise<void>;
+
+	/**
+	 * Rename all stores for a table from `oldName` to `newName`. Implementations
+	 * must close any open handles, move the underlying data + index storage,
+	 * and drop all cached references to the old name so that subsequent
+	 * `getStore`/`getIndexStore` calls open the renamed storage.
+	 *
+	 * Called by StoreModule.renameTable during ALTER TABLE ... RENAME TO.
+	 * @param schemaName - The schema name
+	 * @param oldName - The current table name
+	 * @param newName - The desired table name
+	 */
+	renameTableStores?(schemaName: string, oldName: string, newName: string): Promise<void>;
 }

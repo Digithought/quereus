@@ -78,4 +78,3 @@ DROP TABLE s1.orders;
 DROP TABLE s1.items;
 DROP TABLE s2.items;
 
-PRAGMA foreign_keys = false;

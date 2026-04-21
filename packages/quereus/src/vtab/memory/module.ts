@@ -181,6 +181,28 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			bestPlan = this.adjustPlanForOrdering(bestPlan, request, availableIndexes);
 		}
 
+		// B-tree scans inherently produce rows in PK order.  Advertise this
+		// when there is no explicit ORDER BY so the join rule can pick merge join.
+		// When requiredOrdering is present, adjustPlanForOrdering already handled it;
+		// adding PK ordering here would incorrectly claim we satisfy a different ORDER BY.
+		if (!bestPlan.providesOrdering
+			&& !(request.requiredOrdering && request.requiredOrdering.length > 0)
+			&& tableInfo.primaryKeyDefinition && tableInfo.primaryKeyDefinition.length > 0
+		) {
+			const usesSecondaryIndex = bestPlan.indexName && bestPlan.indexName !== '_primary_';
+			if (!usesSecondaryIndex) {
+				const pkOrdering: OrderingSpec[] = tableInfo.primaryKeyDefinition.map(col => ({
+					columnIndex: col.index,
+					desc: false
+				}));
+				bestPlan = {
+					...bestPlan,
+					providesOrdering: pkOrdering,
+					orderingIndexName: bestPlan.orderingIndexName ?? '_primary_'
+				};
+			}
+		}
+
 		// Prefer plans that fully handle at least one filter over pure full scans when costs tie
 		if (request.filters.length > 0 && bestPlan.handledFilters?.some(Boolean) === false) {
 			// Small nudge to cost to encourage using any usable index when costs are equal
@@ -480,9 +502,9 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 	/**
 	 * Renames a memory table's internal registration key.
-	 * Called by the ALTER TABLE RENAME TO emitter after schema update.
+	 * Called by the ALTER TABLE RENAME TO emitter before the schema catalog update.
 	 */
-	renameTable(schemaName: string, oldName: string, newName: string): void {
+	async renameTable(_db: Database, schemaName: string, oldName: string, newName: string): Promise<void> {
 		const oldKey = `${schemaName}.${oldName}`.toLowerCase();
 		const newKey = `${schemaName}.${newName}`.toLowerCase();
 		const manager = this.tables.get(oldKey);
@@ -516,6 +538,19 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 					throw new QuereusError('RENAME COLUMN requires a new column definition AST', StatusCode.INTERNAL);
 				}
 				await manager.renameColumn(change.oldName, change.newColumnDefAst);
+				break;
+			case 'alterPrimaryKey':
+				throw new QuereusError(
+					'MemoryTable does not support in-place primary key alteration',
+					StatusCode.UNSUPPORTED,
+				);
+			case 'alterColumn':
+				await manager.alterColumn({
+					columnName: change.columnName,
+					setNotNull: change.setNotNull,
+					setDataType: change.setDataType,
+					setDefault: change.setDefault,
+				});
 				break;
 		}
 

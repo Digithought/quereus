@@ -72,9 +72,16 @@ export function buildStatsKey(schemaName: string, tableName: string): Uint8Array
 
 /**
  * Build a data row key (just the encoded primary key).
+ *
+ * `directions[i] === true` marks PK column i as DESC — its encoded bytes are
+ * bit-inverted so natural byte-lex iteration yields DESC order for that column.
  */
-export function buildDataKey(pkValues: SqlValue[], options?: EncodeOptions): Uint8Array {
-	return encodeCompositeKey(pkValues, options);
+export function buildDataKey(
+	pkValues: SqlValue[],
+	options?: EncodeOptions,
+	directions?: ReadonlyArray<boolean>,
+): Uint8Array {
+	return encodeCompositeKey(pkValues, options, directions);
 }
 
 /**
@@ -82,14 +89,18 @@ export function buildDataKey(pkValues: SqlValue[], options?: EncodeOptions): Uin
  * Format: {encoded_index_cols}{encoded_pk}
  *
  * The index columns come first for range scans, followed by PK for uniqueness.
+ * `indexDirections` and `pkDirections` independently control DESC bit-inversion
+ * for each half so ordered index scans honor per-column direction.
  */
 export function buildIndexKey(
 	indexValues: SqlValue[],
 	pkValues: SqlValue[],
-	options?: EncodeOptions
+	options?: EncodeOptions,
+	indexDirections?: ReadonlyArray<boolean>,
+	pkDirections?: ReadonlyArray<boolean>,
 ): Uint8Array {
-	const indexEncoded = encodeCompositeKey(indexValues, options);
-	const pkEncoded = encodeCompositeKey(pkValues, options);
+	const indexEncoded = encodeCompositeKey(indexValues, options, indexDirections);
+	const pkEncoded = encodeCompositeKey(pkValues, options, pkDirections);
 	return concatBytes(indexEncoded, pkEncoded);
 }
 
@@ -103,27 +114,34 @@ export function buildCatalogKey(schemaName: string, tableName: string): Uint8Arr
 
 /**
  * Build range bounds for scanning all rows in a data store.
- * Since keys are just encoded PKs, we scan the entire store.
+ *
+ * Data stores are per-table so any non-empty key belongs to this table — an
+ * unbounded scan is safe and avoids the trap that a leading 0xff byte (produced
+ * by inverted NULL type prefix 0x00 ^ 0xff for DESC columns) would be excluded
+ * by an `lt: [0xff]` upper bound.
  */
-export function buildFullScanBounds(): { gte: Uint8Array; lt: Uint8Array } {
+export function buildFullScanBounds(): { gte: Uint8Array } {
 	return {
 		gte: new Uint8Array(0),
-		lt: new Uint8Array([0xff]), // All valid encoded keys are < 0xff
 	};
 }
 
 /**
  * Build range bounds for scanning an index with a prefix.
+ *
+ * `directions[i] === true` flips bytes of prefix component i to match DESC
+ * encoding in the stored index keys.
  */
 export function buildIndexPrefixBounds(
 	prefixValues: SqlValue[],
-	options?: EncodeOptions
+	options?: EncodeOptions,
+	directions?: ReadonlyArray<boolean>,
 ): { gte: Uint8Array; lt: Uint8Array } {
 	if (prefixValues.length === 0) {
-		return buildFullScanBounds();
+		return { gte: new Uint8Array(0), lt: new Uint8Array([0xff]) };
 	}
 
-	const prefixEncoded = encodeCompositeKey(prefixValues, options);
+	const prefixEncoded = encodeCompositeKey(prefixValues, options, directions);
 	return {
 		gte: prefixEncoded,
 		lt: incrementLastByte(prefixEncoded),
@@ -208,8 +226,8 @@ export function buildTablePrefix(
 /** @deprecated Use buildFullScanBounds instead */
 export function buildTableScanBounds(
 	_schemaName: string,
-	_tableName: string
-): { gte: Uint8Array; lt: Uint8Array } {
+	_tableName: string,
+): { gte: Uint8Array } {
 	return buildFullScanBounds();
 }
 

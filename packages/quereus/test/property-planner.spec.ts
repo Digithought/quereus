@@ -2,7 +2,7 @@ import { expect } from 'chai';
 import * as fc from 'fast-check';
 import { Database } from '../src/core/database.js';
 import type { SqlValue } from '../src/common/types.js';
-import type { OptimizerTuning } from '../src/planner/optimizer-tuning.js';
+
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -119,7 +119,10 @@ function withDisabledRule(db: Database, ruleId: string, fn: () => Promise<void>)
 
 function skewedDataArb(spec: TableSpec, count: number): fc.Arbitrary<SqlValue[][]> {
 	return fc.constantFrom<'high-cardinality' | 'clustered-nulls' | 'monotonic'>('high-cardinality', 'clustered-nulls', 'monotonic').chain(skewType => {
-		return fc.array(rowArb(spec), { minLength: count, maxLength: count }).map(baseRows => {
+		return fc.tuple(
+			fc.array(rowArb(spec), { minLength: count, maxLength: count }),
+			fc.array(fc.integer({ min: 0, max: 99 }), { minLength: count, maxLength: count })
+		).map(([baseRows, randoms]) => {
 			return baseRows.map((row, i) => {
 				const newRow = [...row];
 				// Column index 1 is the first non-id column
@@ -127,13 +130,13 @@ function skewedDataArb(spec: TableSpec, count: number): fc.Arbitrary<SqlValue[][
 					switch (skewType) {
 						case 'high-cardinality':
 							// 80% of rows get the same value
-							if (Math.random() < 0.8) {
+							if (randoms[i] < 80) {
 								newRow[1] = spec.columns[1].type === 'TEXT' ? 'skewed' : 42;
 							}
 							break;
 						case 'clustered-nulls':
 							// 90% null in first non-id column
-							if (Math.random() < 0.9) {
+							if (randoms[i] < 90) {
 								newRow[1] = null;
 							}
 							break;
