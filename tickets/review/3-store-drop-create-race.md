@@ -1,5 +1,5 @@
 description: Serialize DROP TABLE destruction before returning, eliminating the DROP/CREATE race against async store destruction
-dependencies: none
+prereq: none
 files:
   packages/quereus/src/schema/manager.ts
   packages/quereus-store/src/common/store-module.ts

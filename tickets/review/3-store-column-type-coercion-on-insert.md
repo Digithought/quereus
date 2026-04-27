@@ -1,5 +1,5 @@
 description: StoreTable now coerces incoming row values to declared column logical types on INSERT/UPDATE, mirroring the memory path (INTEGER/REAL affinity + JSON normalization). Idempotency hazard around JSON scalar strings via the isolation overlay→underlying flush addressed by a `preCoerced` bypass.
-dependencies: none
+prereq: none
 files:
   packages/quereus-store/src/common/store-table.ts
   packages/quereus-isolation/src/isolated-table.ts

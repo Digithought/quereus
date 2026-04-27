@@ -1,5 +1,5 @@
 description: StoreModule now implements ALTER TABLE ... RENAME TO — module-level rename hook promoted to VirtualTableModule, physical storage relocation delegated to provider, persistent catalog rewritten under the new name
-dependencies: none
+prereq: none
 files:
   packages/quereus/src/vtab/module.ts
   packages/quereus/src/vtab/memory/module.ts

@@ -77,8 +77,9 @@ Task workflow in `tickets/` folder (see `tickets/AGENTS.md`).
 - Pipeline: SQL → parser → AST → planner/building → PlanNode tree → optimizer rules → emit → Instructions
 
 ## Docs
-- Main docs in `docs/` folder (runtime.md, types.md, sql.md, optimizer.md, schema.md, usage.md, etc.)
-- Package README at `packages/quereus/README.md`
+- **Start here for engine internals:** `docs/architecture.md` — pipeline, source layout, extension patterns, design decisions, constraints, testing strategy
+- **Package overview / user-facing:** `packages/quereus/README.md` — quick start, platform/storage, docs index, current status
+- Deeper topic docs in `docs/` folder (runtime.md, types.md, sql.md, optimizer.md, schema.md, usage.md, etc.)
 
 ----
 

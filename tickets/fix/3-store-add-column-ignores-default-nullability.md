@@ -1,5 +1,5 @@
 description: StoreModule.alterTable ADD COLUMN / RENAME COLUMN hardcode defaultNotNull=false and ignore the session-level default_column_nullability option, so `alter table t add column x text` gets NULL semantics under store mode but NOT NULL under memory mode
-dependencies: none
+prereq: none
 files:
   packages/quereus-store/src/common/store-module.ts
   packages/quereus/src/vtab/memory/layer/manager.ts
@@ -27,7 +27,7 @@ const newColSchema = columnDefToSchema(change.newColumnDefAst, false);
 
 Consequence: `alter table t add column required text` behaves differently between modules. Under memory it triggers the "add NOT NULL to populated table" guard; under store it silently succeeds as a nullable column.
 
-This is surfaced by `41-alter-table.sqllogic:131` under `yarn test:store`: the test expects the NOT NULL error; store mode now reaches this line (after the rename fix in `tickets/complete/3-store-alter-table-rename-unsupported.md`) and fails because the column is added as nullable.
+This is surfaced by `41-alter-table.sqllogic:131` under `yarn test:store`: the test expects the NOT NULL error; store mode now reaches this line (after the rename fix in `tickets/complete/store-alter-table-rename-unsupported.md`) and fails because the column is added as nullable.
 
 ### Fix
 

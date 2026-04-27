@@ -1,5 +1,5 @@
 description: Store module honors DESC direction in primary-key (and index) natural iteration order
-dependencies: none
+prereq: none
 files:
   packages/quereus-store/src/common/encoding.ts
   packages/quereus-store/src/common/key-builder.ts

@@ -1,5 +1,5 @@
 description: Native ALTER PRIMARY KEY implemented in the store module via two-pass re-key + index rebuild.
-dependencies: none
+prereq: none
 files:
   packages/quereus-store/src/common/store-table.ts        (new `rekeyRows` helper)
   packages/quereus-store/src/common/store-module.ts       (implemented `alterPrimaryKey` case)

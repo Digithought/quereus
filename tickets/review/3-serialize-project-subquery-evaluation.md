@@ -1,5 +1,5 @@
 description: Serialize projection evaluation in emitProject to prevent row-context collision between scalar subqueries sharing plan subtrees
-dependencies: none
+prereq: none
 files:
   packages/quereus/src/runtime/emit/project.ts
   packages/quereus/test/logic/49-reference-graph.sqllogic
