@@ -603,7 +603,7 @@ export class StoreTable extends VirtualTable {
 						return {
 							status: 'constraint',
 							constraint: 'unique',
-							message: 'UNIQUE constraint failed: primary key',
+							message: `UNIQUE constraint failed: ${this.tableName} PK.`,
 							existingRow,
 						};
 					}
@@ -693,7 +693,7 @@ export class StoreTable extends VirtualTable {
 							return {
 								status: 'constraint',
 								constraint: 'unique',
-								message: 'UNIQUE constraint failed: primary key',
+								message: `UNIQUE constraint failed: ${this.tableName} PK.`,
 								existingRow: deserializeRow(existingAtNew),
 							};
 						}

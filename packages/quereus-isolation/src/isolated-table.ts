@@ -951,7 +951,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 		return {
 			status: 'constraint',
 			constraint: 'unique',
-			message: 'UNIQUE constraint failed: primary key',
+			message: `UNIQUE constraint failed: ${this.tableName} PK.`,
 			existingRow: underlyingRow,
 		};
 	}
