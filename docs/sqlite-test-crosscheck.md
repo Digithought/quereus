@@ -81,7 +81,7 @@ Rows seeded from a survey of `packages/quereus/test/logic/` (116 files as of 202
 | `between.test` | unreviewed | (none mapped) | BETWEEN semantics. |
 | `in.test`, `in2-5.test` | unreviewed | 07.7-in-subquery-caching | IN/NOT IN with lists and subqueries. |
 | `exists.test` | unreviewed | 08.1-semi-anti-join; 07.6-subqueries | EXISTS/NOT EXISTS. |
-| `like.test`, `like2.test`, `like3.test` | unreviewed | 06.1-string-functions | LIKE/GLOB pattern matching. |
+| `like.test`, `like2.test`, `like3.test` | reviewed (claude, 2026-05-06) | 06-builtin_functions; 24-builtin-branches; 06.1.3-like-glob-edges | Case-sensitivity invariant (Quereus is fixed case-sensitive — no PRAGMA case_sensitive_like), multi-byte `_` matching, LIKE on numeric/BLOB columns, ESCAPE clause (`\%`, `\_`, `\\`), GLOB character classes (`[abc]`, `[a-c]`, `[^abc]`) added in 06.1.3. like3.test (optimizer plan-shape, REINDEX, UTF-16 encoding) n/a. |
 | `null.test` | unreviewed | 21-null-edge-cases | NULL semantics in expressions and predicates. |
 
 ### Subqueries, CTEs, set ops
@@ -120,10 +120,16 @@ Rows seeded from a survey of `packages/quereus/test/logic/` (116 files as of 202
 
 | SQLite Source | Status | Quereus Coverage | Notes |
 |---|---|---|---|
-| `func.test`, `func2.test`, `func3.test`, `func4.test`, `func5.test`, `func6.test`, `func7.test` | unreviewed | 06-builtin_functions; 24-builtin-branches | Scalar functions. SQLite-specific (`zeroblob`, `quote`, etc.) per-func during review. |
-| `substr.test` | unreviewed | 06.1-string-functions | SUBSTR semantics. |
-| `printf.test`, `printf2.test` | unreviewed | (check) | `printf()`/`format()`. Confirm Quereus exposure. |
-| `random.test` | unreviewed | 45-udf-determinism | `random()` is non-deterministic; bulk likely n/a under Quereus determinism rules. |
+| `func.test` | reviewed (claude, 2026-05-06) | 06-builtin_functions; 24-builtin-branches; 06.1.1-string-functions-extended | hex(), char(), unicode(), octet_length() (UTF-8 byte vs char distinction) added in 06.1.1. SQLite-specific quote(), zeroblob(), last_insert_rowid(), changes(), total_changes(), sqlite_version(), likelihood/likely/unlikely n/a (storage internals, debug helpers, optimizer hints). |
+| `func2.test` | reviewed (claude, 2026-05-06) | 06-builtin_functions; 24-builtin-branches; 24.1-substr-extras | NULL propagation across substr args, substring() alias equivalence, Y > strlen, 2-arg negative-Y forms, Y=0+length, negative-Z (chars preceding Y per SQLite docs), multi-byte indexing all added in 24.1. BLOB byte-substr n/a (Quereus stringifies). |
+| `func3.test` | n/a (likelihood/likely/unlikely optimizer hints + C-API destructor mechanics not present in Quereus) | 06-builtin_functions | No SQL-observable surface. |
+| `func4.test` | n/a (totype.c extension — tointeger()/toreal() not in Quereus core) | 06-builtin_functions | Extension-specific type-conversion functions; Quereus uses logical type system instead. |
+| `func5.test` | reviewed (claude, 2026-05-06) | 44-determinism-validation; 45-udf-determinism | Deterministic-vs-nondeterministic factoring covered in determinism fixtures; remaining content is plan-shape / SQLITE_DETERMINISTIC C-API flag mechanics (n/a). |
+| `func6.test` | n/a (sqlite_offset() — b-tree byte-offset introspection; storage delegated to VTab modules) | (none) | Verified via fetch: file is entirely sqlite_offset() probes. |
+| `func7.test` | reviewed (claude, 2026-05-06) | 06.2-math-functions; 06.2.1-math-extended | SQLite 3.35+ math surface (ln/log/log10/log2/exp, trig, hyperbolic, pi/degrees/radians, trunc/mod/sign) pinned in 06.2.1. |
+| `substr.test` | reviewed (claude, 2026-05-06) | 06-builtin_functions; 24-builtin-branches; 24.1-substr-extras | Most edges (negative Y, Y=0, negative Z → empty) already covered; NULL propagation via columns, substring() alias, multi-byte indexing, Y past end, 2-arg negative-Y, Y=0+length, SQLite negative-Z (chars preceding) added in 24.1. |
+| `printf.test`, `printf2.test` | reviewed (claude, 2026-05-06) | 06.1.2-printf | printf() / format() not currently registered in Quereus; fixture in 06.1.2 documents the SQLite surface (integer / float / string / %q / %Q / %w / %% / width-precision / asterisk-width / %c / %,d / NULL handling / format() alias) so the next pass decides whether to add the function or reclassify. |
+| `random.test` | n/a (file does not exist in upstream sqlite/sqlite — confirmed via raw URL 404) | 06.2-math-functions; 24.2-random-extras; 44-determinism-validation; 45-udf-determinism | randomblob() type/length contract and arity validation pinned in 24.2 as a regression guard. |
 | `date.test`, `date2-4.test` | unreviewed | 16-epoch; 17-weekday-modifier; 98-temporal-edge-cases | Date/time functions and modifiers. |
 | `json1.test` – `json5.test`, `json101-104.test` | unreviewed | 06.7-json-extended; 06.8-json-path-operators; 97-json-function-edge-cases | JSON functions and path operators. |
 

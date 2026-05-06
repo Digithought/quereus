@@ -1,0 +1,149 @@
+-- math-extended.sqllogic - SQLite 3.35+ math extension surface: ln/log/log10/log2/exp,
+-- trig (sin/cos/tan/asin/acos/atan/atan2), hyperbolic, pi/degrees/radians,
+-- trunc/mod/sign. Existing 06.2-math-functions covers sqrt/pow/floor/ceil/clamp.
+-- adapted from SQLite test/func4.test (math-funcs subset) and test/func7.test
+
+-- ln(X): natural log
+select ln(1);
+→ [{"ln(1)":0}]
+
+select ln(2.718281828459045);
+→ [{"ln(2.718281828459045)":1}]
+
+-- ln of 0 or negative is null (domain error in SQLite)
+select ln(0);
+→ [{"ln(0)":null}]
+
+select ln(-1);
+→ [{"ln(-1)":null}]
+
+-- log10(X)
+select log10(1);
+→ [{"log10(1)":0}]
+
+select log10(100);
+→ [{"log10(100)":2}]
+
+-- log2(X)
+select log2(1);
+→ [{"log2(1)":0}]
+
+select log2(8);
+→ [{"log2(8)":3}]
+
+-- log(B, X): log of X in base B
+select log(10, 100);
+→ [{"log(10, 100)":2}]
+
+select log(2, 8);
+→ [{"log(2, 8)":3}]
+
+-- exp(X): e^X
+select exp(0);
+→ [{"exp(0)":1}]
+
+select exp(1);
+→ [{"exp(1)":2.718281828459045}]
+
+-- pi()
+select pi();
+→ [{"pi()":3.141592653589793}]
+
+-- degrees(X): radians → degrees
+select degrees(0);
+→ [{"degrees(0)":0}]
+
+select degrees(pi());
+→ [{"degrees(pi())":180}]
+
+-- radians(X): degrees → radians
+select radians(0);
+→ [{"radians(0)":0}]
+
+select radians(180);
+→ [{"radians(180)":3.141592653589793}]
+
+-- sin / cos / tan
+select sin(0);
+→ [{"sin(0)":0}]
+
+select cos(0);
+→ [{"cos(0)":1}]
+
+select tan(0);
+→ [{"tan(0)":0}]
+
+-- asin / acos / atan
+select asin(0);
+→ [{"asin(0)":0}]
+
+select acos(1);
+→ [{"acos(1)":0}]
+
+select atan(0);
+→ [{"atan(0)":0}]
+
+-- atan2(Y, X)
+select atan2(0, 1);
+→ [{"atan2(0, 1)":0}]
+
+-- Hyperbolic
+select sinh(0);
+→ [{"sinh(0)":0}]
+
+select cosh(0);
+→ [{"cosh(0)":1}]
+
+select tanh(0);
+→ [{"tanh(0)":0}]
+
+-- asinh / acosh / atanh
+select asinh(0);
+→ [{"asinh(0)":0}]
+
+select acosh(1);
+→ [{"acosh(1)":0}]
+
+select atanh(0);
+→ [{"atanh(0)":0}]
+
+-- trunc(X): truncate toward zero
+select trunc(3.7);
+→ [{"trunc(3.7)":3}]
+
+select trunc(-3.7);
+→ [{"trunc(-3.7)":-3}]
+
+select trunc(0);
+→ [{"trunc(0)":0}]
+
+-- mod(X, Y): floating-point modulo (NOT integer remainder; matches C fmod)
+select mod(10, 3);
+→ [{"mod(10, 3)":1}]
+
+select mod(10.5, 3);
+→ [{"mod(10.5, 3)":1.5}]
+
+-- mod by zero is null
+select mod(10, 0);
+→ [{"mod(10, 0)":null}]
+
+-- sign(X): -1 / 0 / 1
+select sign(-10);
+→ [{"sign(-10)":-1}]
+
+select sign(0);
+→ [{"sign(0)":0}]
+
+select sign(10);
+→ [{"sign(10)":1}]
+
+-- NULL propagation across the math surface
+select ln(null), log10(null), log2(null), exp(null);
+→ [{"ln(null)":null,"log10(null)":null,"log2(null)":null,"exp(null)":null}]
+
+select sin(null), cos(null), tan(null), atan2(null, 1);
+→ [{"sin(null)":null,"cos(null)":null,"tan(null)":null,"atan2(null, 1)":null}]
+
+select trunc(null), mod(null, 1), sign(null);
+→ [{"trunc(null)":null,"mod(null, 1)":null,"sign(null)":null}]

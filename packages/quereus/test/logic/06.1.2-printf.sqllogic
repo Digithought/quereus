@@ -1,0 +1,131 @@
+-- printf.sqllogic - printf() / format() formatted-string surface.
+-- adapted from SQLite test/printf.test and test/printf2.test
+
+-- Basic integer formats
+select printf('%d', 42);
+→ [{"printf('%d', 42)":"42"}]
+
+select printf('%d', -1);
+→ [{"printf('%d', -1)":"-1"}]
+
+-- String specifier
+select printf('%s', 'hello');
+→ [{"printf('%s', 'hello')":"hello"}]
+
+-- Multiple arguments
+select printf('%d %d %s', 1, 2, 'three');
+→ [{"printf('%d %d %s', 1, 2, 'three')":"1 2 three"}]
+
+-- Hex (lower) and octal
+select printf('%x %o', 255, 8);
+→ [{"printf('%x %o', 255, 8)":"ff 10"}]
+
+-- Hex upper-case with %X
+select printf('%X', 255);
+→ [{"printf('%X', 255)":"FF"}]
+
+-- Width: right-aligned
+select printf('(%6d)', 1);
+→ [{"printf('(%6d)', 1)":"(     1)"}]
+
+-- Width: left-aligned with `-`
+select printf('(%-6d)', 1);
+→ [{"printf('(%-6d)', 1)":"(1     )"}]
+
+-- Width: zero-padded
+select printf('(%06d)', 7);
+→ [{"printf('(%06d)', 7)":"(000007)"}]
+
+-- Sign forcing with `+`
+select printf('(%+d)', 1);
+→ [{"printf('(%+d)', 1)":"(+1)"}]
+
+-- Leading-space flag
+select printf('(% d)', 1);
+→ [{"printf('(% d)', 1)":"( 1)"}]
+
+-- Alternate form for hex (`#`) → 0x prefix
+select printf('(%#x)', 255);
+→ [{"printf('(%#x)', 255)":"(0xff)"}]
+
+-- Floating-point fixed notation
+select printf('%.2f', 3.14159);
+→ [{"printf('%.2f', 3.14159)":"3.14"}]
+
+select printf('(%8.3f)', 3.14159);
+→ [{"printf('(%8.3f)', 3.14159)":"(   3.142)"}]
+
+-- Floating-point scientific
+select printf('%.2e', 12345.0);
+→ [{"printf('%.2e', 12345.0)":"1.23e+04"}]
+
+-- Floating-point general
+select printf('%g', 0.0001);
+→ [{"printf('%g', 0.0001)":"0.0001"}]
+
+-- String width and precision
+select printf('(%10s)', 'hi');
+→ [{"printf('(%10s)', 'hi')":"(        hi)"}]
+
+select printf('(%-10s)', 'hi');
+→ [{"printf('(%-10s)', 'hi')":"(hi        )"}]
+
+select printf('(%.3s)', 'truncated');
+→ [{"printf('(%.3s)', 'truncated')":"(tru)"}]
+
+-- Asterisk width / precision
+select printf('(%*d)', 5, 7);
+→ [{"printf('(%*d)', 5, 7)":"(    7)"}]
+
+select printf('(%.*f)', 3, 3.14159);
+→ [{"printf('(%.*f)', 3, 3.14159)":"(3.142)"}]
+
+-- Percent literal
+select printf('100%%');
+→ [{"printf('100%%')":"100%"}]
+
+-- format() is a synonym of printf()
+select format('%d', 42);
+→ [{"format('%d', 42)":"42"}]
+
+-- Type coercion: real → %d truncates
+select printf('%d', 3.9);
+→ [{"printf('%d', 3.9)":"3"}]
+
+-- Type coercion: integer → %s
+select printf('%s', 42);
+→ [{"printf('%s', 42)":"42"}]
+
+-- NULL string argument: SQLite renders as the literal "(NULL)" for %s
+select printf('%s', null);
+→ [{"printf('%s', null)":"(NULL)"}]
+
+-- NULL numeric argument: SQLite renders as 0 for %d
+select printf('%d', null);
+→ [{"printf('%d', null)":"0"}]
+
+-- SQLite-specific %q: embed text as a SQL-quoted string, doubling embedded apostrophes
+select printf('%q', 'O''Brien');
+→ [{"printf('%q', 'O''Brien')":"O''Brien"}]
+
+-- SQLite-specific %Q: like %q but emits NULL (unquoted) for null
+select printf('%Q', null);
+→ [{"printf('%Q', null)":"NULL"}]
+
+select printf('%Q', 'hello');
+→ [{"printf('%Q', 'hello')":"'hello'"}]
+
+-- SQLite-specific %w: double embedded double-quotes for "..." identifiers
+select printf('%w', 'a"b');
+→ [{"printf('%w', 'a\"b')":"a\"\"b"}]
+
+-- printf2 extras: thousands separator (','), large numbers
+select printf('%,d', 1234567);
+→ [{"printf('%,d', 1234567)":"1,234,567"}]
+
+-- printf2 extras: %c renders unicode code point as character
+select printf('%c', 65);
+→ [{"printf('%c', 65)":"A"}]
+
+select printf('%c%c%c', 65, 66, 67);
+→ [{"printf('%c%c%c', 65, 66, 67)":"ABC"}]

@@ -1,0 +1,74 @@
+-- string-functions-extended.sqllogic - SQL-standard / SQLite-builtin string functions not yet
+-- exercised in 06.1-string-functions: hex, char, unicode, octet_length.
+-- adapted from SQLite test/func.test scenarios
+
+-- hex: BLOB to uppercase hex
+select hex(x'0102');
+→ [{"hex(x'0102')":"0102"}]
+
+select hex(x'aF');
+→ [{"hex(x'aF')":"AF"}]
+
+select hex(x'');
+→ [{"hex(x'')":""}]
+
+-- hex on text: encodes the UTF-8 byte sequence
+select hex('ABC');
+→ [{"hex('ABC')":"414243"}]
+
+-- hex NULL propagation
+select hex(null);
+→ [{"hex(null)":null}]
+
+-- char: build string from unicode code points
+select char(65, 66, 67);
+→ [{"char(65, 66, 67)":"ABC"}]
+
+select char(72, 101, 108, 108, 111);
+→ [{"char(72, 101, 108, 108, 111)":"Hello"}]
+
+-- char with no args returns empty string
+select char();
+→ [{"char()":""}]
+
+-- char with code point above BMP (😀 = U+1F600 = 128512)
+select char(128512);
+→ [{"char(128512)":"😀"}]
+
+-- unicode: code point of first character (inverse of char)
+select unicode('A');
+→ [{"unicode('A')":65}]
+
+select unicode('hello');
+→ [{"unicode('hello')":104}]
+
+-- unicode of empty string is null
+select unicode('');
+→ [{"unicode('')":null}]
+
+-- unicode of a non-BMP character
+select unicode('😀');
+→ [{"unicode('😀')":128512}]
+
+-- unicode NULL propagation
+select unicode(null);
+→ [{"unicode(null)":null}]
+
+-- octet_length: byte count, distinct from length() (which is char count)
+select octet_length('hello');
+→ [{"octet_length('hello')":5}]
+
+select octet_length('');
+→ [{"octet_length('')":0}]
+
+-- octet_length distinguishes itself from length on multi-byte UTF-8: 'café' is 4 chars / 5 bytes
+select length('café'), octet_length('café');
+→ [{"length('café')":4,"octet_length('café')":5}]
+
+-- octet_length on BLOB equals BLOB length
+select octet_length(x'010203');
+→ [{"octet_length(x'010203')":3}]
+
+-- octet_length NULL propagation
+select octet_length(null);
+→ [{"octet_length(null)":null}]
