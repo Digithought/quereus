@@ -179,23 +179,23 @@ Rows seeded from a survey of `packages/quereus/test/logic/` (116 files as of 202
 
 | SQLite Source | Status | Quereus Coverage | Notes |
 |---|---|---|---|
-| `trans.test`, `trans2.test`, `trans3.test` | unreviewed | 04-transactions; 101-transaction-edge-cases | BEGIN/COMMIT/ROLLBACK semantics. |
-| `savepoint.test`, `savepoint2-7.test` | unreviewed | 04-transactions | SAVEPOINT / RELEASE / ROLLBACK TO. |
-| `transaction.test` | unreviewed | 04-transactions | Misc transaction regressions. |
+| `trans.test`, `trans2.test`, `trans3.test` | reviewed (claude, 2026-05-06) | 04-transactions; 101-transaction-edge-cases | BEGIN/COMMIT/ROLLBACK and savepoint semantics already covered. BEGIN DEFERRED/IMMEDIATE/EXCLUSIVE locking modes, multi-connection isolation, journal mode handling, freelist tracking, and DDL-rollback (Quereus DDL is non-transactional per `10.1-ddl-lifecycle` lines 103-106) are all n/a. trans3 cursor-during-commit scenario is n/a (sqllogic harness drains iterators before next statement, so cursor-still-open is not observable). |
+| `savepoint.test`, `savepoint2-7.test` | reviewed (claude, 2026-05-06) | 04-transactions; 101-transaction-edge-cases | SAVEPOINT / RELEASE / ROLLBACK TO at all nesting depths, same-name savepoints, savepoint-without-explicit-BEGIN, mutation types across savepoint boundaries, release-then-rollback-outer, nested-unwinding all already covered. CREATE/DROP TABLE within savepoint scope is n/a (DDL is non-transactional in Quereus per `10.1-ddl-lifecycle`). Auto-vacuum, journal modes, ATTACH-cross-db savepoints, triggers using SAVEPOINT, and savepoint-during-pending-outer-query are n/a. `savepoint3.test` does not exist upstream (confirmed via raw URL 404). |
+| `transaction.test` | reviewed (claude, 2026-05-06) | 04-transactions; 101-transaction-edge-cases | Empty/double/failed-statement-recovery/large-batch transaction surface, plus savepoint nesting, all already covered. C-API `sqlite3_txn_state` introspection, multi-connection locking/isolation, and journal-file recovery are n/a (Quereus is single-engine, no journal mode, no separate connection state surface). |
 
 ### Bound parameters, identifiers
 
 | SQLite Source | Status | Quereus Coverage | Notes |
 |---|---|---|---|
-| `bind.test` | unreviewed | 13.2-cte-bind-params | Parameter binding (`?`, `:name`, `@name`, `$name`). |
+| `bind.test` | reviewed (claude, 2026-05-06) | 13.2-cte-bind-params; 02.1-bind-parameters; 90.1-parse-errors | Positional `?` (basic SELECT/INSERT/UPDATE/DELETE), named `:name` and `$name`, numeric named `:N`/`$N`, repeated parameter references, NULL/integer/real/text type binds, parameter in arithmetic / function call / CASE / IN list / LIMIT / OFFSET, repeated execution with different bind values added in 02.1. `@name` rejection (lexer "Unexpected character") and `?N` rejection (stray digit after positional placeholder) and bare `:` prefix rejection added in 90.1. C-API `sqlite3_bind_*` mechanics, `sqlite3_bind_parameter_index/_name`, and Tcl `$varname` integration are n/a. |
 | `descidx*.test` | reviewed (claude, 2026-05-06) | 40.1-pk-desc-direction; 10.5-indexes; 06.3-schema; 10.5.3-desc-index-ordering; test/optimizer/desc-index-ordering.spec.ts | Single-column DESC traversal, composite mixed-direction (ASC, DESC), DESC ordering of NULLs (NULLS FIRST / LAST), DESC range scan, DESC TEXT lexicographic added in 10.5.3. Plan-shape: ORDER BY DESC consumes DESC index without SORT, range filter+ORDER BY DESC uses index, composite (ASC, DESC) index satisfies equality+DESC trailing without SORT — added in test/optimizer/desc-index-ordering.spec.ts. SQLite file-format-version 4 / VACUUM-with-format-preservation paths n/a (in-memory; no on-disk format constraints). |
-| `identifier.test` (if present) | unreviewed | 03.1-quoted-identifiers; 06.4.1-schema-case-insensitive | Quoting and identifier resolution. |
+| `identifier.test` (if present) | n/a (file does not exist in upstream sqlite/sqlite — confirmed via raw URL 404) | 03.1-quoted-identifiers; 06.4.1-schema-case-insensitive | Identifier quoting (`"..."`, `` `...` ``, `[...]`, reserved words, mixed styles, spaces) and schema case-insensitivity already comprehensively covered in the listed fixtures. |
 
 ### Error paths
 
 | SQLite Source | Status | Quereus Coverage | Notes |
 |---|---|---|---|
-| `errors.test` (if present) | unreviewed | 90.1-parse-errors; 90.3-expression-errors; 90.4-dml-errors; 90-error_paths | Error message coverage; SQLite error codes won't match — focus on which inputs raise. |
+| `errors.test` (if present) | n/a (file does not exist in upstream sqlite/sqlite — confirmed via raw URL 404; SQLite distributes error tests across topic-specific files like `e_select.test`, `e_expr.test`, etc.) | 90.1-parse-errors; 90.3-expression-errors; 90.4-dml-errors; 90-error_paths; 90.2-alter-table-errors; 90.5-unsupported-join-types; 90.6-select-error-paths | Error message surface (parse, semantic, constraint, subquery, DML, alter, RETURNING qualifier misuse) already comprehensively covered across the listed `90.x` fixtures using Quereus-specific wording. SQLite error code numbers are n/a. |
 
 ### Quereus-specific (no SQLite analog)
 
