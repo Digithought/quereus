@@ -1,0 +1,127 @@
+-- adapted from SQLite test/unique.test, test/unique2.test
+-- UNIQUE constraint scenarios beyond 102-unique-constraints.sqllogic.
+
+-- ===================================
+-- 1. UNIQUE with COLLATE NOCASE — case-insensitive uniqueness
+-- ===================================
+
+create table t_uci (id integer primary key, email text collate nocase unique);
+
+insert into t_uci values (1, 'Alice@Test.com');
+
+insert into t_uci values (2, 'alice@test.com');
+-- error: UNIQUE
+
+insert into t_uci values (3, 'ALICE@TEST.COM');
+-- error: UNIQUE
+
+insert into t_uci values (4, 'bob@test.com');
+
+select count(*) as cnt from t_uci;
+→ [{"cnt":2}]
+
+-- update to a case-variant of an existing value also fails
+update t_uci set email = 'BOB@TEST.COM' where id = 1;
+-- error: UNIQUE
+
+drop table t_uci;
+
+-- composite UNIQUE with mixed collations
+create table t_uci2 (
+	id integer primary key,
+	a text collate nocase,
+	b text,
+	unique (a, b)
+);
+
+insert into t_uci2 values (1, 'Foo', 'bar');
+insert into t_uci2 values (2, 'foo', 'baz');
+
+-- ('FOO','bar') matches ('Foo','bar') under NOCASE on a, exact on b
+insert into t_uci2 values (3, 'FOO', 'bar');
+-- error: UNIQUE
+
+-- 'Foo'/'BAR' differs on b (BINARY) so allowed
+insert into t_uci2 values (4, 'Foo', 'BAR');
+
+select count(*) as cnt from t_uci2;
+→ [{"cnt":3}]
+
+drop table t_uci2;
+
+-- ===================================
+-- 2. UNIQUE constraint error message identifies the violated column
+-- ===================================
+
+create table t_ue (id integer primary key, email text unique, code text unique);
+insert into t_ue values (1, 'a@x', 'AAA');
+
+-- conflict on email reports email
+insert into t_ue values (2, 'a@x', 'BBB');
+-- error: t_ue.email
+
+-- conflict on code reports code
+insert into t_ue values (3, 'b@x', 'AAA');
+-- error: t_ue.code
+
+drop table t_ue;
+
+-- composite UNIQUE error names the offending column(s)
+create table t_uec (id integer primary key, a text, b text, unique (a, b));
+insert into t_uec values (1, 'x', 'y');
+
+insert into t_uec values (2, 'x', 'y');
+-- error: t_uec
+
+drop table t_uec;
+
+-- ===================================
+-- 3. CREATE UNIQUE INDEX rejected when data already has duplicates
+-- ===================================
+
+create table u2_a (k text primary key, x text not null);
+insert into u2_a values ('r1', 'dup'), ('r2', 'dup');
+
+create unique index u2_a_x on u2_a(x);
+-- error: UNIQUE
+
+-- after dedup, the index creates fine and rejects new duplicates
+delete from u2_a where k = 'r2';
+
+create unique index u2_a_x on u2_a(x);
+
+insert into u2_a values ('r3', 'dup');
+-- error: UNIQUE
+
+drop table u2_a;
+
+-- nullable indexed columns: multiple NULL allowed
+create table u2_c (k integer primary key, y text null, z text null);
+insert into u2_c values (1, null, null), (2, null, null);
+
+create unique index u2_c_yz on u2_c(y, z);
+
+select count(*) as cnt from u2_c;
+→ [{"cnt":2}]
+
+drop table u2_c;
+
+-- ===================================
+-- 4. PRIMARY KEY / UNIQUE referencing non-existent column rejected at DDL
+-- ===================================
+
+create table u2_bad1 (a integer not null, b integer not null, primary key (nope));
+-- error:
+
+drop table if exists u2_bad1;
+
+create table u2_bad2 (id integer primary key, a integer not null, unique (missing));
+-- error:
+
+drop table if exists u2_bad2;
+
+create table u2_bad3 (id integer primary key, b integer not null);
+create unique index u2_bad3_idx on u2_bad3(no_such_col);
+-- error: not found
+
+drop table u2_bad3;

@@ -1,0 +1,123 @@
+-- adapted from SQLite test/check.test
+-- CHECK constraint scenarios beyond 40-constraints.sqllogic and
+-- 29-constraint-edge-cases.sqllogic.
+
+-- ===================================
+-- 1. CHECK with typeof() / function-driven type integrity
+-- ===================================
+
+create table t_typ (
+	id integer primary key,
+	x any,
+	check (typeof(x) in ('integer', 'real'))
+);
+
+insert into t_typ values (1, 10);
+
+select typeof(x) from t_typ where id = 1;
+→ [{"typeof(x)":"integer"}]
+
+-- text fails typeof check
+insert into t_typ values (2, 'abc');
+-- error: CHECK
+
+-- real passes
+insert into t_typ values (3, 1.5);
+
+select typeof(x) from t_typ where id = 3;
+→ [{"typeof(x)":"real"}]
+
+drop table t_typ;
+
+-- ===================================
+-- 2. CHECK using CASE / BETWEEN
+-- ===================================
+
+create table t_cb (
+	id integer primary key,
+	kind text,
+	amt integer,
+	constraint range_by_kind check (
+		case kind
+			when 'small' then amt between 0 and 9
+			when 'big'   then amt between 100 and 999
+			else amt >= 0
+		end
+	)
+);
+
+insert into t_cb values (1, 'small', 5);
+insert into t_cb values (2, 'big', 500);
+insert into t_cb values (3, 'other', 0);
+
+select count(*) as cnt from t_cb;
+→ [{"cnt":3}]
+
+insert into t_cb values (4, 'small', 50);
+-- error: range_by_kind
+
+insert into t_cb values (5, 'big', 10);
+-- error: range_by_kind
+
+drop table t_cb;
+
+-- ===================================
+-- 3. CHECK with COLLATE inside the predicate
+-- ===================================
+
+create table t_col (
+	id integer primary key,
+	code text,
+	constraint upper_only check (code = code collate nocase and code = upper(code))
+);
+
+insert into t_col values (1, 'ABC');
+
+select code from t_col;
+→ [{"code":"ABC"}]
+
+insert into t_col values (2, 'abc');
+-- error: upper_only
+
+drop table t_col;
+
+-- ===================================
+-- 4. CHECK enforced on INSERT...SELECT (statement-level rollback)
+-- ===================================
+
+create table src (id integer primary key, n integer null);
+insert into src values (1, 1), (2, 2), (3, -1), (4, 4);
+
+create table dst (id integer primary key, n integer not null check (n > 0));
+
+insert into dst select id, n from src;
+-- error: CHECK
+
+-- whole INSERT aborted
+select count(*) as cnt from dst;
+→ [{"cnt":0}]
+
+-- after removing the violating source row, full insert succeeds
+delete from src where id = 3;
+
+insert into dst select id, n from src;
+
+select count(*) as cnt from dst;
+→ [{"cnt":3}]
+
+drop table dst;
+drop table src;
+
+-- ===================================
+-- 5. Bind parameter inside CHECK rejected at DDL
+-- ===================================
+
+create table t_p (a integer not null, check (a = ?));
+-- error:
+
+drop table if exists t_p;
+
+create table t_p2 (a integer not null, check (a = :foo));
+-- error:
+
+drop table if exists t_p2;

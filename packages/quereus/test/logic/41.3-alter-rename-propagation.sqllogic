@@ -1,0 +1,129 @@
+-- adapted from SQLite test/alter.test and test/altertab.test
+-- RENAME TABLE / RENAME COLUMN must propagate into dependent objects:
+-- views, CHECK constraints, FOREIGN KEY references, indexes, CTEs in views.
+
+-- ===================================
+-- 1. RENAME TABLE referenced by a CHECK constraint
+-- ===================================
+
+create table t_chk (id integer primary key, v integer not null);
+alter table t_chk add constraint c1 check ((select count(*) from t_chk) >= 0);
+
+alter table t_chk rename to t_chk2;
+
+insert into t_chk2 values (1, 10);
+
+select count(*) as cnt from t_chk2;
+→ [{"cnt":1}]
+
+drop table t_chk2;
+
+-- ===================================
+-- 2. RENAME TABLE referenced by a partial-index WHERE clause
+-- ===================================
+
+create table t_pidx (id integer primary key, v integer not null);
+create index ix_t_pidx on t_pidx(v) where v > 0;
+
+alter table t_pidx rename to t_pidx2;
+
+insert into t_pidx2 values (1, 5), (2, -1);
+
+select v from t_pidx2 where v > 0 order by v;
+→ [{"v":5}]
+
+drop table t_pidx2;
+
+-- ===================================
+-- 3. RENAME TABLE referenced by a FOREIGN KEY in another table
+-- ===================================
+
+pragma foreign_keys = true;
+
+create table parent_t (id integer primary key, name text);
+create table child_t (id integer primary key, pid integer not null references parent_t(id));
+
+insert into parent_t values (1, 'p');
+insert into child_t values (10, 1);
+
+alter table parent_t rename to parent_t2;
+
+-- FK still enforced under new parent name
+insert into child_t values (11, 99);
+-- error:
+
+-- valid child reference still works
+insert into child_t values (12, 1);
+
+select count(*) as cnt from child_t;
+→ [{"cnt":2}]
+
+drop table child_t;
+drop table parent_t2;
+
+-- ===================================
+-- 4. RENAME TABLE referenced inside a view's SELECT
+-- ===================================
+
+create table tv_src (id integer primary key, name text);
+insert into tv_src values (1, 'a');
+
+create view vv as select id, name from tv_src;
+
+alter table tv_src rename to tv_src2;
+
+select * from vv;
+→ [{"id":1,"name":"a"}]
+
+drop view vv;
+drop table tv_src2;
+
+-- ===================================
+-- 5. RENAME COLUMN propagates into a view's projection / WHERE
+-- ===================================
+
+create table t_vc (id integer primary key, old_n text);
+insert into t_vc values (1, 'a'), (2, 'b');
+
+create view v_vc as select id, old_n from t_vc where old_n is not null;
+
+alter table t_vc rename column old_n to new_n;
+
+select * from v_vc order by id;
+→ [{"id":1,"new_n":"a"},{"id":2,"new_n":"b"}]
+
+drop view v_vc;
+drop table t_vc;
+
+-- ===================================
+-- 6. RENAME COLUMN referenced inside a CTE in a view
+-- ===================================
+
+create table t_cte (id integer primary key, k integer not null);
+insert into t_cte values (1, 10), (2, 20);
+
+create view v_cte as with c as (select k from t_cte) select k from c;
+
+alter table t_cte rename column k to kk;
+
+select * from v_cte order by kk;
+→ [{"kk":10},{"kk":20}]
+
+drop view v_cte;
+drop table t_cte;
+
+-- ===================================
+-- 7. RENAME COLUMN referenced inside an index expression
+-- ===================================
+
+create table t_idxc (id integer primary key, v integer not null);
+create index ix_idxc on t_idxc(v + 1);
+
+alter table t_idxc rename column v to w;
+
+insert into t_idxc values (1, 10);
+
+select w from t_idxc;
+→ [{"w":10}]
+
+drop table t_idxc;

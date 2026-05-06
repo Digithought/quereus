@@ -1,0 +1,11 @@
+-- adapted from SQLite test/notnull2.test
+-- IS NULL / IS NOT NULL evaluated under an aggregate over an empty NOT NULL
+-- table. The implicit single aggregate row yields NULL for non-aggregated
+-- column refs, so `a is null` returns 1 even though `a` is declared NOT NULL.
+
+create table ag_t (a integer primary key, b text);
+
+select a is null as a_is_null, a is not null as a_is_not_null, count(*) as n from ag_t;
+→ [{"a_is_null":1,"a_is_not_null":0,"n":0}]
+
+drop table ag_t;
