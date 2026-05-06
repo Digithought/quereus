@@ -1,0 +1,112 @@
+-- adapted from SQLite test/index.test, test/index1.test, test/expridx.test ideas
+-- expression indexes: CREATE INDEX ... ON tab(<expr>)
+-- Quereus's parser accepts expressions in indexed-column lists (and 41.3 already
+-- exercises ALTER propagation of `v + 1` indexes); this fixture pins runtime
+-- behavior of expression indexes themselves: query correctness when the same
+-- expression appears in WHERE / ORDER BY / DISTINCT.
+
+-- =====================================================
+-- 1. Function-call expression index (UPPER)
+-- =====================================================
+create table e_upper (id integer primary key, name text);
+insert into e_upper values (1, 'alice');
+insert into e_upper values (2, 'BOB');
+insert into e_upper values (3, 'Carol');
+insert into e_upper values (4, 'dave');
+
+create index ix_e_upper_name on e_upper(upper(name));
+
+-- Equality on the indexed expression
+select id from e_upper where upper(name) = 'ALICE';
+→ [{"id":1}]
+
+select id from e_upper where upper(name) = 'BOB';
+→ [{"id":2}]
+
+-- ORDER BY on the indexed expression
+select id, name from e_upper order by upper(name);
+→ [{"id":1,"name":"alice"},{"id":2,"name":"BOB"},{"id":3,"name":"Carol"},{"id":4,"name":"dave"}]
+
+drop table e_upper;
+
+-- =====================================================
+-- 2. Arithmetic expression index
+-- =====================================================
+create table e_arith (id integer primary key, a integer, b integer);
+insert into e_arith values (1, 10, 5);
+insert into e_arith values (2, 7, 8);
+insert into e_arith values (3, 3, 12);
+insert into e_arith values (4, 6, 9);
+
+create index ix_e_arith_sum on e_arith(a + b);
+
+-- Equality on the expression
+select id from e_arith where a + b = 15 order by id;
+→ [{"id":1},{"id":3},{"id":4}]
+
+-- Range on the expression
+select id from e_arith where a + b > 12 order by id;
+→ [{"id":1},{"id":3},{"id":4}]
+
+-- ORDER BY the expression
+select id, a + b as s from e_arith order by a + b, id;
+→ [{"id":2,"s":15},{"id":1,"s":15},{"id":3,"s":15},{"id":4,"s":15}]
+
+drop table e_arith;
+
+-- =====================================================
+-- 3. Concatenation expression index
+-- =====================================================
+create table e_concat (id integer primary key, first text, last text);
+insert into e_concat values (1, 'John', 'Doe');
+insert into e_concat values (2, 'Jane', 'Smith');
+insert into e_concat values (3, 'Bob', 'Jones');
+
+create index ix_e_concat_full on e_concat(first || ' ' || last);
+
+select id from e_concat where first || ' ' || last = 'Jane Smith';
+→ [{"id":2}]
+
+-- Range / lex order on the expression
+select id, first || ' ' || last as full from e_concat order by first || ' ' || last;
+→ [{"id":3,"full":"Bob Jones"},{"id":2,"full":"Jane Smith"},{"id":1,"full":"John Doe"}]
+
+drop table e_concat;
+
+-- =====================================================
+-- 4. UNIQUE expression index — uniqueness on computed value
+-- =====================================================
+create table e_uniq (id integer primary key, name text);
+create unique index ix_e_uniq_lower on e_uniq(lower(name));
+
+insert into e_uniq values (1, 'Alpha');
+insert into e_uniq values (2, 'BETA');
+
+-- Different stored value but same lower() collides
+insert into e_uniq values (3, 'alpha');
+-- error: UNIQUE
+
+select id, name from e_uniq order by id;
+→ [{"id":1,"name":"Alpha"},{"id":2,"name":"BETA"}]
+
+drop table e_uniq;
+
+-- =====================================================
+-- 5. Expression index combined with partial WHERE
+-- =====================================================
+create table e_part (id integer primary key, status text, val integer);
+insert into e_part values (1, 'active', 10);
+insert into e_part values (2, 'inactive', 100);
+insert into e_part values (3, 'active', 25);
+
+create index ix_e_part on e_part(val * 2) where status = 'active';
+
+-- In-scope query against the expression
+select id from e_part where status = 'active' and val * 2 = 50;
+→ [{"id":3}]
+
+-- Out-of-scope query still correct
+select id from e_part where val * 2 = 200;
+→ [{"id":2}]
+
+drop table e_part;

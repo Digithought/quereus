@@ -76,8 +76,8 @@ Rows seeded from a survey of `packages/quereus/test/logic/` (116 files as of 202
 | `where.test`, `where2-9.test`, `whereA-J.test` | unreviewed | 26-join-edge-cases; 100-predicate-normalization-edge-cases | WHERE clauses and index selection. Split per-file. |
 | `join.test`, `join1-7.test` | unreviewed | 11-joins; 12-join_padding_order; 23-self-joins-duplicates; 26-join-edge-cases | Inner/outer/cross joins, NULL padding. |
 | `joinB.test`, `joinC.test`, `joinD.test`, `joinE.test`, `joinF.test`, `joinG.test`, `joinH.test` | unreviewed | 11-joins; 26-join-edge-cases | Misc join regressions. |
-| `index.test`, `index1-7.test` | unreviewed | 10.5-indexes; 40.1-pk-desc-direction | Index semantics. |
-| `indexedby.test` | unreviewed | 10.5-indexes | INDEXED BY clause. |
+| `index.test`, `index1-7.test` | reviewed (claude, 2026-05-06) | 10.5-indexes; 40.1-pk-desc-direction; 102.1-unique-edge-cases; 06.4.2-collation-extras; 06.3-schema; 41.3-alter-rename-propagation; 10.5.1-partial-indexes; 10.5.2-expression-indexes | Basic CREATE / DROP / IF [NOT] EXISTS / multi-column / DESC / UNIQUE / NULLs / COLLATE / schema introspection / post-hoc CREATE UNIQUE INDEX rejecting duplicates already covered. Partial indexes (basic, partial UNIQUE within scope, IS NULL predicate, compound WHERE, scope-transition on UPDATE) added in 10.5.1. Expression indexes (UPPER, arithmetic, concatenation, UNIQUE on lower(), expression+partial combo) added in 10.5.2. Implicit rowid auto-index, INTEGER-PK rowid alias, REINDEX, ATTACH, PRAGMA case_sensitive_like, page-format / disk-I/O patterns (index5.test), 65k-row stress (index4.test), and reserved-prefix `sqlite_` index name rejection are n/a (no rowids, no REINDEX, no ATTACH, storage delegated to VTab; reserved-name policy is SQLite-specific). |
+| `indexedby.test` | n/a (INDEXED BY / NOT INDEXED hint syntax not in Quereus parser; planner uses cost-based selection) | 10.5-indexes | Confirmed: every bullet in indexedby.test exercises the hint clause itself; Quereus has no equivalent grammar (verified by grep over src/parser and the explicit n/a comment in 01.6-update-extras line 3). |
 | `between.test` | unreviewed | (none mapped) | BETWEEN semantics. |
 | `in.test`, `in2-5.test` | unreviewed | 07.7-in-subquery-caching | IN/NOT IN with lists and subqueries. |
 | `exists.test` | unreviewed | 08.1-semi-anti-join; 07.6-subqueries | EXISTS/NOT EXISTS. |
@@ -188,7 +188,7 @@ Rows seeded from a survey of `packages/quereus/test/logic/` (116 files as of 202
 | SQLite Source | Status | Quereus Coverage | Notes |
 |---|---|---|---|
 | `bind.test` | unreviewed | 13.2-cte-bind-params | Parameter binding (`?`, `:name`, `@name`, `$name`). |
-| `descidx*.test` | unreviewed | 40.1-pk-desc-direction | Descending indexes. |
+| `descidx*.test` | reviewed (claude, 2026-05-06) | 40.1-pk-desc-direction; 10.5-indexes; 06.3-schema; 10.5.3-desc-index-ordering; test/optimizer/desc-index-ordering.spec.ts | Single-column DESC traversal, composite mixed-direction (ASC, DESC), DESC ordering of NULLs (NULLS FIRST / LAST), DESC range scan, DESC TEXT lexicographic added in 10.5.3. Plan-shape: ORDER BY DESC consumes DESC index without SORT, range filter+ORDER BY DESC uses index, composite (ASC, DESC) index satisfies equality+DESC trailing without SORT — added in test/optimizer/desc-index-ordering.spec.ts. SQLite file-format-version 4 / VACUUM-with-format-preservation paths n/a (in-memory; no on-disk format constraints). |
 | `identifier.test` (if present) | unreviewed | 03.1-quoted-identifiers; 06.4.1-schema-case-insensitive | Quoting and identifier resolution. |
 
 ### Error paths

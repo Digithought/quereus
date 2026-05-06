@@ -1,0 +1,135 @@
+-- adapted from SQLite test/index6.test, test/index7.test
+-- partial indexes (CREATE INDEX ... WHERE expr) — both regular and UNIQUE.
+-- Quereus's parser accepts partial indexes; this fixture pins the runtime semantics:
+-- only rows matching the WHERE clause participate in the index, but query results must
+-- remain correct regardless of which rows the index covers.
+
+-- =====================================================
+-- 1. Basic partial index — rows outside WHERE still queryable
+-- =====================================================
+create table p_basic (id integer primary key, status text, val integer);
+insert into p_basic values (1, 'active', 10);
+insert into p_basic values (2, 'inactive', 20);
+insert into p_basic values (3, 'active', 30);
+insert into p_basic values (4, 'inactive', 5);
+
+create index ix_p_basic_active on p_basic(val) where status = 'active';
+
+-- Query inside the partial scope
+select id from p_basic where status = 'active' order by id;
+→ [{"id":1},{"id":3}]
+
+-- Query outside the partial scope still returns correct rows (index need not apply)
+select id from p_basic where status = 'inactive' order by id;
+→ [{"id":2},{"id":4}]
+
+-- Combined predicate using the partial scope
+select id from p_basic where status = 'active' and val > 15;
+→ [{"id":3}]
+
+drop table p_basic;
+
+-- =====================================================
+-- 2. Partial UNIQUE index — uniqueness limited to WHERE scope
+-- =====================================================
+create table p_uniq (id integer primary key, status text, code text);
+create unique index ix_p_uniq_active_code on p_uniq(code) where status = 'active';
+
+-- First active row claims code 'A'
+insert into p_uniq values (1, 'active', 'A');
+
+-- Same code outside scope: allowed (partial UNIQUE excludes inactive rows)
+insert into p_uniq values (2, 'inactive', 'A');
+
+select id, status, code from p_uniq order by id;
+→ [{"id":1,"status":"active","code":"A"},{"id":2,"status":"inactive","code":"A"}]
+
+-- Same code inside scope: rejected
+insert into p_uniq values (3, 'active', 'A');
+-- error: UNIQUE
+
+-- Update transitioning a row out of scope frees the code
+update p_uniq set status = 'archived' where id = 1;
+insert into p_uniq values (4, 'active', 'A');
+
+select id, status, code from p_uniq order by id;
+→ [{"id":1,"status":"archived","code":"A"},{"id":2,"status":"inactive","code":"A"},{"id":4,"status":"active","code":"A"}]
+
+drop table p_uniq;
+
+-- =====================================================
+-- 3. Partial index with IS NULL / IS NOT NULL predicate
+-- =====================================================
+create table p_null (id integer primary key, name text, deleted_at text null);
+insert into p_null values (1, 'Widget', null);
+insert into p_null values (2, 'Gadget', '2024-06-01');
+insert into p_null values (3, 'Sprocket', null);
+insert into p_null values (4, 'Doohickey', '2025-01-15');
+
+create index ix_p_null_active on p_null(name) where deleted_at is null;
+
+-- Query inside scope (matches the partial predicate)
+select id from p_null where name = 'Widget' and deleted_at is null;
+→ [{"id":1}]
+
+-- Query outside scope (does not match the partial predicate)
+select id from p_null where name = 'Gadget' and deleted_at is not null;
+→ [{"id":2}]
+
+-- Listing all "active" rows
+select id, name from p_null where deleted_at is null order by id;
+→ [{"id":1,"name":"Widget"},{"id":3,"name":"Sprocket"}]
+
+drop table p_null;
+
+-- =====================================================
+-- 4. Partial index with compound WHERE (AND, comparison)
+-- =====================================================
+create table p_cmp (id integer primary key, user_id integer, score real, archived integer);
+insert into p_cmp values (1, 10, 95.5, 0);
+insert into p_cmp values (2, 10, 45.0, 0);
+insert into p_cmp values (3, 20, 88.2, 0);
+insert into p_cmp values (4, 10, 99.0, 1);
+
+create index ix_p_cmp_high on p_cmp(user_id) where archived = 0 and score > 80.0;
+
+-- Query in scope
+select id from p_cmp where archived = 0 and score > 80.0 and user_id = 10;
+→ [{"id":1}]
+
+-- Query that overlaps scope but adds another filter
+select id from p_cmp where user_id = 10 and score > 80.0 order by id;
+→ [{"id":1},{"id":4}]
+
+-- Query strictly outside scope
+select id from p_cmp where archived = 1 order by id;
+→ [{"id":4}]
+
+drop table p_cmp;
+
+-- =====================================================
+-- 5. Partial index updated correctly when a row's WHERE-eligibility changes
+-- =====================================================
+create table p_move (id integer primary key, kind text, label text);
+create index ix_p_move on p_move(label) where kind = 'A';
+
+insert into p_move values (1, 'A', 'one');
+insert into p_move values (2, 'B', 'two');
+insert into p_move values (3, 'A', 'three');
+
+select id from p_move where kind = 'A' and label = 'one';
+→ [{"id":1}]
+
+-- Move id=1 out of scope
+update p_move set kind = 'B' where id = 1;
+
+select id from p_move where kind = 'A' and label = 'one';
+→ []
+
+-- Move id=2 into scope
+update p_move set kind = 'A' where id = 2;
+
+select id from p_move where kind = 'A' order by id;
+→ [{"id":2},{"id":3}]
+
+drop table p_move;
