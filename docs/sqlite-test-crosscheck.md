@@ -131,13 +131,13 @@ Rows seeded from a survey of `packages/quereus/test/logic/` (116 files as of 202
 
 | SQLite Source | Status | Quereus Coverage | Notes |
 |---|---|---|---|
-| `insert.test`, `insert2-5.test` | unreviewed | 01-basic; 47-upsert | INSERT, INSERT...SELECT, multi-row. |
-| `update.test`, `update2.test`, `update_from.test` | unreviewed | 01-basic; 90.4-dml-errors | UPDATE incl. UPDATE...FROM. |
-| `delete.test`, `delete2-4.test` | unreviewed | 01-basic | DELETE. |
-| `upsert.test`, `upsert2-4.test` | unreviewed | 47-upsert | INSERT ... ON CONFLICT. |
-| `returning1.test` | unreviewed | 42-returning; 44-orthogonality | RETURNING. |
-| `replace.test` | unreviewed | (check) | REPLACE INTO / OR REPLACE. |
-| `conflict.test`, `conflict2-4.test` | unreviewed | 29-constraint-edge-cases; 102-unique-constraints | OR ABORT/FAIL/IGNORE/REPLACE/ROLLBACK. |
+| `insert.test`, `insert2-5.test` | reviewed (claude, 2026-05-06) | 01-basic; 47-upsert; 01.5-insert-select | INSERT…SELECT variants (column reordering, GROUP BY, compound, JOIN, DISTINCT, LIMIT, self-reference, view-mediated, correlated WHERE, CHECK propagation) added in 01.5. Trigger / rowid / autoincrement scenarios n/a. |
+| `update.test`, `update2.test`, `update_from.test` | reviewed (claude, 2026-05-06) | 01-basic; 90.4-dml-errors; 01.6-update-extras; 01.7-update-from | UPDATE all-rows / scalar subquery in SET / multi-column SET / column-list `(a,b)=(subquery)` / NOT / OR / PK-change in 01.6. UPDATE…FROM single table / subquery FROM / CTE FROM / multi-table FROM in 01.7. `update_from.test` n/a (file does not exist in upstream sqlite/sqlite — confirmed via gh api 404). UPDATE LIMIT/ORDER BY / INDEXED BY / rowid n/a. |
+| `delete.test`, `delete2-4.test` | reviewed (claude, 2026-05-06) | 01-basic; 29-constraint-edge-cases; 41-foreign-keys; 01.8-delete-extras | DELETE EXISTS / NOT EXISTS / NOT(...) / OR / multi-column AND / self-referential EXISTS / composite-PK delete-all / IN-subquery added in 01.8. `delete2.test` n/a (cursor-lock and index-corruption regression that's not user-observable in Quereus). DELETE LIMIT/ORDER BY / rowid forms n/a. |
+| `upsert.test`, `upsert2-4.test` | reviewed (claude, 2026-05-06) | 47-upsert; 47.1-upsert-conflict-targets | `upsert.test` n/a (file does not exist in upstream — confirmed via gh api 404). Composite UNIQUE conflict targets (full match, reversed order, partial-target rejection), `excluded.col` semantics, `INSERT…AS alias`, CTE source for UPSERT, DO UPDATE WHERE filter, column-list assignment in DO UPDATE SET, multi-row UPSERT mix-and-match added in 47.1. Trigger / WITHOUT ROWID variants n/a. |
+| `returning1.test` | reviewed (claude, 2026-05-06) | 42-returning; 44-orthogonality; 42.1-returning-extras | Scalar subquery in RETURNING list, INSERT…SELECT with RETURNING, quoted/bracketed identifiers, RETURNING on no-op DO NOTHING upsert, RETURNING on UPDATE OR IGNORE skip, generated-column RETURNING projection added in 42.1. Trigger / FTS / sqlite_schema scenarios n/a. |
+| `replace.test` | reviewed (claude, 2026-05-06) | 47-upsert; 102-unique-constraints; 43.1-notnull-or-conflict; 47.2-replace-and-or-clauses | `replace.test` does not exist upstream, but the surface called out in the ticket is exercised in 47.2: REPLACE INTO keyword, multi-row REPLACE, multi-conflict REPLACE (cross-UNIQUE), REPLACE+RETURNING, UPDATE OR REPLACE on UNIQUE, INSERT OR ABORT/FAIL/ROLLBACK semantics with respect to surrounding transactional state, OR IGNORE on CHECK, and OR REPLACE not masking CHECK. |
+| `conflict.test`, `conflict2-4.test` | reviewed (claude, 2026-05-06) | 29-constraint-edge-cases; 102-unique-constraints; 47.2-replace-and-or-clauses; 29.1-column-level-conflict-clause | `conflict4.test` n/a (file does not exist upstream — confirmed via gh api 404). OR ABORT/FAIL/ROLLBACK semantics in 47.2. Column-level ON CONFLICT directives (PRIMARY KEY/UNIQUE/NOT NULL/CHECK ON CONFLICT REPLACE/IGNORE; statement-level OR override) pinned in 29.1. |
 
 ### DDL (CREATE/ALTER/DROP, views, indexes)
 
