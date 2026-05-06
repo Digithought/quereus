@@ -106,15 +106,15 @@ Rows seeded from a survey of `packages/quereus/test/logic/` (116 files as of 202
 
 | SQLite Source | Status | Quereus Coverage | Notes |
 |---|---|---|---|
-| `expr.test`, `expr2.test` | unreviewed | 03-expressions; 03.7-bigint-mixed-arithmetic; 22-boundary-values | Arithmetic, logical, comparison ops. |
-| `e_expr.test` | unreviewed | 03-expressions | "Encyclopedia" expressions. |
-| `cast.test` | unreviewed | 06.5.1-conversion-functions; 99-conversion-edge-cases | CAST. Quereus prefers `integer()`/`date()`/etc.; check both syntaxes. |
-| `types.test` | unreviewed | 03.6-type-system; 10-distinct_datatypes | Strip out affinity-coercion sections (n/a); explicit-conversion subset applies. |
-| `types2.test`, `types3.test` | unreviewed | 03.6-type-system | Same caveat as `types.test`. |
-| `numcast.test`, `tostr.test` | unreviewed | 06.5.1-conversion-functions | Numeric ↔ text conversions. |
-| `boundary*.test` | unreviewed | 22-boundary-values | Numeric/string boundaries. |
-| `bigint.test` | unreviewed | 03.7-bigint-mixed-arithmetic | bigint arithmetic. |
-| `collate1.test` – `collate9.test` | unreviewed | 06.4.1-schema-case-insensitive | Collation sequences. |
+| `expr.test`, `expr2.test` | reviewed (claude, 2026-05-06) | 03-expressions; 03.7-bigint-mixed-arithmetic; 22-boundary-values; 03.2-bitwise-operators; 03.3-is-truthy-falsy | Bitwise binary operators (&/\|/<</>>) added in 03.2. IS TRUE/FALSE/NOT TRUE/NOT FALSE added in 03.3. Rowid arithmetic, internal search-count counters, sqlite3-only introspection are n/a. |
+| `e_expr.test` | reviewed (claude, 2026-05-06) | 03-expressions; 03.6-type-system; 03.2-bitwise-operators | "Encyclopedia of expressions" surface (binary/unary ops, IS NULL, BETWEEN, LIKE/GLOB, CASE, CAST, EXISTS, IN, COLLATE, parentheses, NULL propagation, function calls) covered by existing fixtures plus 03.2 bitwise gap. RAISE / MATCH / REGEXP n/a (no triggers, no FTS, no regex matcher). |
+| `cast.test` | reviewed (claude, 2026-05-06) | 06.5.1-conversion-functions; 99-conversion-edge-cases; 03.6-type-system; 99.1-cast-syntax-extras | BLOB roundtrip via CAST, scientific notation, whitespace trim, `cast('3.0' as numeric)` → INTEGER affinity, IEEE 754 INF/NaN, BOOLEAN ↔ numeric edges added in 99.1. |
+| `types.test` | reviewed (claude, 2026-05-06) | 03.6-type-system; 10-distinct_datatypes | Cross-type ordering (NULL < num < text < blob), BLOB byte-comparison, typeof bucket names, NULL ordering, BOOLEAN ordering, lexicographic date/time ordering all already covered. Implicit column-type affinity coercion / CREATE TABLE NUMERIC/INTEGER/TEXT/BLOB affinity rules / SQLite physical record sizing are n/a (Quereus uses strict logical types). |
+| `types2.test`, `types3.test` | reviewed (claude, 2026-05-06) | 03.6-type-system; 99.1-cast-syntax-extras | Cross-category comparison (=, <, >, BETWEEN) and IN with mixed-type literal lists pinned in 99.1; rest of types2/types3 (column-type affinity, manifest-typing via Tcl variables, custom-function affinity tagging, index-affinity optimization) n/a by design. |
+| `numcast.test`, `tostr.test` | reviewed (claude, 2026-05-06) | 06.5.1-conversion-functions; 99-conversion-edge-cases; 99.1-cast-syntax-extras | Whitespace trimming, scientific notation, real-to-text formatting added in 99.1. `tostr.test` does not exist upstream (numeric-to-text covered via existing text() / cast(... as text) tests). SQLite UTF-16 internal encoding paths n/a. |
+| `boundary*.test` | reviewed (claude, 2026-05-06) | 22-boundary-values; 03.7-bigint-mixed-arithmetic; 99.1-cast-syntax-extras | Value-domain boundaries (Number.MAX_SAFE_INTEGER ±, empty string/BLOB, IEEE 754 0.0 vs -0.0, mixed-type arithmetic) already covered; INF/NaN handling added in 99.1. SQLite varint / page-format / bytecode-level boundary tests are n/a (storage delegated to VTab). |
+| `bigint.test` | n/a (file does not exist in upstream sqlite/sqlite — confirmed via raw URL 404) | 03.7-bigint-mixed-arithmetic | Mixed-type bigint/number arithmetic at 2^53 boundary fully covered in 03.7; no upstream `bigint.test` to mirror. |
+| `collate1.test` – `collate9.test` | reviewed (claude, 2026-05-06) | 06.4.1-schema-case-insensitive; 03-expressions; 03.6-type-system; 07.5-window; 07.3-group-by-extras; 06.4.2-collation-extras | ORDER BY with column-level NOCASE/explicit override, RTRIM in WHERE/ORDER BY/DISTINCT, JOIN ON with COLLATE override, DISTINCT NOCASE dedup, UNION/INTERSECT/EXCEPT under NOCASE, MIN/MAX under NOCASE, INDEX with COLLATE NOCASE, COLLATE in CASE all added in 06.4.2. C-API `sqlite3_create_collation_v2` / collation factory callbacks / REINDEX / UTF-16 encoding / ATTACH cross-collation are n/a (Quereus uses plugin path; no REINDEX or ATTACH). |
 
 ### Functions (scalar, string, math, date, json)
 

@@ -1,0 +1,86 @@
+-- adapted from SQLite test/expr.test, e_expr.test
+-- Bitwise binary operators (&, |, <<, >>) on integers.
+-- Quereus already covers unary bitwise NOT (~) in 03-expressions.
+
+-- AND / OR
+select 5 & 3 as r;
+→ [{"r":1}]
+
+select 5 | 3 as r;
+→ [{"r":7}]
+
+select 12 & 10 as r;
+→ [{"r":8}]
+
+select 12 | 10 as r;
+→ [{"r":14}]
+
+-- Identity / zeroing
+select 7 & 0 as zero, 7 | 0 as same;
+→ [{"zero":0,"same":7}]
+
+-- Mask: -1 has all bits set within int domain
+select -1 & 255 as r;
+→ [{"r":255}]
+
+-- Shifts
+select 1 << 0 as r;
+→ [{"r":1}]
+
+select 1 << 4 as r;
+→ [{"r":16}]
+
+select 5 << 1 as r;
+→ [{"r":10}]
+
+select 8 >> 1 as r;
+→ [{"r":4}]
+
+select 16 >> 2 as r;
+→ [{"r":4}]
+
+select 1 >> 1 as r;
+→ [{"r":0}]
+
+-- Negative operand right-shift (arithmetic / sign-preserving per SQLite)
+select -8 >> 2 as r;
+→ [{"r":-2}]
+
+select -1 >> 1 as r;
+→ [{"r":-1}]
+
+-- Negative left-shift
+select -1 << 2 as r;
+→ [{"r":-4}]
+
+-- NULL propagation
+select 5 & null as r;
+→ [{"r":null}]
+
+select null | 5 as r;
+→ [{"r":null}]
+
+select null << 2 as r;
+→ [{"r":null}]
+
+select null >> 2 as r;
+→ [{"r":null}]
+
+-- Combined bitwise expression: precedence (~ tighter than & tighter than | tighter than <<)
+select ~0 & 0xF as r;
+→ [{"r":15}]
+
+select 1 << 2 | 1 as r;
+→ [{"r":5}]
+
+-- Bitwise on column values
+create table bw (id integer primary key, a integer, b integer);
+insert into bw values (1, 12, 10), (2, 0xFF, 0x0F), (3, 1, 31);
+
+select id, a & b as a_and_b, a | b as a_or_b from bw order by id;
+→ [{"id":1,"a_and_b":8,"a_or_b":14},{"id":2,"a_and_b":15,"a_or_b":255},{"id":3,"a_and_b":1,"a_or_b":31}]
+
+select id, a << 1 as left_shift, a >> 1 as right_shift from bw order by id;
+→ [{"id":1,"left_shift":24,"right_shift":6},{"id":2,"left_shift":510,"right_shift":127},{"id":3,"left_shift":2,"right_shift":0}]
+
+drop table bw;
