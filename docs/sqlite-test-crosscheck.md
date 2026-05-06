@@ -63,10 +63,10 @@ Rows seeded from a survey of `packages/quereus/test/logic/` (116 files as of 202
 | `orderby1.test` – `orderby9.test` | unreviewed | 28-set-ops-sort-edge-cases; 22-boundary-values | ORDER BY behavior, NULLS first/last, multi-key. Split per-file when reviewing. |
 | `limit.test`, `limit2.test` | unreviewed | 94.1-limit-offset-edge-cases | LIMIT/OFFSET. |
 | `distinct.test`, `distinct2.test` | unreviewed | 10-distinct_datatypes | DISTINCT semantics, multi-col. |
-| `minmax.test`, `minmax2.test`, `minmax3.test`, `minmax4.test` | unreviewed | 07-aggregates; 25-aggregate-edge-cases | MIN/MAX as scalar and aggregate. |
-| `count.test` | unreviewed | 07-aggregates | COUNT(*) vs COUNT(expr) vs COUNT(DISTINCT). |
-| `having.test` | unreviewed | 07-aggregates | HAVING clause. |
-| `groupby.test` | unreviewed | 07-aggregates; 92-hash-aggregate-edge-cases | GROUP BY semantics. |
+| `minmax.test`, `minmax2.test`, `minmax3.test`, `minmax4.test` | reviewed (claude, 2026-05-06) | 07-aggregates; 25-aggregate-edge-cases; 06.5.2-scalar-minmax | (see aggregates-windows ticket) Scalar multi-arg form gap filled in 06.5.2; index/plan-shape and rowid-arithmetic scenarios are n/a. |
+| `count.test` | reviewed (claude, 2026-05-06) | 07-aggregates; 25-aggregate-edge-cases; 92-hash-aggregate-edge-cases | (see aggregates-windows ticket) COUNT(*) / COUNT(expr) / COUNT(DISTINCT) semantics already covered; OP_Count / WITHOUT ROWID optimizations are n/a. |
+| `having.test` | reviewed (claude, 2026-05-06) | 07-aggregates; 25-aggregate-edge-cases; 25.2-having-edge-cases | (see aggregates-windows ticket) IS NULL / agg-vs-agg / ungrouped-column predicates added in 25.2. |
+| `groupby.test` | reviewed (claude, 2026-05-06) | 07-aggregates; 92-hash-aggregate-edge-cases; 07.3-group-by-extras | (see aggregates-windows ticket) GROUP BY ordinal / expression / NOCASE / CASE coverage added in 07.3. SQLite source URL 404'd; cross-check based on Quereus existing coverage and SQLite-doc-known scenarios. |
 | `e_select.test` | unreviewed | 01-basic; 07-aggregates | "Encyclopedia" SELECT — exhaustive grammar coverage. |
 
 ### WHERE, JOIN, indexing
@@ -97,10 +97,10 @@ Rows seeded from a survey of `packages/quereus/test/logic/` (116 files as of 202
 
 | SQLite Source | Status | Quereus Coverage | Notes |
 |---|---|---|---|
-| `aggfunc.test` | unreviewed | 07-aggregates; 06.6-aggregate-extended | Built-in aggregate functions. |
-| `aggnested.test` | unreviewed | 25-aggregate-edge-cases | Nested aggregates. |
-| `window1.test` – `window9.test` | unreviewed | 07.5-window; 27-window-edge-cases | Window function semantics, frames, partitioning. |
-| `windowfault.test` | unreviewed | (none) | Mostly OOM; subset on grammar errors may apply. |
+| `aggfunc.test` | reviewed (claude, 2026-05-06) | 07-aggregates; 06.6-aggregate-extended; 07.1-aggregate-filter-clause; 07.2-aggregate-order-by | FILTER clause and ORDER BY-inside-aggregate gaps filled. |
+| `aggnested.test` | reviewed (claude, 2026-05-06) | 25-aggregate-edge-cases; 25.1-nested-aggregates | Aggregate-over-aggregate via subquery / CTE / multi-level nesting added. |
+| `window1.test` – `window9.test` | reviewed (claude, 2026-05-06) | 07.5-window; 27-window-edge-cases; 07.5.1-window-named; 07.5.2-window-nth-value; 27.1-window-groups-frame; 27.2-window-exclude | Named WINDOW clause, NTH_VALUE, GROUPS frame mode, and EXCLUDE clauses added (FILTER on window aggregates lives in 07.1). |
+| `windowfault.test` | n/a (OOM/memory fault injection only — no grammar/error-path subset present) | (none) | Confirmed via fetch: contents are all `oom-*`/`tmpread` fault-injection wrappers around valid SQL; no applicable grammar errors. |
 
 ### Expressions, types, conversion
 

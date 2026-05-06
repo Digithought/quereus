@@ -1,0 +1,47 @@
+-- adapted from SQLite test/window1.test, test/window3.test, test/window6.test
+-- nth_value(expr, n): returns the n-th row's expr in the current frame, or NULL
+-- when the frame has fewer than n rows.
+
+create table nv (id integer primary key, val integer, grp text);
+insert into nv values
+  (1, 10, 'A'),
+  (2, 20, 'A'),
+  (3, 30, 'A'),
+  (4, 40, 'A'),
+  (5, 100, 'B'),
+  (6, 200, 'B'),
+  (7, 300, 'B');
+
+-- nth_value with default frame (ORDER BY → unbounded preceding to current row)
+select id, val, grp,
+       nth_value(val, 1) over (partition by grp order by id) as nth1,
+       nth_value(val, 2) over (partition by grp order by id) as nth2,
+       nth_value(val, 3) over (partition by grp order by id) as nth3
+from nv order by id;
+→ [{"id":1,"val":10,"grp":"A","nth1":10,"nth2":null,"nth3":null},{"id":2,"val":20,"grp":"A","nth1":10,"nth2":20,"nth3":null},{"id":3,"val":30,"grp":"A","nth1":10,"nth2":20,"nth3":30},{"id":4,"val":40,"grp":"A","nth1":10,"nth2":20,"nth3":30},{"id":5,"val":100,"grp":"B","nth1":100,"nth2":null,"nth3":null},{"id":6,"val":200,"grp":"B","nth1":100,"nth2":200,"nth3":null},{"id":7,"val":300,"grp":"B","nth1":100,"nth2":200,"nth3":300}]
+
+-- nth_value over the entire partition (explicit frame)
+select id, val, grp,
+       nth_value(val, 2) over (partition by grp order by id rows between unbounded preceding and unbounded following) as second_in_grp
+from nv order by id;
+→ [{"id":1,"val":10,"grp":"A","second_in_grp":20},{"id":2,"val":20,"grp":"A","second_in_grp":20},{"id":3,"val":30,"grp":"A","second_in_grp":20},{"id":4,"val":40,"grp":"A","second_in_grp":20},{"id":5,"val":100,"grp":"B","second_in_grp":200},{"id":6,"val":200,"grp":"B","second_in_grp":200},{"id":7,"val":300,"grp":"B","second_in_grp":200}]
+
+-- nth_value with N greater than partition size returns null
+select id, val, grp,
+       nth_value(val, 10) over (partition by grp order by id rows between unbounded preceding and unbounded following) as nth10
+from nv order by id;
+→ [{"id":1,"val":10,"grp":"A","nth10":null},{"id":2,"val":20,"grp":"A","nth10":null},{"id":3,"val":30,"grp":"A","nth10":null},{"id":4,"val":40,"grp":"A","nth10":null},{"id":5,"val":100,"grp":"B","nth10":null},{"id":6,"val":200,"grp":"B","nth10":null},{"id":7,"val":300,"grp":"B","nth10":null}]
+
+drop table nv;
+
+-- N must be a positive integer; n=0 or negative is an error
+create table nv_err (id integer primary key, val integer);
+insert into nv_err values (1, 10), (2, 20);
+
+select nth_value(val, 0) over (order by id) from nv_err;
+-- error: nth_value
+
+select nth_value(val, -1) over (order by id) from nv_err;
+-- error: nth_value
+
+drop table nv_err;

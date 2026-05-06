@@ -1,0 +1,50 @@
+-- adapted from SQLite test/window1.test, test/window4.test, test/window9.test
+-- Named window definitions via the WINDOW clause; reuse and inheritance.
+
+create table nw (id integer primary key, val integer, grp text);
+insert into nw values
+  (1, 10, 'A'),
+  (2, 20, 'A'),
+  (3, 30, 'A'),
+  (4, 40, 'B'),
+  (5, 50, 'B');
+
+-- A single named window referenced by multiple aggregate calls
+select id, val, grp,
+       row_number() over w as rn,
+       sum(val) over w as total
+from nw window w as (partition by grp order by id) order by id;
+→ [{"id":1,"val":10,"grp":"A","rn":1,"total":10},{"id":2,"val":20,"grp":"A","rn":2,"total":30},{"id":3,"val":30,"grp":"A","rn":3,"total":60},{"id":4,"val":40,"grp":"B","rn":1,"total":40},{"id":5,"val":50,"grp":"B","rn":2,"total":90}]
+
+-- Multiple named windows in the same query
+select id, val, grp,
+       row_number() over wpart as rn_grp,
+       row_number() over wglobal as rn_all
+from nw
+window
+  wpart as (partition by grp order by id),
+  wglobal as (order by id)
+order by id;
+→ [{"id":1,"val":10,"grp":"A","rn_grp":1,"rn_all":1},{"id":2,"val":20,"grp":"A","rn_grp":2,"rn_all":2},{"id":3,"val":30,"grp":"A","rn_grp":3,"rn_all":3},{"id":4,"val":40,"grp":"B","rn_grp":1,"rn_all":4},{"id":5,"val":50,"grp":"B","rn_grp":2,"rn_all":5}]
+
+-- Named window inheriting from another (base provides PARTITION BY, child adds ORDER BY)
+select id, val, grp,
+       sum(val) over wbase as grp_total,
+       sum(val) over wchild as running
+from nw
+window
+  wbase as (partition by grp),
+  wchild as (wbase order by id rows unbounded preceding)
+order by id;
+→ [{"id":1,"val":10,"grp":"A","grp_total":60,"running":10},{"id":2,"val":20,"grp":"A","grp_total":60,"running":30},{"id":3,"val":30,"grp":"A","grp_total":60,"running":60},{"id":4,"val":40,"grp":"B","grp_total":90,"running":40},{"id":5,"val":50,"grp":"B","grp_total":90,"running":90}]
+
+-- Named window referenced inline alongside an extra ORDER BY override
+-- (extending a named window by adding a frame is part of the standard)
+select id, val, grp,
+       sum(val) over (wbase order by id rows unbounded preceding) as running
+from nw
+window wbase as (partition by grp)
+order by id;
+→ [{"id":1,"val":10,"grp":"A","running":10},{"id":2,"val":20,"grp":"A","running":30},{"id":3,"val":30,"grp":"A","running":60},{"id":4,"val":40,"grp":"B","running":40},{"id":5,"val":50,"grp":"B","running":90}]
+
+drop table nw;

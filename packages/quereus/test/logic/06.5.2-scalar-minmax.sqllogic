@@ -1,0 +1,51 @@
+-- adapted from SQLite test/minmax.test
+-- Scalar MIN(x, y, ...) / MAX(x, y, ...) — distinguished from single-arg aggregates by arity.
+
+-- Two-argument scalar form
+select min(10, 20), max(10, 20);
+→ [{"min(10, 20)":10,"max(10, 20)":20}]
+
+-- Three-argument scalar form
+select min(10, 20, 5), max(10, 20, 5);
+→ [{"min(10, 20, 5)":5,"max(10, 20, 5)":20}]
+
+-- String comparison
+select min('b', 'a', 'c'), max('b', 'a', 'c');
+→ [{"min('b', 'a', 'c')":"a","max('b', 'a', 'c')":"c"}]
+
+-- Mixed numeric arguments
+select min(1.5, 2, 0.5, 3), max(1.5, 2, 0.5, 3);
+→ [{"min(1.5, 2, 0.5, 3)":0.5,"max(1.5, 2, 0.5, 3)":3}]
+
+-- NULL argument: SQLite returns NULL for any NULL input to scalar MIN/MAX
+select min(3, null, 1);
+→ [{"min(3, null, 1)":null}]
+
+select max(3, null, 1);
+→ [{"max(3, null, 1)":null}]
+
+-- Negative numbers
+select min(-5, -10, -1), max(-5, -10, -1);
+→ [{"min(-5, -10, -1)":-10,"max(-5, -10, -1)":-1}]
+
+-- All-equal arguments
+select min(7, 7, 7), max(7, 7, 7);
+→ [{"min(7, 7, 7)":7,"max(7, 7, 7)":7}]
+
+-- Scalar MIN/MAX inside an expression
+select min(1, 2) + max(3, 4);
+→ [{"min(1, 2) + max(3, 4)":5}]
+
+-- Scalar MIN/MAX over column expressions (per-row, not aggregate)
+create table sm (id integer primary key, a integer, b integer, c integer);
+insert into sm values (1, 10, 20, 5), (2, 30, 15, 25), (3, 7, 7, 7);
+
+select id, min(a, b, c) as mn, max(a, b, c) as mx from sm order by id;
+→ [{"id":1,"mn":5,"mx":20},{"id":2,"mn":15,"mx":30},{"id":3,"mn":7,"mx":7}]
+
+-- Scalar MIN/MAX with NULL column value
+insert into sm values (4, 100, null, 50);
+select id, min(a, b, c) as mn, max(a, b, c) as mx from sm where id = 4;
+→ [{"id":4,"mn":null,"mx":null}]
+
+drop table sm;
