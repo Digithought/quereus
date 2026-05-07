@@ -2646,7 +2646,7 @@ pragma foreign_keys = on;   -- enable FK enforcement (default)
 pragma foreign_keys = off;  -- parse but don't enforce
 ```
 
-When no `ON DELETE` or `ON UPDATE` clause is specified, the default action is `IGNORE` (no enforcement). This means FKs are only enforced when you explicitly specify an action like `CASCADE`, `RESTRICT`, `SET NULL`, or `SET DEFAULT`.
+When no `ON DELETE` or `ON UPDATE` clause is specified, the default action is `RESTRICT`. `NO ACTION` is currently treated as a synonym for `RESTRICT`.
 
 **Syntax - Column Constraint:**
 ```sql
@@ -2667,15 +2667,14 @@ Where `action` can be:
 - `set null` — set child FK columns to NULL when parent row is deleted/updated
 - `set default` — set child FK columns to their default values
 - `cascade` — delete/update child rows when parent row is deleted/updated
-- `restrict` — immediately reject delete/update if child rows exist
-- `no action` / `ignore` (default) — no enforcement; the FK is informational only
+- `restrict` (default) — immediately reject delete/update if child rows exist
+- `no action` — currently treated as a synonym for `restrict`
 
 **Enforcement Semantics:**
 
 When `pragma foreign_keys = on` (the default):
 
-- **IGNORE / NO ACTION (default):** No enforcement. The FK is stored in the schema for metadata/introspection but does not generate any constraint checks or cascading actions.
-- **Child-side (INSERT/UPDATE):** For FKs with at least one non-ignore action, validates that referenced parent rows exist. These checks are deferred to commit time (they use cross-table subqueries). Uses MATCH SIMPLE semantics (SQL default): if any FK column is NULL, the constraint is satisfied without checking the parent table.
+- **Child-side (INSERT/UPDATE):** Validates that referenced parent rows exist. These checks are deferred to commit time (they use cross-table subqueries). Uses MATCH SIMPLE semantics (SQL default): if any FK column is NULL, the constraint is satisfied without checking the parent table. If the referenced parent table does not exist, non-NULL FK rows are rejected.
 - **Parent-side DELETE/UPDATE with RESTRICT:** Immediately rejects the operation if child rows reference the parent row being modified.
 - **Parent-side DELETE/UPDATE with CASCADE:** Automatically deletes or updates matching child rows.
 - **Parent-side DELETE/UPDATE with SET NULL:** Sets child FK columns to NULL.
@@ -2685,14 +2684,14 @@ Cascade cycle detection prevents infinite recursion when cascading actions chain
 
 **Examples:**
 ```sql
--- Column-level foreign key (no action clause = informational only)
+-- Column-level foreign key (no action clause = RESTRICT default)
 create table posts (
   id integer primary key,
   user_id integer references users(id),
   title text not null
 );
 
--- Table-level foreign key with explicit actions (enforced)
+-- Table-level foreign key with explicit actions
 create table comments (
   id integer primary key,
   post_id integer,

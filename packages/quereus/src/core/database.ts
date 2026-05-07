@@ -254,7 +254,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 			type: 'boolean',
 			defaultValue: true,
 			aliases: ['fk_enforcement'],
-			description: 'Enable foreign key constraint enforcement. FKs default to ON DELETE IGNORE ON UPDATE IGNORE, so explicit action clauses are required for enforcement.',
+			description: 'Enable foreign key constraint enforcement. When omitted, ON DELETE / ON UPDATE default to RESTRICT.',
 		});
 	}
 

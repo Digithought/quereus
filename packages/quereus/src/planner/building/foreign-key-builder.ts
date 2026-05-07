@@ -280,9 +280,9 @@ export function buildParentSideFKChecks(
 
 				const action = operation === RowOpFlag.DELETE ? fk.onDelete : fk.onUpdate;
 
-				// Only RESTRICT generates parent-side checks
-				// CASCADE, SET NULL, SET DEFAULT are handled by cascading actions
-				// IGNORE means no enforcement at all
+				// Only RESTRICT generates parent-side checks. CASCADE, SET NULL,
+				// and SET DEFAULT are handled by cascading actions in
+				// runtime/foreign-key-actions.
 				if (action !== 'restrict') continue;
 
 				const parentColIndices = resolveReferencedColumns(fk, tableSchema);

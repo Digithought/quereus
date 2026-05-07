@@ -500,8 +500,8 @@ select fullkey, type from json_tree('{"a": [1, 2]}');
 | `referenced_table` | TEXT | Parent table name |
 | `referenced_schema` | TEXT? | Parent schema (null if same schema) |
 | `to` | TEXT | Parent column name |
-| `on_update` | TEXT | Update action (`cascade`, `restrict`, `setNull`, `setDefault`, `ignore`) |
-| `on_delete` | TEXT | Delete action (`cascade`, `restrict`, `setNull`, `setDefault`, `ignore`) |
+| `on_update` | TEXT | Update action (`cascade`, `restrict`, `setNull`, `setDefault`) |
+| `on_delete` | TEXT | Delete action (`cascade`, `restrict`, `setNull`, `setDefault`) |
 | `deferred` | INTEGER | 1 if enforcement is deferred to COMMIT |
 | `seq` | INTEGER | Column sequence within FK (0-based) |
 
