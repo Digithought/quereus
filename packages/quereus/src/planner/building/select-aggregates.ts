@@ -389,6 +389,38 @@ function buildHavingFilter(
 
 	const havingExpression = buildExpression(havingContext, havingClause, true);
 
+	// Reject HAVING references to non-grouped, non-aggregated columns.
+	// With GROUP BY: only GROUP BY columns/expressions and aggregates are allowed.
+	// Without GROUP BY (implicit single group, only reachable here when aggregates
+	// are present): only aggregates are allowed.
+	// HAVING references resolve through `hybridScope`: GROUP BY columns and
+	// aggregate aliases land on AggregateNode-output attribute IDs, while bare
+	// source columns (registered as a fallback) land on source attribute IDs.
+	// We accept both flavors of "grouped" attribute, plus any subtree whose AST
+	// fingerprint matches a GROUP BY expression.
+	const allowedAttrIds = new Set<number>();
+	const groupByExprFingerprints = new Set<string>();
+	for (const expr of groupByExpressions) {
+		if (CapabilityDetectors.isColumnReference(expr)) {
+			allowedAttrIds.add(expr.attributeId);
+		}
+		groupByExprFingerprints.add(expressionToString(expr.expression));
+	}
+	for (let i = 0; i < groupByExpressions.length + aggregates.length; i++) {
+		allowedAttrIds.add(aggregateAttributes[i].id);
+	}
+	const ungrouped = findUngroupedColumnRef(havingExpression, allowedAttrIds, groupByExprFingerprints);
+	if (ungrouped) {
+		throw new QuereusError(
+			`HAVING references non-grouped column '${ungrouped.expression.name}'; ` +
+			`HAVING may only reference GROUP BY columns or aggregate expressions`,
+			StatusCode.ERROR,
+			undefined,
+			ungrouped.expression.loc?.start.line,
+			ungrouped.expression.loc?.start.column,
+		);
+	}
+
 	return new FilterNode(hybridScope, input, havingExpression);
 }
 
