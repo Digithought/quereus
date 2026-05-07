@@ -103,15 +103,18 @@ export function buildUpdateStmt(
     };
   });
 
-  // Add implicit assignments for generated STORED columns (recompute after user assignments)
-  for (const col of tableReference.tableSchema.columns) {
-    if (col.generated && col.generatedExpr) {
-      // Build generated expression in the table scope so it can reference columns
-      const genNode = buildExpression(updateCtx, col.generatedExpr) as ScalarPlanNode;
-      validateDeterministicGenerated(genNode, col.name, tableReference.tableSchema.name);
-      const targetColumn: AST.ColumnExpr = { type: 'column', name: col.name, table: stmt.table.name, schema: stmt.table.schema };
-      assignments.push({ targetColumn, value: genNode, isGenerated: true });
-    }
+  // Add implicit assignments for generated columns in topological order so
+  // that a generated column referencing another generated column sees the
+  // freshly-computed value when the runtime evaluates each in turn against
+  // the in-place updated row.
+  const genTopoOrder = tableReference.tableSchema.generatedColumnTopoOrder ?? [];
+  for (const colIdx of genTopoOrder) {
+    const col = tableReference.tableSchema.columns[colIdx];
+    if (!col.generated || !col.generatedExpr) continue;
+    const genNode = buildExpression(updateCtx, col.generatedExpr) as ScalarPlanNode;
+    validateDeterministicGenerated(genNode, col.name, tableReference.tableSchema.name);
+    const targetColumn: AST.ColumnExpr = { type: 'column', name: col.name, table: stmt.table.name, schema: stmt.table.schema };
+    assignments.push({ targetColumn, value: genNode, isGenerated: true });
   }
 
   // Now build the WHERE filter (parameters here get indices after SET clause parameters)

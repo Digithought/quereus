@@ -8,6 +8,7 @@ import type * as AST from '../parser/ast.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { createLogger } from '../common/logger.js';
 import { inferType } from '../types/registry.js';
+import { traverseAst } from '../parser/visitor.js';
 import type { TableStatistics } from '../planner/stats/catalog-stats.js';
 
 const log = createLogger('schema:table');
@@ -61,6 +62,17 @@ export interface TableSchema {
 	foreignKeys?: ReadonlyArray<ForeignKeyConstraintSchema>;
 	/** Unique constraints (beyond primary key) */
 	uniqueConstraints?: ReadonlyArray<UniqueConstraintSchema>;
+	/**
+	 * For each generated column index, the set of column indices in this table its
+	 * expression references. Populated alongside the columns array so INSERT/UPDATE
+	 * planners and DROP COLUMN don't re-walk the AST.
+	 */
+	generatedColumnDependencies?: ReadonlyMap<number, ReadonlyArray<number>>;
+	/**
+	 * Generated column indices ordered so dependencies come before dependents.
+	 * Empty / undefined when no generated columns exist.
+	 */
+	generatedColumnTopoOrder?: ReadonlyArray<number>;
 	/** Arbitrary metadata tags (informational only, does not affect behavior or hashing) */
 	tags?: Readonly<Record<string, SqlValue>>;
 }
@@ -492,5 +504,153 @@ function findColumnPKDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyA
 		desc: col.pkDirection === 'desc',
 		collation: col.collation || 'BINARY'
 	})));
+}
+
+/**
+ * Returns a copy of `tableSchema` with `generatedColumnDependencies` and
+ * `generatedColumnTopoOrder` recomputed from its current column list.
+ * Throws on cycle. The other fields are preserved as-is.
+ */
+export function withGeneratedColumnGraph(tableSchema: TableSchema): TableSchema {
+	const rawDeps = extractGeneratedColumnDependencies(tableSchema.columns, tableSchema.name);
+	if (rawDeps.size === 0) {
+		return Object.freeze({
+			...tableSchema,
+			generatedColumnDependencies: undefined,
+			generatedColumnTopoOrder: undefined,
+		});
+	}
+	const topoOrder = topoSortGeneratedColumns(tableSchema.columns, rawDeps);
+	const frozenDeps = new Map<number, ReadonlyArray<number>>();
+	for (const [k, v] of rawDeps) frozenDeps.set(k, Object.freeze(v));
+	return Object.freeze({
+		...tableSchema,
+		generatedColumnDependencies: frozenDeps,
+		generatedColumnTopoOrder: Object.freeze(topoOrder),
+	});
+}
+
+/**
+ * For each generated column, walks its expression AST and collects the column
+ * indices in this table that the expression references. Unknown column names
+ * referenced unqualified (or qualified to this table) are rejected with a
+ * specific error so typos surface at CREATE TABLE / ALTER TABLE time rather
+ * than at INSERT/UPDATE time.
+ *
+ * References qualified to a different table are skipped — they belong to
+ * an outer scope (e.g. a scalar subquery's source) and don't constitute a
+ * dependency on this table's columns.
+ */
+export function extractGeneratedColumnDependencies(
+	columns: ReadonlyArray<ColumnSchema>,
+	tableName: string,
+): Map<number, number[]> {
+	const columnIndexMap = buildColumnIndexMap(columns);
+	const tableNameLower = tableName.toLowerCase();
+	const result = new Map<number, number[]>();
+
+	columns.forEach((col, colIdx) => {
+		if (!col.generated || !col.generatedExpr) return;
+
+		const deps = new Set<number>();
+		traverseAst(col.generatedExpr as AST.AstNode, {
+			enterNode: (node: AST.AstNode) => {
+				if (node.type === 'column') {
+					const ref = node as AST.ColumnExpr;
+					if (ref.table && ref.table.toLowerCase() !== tableNameLower) return;
+					const refIdx = columnIndexMap.get(ref.name.toLowerCase());
+					if (refIdx === undefined) {
+						throw new QuereusError(
+							`Column '${ref.name}' referenced by generated column '${col.name}' not found in table '${tableName}'`,
+							StatusCode.ERROR,
+						);
+					}
+					deps.add(refIdx);
+				} else if (node.type === 'identifier') {
+					const ref = node as AST.IdentifierExpr;
+					if (ref.schema) return;
+					const refIdx = columnIndexMap.get(ref.name.toLowerCase());
+					if (refIdx !== undefined) deps.add(refIdx);
+				}
+			},
+		});
+
+		result.set(colIdx, Array.from(deps).sort((a, b) => a - b));
+	});
+
+	return result;
+}
+
+/**
+ * Topologically sorts generated columns so a generated column's dependencies
+ * come before it. Throws on any cycle (including self-edges).
+ *
+ * The graph nodes are generated-column indices only — edges from a generated
+ * column to a non-generated column are ignored for topo purposes (only
+ * gen→gen edges can form cycles).
+ */
+export function topoSortGeneratedColumns(
+	columns: ReadonlyArray<ColumnSchema>,
+	deps: ReadonlyMap<number, ReadonlyArray<number>>,
+): number[] {
+	const genIndices = new Set<number>();
+	for (const idx of deps.keys()) genIndices.add(idx);
+
+	// Build in-degree only over gen→gen edges
+	const inDegree = new Map<number, number>();
+	const adjacency = new Map<number, number[]>();
+	for (const idx of genIndices) {
+		inDegree.set(idx, 0);
+		adjacency.set(idx, []);
+	}
+	for (const [genIdx, depList] of deps) {
+		for (const depIdx of depList) {
+			if (!genIndices.has(depIdx)) continue;
+			adjacency.get(depIdx)!.push(genIdx);
+			inDegree.set(genIdx, (inDegree.get(genIdx) ?? 0) + 1);
+		}
+	}
+
+	// Kahn's algorithm
+	const queue: number[] = [];
+	for (const [idx, deg] of inDegree) {
+		if (deg === 0) queue.push(idx);
+	}
+	queue.sort((a, b) => a - b); // Stable ordering: prefer declaration order on ties
+
+	const order: number[] = [];
+	while (queue.length > 0) {
+		const idx = queue.shift()!;
+		order.push(idx);
+		for (const next of adjacency.get(idx) ?? []) {
+			const newDeg = inDegree.get(next)! - 1;
+			inDegree.set(next, newDeg);
+			if (newDeg === 0) {
+				// Insert preserving sorted order so output is deterministic
+				let inserted = false;
+				for (let i = 0; i < queue.length; i++) {
+					if (queue[i] > next) {
+						queue.splice(i, 0, next);
+						inserted = true;
+						break;
+					}
+				}
+				if (!inserted) queue.push(next);
+			}
+		}
+	}
+
+	if (order.length < genIndices.size) {
+		const offending = Array.from(genIndices)
+			.filter(i => !order.includes(i))
+			.map(i => `'${columns[i].name}'`)
+			.join(', ');
+		throw new QuereusError(
+			`Cyclic dependency in generated columns: ${offending}`,
+			StatusCode.ERROR,
+		);
+	}
+
+	return order;
 }
 

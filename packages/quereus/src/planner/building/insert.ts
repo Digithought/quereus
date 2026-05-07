@@ -155,56 +155,66 @@ function createRowExpansionProjection(
 }
 
 /**
- * Creates a projection that computes generated column values from an expanded row.
- * Non-generated columns pass through; generated columns are computed from their expressions.
+ * Creates a chain of projections that compute generated column values in
+ * dependency order. One projection per generated column: it passes every
+ * column through and recomputes exactly one generated column whose expression
+ * resolves names against the prior projection's attributes (so a generated
+ * column referencing another generated column sees the freshly-computed value
+ * rather than the NULL placeholder from the initial expansion).
+ *
+ * Topological order is taken from `tableSchema.generatedColumnTopoOrder`,
+ * which the schema manager validates for cycles at CREATE/ALTER time.
  */
 function createGeneratedColumnProjection(
 	ctx: PlanningContext,
 	sourceNode: RelationalPlanNode,
 	tableSchema: TableSchema
 ): RelationalPlanNode {
-	const sourceAttributes = sourceNode.getAttributes();
-	const genProjections: Projection[] = [];
+	const topoOrder = tableSchema.generatedColumnTopoOrder ?? [];
+	let currentNode: RelationalPlanNode = sourceNode;
 
-	// Create a scope where column names resolve to the source (expanded) row attributes
-	const genScope = new RegisteredScope(ctx.scope);
-	tableSchema.columns.forEach((col, colIndex) => {
-		if (col.generated) return; // Generated columns can't be referenced by other generated columns
-		const attr = sourceAttributes[colIndex];
-		genScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
-			new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, colIndex)
-		);
-	});
+	for (const genColIdx of topoOrder) {
+		const genColumn = tableSchema.columns[genColIdx];
+		if (!genColumn.generated || !genColumn.generatedExpr) continue;
 
-	const genCtx = { ...ctx, scope: genScope };
+		const inputAttributes = currentNode.getAttributes();
 
-	tableSchema.columns.forEach((tableColumn, colIndex) => {
-		if (tableColumn.generated && tableColumn.generatedExpr) {
-			// Build the generated expression in the scope with access to non-generated columns
-			const genNode = buildExpression(genCtx, tableColumn.generatedExpr) as ScalarPlanNode;
-			validateDeterministicGenerated(genNode, tableColumn.name, tableSchema.name);
+		// Scope: every column resolves to the corresponding attribute in the
+		// current source. This includes generated columns processed in earlier
+		// iterations — their attribute carries the freshly-computed value.
+		const genScope = new RegisteredScope(ctx.scope);
+		tableSchema.columns.forEach((col, colIndex) => {
+			const attr = inputAttributes[colIndex];
+			genScope.registerSymbol(col.name.toLowerCase(), (exp, s) =>
+				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, colIndex)
+			);
+		});
 
-			genProjections.push({
-				node: genNode,
-				alias: tableColumn.name
-			});
-		} else {
-			// Pass through non-generated column from source
-			const attr = sourceAttributes[colIndex];
-			genProjections.push({
+		const genCtx = { ...ctx, scope: genScope };
+
+		const genProjections: Projection[] = tableSchema.columns.map((col, colIdx) => {
+			if (colIdx === genColIdx) {
+				const genNode = buildExpression(genCtx, genColumn.generatedExpr!) as ScalarPlanNode;
+				validateDeterministicGenerated(genNode, genColumn.name, tableSchema.name);
+				return { node: genNode, alias: col.name };
+			}
+			const attr = inputAttributes[colIdx];
+			return {
 				node: new ColumnReferenceNode(
 					ctx.scope,
 					{ type: 'column', name: attr.name } satisfies AST.ColumnExpr,
 					attr.type,
 					attr.id,
-					colIndex
+					colIdx,
 				),
-				alias: tableColumn.name
-			});
-		}
-	});
+				alias: col.name,
+			};
+		});
 
-	return new ProjectNode(ctx.scope, sourceNode, genProjections);
+		currentNode = new ProjectNode(ctx.scope, currentNode, genProjections);
+	}
+
+	return currentNode;
 }
 
 /**

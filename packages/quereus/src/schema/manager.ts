@@ -8,7 +8,7 @@ import { StatusCode, type SqlValue } from '../common/types.js';
 import type { AnyVirtualTableModule, BaseModuleConfig } from '../vtab/module.js';
 import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
-import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, mutationContextVarToSchema } from './table.js';
+import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, mutationContextVarToSchema, extractGeneratedColumnDependencies, topoSortGeneratedColumns } from './table.js';
 import type { ViewSchema } from './view.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
@@ -883,6 +883,21 @@ export class SchemaManager {
 			? stmt.contextDefinitions.map(varDef => mutationContextVarToSchema(varDef, defaultNotNull))
 			: undefined;
 
+		// Extract generated-column dependencies and validate that they form a DAG.
+		// Cycle detection runs before module.create so an invalid schema never
+		// reaches storage.
+		const rawGenDeps = extractGeneratedColumnDependencies(columns, tableName);
+		const genTopoOrder = rawGenDeps.size > 0
+			? topoSortGeneratedColumns(columns, rawGenDeps)
+			: undefined;
+		const generatedColumnDependencies = rawGenDeps.size > 0
+			? Object.freeze(new Map(
+				Array.from(rawGenDeps.entries()).map(
+					([k, v]) => [k, Object.freeze(v)] as const,
+				),
+			))
+			: undefined;
+
 		return {
 			name: tableName,
 			schemaName: targetSchemaName,
@@ -900,6 +915,8 @@ export class SchemaManager {
 			vtabAuxData: moduleInfo.auxData,
 			estimatedRows: 0,
 			mutationContext: mutationContextSchemas ? Object.freeze(mutationContextSchemas) : undefined,
+			generatedColumnDependencies,
+			generatedColumnTopoOrder: genTopoOrder ? Object.freeze(genTopoOrder) : undefined,
 			tags: stmt.tags && Object.keys(stmt.tags).length > 0 ? Object.freeze({ ...stmt.tags }) : undefined,
 		};
 	}

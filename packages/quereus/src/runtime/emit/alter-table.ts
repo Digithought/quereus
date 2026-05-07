@@ -5,7 +5,7 @@ import { QuereusError } from '../../common/errors.js';
 import { type SqlValue, StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import type { TableSchema, PrimaryKeyColumnDefinition, RowConstraintSchema, ForeignKeyConstraintSchema } from '../../schema/table.js';
-import { buildColumnIndexMap, opsToMask } from '../../schema/table.js';
+import { buildColumnIndexMap, opsToMask, withGeneratedColumnGraph } from '../../schema/table.js';
 import type { ColumnDef } from '../../parser/ast.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
 import { quoteIdentifier, expressionToString, selectToString } from '../../emit/ast-stringify.js';
@@ -227,11 +227,17 @@ async function runAddColumn(
 		? Object.freeze([...(updatedTableSchema.foreignKeys ?? []), ...resolvedForeignKeys])
 		: updatedTableSchema.foreignKeys;
 
-	const enhancedTableSchema: TableSchema = Object.freeze({
+	const enhancedBase: TableSchema = {
 		...updatedTableSchema,
 		checkConstraints: mergedChecks,
 		foreignKeys: mergedForeignKeys,
-	});
+	};
+
+	// Recompute the generated-column dependency graph. If the added column is
+	// generated and its expression references an unknown column, or any new
+	// generated-column edges form a cycle, this throws before we register the
+	// new schema in the catalog.
+	const enhancedTableSchema = withGeneratedColumnGraph(enhancedBase);
 
 	// Register the enhanced schema BEFORE backfill validation so that SQL bound
 	// during validation can resolve the new column.
@@ -373,6 +379,20 @@ async function runDropColumn(
 		throw new QuereusError(`Cannot drop the last column of table '${tableSchema.name}'`, StatusCode.ERROR);
 	}
 
+	// Validate: can't drop a column that any generated column's expression depends on
+	if (tableSchema.generatedColumnDependencies) {
+		for (const [genIdx, depIndices] of tableSchema.generatedColumnDependencies) {
+			if (genIdx === colIndex) continue; // Dropping the gen column itself is allowed
+			if (depIndices.includes(colIndex)) {
+				const genName = tableSchema.columns[genIdx].name;
+				throw new QuereusError(
+					`Cannot drop column '${columnName}' from '${tableSchema.name}': it is referenced by generated column '${genName}'`,
+					StatusCode.CONSTRAINT,
+				);
+			}
+		}
+	}
+
 	// Call module.alterTable for data + schema update
 	const module = tableSchema.vtabModule;
 	if (!module.alterTable) {
@@ -387,15 +407,19 @@ async function runDropColumn(
 		columnName,
 	});
 
+	// Recompute the generated-column dependency graph against the post-drop
+	// column array — old indices in the previous map are invalid.
+	const finalSchema = withGeneratedColumnGraph(updatedTableSchema);
+
 	// Update the schema catalog
-	schema.addTable(updatedTableSchema);
+	schema.addTable(finalSchema);
 
 	rctx.db.schemaManager.getChangeNotifier().notifyChange({
 		type: 'table_modified',
 		schemaName: tableSchema.schemaName,
 		objectName: tableSchema.name,
 		oldObject: tableSchema,
-		newObject: updatedTableSchema,
+		newObject: finalSchema,
 	});
 
 	log('Dropped column %s from table %s.%s', columnName, tableSchema.schemaName, tableSchema.name);
