@@ -470,8 +470,15 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		};
 		availableIndexes.push(pkIndexSchema);
 
-		// Add secondary indexes
-		availableIndexes.push(...(tableInfo.indexes ?? []));
+		// Add secondary indexes — but exclude partial indexes (those with a WHERE
+		// predicate). The planner does not yet check that the query's WHERE
+		// implies the partial predicate, so using a partial index for a query
+		// it doesn't cover would silently drop matching rows. Treat partial
+		// indexes purely as uniqueness enforcers.
+		for (const idx of tableInfo.indexes ?? []) {
+			if (idx.predicate) continue;
+			availableIndexes.push(idx);
+		}
 
 		return availableIndexes;
 	}

@@ -243,6 +243,10 @@ export interface IndexSchema {
 	columns: ReadonlyArray<IndexColumnSchema>;
 	/** Whether the index enforces uniqueness on its key columns */
 	unique?: boolean;
+	/** Optional partial-index predicate (the WHERE clause AST). Rows for which this
+	 *  evaluates to anything other than TRUE are excluded from the index and from
+	 *  any UNIQUE enforcement that the index backs. */
+	predicate?: Expression;
 	/** Arbitrary metadata tags (informational only) */
 	tags?: Readonly<Record<string, SqlValue>>;
 }
@@ -422,6 +426,11 @@ export interface UniqueConstraintSchema {
 	 * `email TEXT UNIQUE ON CONFLICT REPLACE`). Statement-level OR clauses override.
 	 */
 	defaultConflict?: ConflictResolution;
+	/** Optional partial-index predicate (the WHERE clause AST). Mirrored from the
+	 *  backing IndexSchema so the runtime can skip uniqueness checks for rows that
+	 *  fall outside the partial scope. Only set when the constraint was synthesized
+	 *  from a `CREATE UNIQUE INDEX ... WHERE ...`. */
+	predicate?: Expression;
 	/** Arbitrary metadata tags (informational only) */
 	tags?: Readonly<Record<string, SqlValue>>;
 }

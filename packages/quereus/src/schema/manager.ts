@@ -1224,6 +1224,7 @@ export class SchemaManager {
 			name: indexName,
 			columns: Object.freeze(indexColumns),
 			unique: stmt.isUnique || undefined,
+			predicate: stmt.where,
 			tags: stmt.tags && Object.keys(stmt.tags).length > 0 ? Object.freeze({ ...stmt.tags }) : undefined,
 		};
 	}
@@ -1243,6 +1244,7 @@ export class SchemaManager {
 			const newConstraint: UniqueConstraintSchema = {
 				name: indexSchema.name,
 				columns: Object.freeze(indexSchema.columns.map(c => c.index)),
+				predicate: indexSchema.predicate,
 			};
 			const updatedConstraints = [...(tableSchema.uniqueConstraints ?? []), newConstraint];
 			result.uniqueConstraints = Object.freeze(updatedConstraints);

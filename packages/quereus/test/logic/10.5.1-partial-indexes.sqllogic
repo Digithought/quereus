@@ -32,33 +32,30 @@ drop table p_basic;
 -- =====================================================
 -- 2. Partial UNIQUE index — uniqueness limited to WHERE scope
 -- =====================================================
--- TODO bug: partial UNIQUE indexes ignore the WHERE clause and enforce
--- uniqueness across all rows; CREATE INDEX ... WHERE is parsed but the
--- predicate is not used to scope index membership.
--- create table p_uniq (id integer primary key, status text, code text);
--- create unique index ix_p_uniq_active_code on p_uniq(code) where status = 'active';
---
--- -- First active row claims code 'A'
--- insert into p_uniq values (1, 'active', 'A');
---
--- -- Same code outside scope: allowed (partial UNIQUE excludes inactive rows)
--- insert into p_uniq values (2, 'inactive', 'A');
---
--- select id, status, code from p_uniq order by id;
--- → [{"id":1,"status":"active","code":"A"},{"id":2,"status":"inactive","code":"A"}]
---
--- -- Same code inside scope: rejected
--- insert into p_uniq values (3, 'active', 'A');
--- -- error: UNIQUE
---
--- -- Update transitioning a row out of scope frees the code
--- update p_uniq set status = 'archived' where id = 1;
--- insert into p_uniq values (4, 'active', 'A');
---
--- select id, status, code from p_uniq order by id;
--- → [{"id":1,"status":"archived","code":"A"},{"id":2,"status":"inactive","code":"A"},{"id":4,"status":"active","code":"A"}]
---
--- drop table p_uniq;
+create table p_uniq (id integer primary key, status text, code text);
+create unique index ix_p_uniq_active_code on p_uniq(code) where status = 'active';
+
+-- First active row claims code 'A'
+insert into p_uniq values (1, 'active', 'A');
+
+-- Same code outside scope: allowed (partial UNIQUE excludes inactive rows)
+insert into p_uniq values (2, 'inactive', 'A');
+
+select id, status, code from p_uniq order by id;
+→ [{"id":1,"status":"active","code":"A"},{"id":2,"status":"inactive","code":"A"}]
+
+-- Same code inside scope: rejected
+insert into p_uniq values (3, 'active', 'A');
+-- error: UNIQUE
+
+-- Update transitioning a row out of scope frees the code
+update p_uniq set status = 'archived' where id = 1;
+insert into p_uniq values (4, 'active', 'A');
+
+select id, status, code from p_uniq order by id;
+→ [{"id":1,"status":"archived","code":"A"},{"id":2,"status":"inactive","code":"A"},{"id":4,"status":"active","code":"A"}]
+
+drop table p_uniq;
 
 -- =====================================================
 -- 3. Partial index with IS NULL / IS NOT NULL predicate

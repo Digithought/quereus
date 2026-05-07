@@ -201,14 +201,33 @@ export class TransactionLayer implements Layer {
 			});
 		}
 
-		// Update secondary indexes
+		// Update secondary indexes (honoring partial-index predicates)
 		const schema = this.getSchema();
 		if (schema.indexes) {
 			for (const indexSchema of schema.indexes) {
 				const memoryIndex = this.secondaryIndexes.get(indexSchema.name);
 				if (!memoryIndex) continue;
 
+				const newInScope = memoryIndex.rowMatchesPredicate(newRowData);
+
 				if (oldRowDataIfUpdate) { // UPDATE
+					const oldInScope = memoryIndex.rowMatchesPredicate(oldRowDataIfUpdate);
+
+					if (!oldInScope && !newInScope) continue;
+
+					if (oldInScope && !newInScope) {
+						const oldIndexKey = memoryIndex.keyFromRow(oldRowDataIfUpdate);
+						memoryIndex.removeEntry(oldIndexKey, primaryKey);
+						continue;
+					}
+
+					if (!oldInScope && newInScope) {
+						const newIndexKey = memoryIndex.keyFromRow(newRowData);
+						memoryIndex.addEntry(newIndexKey, primaryKey);
+						continue;
+					}
+
+					// Both in scope
 					const oldIndexKey = memoryIndex.keyFromRow(oldRowDataIfUpdate);
 					const newIndexKey = memoryIndex.keyFromRow(newRowData);
 
@@ -222,6 +241,7 @@ export class TransactionLayer implements Layer {
 						memoryIndex.addEntry(newIndexKey, primaryKey);
 					}
 				} else { // INSERT
+					if (!newInScope) continue;
 					const newIndexKey = memoryIndex.keyFromRow(newRowData);
 					memoryIndex.addEntry(newIndexKey, primaryKey);
 				}
@@ -252,12 +272,14 @@ export class TransactionLayer implements Layer {
 			});
 		}
 
-		// Update secondary indexes to remove entries
+		// Update secondary indexes to remove entries (only if the deleted row was in scope)
 		const schema = this.getSchema();
 		if (schema.indexes) {
 			for (const indexSchema of schema.indexes) {
 				const memoryIndex = this.secondaryIndexes.get(indexSchema.name);
 				if (!memoryIndex) continue;
+
+				if (!memoryIndex.rowMatchesPredicate(oldRowDataForIndexes)) continue;
 
 				const oldIndexKey = memoryIndex.keyFromRow(oldRowDataForIndexes);
 				memoryIndex.removeEntry(oldIndexKey, primaryKey);

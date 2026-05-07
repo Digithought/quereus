@@ -21,6 +21,7 @@ import { validateAndParse } from '../../../types/validation.js';
 import type { VTableEventEmitter } from '../../events.js';
 import { inferType } from '../../../types/registry.js';
 import type { Expression } from '../../../parser/ast.js';
+import { compilePredicate } from '../utils/predicate.js';
 
 let tableManagerCounter = 0;
 const logger = createMemoryTableLoggers('layer:manager');
@@ -96,6 +97,7 @@ export class MemoryTableManager {
 				newIndexes.push({
 					name: indexName,
 					columns: uc.columns.map(colIdx => ({ index: colIdx })),
+					predicate: uc.predicate,
 				});
 				added = true;
 			}
@@ -693,12 +695,25 @@ export class MemoryTableManager {
 		return { status: 'ok', row: oldRowData };
 	}
 
-	/** Returns true if any column covered by a UNIQUE constraint changed between old and new rows. */
+	/**
+	 * Returns true if any column covered by a UNIQUE constraint changed between
+	 * old and new rows, or if any column referenced by a partial-UNIQUE predicate
+	 * changed (which may transition the row into or out of the predicate's scope).
+	 */
 	private uniqueColumnsChanged(schema: TableSchema, oldRow: Row, newRow: Row): boolean {
 		if (!schema.uniqueConstraints) return false;
 		for (const uc of schema.uniqueConstraints) {
 			for (const colIdx of uc.columns) {
 				if (compareSqlValues(oldRow[colIdx], newRow[colIdx]) !== 0) return true;
+			}
+			if (uc.predicate) {
+				const idx = this.findIndexForConstraint(this._currentCommittedLayer, uc);
+				const referenced = idx?.predicate?.referencedColumns;
+				if (referenced) {
+					for (const colIdx of referenced) {
+						if (compareSqlValues(oldRow[colIdx], newRow[colIdx]) !== 0) return true;
+					}
+				}
 			}
 		}
 		return false;
@@ -739,11 +754,18 @@ export class MemoryTableManager {
 		// SQL semantics: UNIQUE allows multiple NULLs — skip if any constrained column is NULL
 		if (uc.columns.some(colIdx => newRowData[colIdx] === null)) return null;
 
+		// Find the matching secondary index for this constraint
+		const index = this.findIndexForConstraint(targetLayer, uc);
+
+		// Partial UNIQUE: a row whose predicate is not unambiguously TRUE is
+		// outside the index's scope and contributes nothing to uniqueness.
+		if (index?.predicate && !index.rowMatchesPredicate(newRowData)) {
+			return null;
+		}
+
 		// Resolve effective action: statement OR > constraint default > ABORT.
 		const effective = onConflict ?? uc.defaultConflict ?? ConflictResolution.ABORT;
 
-		// Find the matching secondary index for this constraint
-		const index = this.findIndexForConstraint(targetLayer, uc);
 		if (index) {
 			return this.checkUniqueViaIndex(targetLayer, schema, uc, index, newRowData, newPrimaryKey, effective);
 		}
@@ -818,10 +840,18 @@ export class MemoryTableManager {
 		const primaryTree = targetLayer.getModificationTree('primary');
 		if (!primaryTree) return null;
 
+		// Compile partial-UNIQUE predicate ad-hoc (cold path: an auto-index normally
+		// services this check, so this branch fires only for pathological schemas).
+		const predicate = uc.predicate
+			? compilePredicate(uc.predicate, schema.columns)
+			: undefined;
+
 		for (const path of primaryTree.ascending(primaryTree.first())) {
 			const existingRow = primaryTree.at(path)!;
 			const existingPK = this.primaryKeyFromRow(existingRow);
 			if (this.comparePrimaryKeys(newPrimaryKey, existingPK) === 0) continue;
+
+			if (predicate && predicate.evaluate(existingRow) !== true) continue;
 
 			const allMatch = uc.columns.every(
 				colIdx => compareSqlValues(newRowData[colIdx], existingRow[colIdx]) === 0
@@ -1251,6 +1281,7 @@ export class MemoryTableManager {
 				const newConstraint = {
 					name: newIndexSchemaEntry.name,
 					columns: Object.freeze(newIndexSchemaEntry.columns.map(c => c.index)),
+					predicate: newIndexSchemaEntry.predicate,
 				};
 				updatedUniqueConstraints = Object.freeze([
 					...(this.tableSchema.uniqueConstraints ?? []),
