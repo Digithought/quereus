@@ -2,7 +2,7 @@ import type { SqlValue, DeepReadonly } from '../../common/types.js';
 import { createScalarFunction } from '../registration.js';
 import { compareSqlValues, getSqlDataTypeName } from '../../util/comparison.js';
 import type { LogicalType } from '../../types/logical-type.js';
-import { ANY_TYPE, INTEGER_TYPE, REAL_TYPE } from '../../types/builtin-types.js';
+import { ANY_TYPE, INTEGER_TYPE, REAL_TYPE, TEXT_TYPE } from '../../types/builtin-types.js';
 
 /**
  * Find the common type among multiple logical types.
@@ -157,8 +157,23 @@ export const nullifFunc = createScalarFunction(
 );
 
 // --- typeof(X) ---
+// Pin the return type to TEXT so the planner does not insert an implicit
+// cast on the right-hand side of comparisons like `typeof(x) = 'integer'`.
+// Without this, the default REAL return type makes the comparator coerce
+// the literal 'integer' to REAL (=> 0), which then constant-folds and the
+// CHECK predicate always fails.
 export const typeofFunc = createScalarFunction(
-	{ name: 'typeof', numArgs: 1, deterministic: true },
+	{
+		name: 'typeof',
+		numArgs: 1,
+		deterministic: true,
+		returnType: {
+			typeClass: 'scalar',
+			logicalType: TEXT_TYPE,
+			nullable: false,
+			isReadOnly: true
+		}
+	},
 	(arg: SqlValue): SqlValue => {
 		return getSqlDataTypeName(arg);
 	}
