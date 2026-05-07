@@ -1339,7 +1339,7 @@ The having clause filters groups based on a condition.
 having condition
 ```
 
-The condition is applied after grouping, allowing filtering on aggregate values.
+The condition is applied after grouping, allowing filtering on aggregate values. References to columns are restricted: only columns that appear in `group by` and aggregate expressions are valid; bare references to ungrouped columns raise an error. The same restriction applies to the implicit single group when the query has aggregates but no `group by`.
 
 **Examples:**
 ```sql
