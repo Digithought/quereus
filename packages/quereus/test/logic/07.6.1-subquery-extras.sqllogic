@@ -12,10 +12,9 @@ insert into sqx_inner values (10, 1, 50), (20, 1, 30), (30, 2, 40);
 -- Correlated scalar subquery in UPDATE SET clause
 -- =============================================================================
 
--- TODO bug: correlated scalar subquery in UPDATE SET cannot resolve outer table column ("sqx_outer.id isn't a column")
--- update sqx_outer set val = (select coalesce(sum(amount), 0) from sqx_inner where sqx_inner.ref_id = sqx_outer.id);
--- select id, val from sqx_outer order by id;
--- → [{"id":1,"val":80},{"id":2,"val":40},{"id":3,"val":0}]
+update sqx_outer set val = (select coalesce(sum(amount), 0) from sqx_inner where sqx_inner.ref_id = sqx_outer.id);
+select id, val from sqx_outer order by id;
+→ [{"id":1,"val":80},{"id":2,"val":40},{"id":3,"val":0}]
 
 -- =============================================================================
 -- Dynamic LIMIT / OFFSET via scalar subquery

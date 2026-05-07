@@ -25,10 +25,9 @@ create table tgt_lookup (id integer primary key, name text null);
 insert into src_lookup values (1, 'alpha'), (2, 'beta');
 insert into tgt_lookup values (1, null), (2, null);
 
--- TODO bug: correlated scalar subquery in UPDATE SET cannot resolve outer table column ("tgt_lookup.id isn't a column")
--- update tgt_lookup set name = (select val from src_lookup where src_lookup.id = tgt_lookup.id);
--- select id, name from tgt_lookup order by id;
--- → [{"id":1,"name":"alpha"},{"id":2,"name":"beta"}]
+update tgt_lookup set name = (select val from src_lookup where src_lookup.id = tgt_lookup.id);
+select id, name from tgt_lookup order by id;
+→ [{"id":1,"name":"alpha"},{"id":2,"name":"beta"}]
 
 drop table tgt_lookup;
 drop table src_lookup;

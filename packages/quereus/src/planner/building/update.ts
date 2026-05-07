@@ -9,6 +9,7 @@ import { FilterNode } from '../nodes/filter.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { RegisteredScope } from '../scopes/registered.js';
+import { AliasedScope } from '../scopes/aliased.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { SinkNode } from '../nodes/sink-node.js';
 import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
@@ -67,14 +68,18 @@ export function buildUpdateStmt(
   // Plan the source of rows to update. This is typically the table itself, potentially filtered.
   let sourceNode: RelationalPlanNode = buildTableReference({ type: 'table', table: stmt.table }, contextWithSchemaPath);
 
-  // Create a new scope with the table columns registered for column resolution
-  const tableScope = new RegisteredScope(ctx.scope);
+  // Create a new scope with the table columns registered for column resolution.
+  // Wrap with AliasedScope so correlated subqueries inside SET / WHERE / RETURNING
+  // can reference the outer DML target via qualified `table.column` form.
+  const tableColumnScope = new RegisteredScope(ctx.scope);
   const sourceAttributes = sourceNode.getAttributes();
   sourceNode.getType().columns.forEach((c, i) => {
     const attr = sourceAttributes[i];
-    tableScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
+    tableColumnScope.registerSymbol(c.name.toLowerCase(), (exp, s) =>
       new ColumnReferenceNode(s, exp as AST.ColumnExpr, c.type, attr.id, i));
   });
+  const tableName = tableReference.tableSchema.name.toLowerCase();
+  const tableScope = new AliasedScope(tableColumnScope, tableName, tableName);
 
   // Create a new planning context with the updated scope for WHERE clause resolution
   const updateCtx = { ...contextWithSchemaPath, scope: tableScope };
