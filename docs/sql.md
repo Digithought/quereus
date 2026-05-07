@@ -1378,7 +1378,7 @@ order by expression [asc | desc] [nulls first | nulls last]
 - `desc`: Descending order
 - `nulls first`: NULL values sort before non-NULL values
 - `nulls last`: NULL values sort after non-NULL values
-- Expression can be a column name, alias, or expression
+- Expression can be a column name, alias, expression, or a positive integer representing a position in the select list (1-based; out-of-range raises an error)
 - Aggregate functions are permitted when the query is itself an aggregate query (has aggregates in `select`/`having`, or has `group by`)
 
 **Examples:**
