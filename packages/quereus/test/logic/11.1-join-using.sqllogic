@@ -18,9 +18,18 @@ select u_a.id as aid, u_a.k as ak, va, u_b.id as bid, u_b.k as bk, vb from u_a j
 select k, va, vb from u_a join u_b using (k) order by u_a.id;
 -- error: ambiguous column name: k
 
+-- select * over a USING join exposes both sides' columns with `:N` disambiguation
+-- (matches the same shape as `inner join ... on u_a.k = u_b.k`).
+select * from u_a join u_b using (k) order by u_a.id;
+→ [{"id":1,"k":100,"va":"a1","id:1":10,"k:1":100,"vb":"b1"},{"id":2,"k":200,"va":"a2","id:1":20,"k:1":200,"vb":"b2"}]
+
 -- LEFT JOIN with USING preserves left rows; right side is null on miss
 select u_a.id as aid, u_a.k as ak, u_b.id as bid, vb from u_a left join u_b using (k) order by u_a.id;
 → [{"aid":1,"ak":100,"bid":10,"vb":"b1"},{"aid":2,"ak":200,"bid":20,"vb":"b2"},{"aid":3,"ak":300,"bid":null,"vb":null}]
+
+-- select * over a LEFT JOIN ... USING also disambiguates and keeps unmatched right side as nulls.
+select * from u_a left join u_b using (k) order by u_a.id;
+→ [{"id":1,"k":100,"va":"a1","id:1":10,"k:1":100,"vb":"b1"},{"id":2,"k":200,"va":"a2","id:1":20,"k:1":200,"vb":"b2"},{"id":3,"k":300,"va":"a3","id:1":null,"k:1":null,"vb":null}]
 
 drop table u_a;
 drop table u_b;

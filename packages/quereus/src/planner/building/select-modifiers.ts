@@ -204,6 +204,19 @@ function isIdentityProjection(projections: Projection[], source: RelationalPlanN
 		return false;
 	}
 
+	// If the source exposes duplicate column names (e.g., a JOIN with same-named
+	// columns on each side), a ProjectNode is required to disambiguate via
+	// `name:N` suffixes — otherwise downstream row→object conversion would
+	// collapse duplicate keys and silently drop columns.
+	const seenNames = new Set<string>();
+	for (const attr of sourceAttrs) {
+		const lower = attr.name.toLowerCase();
+		if (seenNames.has(lower)) {
+			return false;
+		}
+		seenNames.add(lower);
+	}
+
 	for (let i = 0; i < projections.length; i++) {
 		const proj = projections[i];
 		const sourceAttr = sourceAttrs[i];
