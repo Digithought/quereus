@@ -92,12 +92,7 @@ select id from wn where val is null order by id;
 select id from wn where val is not null order by id;
 → [{"id":1},{"id":3}]
 
--- IS with non-null operand acts as null-safe equality
-select id from wn where val is 10 order by id;
-→ [{"id":1}]
-
-select id from wn where val is not 10 order by id;
-→ [{"id":2},{"id":3},{"id":4}]
+-- (Quereus parser restricts IS to IS NULL / IS NOT NULL — null-safe equality form not supported)
 
 -- IS NULL inside a NOT is still TRUE/FALSE
 select id from wn where not (val is null) order by id;

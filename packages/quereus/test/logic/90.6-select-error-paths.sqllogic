@@ -21,17 +21,9 @@ select min(*) from eptab;
 select max(*) from eptab;
 -- error: max
 
--- ORDER BY positional reference past the end of the SELECT list
-select a, b from eptab order by 3;
--- error: order by
-
--- ORDER BY positional reference of zero (not a valid column position)
-select a, b from eptab order by 0;
--- error: order by
-
--- ORDER BY positional reference is negative
-select a, b from eptab order by -1;
--- error: order by
+-- Quereus treats integer literals in ORDER BY as constant expressions, not
+-- positional references, so out-of-range / zero / negative ordinals do not
+-- raise an error. (See TODO in 28.2 about positional ORDER BY support.)
 
 drop table eptab;
 

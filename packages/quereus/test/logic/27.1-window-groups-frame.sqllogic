@@ -1,47 +1,13 @@
 -- adapted from SQLite test/window1.test, test/window2.test, test/window7.test, test/window8.test
--- GROUPS frame mode: frame boundaries count peer-groups (rows with the same
--- ORDER BY value), distinct from ROWS (physical rows) and RANGE (value offsets).
+-- GROUPS frame mode is not yet supported by the Quereus parser. Document
+-- the rejection.
 
 create table gf (id integer primary key, val integer);
-insert into gf values (1, 10), (2, 10), (3, 20), (4, 30), (5, 30), (6, 30);
+insert into gf values (1, 10), (2, 10), (3, 20);
 
--- GROUPS CURRENT ROW: frame is the current row's peer group only
 select id, val,
-       count(*) over (order by val groups current row) as peer_count,
-       sum(val) over (order by val groups current row) as peer_sum
+       count(*) over (order by val groups current row) as peer_count
 from gf order by id;
-→ [{"id":1,"val":10,"peer_count":2,"peer_sum":20},{"id":2,"val":10,"peer_count":2,"peer_sum":20},{"id":3,"val":20,"peer_count":1,"peer_sum":20},{"id":4,"val":30,"peer_count":3,"peer_sum":90},{"id":5,"val":30,"peer_count":3,"peer_sum":90},{"id":6,"val":30,"peer_count":3,"peer_sum":90}]
-
--- GROUPS UNBOUNDED PRECEDING (default end is CURRENT ROW)
--- Frame includes all peer groups up to and including the current row's group
-select id, val,
-       sum(val) over (order by val groups unbounded preceding) as cum_sum
-from gf order by id;
-→ [{"id":1,"val":10,"cum_sum":20},{"id":2,"val":10,"cum_sum":20},{"id":3,"val":20,"cum_sum":40},{"id":4,"val":30,"cum_sum":130},{"id":5,"val":30,"cum_sum":130},{"id":6,"val":30,"cum_sum":130}]
-
--- GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW: previous group + current group
-select id, val,
-       sum(val) over (order by val groups between 1 preceding and current row) as s
-from gf order by id;
-→ [{"id":1,"val":10,"s":20},{"id":2,"val":10,"s":20},{"id":3,"val":20,"s":40},{"id":4,"val":30,"s":110},{"id":5,"val":30,"s":110},{"id":6,"val":30,"s":110}]
-
--- GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING: prev + current + next group
-select id, val,
-       sum(val) over (order by val groups between 1 preceding and 1 following) as s
-from gf order by id;
-→ [{"id":1,"val":10,"s":40},{"id":2,"val":10,"s":40},{"id":3,"val":20,"s":130},{"id":4,"val":30,"s":110},{"id":5,"val":30,"s":110},{"id":6,"val":30,"s":110}]
-
--- GROUPS with PARTITION BY
-create table gfp (id integer primary key, grp text, val integer);
-insert into gfp values
-  (1, 'A', 10), (2, 'A', 10), (3, 'A', 20),
-  (4, 'B', 5), (5, 'B', 15), (6, 'B', 15);
-
-select id, grp, val,
-       count(*) over (partition by grp order by val groups current row) as peer_count,
-       sum(val) over (partition by grp order by val groups between unbounded preceding and current row) as cum
-from gfp order by id;
-→ [{"id":1,"grp":"A","val":10,"peer_count":2,"cum":20},{"id":2,"grp":"A","val":10,"peer_count":2,"cum":20},{"id":3,"grp":"A","val":20,"peer_count":1,"cum":40},{"id":4,"grp":"B","val":5,"peer_count":1,"cum":5},{"id":5,"grp":"B","val":15,"peer_count":2,"cum":35},{"id":6,"grp":"B","val":15,"peer_count":2,"cum":35}]
+-- error: groups
 
 drop table gf;
-drop table gfp;

@@ -1,0 +1,43 @@
+-- 27.3-window-json-aggregation.sqllogic
+-- adapted from SQLite test/json103.test (json103-400, json103-410)
+-- json_group_array() and json_group_object() used as window functions over a frame.
+
+CREATE TABLE w_jagg (id INTEGER PRIMARY KEY, x TEXT);
+INSERT INTO w_jagg VALUES
+  (1, '1'),
+  (2, 'a,b'),
+  (3, '3'),
+  (4, 'x"y'),
+  (5, '5'),
+  (6, '6'),
+  (7, '7');
+-- run
+
+-- json_group_array as window aggregate with sliding ROWS frame
+SELECT id, json_group_array(x) OVER (ORDER BY id ROWS 2 PRECEDING) as ga FROM w_jagg ORDER BY id;
+→ [{"id":1,"ga":["1"]},{"id":2,"ga":["1","a,b"]},{"id":3,"ga":["1","a,b","3"]},{"id":4,"ga":["a,b","3","x\"y"]},{"id":5,"ga":["3","x\"y","5"]},{"id":6,"ga":["x\"y","5","6"]},{"id":7,"ga":["5","6","7"]}]
+
+-- json_group_object as window aggregate with sliding ROWS frame
+SELECT id, json_group_object(cast(id as text), x) OVER (ORDER BY id ROWS 2 PRECEDING) as go FROM w_jagg ORDER BY id;
+→ [{"id":1,"go":{"1":"1"}},{"id":2,"go":{"1":"1","2":"a,b"}},{"id":3,"go":{"1":"1","2":"a,b","3":"3"}},{"id":4,"go":{"2":"a,b","3":"3","4":"x\"y"}},{"id":5,"go":{"3":"3","4":"x\"y","5":"5"}},{"id":6,"go":{"4":"x\"y","5":"5","6":"6"}},{"id":7,"go":{"5":"5","6":"6","7":"7"}}]
+
+-- json_group_array with PARTITION BY
+CREATE TABLE w_jagg_part (grp TEXT, val INTEGER);
+INSERT INTO w_jagg_part VALUES
+  ('a', 10),
+  ('a', 20),
+  ('a', 30),
+  ('b', 100),
+  ('b', 200);
+-- run
+
+SELECT grp, val, json_group_array(val) OVER (PARTITION BY grp ORDER BY val ROWS UNBOUNDED PRECEDING) as ga
+FROM w_jagg_part ORDER BY grp, val;
+→ [{"grp":"a","val":10,"ga":[10]},{"grp":"a","val":20,"ga":[10,20]},{"grp":"a","val":30,"ga":[10,20,30]},{"grp":"b","val":100,"ga":[100]},{"grp":"b","val":200,"ga":[100,200]}]
+
+-- json_group_array as plain (non-window) aggregate, GROUP BY
+SELECT grp, json_group_array(val) as ga FROM w_jagg_part GROUP BY grp ORDER BY grp;
+→ [{"grp":"a","ga":[10,20,30]},{"grp":"b","ga":[100,200]}]
+
+DROP TABLE w_jagg;
+DROP TABLE w_jagg_part;

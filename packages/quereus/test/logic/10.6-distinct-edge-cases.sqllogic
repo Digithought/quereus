@@ -32,10 +32,10 @@ drop table dt;
 -- DISTINCT across CROSS JOIN — Cartesian product then dedup
 -- =============================================================================
 
-create table cj_a (x integer);
-create table cj_b (y integer);
-insert into cj_a values (1), (2);
-insert into cj_b values (10), (20), (10);
+create table cj_a (id integer primary key, x integer);
+create table cj_b (id integer primary key, y integer);
+insert into cj_a values (1, 1), (2, 2);
+insert into cj_b values (1, 10), (2, 20), (3, 10);
 
 select distinct cj_a.x, cj_b.y
 from cj_a cross join cj_b
@@ -101,7 +101,7 @@ select distinct name from cs order by name;
 → [{"name":"Alice"},{"name":"BOB"},{"name":"Bob"},{"name":"bob"}]
 
 -- COLLATE NOCASE in the projection collapses case-equivalent strings
-select distinct name collate nocase from cs order by name collate nocase;
+select distinct name collate nocase as name from cs order by name collate nocase;
 → [{"name":"Alice"},{"name":"Bob"}]
 
 drop table cs;

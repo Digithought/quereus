@@ -8,8 +8,8 @@
 -- 1. INSERT ... SELECT with column reordering / partial mapping
 -- ===================================
 
-create table src_basic (a integer null, b text null, c integer null);
-create table dst_basic (a integer null, b text null, c integer null);
+create table src_basic (a integer primary key, b text null, c integer null);
+create table dst_basic (a integer primary key, b text null, c integer null);
 
 insert into src_basic values (1, 'x', 10), (2, 'y', 20);
 
@@ -89,8 +89,8 @@ drop table l;
 -- 5. INSERT ... SELECT with DISTINCT (suppress duplicates)
 -- ===================================
 
-create table dup_src (x integer, y integer);
-insert into dup_src values (1, 10), (1, 10), (2, 20);
+create table dup_src (id integer primary key, x integer, y integer);
+insert into dup_src values (1, 1, 10), (2, 1, 10), (3, 2, 20);
 
 create table dup_dst (x integer, y integer, primary key (x, y));
 insert into dup_dst select distinct x, y from dup_src;

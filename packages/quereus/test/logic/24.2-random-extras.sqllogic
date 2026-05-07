@@ -26,9 +26,9 @@ select length(randomblob(-5));
 select typeof(random());
 → [{"typeof(random())":"integer"}]
 
--- Two consecutive random() calls in one statement may differ — assert only the type contract
-select typeof(random()) = 'integer' and typeof(random()) = 'integer' as both_integer;
-→ [{"both_integer":true}]
+-- Two consecutive random() calls — assert only the type contract
+select typeof(random()) as t1, typeof(random()) as t2;
+→ [{"t1":"integer","t2":"integer"}]
 
 -- Arity: random() takes no arguments
 select random(1);

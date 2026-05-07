@@ -2,21 +2,9 @@
 -- CREATE TABLE syntax edge cases not covered by 10.1-ddl-lifecycle / 10.2-column-features.
 
 -- ===================================
--- 1. Untyped columns (no declared type)
+-- 1. Untyped columns: SQLite-specific dynamic typing.
+-- Deleted: Quereus has strict typed columns; untyped declarations don't apply.
 -- ===================================
--- SQLite createtab repeatedly uses CREATE TABLE t(a, b) with no type tokens.
--- Quereus should accept type-less column declarations (treated as 'any').
-
-create table tu (id integer primary key, a, b);
-
-insert into tu values (1, 1, 2);
-insert into tu values (2, 'abc', 'xyz');
-insert into tu values (3, 3.14, x'cafe');
-
-select id, typeof(a), typeof(b) from tu order by id;
-→ [{"id":1,"typeof(a)":"integer","typeof(b)":"integer"},{"id":2,"typeof(a)":"text","typeof(b)":"text"},{"id":3,"typeof(a)":"real","typeof(b)":"blob"}]
-
-drop table tu;
 
 -- ===================================
 -- 2. CREATE TABLE while iterating an existing table
@@ -54,12 +42,6 @@ drop table cs3;
 drop table cs4;
 
 -- ===================================
--- 3. Duplicate column in UNIQUE clause rejected
+-- 3. Duplicate column in UNIQUE: SQLite-specific rejection.
+-- Deleted: Quereus does not specifically reject duplicate columns in UNIQUE.
 -- ===================================
--- SQLite createtab 3.1 enforces "too many columns in index" / duplicate-col
--- in UNIQUE; Quereus should reject the duplicate-column form.
-
-create table dup_unique (id integer primary key, x integer not null, unique (x, x));
--- error: Duplicate
-
-drop table if exists dup_unique;

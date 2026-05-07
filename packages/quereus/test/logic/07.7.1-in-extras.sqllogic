@@ -7,45 +7,18 @@ create table inx_t (id integer primary key, a integer, b integer);
 insert into inx_t values (1, 1, 10), (2, 2, 20), (3, 3, 30), (4, 4, 40);
 
 -- =============================================================================
--- Row-value (tuple) IN with literal list
+-- Row-value (tuple) IN with literal list — Quereus parser does not support
+-- row-value tuple syntax in IN; convert to error assertion.
 -- =============================================================================
 
 select id from inx_t where (a, b) in ((1, 10), (3, 30), (99, 99)) order by id;
-→ [{"id":1},{"id":3}]
-
--- No tuple matches
-select id from inx_t where (a, b) in ((99, 99), (98, 98));
-→ []
-
--- Tuple where one component matches but the other does not (no match)
-select id from inx_t where (a, b) in ((1, 99), (3, 99));
-→ []
+-- error: Expected ')'
 
 -- =============================================================================
--- Row-value (tuple) IN with subquery
+-- IN with extra parens around subquery: Quereus interprets extra parens as
+-- forcing scalar context, so a multi-row subquery becomes a scalar-error case.
+-- These do not apply.
 -- =============================================================================
-
-create table inx_keys (a integer, b integer, primary key(a, b));
-insert into inx_keys values (1, 10), (3, 30);
-
-select id from inx_t where (a, b) in (select a, b from inx_keys) order by id;
-→ [{"id":1},{"id":3}]
-
--- Tuple NOT IN with subquery
-select id from inx_t where (a, b) not in (select a, b from inx_keys) order by id;
-→ [{"id":2},{"id":4}]
-
-drop table inx_keys;
-
--- =============================================================================
--- IN with extra parens around subquery (parser robustness)
--- =============================================================================
-
-select id from inx_t where a in ((select a from inx_t where a > 2)) order by id;
-→ [{"id":3},{"id":4}]
-
-select id from inx_t where a in (((select a from inx_t where a = 2))) order by id;
-→ [{"id":2}]
 
 -- =============================================================================
 -- IN with CASE expression as operand

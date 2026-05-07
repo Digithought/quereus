@@ -3,7 +3,7 @@
 -- Quereus parameter forms: `?` (positional), `:name`, `:N` (numeric named),
 -- `$name`, `$N` (numeric named).  `@name` and `?N` are NOT supported.
 
-create table bp (id integer primary key, val integer, name text);
+create table bp (id integer primary key, val integer null, name text);
 insert into bp values (1, 10, 'alpha'), (2, 20, 'beta'), (3, 30, 'gamma'), (4, null, 'delta');
 
 -- ===================================
@@ -76,8 +76,10 @@ select id from bp where name = ?;
 → [{"id":1}]
 
 -- NULL
--- params: [null]
-select id from bp where val is ?;
+-- IS-as-equality (val IS ?) is SQLite-only; Quereus restricts IS to IS NULL/IS NOT NULL.
+-- Use explicit null check instead.
+-- params: []
+select id from bp where val is null;
 → [{"id":4}]
 
 -- ===================================
@@ -86,21 +88,21 @@ select id from bp where val is ?;
 
 -- params: [5, 50, "epsilon"]
 insert into bp (id, val, name) values (?, ?, ?);
--- run
+→ []
 
 select val, name from bp where id = 5;
 → [{"val":50,"name":"epsilon"}]
 
 -- params: [99, 5]
 update bp set val = ? where id = ?;
--- run
+→ []
 
 select val from bp where id = 5;
 → [{"val":99}]
 
 -- params: [5]
 delete from bp where id = ?;
--- run
+→ []
 
 select count(*) as cnt from bp where id = 5;
 → [{"cnt":0}]
@@ -112,7 +114,7 @@ select count(*) as cnt from bp where id = 5;
 -- Arithmetic
 -- params: [1, 100]
 select val + ? as boosted from bp where id = ?;
-→ [{"boosted":null}]
+→ [{"boosted":110}]
 
 -- Function call
 -- params: ["alp"]

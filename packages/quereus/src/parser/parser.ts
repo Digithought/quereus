@@ -2721,7 +2721,11 @@ export class Parser {
 				items.push(this.declareTableItem());
 			} else if (this.peekKeyword('INDEX')) {
 				this.advance();
-				items.push(this.declareIndexItem());
+				items.push(this.declareIndexItem(false));
+			} else if (this.peekKeyword('UNIQUE')) {
+				this.advance();
+				this.consumeKeyword('INDEX', "Expected 'INDEX' after 'UNIQUE'.");
+				items.push(this.declareIndexItem(true));
 			} else if (this.peekKeyword('VIEW')) {
 				this.advance();
 				items.push(this.declareViewItem());
@@ -2847,7 +2851,7 @@ export class Parser {
 		return { type: 'declaredTable', tableStmt };
 	}
 
-	private declareIndexItem(): AST.DeclaredIndex {
+	private declareIndexItem(isUnique: boolean): AST.DeclaredIndex {
 		const indexName = this.consumeIdentifier('Expected index name.');
 		this.consumeKeyword('ON', "Expected 'ON' after index name.");
 		const tableName = this.consumeIdentifier('Expected table name after ON.');
@@ -2871,7 +2875,7 @@ export class Parser {
 			table: { type: 'identifier', name: tableName },
 			ifNotExists: false,
 			columns,
-			isUnique: false,
+			isUnique,
 			tags
 		};
 

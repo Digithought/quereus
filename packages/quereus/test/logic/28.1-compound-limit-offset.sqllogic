@@ -48,33 +48,41 @@ drop table c_left;
 -- VALUES clause as compound operand
 -- =============================================================================
 
--- VALUES UNION VALUES — typical in CTE-free literal scenarios
+-- VALUES UNION VALUES — Quereus parser does not allow VALUES as a top-level
+-- compound operand; must be wrapped in a SELECT FROM (VALUES ...) form.
 values (1, 'x'), (2, 'y')
 union
 values (2, 'y'), (3, 'z')
 order by column1;
-→ [{"column1":1,"column2":"x"},{"column1":2,"column2":"y"},{"column1":3,"column2":"z"}]
+-- error: union
 
--- VALUES INTERSECT VALUES
-values (1), (2), (3)
+-- Equivalent expressed via SELECT-FROM-VALUES wrapping with explicit aliases
+select c1, c2 from (values (1, 'x'), (2, 'y')) as v(c1, c2)
+union
+select c1, c2 from (values (2, 'y'), (3, 'z')) as v(c1, c2)
+order by c1;
+→ [{"c1":1,"c2":"x"},{"c1":2,"c2":"y"},{"c1":3,"c2":"z"}]
+
+-- VALUES INTERSECT VALUES (wrapped form)
+select c1 from (values (1), (2), (3)) as v(c1)
 intersect
-values (2), (4), (5);
-→ [{"column1":2}]
+select c1 from (values (2), (4), (5)) as v(c1);
+→ [{"c1":2}]
 
--- VALUES EXCEPT VALUES
-values (1), (2), (3)
+-- VALUES EXCEPT VALUES (wrapped form)
+select c1 from (values (1), (2), (3)) as v(c1)
 except
-values (2)
-order by column1;
-→ [{"column1":1},{"column1":3}]
+select c1 from (values (2)) as v(c1)
+order by c1;
+→ [{"c1":1},{"c1":3}]
 
--- Mixed: SELECT UNION VALUES
+-- Mixed: SELECT UNION VALUES (wrapped form)
 create table v_t (id integer primary key, val integer);
 insert into v_t values (1, 10), (2, 20);
 
 select val from v_t
 union
-values (30), (10)
+select c1 as val from (values (30), (10)) as v(c1)
 order by val;
 → [{"val":10},{"val":20},{"val":30}]
 

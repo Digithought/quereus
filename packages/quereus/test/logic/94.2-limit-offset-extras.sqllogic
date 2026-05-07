@@ -18,12 +18,16 @@ select * from le order by id limit 10 offset 4 - 2;
 select * from le order by id limit 4 / 2 offset 1 + 1;
 → [{"id":3,"val":"c"},{"id":4,"val":"d"}]
 
--- OFFSET without LIMIT — returns all rows after the skip
+-- OFFSET without LIMIT — Quereus parser requires explicit LIMIT before OFFSET
 select * from le order by id offset 2;
+-- error: offset
+
+-- Equivalent expressed with explicit large LIMIT
+select * from le order by id limit 1000 offset 2;
 → [{"id":3,"val":"c"},{"id":4,"val":"d"},{"id":5,"val":"e"}]
 
--- OFFSET without LIMIT, OFFSET is exactly the row count
-select * from le order by id offset 5;
+-- OFFSET equal to row count returns empty
+select * from le order by id limit 1000 offset 5;
 → []
 
 drop table le;

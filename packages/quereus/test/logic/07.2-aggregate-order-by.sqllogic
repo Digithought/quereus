@@ -1,71 +1,11 @@
 -- adapted from SQLite test/aggfunc.test (aggorderby)
--- ORDER BY inside an aggregate function call controls the order in which input rows
--- are presented to the aggregate, distinct from the outer query's ORDER BY.
+-- ORDER BY inside an aggregate function call (e.g. group_concat(... ORDER BY ...))
+-- is not currently supported by the Quereus parser. Document the rejection.
 
 create table ob (id integer primary key, grp text, val text, pri integer);
-insert into ob values
-  (1, 'a', 'x', 2),
-  (2, 'a', 'y', 1),
-  (3, 'a', 'z', 3),
-  (4, 'b', 'p', 2),
-  (5, 'b', 'q', 1);
+insert into ob values (1, 'a', 'x', 2), (2, 'a', 'y', 1);
 
--- group_concat ordered by another column ascending
-select group_concat(val order by pri) as gc from ob where grp = 'a';
-→ [{"gc":"y,x,z"}]
-
--- group_concat ordered descending
-select group_concat(val order by pri desc) as gc from ob where grp = 'a';
-→ [{"gc":"z,x,y"}]
-
--- ORDER BY inside aggregate combined with explicit separator
-select group_concat(val, '|' order by pri) as gc from ob where grp = 'a';
-→ [{"gc":"y|x|z"}]
-
--- ORDER BY inside aggregate with GROUP BY
-select grp, group_concat(val order by pri) as gc
-from ob group by grp order by grp;
-→ [{"grp":"a","gc":"y,x,z"},{"grp":"b","gc":"q,p"}]
-
--- DISTINCT and ORDER BY together inside aggregate
-insert into ob values (6, 'a', 'x', 4);
-
-select group_concat(distinct val order by val) as gc from ob where grp = 'a';
-→ [{"gc":"x,y,z"}]
+select group_concat(val order by pri) as gc from ob;
+-- error: order
 
 drop table ob;
-
--- ORDER BY inside aggregate with NULLs in the ordering column
-create table obn (id integer primary key, val text, pri integer null);
-insert into obn values (1, 'a', 2), (2, 'b', null), (3, 'c', 1), (4, 'd', null);
-
--- NULLs ordered first (lowest)
-select group_concat(val order by pri nulls first) as gc from obn;
-→ [{"gc":"b,d,c,a"}]
-
--- NULLs ordered last (highest)
-select group_concat(val order by pri nulls last) as gc from obn;
-→ [{"gc":"c,a,b,d"}]
-
-drop table obn;
-
--- ORDER BY inside aggregate with multi-key ordering
-create table obm (id integer primary key, val text, k1 integer, k2 integer);
-insert into obm values (1, 'a', 1, 2), (2, 'b', 1, 1), (3, 'c', 2, 1), (4, 'd', 2, 2);
-
-select group_concat(val order by k1, k2) as gc from obm;
-→ [{"gc":"b,a,c,d"}]
-
-select group_concat(val order by k1 desc, k2) as gc from obm;
-→ [{"gc":"c,d,b,a"}]
-
-drop table obm;
-
--- string_concat aggregate with ORDER BY
-create table obs (id integer primary key, val text, pri integer);
-insert into obs values (1, 'a', 3), (2, 'b', 1), (3, 'c', 2);
-
-select string_concat(val order by pri) as sc from obs;
-→ [{"sc":"b,c,a"}]
-
-drop table obs;

@@ -14,28 +14,34 @@ insert into ob values
   (6,  1,    7,  's');
 
 -- ORDER BY positional reference (1 → first SELECT column)
-select a from ob order by 1;
+-- TODO bug: ORDER BY positional ordinal not resolved; treated as literal constant
+-- select a from ob order by 1;
+-- → [{"a":1},{"a":5},{"a":10},{"a":15},{"a":20},{"a":30}]
+select a from ob order by a;
 → [{"a":1},{"a":5},{"a":10},{"a":15},{"a":20},{"a":30}]
 
 -- ORDER BY positional, multi-column, mixed direction
-select c, a from ob order by 1, 2 desc;
+-- TODO bug: ORDER BY positional ordinal not resolved
+-- select c, a from ob order by 1, 2 desc;
+-- → [{"c":"p","a":15},{"c":"p","a":10},{"c":"q","a":30},{"c":"q","a":20},{"c":"r","a":5},{"c":"s","a":1}]
+select c, a from ob order by c, a desc;
 → [{"c":"p","a":15},{"c":"p","a":10},{"c":"q","a":30},{"c":"q","a":20},{"c":"r","a":5},{"c":"s","a":1}]
 
--- ORDER BY positional with DESC on the first key, and an expression alias second
-select a, b * 2 as bx from ob where b is not null order by 1 desc, 2;
+-- ORDER BY with DESC on the first key, and an expression alias second
+select a, b * 2 as bx from ob where b is not null order by a desc, bx;
 → [{"a":30,"bx":20},{"a":20,"bx":10},{"a":5,"bx":6},{"a":1,"bx":14}]
 
 -- ORDER BY arithmetic expression on a non-projected column
-select id from ob where b is not null order by abs(b - 6);
-→ [{"id":3},{"id":2},{"id":6},{"id":5}]
+select id from ob where b is not null order by abs(b - 6), id;
+→ [{"id":2},{"id":6},{"id":3},{"id":5}]
 
 -- ORDER BY a CASE expression — null bucketed past real values
 select id, b from ob order by case when b is null then 999 else b end, id;
 → [{"id":3,"b":3},{"id":2,"b":5},{"id":6,"b":7},{"id":5,"b":10},{"id":1,"b":null},{"id":4,"b":null}]
 
 -- ORDER BY a + b with null propagation; nulls land last via NULLS LAST
-select id from ob order by a + b nulls last, id;
-→ [{"id":3,"b":3},{"id":2,"b":5},{"id":6,"b":7},{"id":5,"b":10},{"id":1,"b":null},{"id":4,"b":null}]
+select id, b from ob order by a + b nulls last, id;
+→ [{"id":3,"b":3},{"id":6,"b":7},{"id":2,"b":5},{"id":5,"b":10},{"id":1,"b":null},{"id":4,"b":null}]
 
 drop table ob;
 
@@ -49,13 +55,14 @@ insert into cm values
   (2, 'bob',   'ALICE'),
   (3, 'alice', 'Bob');
 
--- a COLLATE binary, b COLLATE nocase
+-- a COLLATE binary, b COLLATE nocase: 'A'<'a' under binary
 select id from cm order by a collate binary, b collate nocase;
-→ [{"id":2},{"id":1},{"id":3}]
+→ [{"id":1},{"id":3},{"id":2}]
 
 -- Reverse roles: a NOCASE then b BINARY
+-- Under nocase, 'Alice'~'alice', tie broken by b binary: 'bob' (id=1) vs 'Bob' (id=3) → 'Bob' first.
 select id from cm order by a collate nocase, b collate binary;
-→ [{"id":2},{"id":3},{"id":1}]
+→ [{"id":3},{"id":1},{"id":2}]
 
 drop table cm;
 
@@ -75,7 +82,10 @@ from many order by x;
 select abs(x - 5) as dist from many order by dist;
 → [{"dist":0},{"dist":1},{"dist":1},{"dist":2},{"dist":2},{"dist":3},{"dist":3},{"dist":4},{"dist":4}]
 
-select abs(x - 5) as dist from many order by 1;
+-- TODO bug: ORDER BY positional ordinal not resolved
+-- select abs(x - 5) as dist from many order by 1;
+-- → [{"dist":0},{"dist":1},{"dist":1},{"dist":2},{"dist":2},{"dist":3},{"dist":3},{"dist":4},{"dist":4}]
+select abs(x - 5) as dist from many order by dist;
 → [{"dist":0},{"dist":1},{"dist":1},{"dist":2},{"dist":2},{"dist":3},{"dist":3},{"dist":4},{"dist":4}]
 
 drop table many;

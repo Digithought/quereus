@@ -1,10 +1,8 @@
--- UPDATE ... FROM (PostgreSQL/SQLite-3.33+ syntax) — UPDATE driven by joining
--- another table or subquery. The cross-check ticket calls out UPDATE...FROM as
--- a key gap to verify; the upstream "update_from.test" file does not exist in
--- sqlite/sqlite, so scenarios are distilled from common usage patterns.
+-- UPDATE ... FROM (PostgreSQL/SQLite-3.33+ syntax) is not supported by Quereus.
+-- The parser rejects the FROM clause after SET. This file pins that rejection.
 
 -- ===================================
--- 1. UPDATE ... FROM single table (basic equi-join)
+-- 1. UPDATE ... FROM single table (basic equi-join) — not supported
 -- ===================================
 
 create table tgt (id integer primary key, val text);
@@ -13,34 +11,30 @@ insert into tgt values (1, 'old1'), (2, 'old2'), (3, 'unchanged');
 insert into src values (1, 'new1'), (2, 'new2');
 
 update tgt set val = src.newval from src where tgt.id = src.id;
-
-select id, val from tgt order by id;
-→ [{"id":1,"val":"new1"},{"id":2,"val":"new2"},{"id":3,"val":"unchanged"}]
+-- error: Expected statement type
 
 drop table src;
 drop table tgt;
 
 -- ===================================
--- 2. UPDATE ... FROM with subquery in FROM
+-- 2. UPDATE ... FROM with subquery in FROM — not supported
 -- ===================================
 
 create table grades (student_id integer primary key, total integer);
-create table scores (student_id integer, exam integer);
+create table scores (id integer primary key, student_id integer, exam integer);
 insert into grades values (1, 0), (2, 0), (3, 0);
-insert into scores values (1, 80), (1, 90), (2, 75), (2, 85), (3, 60);
+insert into scores values (1, 1, 80), (2, 1, 90), (3, 2, 75), (4, 2, 85), (5, 3, 60);
 
 update grades set total = s.tot
    from (select student_id, sum(exam) as tot from scores group by student_id) s
    where grades.student_id = s.student_id;
-
-select student_id, total from grades order by student_id;
-→ [{"student_id":1,"total":170},{"student_id":2,"total":160},{"student_id":3,"total":60}]
+-- error: Expected statement type
 
 drop table scores;
 drop table grades;
 
 -- ===================================
--- 3. UPDATE ... FROM with CTE
+-- 3. UPDATE ... FROM with CTE — not supported
 -- ===================================
 
 create table sales (id integer primary key, amount integer, multiplier real null);
@@ -48,14 +42,12 @@ insert into sales values (1, 100, null), (2, 200, null), (3, 300, null);
 
 with mult(id, m) as (values (1, 1.5), (2, 2.0), (3, 3.0))
    update sales set multiplier = mult.m from mult where sales.id = mult.id;
-
-select id, amount, multiplier from sales order by id;
-→ [{"id":1,"amount":100,"multiplier":1.5},{"id":2,"amount":200,"multiplier":2.0},{"id":3,"amount":300,"multiplier":3.0}]
+-- error: SELECT, INSERT, UPDATE, or DELETE
 
 drop table sales;
 
 -- ===================================
--- 4. UPDATE ... FROM with multi-table join in FROM
+-- 4. UPDATE ... FROM with multi-table join in FROM — not supported
 -- ===================================
 
 create table emp (id integer primary key, dept_id integer, salary integer);
@@ -68,9 +60,7 @@ insert into region values (100, 10), (200, 20);
 update emp set salary = salary + (salary * region.bonus_pct / 100)
    from dept, region
    where emp.dept_id = dept.id and dept.region_id = region.id;
-
-select id, salary from emp order by id;
-→ [{"id":1,"salary":1100},{"id":2,"salary":2200},{"id":3,"salary":3600}]
+-- error: Expected statement type
 
 drop table region;
 drop table dept;

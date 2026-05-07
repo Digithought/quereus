@@ -750,3 +750,51 @@ commit;
 select * from assert_items;
 → [{"id": 1, "qty": 5, "price": 10}]
 
+-- ===================================================================
+-- Declarative `unique index` — parser admits the UNIQUE qualifier and
+-- the diff stringifies it back as `create unique index` so that the
+-- apply path enforces uniqueness the same way a top-level
+-- `CREATE UNIQUE INDEX` does.
+-- ===================================================================
+
+declare schema decl_uniq {
+	table T (
+		id INTEGER PRIMARY KEY,
+		email TEXT NOT NULL,
+		a TEXT,
+		b TEXT
+	)
+
+	unique index ix_T_email on T(email)
+	unique index ix_T_a_b on T(a, b)
+}
+
+-- run
+
+-- Diff stringifies the declared indexes with the `unique` qualifier.
+diff schema decl_uniq;
+→ [{"ddl": "create table decl_uniq.T (id INTEGER primary key, email TEXT not null, a TEXT, b TEXT)"}, {"ddl": "create unique index decl_uniq.ix_T_email on decl_uniq.T (email)"}, {"ddl": "create unique index decl_uniq.ix_T_a_b on decl_uniq.T (a, b)"}]
+
+apply schema decl_uniq;
+
+-- run
+
+-- Apply was idempotent; re-diff is empty.
+diff schema decl_uniq;
+→ []
+
+-- Single-column unique enforcement.
+insert into decl_uniq.T values (1, 'x@y', 'p', 'q');
+insert into decl_uniq.T values (2, 'x@y', 'r', 's');
+-- error: UNIQUE
+
+-- Multi-column unique enforcement (compound key collides on (p,q)).
+insert into decl_uniq.T values (3, 'a@y', 'p', 'q');
+-- error: UNIQUE
+
+-- Distinct compound key is accepted.
+insert into decl_uniq.T values (4, 'b@y', 'p', 'r');
+
+select count(*) as cnt from decl_uniq.T;
+→ [{"cnt": 2}]
+

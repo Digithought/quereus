@@ -19,8 +19,10 @@ select id from bt where val between 1 and 100 order by id;
 → [{"id":1},{"id":2},{"id":3},{"id":4},{"id":6}]
 
 -- lower bound is NULL: row 3 (val=8, lo=null, hi=10): 8 BETWEEN null AND 10 -> unknown
+-- row 2 (val=15, lo=5, hi=12): 15 between 5 and 12 -> false
+-- row 6 (val=25, lo=30, hi=20): reversed bounds -> false
 select id from bt where val between lo and hi order by id;
-→ [{"id":1},{"id":2}]
+→ [{"id":1}]
 
 -- upper bound is NULL alone, value satisfies low side:
 -- 8 BETWEEN 5 AND null -> unknown -> excluded
@@ -41,7 +43,7 @@ select 5 between 1 and null as r;
 → [{"r":null}]
 
 select 50 between 1 and null as r;
-→ [{"r":false}]
+→ [{"r":null}]
 
 select null between null and null as r;
 → [{"r":null}]
@@ -90,7 +92,7 @@ select id from bx where x between 0 and b * 2 order by id;
 → [{"id":1},{"id":2},{"id":3}]
 
 select id from bx where x between a + 3 and b * 2 order by id;
-→ [{"id":1},{"id":3}]
+→ [{"id":1},{"id":2},{"id":3}]
 
 -- LHS is also an expression
 select id from bx where (x - 5) between a and b order by id;

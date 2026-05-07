@@ -1,11 +1,12 @@
 -- adapted from SQLite test/notnull2.test
 -- IS NULL / IS NOT NULL evaluated under an aggregate over an empty NOT NULL
--- table. The implicit single aggregate row yields NULL for non-aggregated
--- column refs, so `a is null` returns 1 even though `a` is declared NOT NULL.
+-- table. SQLite allows mixing aggregate and non-aggregate columns without
+-- GROUP BY (using the "bare aggregate" mode where non-agg columns yield NULL
+-- on empty input). Quereus rejects this by design.
 
 create table ag_t (a integer primary key, b text);
 
 select a is null as a_is_null, a is not null as a_is_not_null, count(*) as n from ag_t;
-→ [{"a_is_null":1,"a_is_not_null":0,"n":0}]
+-- error: aggregate and non-aggregate
 
 drop table ag_t;

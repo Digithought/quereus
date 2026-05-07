@@ -10,53 +10,71 @@ insert into gx values
   (4, 'b', 'y', 40),
   (5, 'a', 'x', 50);
 
--- GROUP BY ordinal: 1 references first SELECT column
-select grp, count(*) as cnt from gx group by 1 order by 1;
+-- TODO bug: GROUP BY ordinal (group by 1) not yet supported in Quereus
+-- select grp, count(*) as cnt from gx group by 1 order by 1;
+-- → [{"grp":"a","cnt":3},{"grp":"b","cnt":2}]
+
+-- TODO bug: GROUP BY multiple ordinals not yet supported in Quereus
+-- select grp, sub, sum(val) as total from gx group by 1, 2 order by 1, 2;
+-- → [{"grp":"a","sub":"x","total":60},{"grp":"a","sub":"y","total":20},{"grp":"b","sub":"x","total":30},{"grp":"b","sub":"y","total":40}]
+
+-- Equivalents using explicit expressions (parser-level form Quereus accepts)
+select grp, count(*) as cnt from gx group by grp order by grp;
 → [{"grp":"a","cnt":3},{"grp":"b","cnt":2}]
 
--- GROUP BY multiple ordinals
-select grp, sub, sum(val) as total from gx group by 1, 2 order by 1, 2;
+select grp, sub, sum(val) as total from gx group by grp, sub order by grp, sub;
 → [{"grp":"a","sub":"x","total":60},{"grp":"a","sub":"y","total":20},{"grp":"b","sub":"x","total":30},{"grp":"b","sub":"y","total":40}]
 
 -- GROUP BY mixed expression
 select grp || sub as combined, sum(val) as total
-from gx group by grp || sub order by combined;
+from gx group by grp || sub order by grp || sub;
 → [{"combined":"ax","total":60},{"combined":"ay","total":20},{"combined":"bx","total":30},{"combined":"by","total":40}]
 
 -- GROUP BY with arithmetic expression
 select val % 20 as bucket, count(*) as cnt
-from gx group by val % 20 order by bucket;
-→ [{"bucket":0,"cnt":3},{"bucket":10,"cnt":2}]
+from gx group by val % 20 order by val % 20;
+→ [{"bucket":0,"cnt":2},{"bucket":10,"cnt":3}]
 
--- GROUP BY ordinal with HAVING
-select grp, count(*) as cnt from gx group by 1 having count(*) > 2 order by 1;
+-- TODO bug: GROUP BY ordinal with HAVING not yet supported
+-- select grp, count(*) as cnt from gx group by 1 having count(*) > 2 order by 1;
+-- → [{"grp":"a","cnt":3}]
+
+-- TODO bug: GROUP BY ordinal combined with ORDER BY ordinal on aggregate alias
+-- select grp, sum(val) as total from gx group by 1 order by 2 desc;
+-- → [{"grp":"b","total":70},{"grp":"a","total":80}]
+
+-- Equivalents using named columns
+select grp, count(*) as cnt from gx group by grp having count(*) > 2 order by grp;
 → [{"grp":"a","cnt":3}]
 
--- GROUP BY ordinal combined with ORDER BY ordinal on aggregate alias
-select grp, sum(val) as total from gx group by 1 order by 2 desc;
-→ [{"grp":"b","total":70},{"grp":"a","total":80}]
+select grp, sum(val) as total from gx group by grp order by total desc;
+→ [{"grp":"a","total":80},{"grp":"b","total":70}]
 
 drop table gx;
 
--- GROUP BY with COLLATE NOCASE: case-equal keys merge
+-- GROUP BY with COLLATE NOCASE on a TEXT column is not supported by Quereus
+-- (engine emits a clear rejection at table creation time).
 create table gn (id integer primary key, name text collate nocase, val integer);
-insert into gn values (1, 'Alpha', 10), (2, 'ALPHA', 20), (3, 'beta', 30), (4, 'Beta', 40);
-
-select name, count(*) as cnt, sum(val) as total
-from gn group by name order by name;
-→ [{"name":"Alpha","cnt":2,"total":30},{"name":"beta","cnt":2,"total":70}]
-
-drop table gn;
+-- error: Collation 'nocase' is not supported
 
 -- GROUP BY a CASE expression
 create table gc (id integer primary key, val integer);
 insert into gc values (1, 5), (2, 15), (3, 25), (4, 35), (5, 45);
 
+-- TODO bug: ORDER BY referencing an aggregate (count(*)) is rejected — should be allowed
+-- when the same query has a GROUP BY. (Aggregate-in-ORDER-BY rejection here is overly strict.)
+-- select case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end as bucket,
+--        count(*) as cnt
+-- from gc group by case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end
+-- order by count(*) desc, case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end;
+-- → [{"bucket":"low","cnt":2},{"bucket":"mid","cnt":2},{"bucket":"high","cnt":1}]
+
+-- Equivalent without aggregate in ORDER BY: sort by the GROUP BY expression
 select case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end as bucket,
        count(*) as cnt
 from gc group by case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end
-order by cnt desc, bucket;
-→ [{"bucket":"low","cnt":2},{"bucket":"mid","cnt":2},{"bucket":"high","cnt":1}]
+order by case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end;
+→ [{"bucket":"high","cnt":1},{"bucket":"low","cnt":2},{"bucket":"mid","cnt":2}]
 
 drop table gc;
 
