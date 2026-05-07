@@ -435,6 +435,17 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		request: BestAccessPlanRequest,
 		availableIndexes: IndexSchema[]
 	): BestAccessPlanResult {
+		// A multi-range (OR_RANGE) access scans each range independently and
+		// concatenates the results — total ordering across ranges is not
+		// preserved, so the plan cannot claim to satisfy ORDER BY even if the
+		// underlying index is monotonic.
+		const usesOrRange = request.filters.some(
+			(f, i) => plan.handledFilters[i] && f.op === 'OR_RANGE'
+		);
+		if (usesOrRange) {
+			return plan;
+		}
+
 		// Columns bound by an equality predicate are constants for this scan and
 		// therefore contribute no ordering information — they can be skipped when
 		// aligning an index against the required ordering.
