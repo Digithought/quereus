@@ -45,6 +45,16 @@ with recursive lim_cnt(n) as (
 select n from lim_cnt order by n;
 → [{"n":1},{"n":2},{"n":3},{"n":4},{"n":5}]
 
+-- LIMIT 0 yields zero rows (no early base-case row leakage)
+with recursive lim_zero(n) as (
+  select 1
+  union all
+  select n + 1 from lim_zero where n < 1000
+  limit 0
+)
+select n from lim_zero;
+→ []
+
 -- =============================================================================
 -- Nested WITH inside the base case of a recursive CTE — Quereus parser does
 -- not accept a nested WITH inside a CTE body.

@@ -63,6 +63,7 @@ export function emitRecursiveCTE(plan: RecursiveCTENode, ctx: EmissionContext): 
 			if (producedCount <= offset) {
 				return producedCount < totalNeeded;
 			}
+			if (yieldedCount >= limit) return false;
 			yield row;
 			yieldedCount++;
 			return yieldedCount < limit;
