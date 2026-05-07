@@ -882,9 +882,10 @@ Generated columns are computed from an expression over other columns in the same
 - `STORED`: The value is computed at INSERT/UPDATE time and persisted. Reads return the stored value directly.
 - `VIRTUAL`: Semantically computed on read (currently stored identically to STORED; storage optimization is planned).
 - If neither `STORED` nor `VIRTUAL` is specified, `VIRTUAL` is the default.
-- Generated column expressions must be deterministic and may only reference non-generated columns of the same table.
+- Generated column expressions must be deterministic. They may reference any column of the same table, including other generated columns; their dependency graph must be acyclic and self-references are rejected at `CREATE TABLE` / `ALTER TABLE ADD COLUMN` time.
 - Cannot have both `DEFAULT` and `GENERATED ALWAYS AS` on the same column.
 - Cannot INSERT into or UPDATE a generated column directly.
+- `ALTER TABLE ... DROP COLUMN` of a column referenced by another generated column's expression is rejected; drop the referencing generated column first.
 
 ### 2.6.1 CREATE/DROP ASSERTION (Global Integrity Constraints)
 
