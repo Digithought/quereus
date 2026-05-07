@@ -187,3 +187,35 @@ select count(*) as cnt from c_col;
 
 drop table c_col;
 drop table p_col;
+
+-- ===================================
+-- 11. Renaming a column propagates into another table's FK referencedColumnNames
+-- ===================================
+
+pragma foreign_keys = true;
+
+create table p_fk (k integer primary key, v text);
+create table c_fk (id integer primary key, pk integer not null references p_fk(k) on delete restrict on update restrict);
+
+insert into p_fk values (1, 'a');
+insert into c_fk values (10, 1);
+
+-- Force a checkpoint so the existing deferred FK check resolves against the
+-- still-current parent column name before we rename it.
+select count(*) as cnt from c_fk;
+→ [{"cnt":1}]
+
+alter table p_fk rename column k to kk;
+
+-- FK still enforced under new parent column name
+insert into c_fk values (11, 99);
+-- error: CHECK constraint failed: _fk_c_fk
+
+-- Valid child reference still works
+insert into c_fk values (12, 1);
+
+select count(*) as cnt from c_fk;
+→ [{"cnt":2}]
+
+drop table c_fk;
+drop table p_fk;
