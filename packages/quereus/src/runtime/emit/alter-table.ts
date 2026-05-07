@@ -4,8 +4,8 @@ import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { type SqlValue, StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
-import type { TableSchema, PrimaryKeyColumnDefinition } from '../../schema/table.js';
-import { buildColumnIndexMap } from '../../schema/table.js';
+import type { TableSchema, PrimaryKeyColumnDefinition, RowConstraintSchema, ForeignKeyConstraintSchema } from '../../schema/table.js';
+import { buildColumnIndexMap, opsToMask } from '../../schema/table.js';
 import type { ColumnDef } from '../../parser/ast.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
 import { quoteIdentifier, expressionToString } from '../../emit/ast-stringify.js';
@@ -191,24 +191,151 @@ async function runAddColumn(
 		);
 	}
 
+	// Extract column-level CHECK / FK constraints. Column-level UNIQUE is not enforced via
+	// table-level constraints; the existing rejection path in the manager handles it.
+	const newCheckConstraints = extractColumnLevelCheckConstraints(columnDef);
+	const newForeignKeys = extractColumnLevelForeignKeys(columnDef, tableSchema.schemaName);
+
 	const updatedTableSchema = await module.alterTable(rctx.db, tableSchema.schemaName, tableSchema.name, {
 		type: 'addColumn',
 		columnDef,
 	});
 
-	// Update the schema catalog
-	schema.addTable(updatedTableSchema);
+	// Resolve the new child column index in the freshly returned schema for any FK constraints.
+	const newColIdx = updatedTableSchema.columnIndexMap.get(columnDef.name.toLowerCase());
+	const resolvedForeignKeys = newColIdx !== undefined
+		? newForeignKeys.map(fk => ({ ...fk, columns: Object.freeze([newColIdx]) }))
+		: newForeignKeys;
+
+	// Merge new column-level CHECK / FK into the table-level constraint sets so the
+	// existing constraint-builder picks them up for INSERT/UPDATE enforcement.
+	const mergedChecks = newCheckConstraints.length > 0
+		? Object.freeze([...updatedTableSchema.checkConstraints, ...newCheckConstraints])
+		: updatedTableSchema.checkConstraints;
+	const mergedForeignKeys = resolvedForeignKeys.length > 0
+		? Object.freeze([...(updatedTableSchema.foreignKeys ?? []), ...resolvedForeignKeys])
+		: updatedTableSchema.foreignKeys;
+
+	const enhancedTableSchema: TableSchema = Object.freeze({
+		...updatedTableSchema,
+		checkConstraints: mergedChecks,
+		foreignKeys: mergedForeignKeys,
+	});
+
+	// Register the enhanced schema BEFORE backfill validation so that SQL bound
+	// during validation can resolve the new column.
+	schema.addTable(enhancedTableSchema);
+
+	if (newCheckConstraints.length > 0) {
+		try {
+			await validateBackfillAgainstChecks(rctx, enhancedTableSchema, newCheckConstraints);
+		} catch (err) {
+			// Revert: drop the column and restore the original catalog entry.
+			try {
+				await module.alterTable(rctx.db, tableSchema.schemaName, tableSchema.name, {
+					type: 'dropColumn',
+					columnName: columnDef.name,
+				});
+			} catch (revertErr) {
+				log('Failed to revert ADD COLUMN after CHECK violation: %s', (revertErr as Error).message);
+			}
+			schema.addTable(tableSchema);
+			throw err;
+		}
+	}
 
 	rctx.db.schemaManager.getChangeNotifier().notifyChange({
 		type: 'table_modified',
 		schemaName: tableSchema.schemaName,
 		objectName: tableSchema.name,
 		oldObject: tableSchema,
-		newObject: updatedTableSchema,
+		newObject: enhancedTableSchema,
 	});
 
 	log('Added column %s to table %s.%s', columnDef.name, tableSchema.schemaName, tableSchema.name);
 	return null;
+}
+
+function extractColumnLevelCheckConstraints(columnDef: ColumnDef): RowConstraintSchema[] {
+	const result: RowConstraintSchema[] = [];
+	for (const con of columnDef.constraints ?? []) {
+		if (con.type !== 'check' || !con.expr) continue;
+		result.push({
+			name: con.name ?? `_check_${columnDef.name}`,
+			expr: con.expr,
+			operations: opsToMask(con.operations),
+			deferrable: con.deferrable,
+			initiallyDeferred: con.initiallyDeferred,
+			tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
+		});
+	}
+	return result;
+}
+
+function extractColumnLevelForeignKeys(
+	columnDef: ColumnDef,
+	defaultSchemaName: string,
+): ForeignKeyConstraintSchema[] {
+	const result: ForeignKeyConstraintSchema[] = [];
+	for (const con of columnDef.constraints ?? []) {
+		if (con.type !== 'foreignKey' || !con.foreignKey) continue;
+		const fk = con.foreignKey;
+		// child column index gets resolved by caller after module.alterTable returns
+		// the updated schema with the new column appended.
+		// When the ADD COLUMN clause omits ON DELETE/UPDATE, default to 'restrict' so
+		// the FK is actually enforced child-side on INSERT/UPDATE — buildChildSideFKChecks
+		// skips FKs whose onDelete and onUpdate are both 'ignore'.
+		result.push({
+			name: con.name ?? `_fk_${columnDef.name}`,
+			columns: Object.freeze([]),
+			referencedTable: fk.table,
+			referencedSchema: defaultSchemaName,
+			referencedColumns: Object.freeze([]),
+			referencedColumnNames: fk.columns,
+			onDelete: fk.onDelete ?? 'restrict',
+			onUpdate: fk.onUpdate ?? 'restrict',
+			deferred: fk.initiallyDeferred ?? false,
+			tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
+		});
+	}
+	return result;
+}
+
+/**
+ * Runs each new CHECK against existing rows. We rely on the just-registered
+ * enhanced schema so SQL can resolve the new column. Any row matching
+ * `not (<check_expr>)` is a violation and aborts the ALTER.
+ */
+async function validateBackfillAgainstChecks(
+	rctx: RuntimeContext,
+	enhancedTableSchema: TableSchema,
+	newCheckConstraints: RowConstraintSchema[],
+): Promise<void> {
+	const schemaPrefix = (enhancedTableSchema.schemaName && enhancedTableSchema.schemaName.toLowerCase() !== 'main')
+		? `${quoteIdentifier(enhancedTableSchema.schemaName)}.`
+		: '';
+	const qualifiedTable = `${schemaPrefix}${quoteIdentifier(enhancedTableSchema.name)}`;
+
+	for (const cc of newCheckConstraints) {
+		const checkSql = expressionToString(cc.expr);
+		const sql = `select 1 from ${qualifiedTable} where not (${checkSql}) limit 1`;
+		const stmt = rctx.db.prepare(sql);
+		try {
+			let violated = false;
+			for await (const _row of stmt._iterateRowsRaw()) {
+				violated = true;
+				break;
+			}
+			if (violated) {
+				throw new QuereusError(
+					`CHECK constraint ${cc.name ? `'${cc.name}' ` : ''}violated by backfilled rows in ALTER TABLE ADD COLUMN on '${enhancedTableSchema.name}'`,
+					StatusCode.CONSTRAINT,
+				);
+			}
+		} finally {
+			await stmt.finalize();
+		}
+	}
 }
 
 async function runDropColumn(

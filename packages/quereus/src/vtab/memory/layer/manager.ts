@@ -9,14 +9,14 @@ import { MemoryTableConnection } from './connection.js';
 import { Latches } from '../../../util/latches.js';
 import { QuereusError } from '../../../common/errors.js';
 import { ConflictResolution } from '../../../common/constants.js';
-import type { ColumnDef as ASTColumnDef, LiteralExpr } from '../../../parser/ast.js';
+import type { ColumnDef as ASTColumnDef } from '../../../parser/ast.js';
 import { compareSqlValues } from '../../../util/comparison.js';
 import type { ScanPlan } from './scan-plan.js';
 import type { ColumnSchema } from '../../../schema/column.js';
 import { scanLayer as scanLayerImpl } from './scan-layer.js';
 import { createPrimaryKeyFunctions, buildPrimaryKeyFromValues, type PrimaryKeyFunctions } from '../utils/primary-key.js';
 import { createMemoryTableLoggers } from '../utils/logging.js';
-import { getSyncLiteral } from '../../../parser/utils.js';
+import { tryFoldLiteral } from '../../../parser/utils.js';
 import { validateAndParse } from '../../../types/validation.js';
 import type { VTableEventEmitter } from '../../events.js';
 import { inferType } from '../../../types/registry.js';
@@ -900,10 +900,13 @@ export class MemoryTableManager {
 				throw new QuereusError(`Duplicate column name: ${newColumnSchema.name}`, StatusCode.ERROR);
 			}
 			let defaultValue: SqlValue = null;
+			let defaultIsLiteral = false;
 			const defaultConstraint = columnDefAst.constraints.find(c => c.type === 'default');
 			if (defaultConstraint && defaultConstraint.expr) {
-				if (defaultConstraint.expr.type === 'literal') {
-					defaultValue = getSyncLiteral(defaultConstraint.expr as LiteralExpr);
+				const folded = tryFoldLiteral(defaultConstraint.expr);
+				if (folded !== undefined) {
+					defaultValue = folded;
+					defaultIsLiteral = true;
 				} else {
 					logger.warn('Add Column', this._tableName, 'Default for new col is expr; existing rows get NULL.', { columnName: newColumnSchema.name });
 				}
@@ -911,7 +914,7 @@ export class MemoryTableManager {
 			// Check for NOT NULL constraint (could be explicit or from default behavior)
 			// Allow NOT NULL without DEFAULT if table is empty (SQLite-compatible)
 			const tableHasRows = this.baseLayer.primaryTree.at(this.baseLayer.primaryTree.first()) !== undefined;
-			if (newColumnSchema.notNull && defaultValue === null && !(defaultConstraint?.expr?.type ==='literal') && tableHasRows) {
+			if (newColumnSchema.notNull && defaultValue === null && !defaultIsLiteral && tableHasRows) {
 				throw new QuereusError(
 					`Cannot add NOT NULL column '${newColumnSchema.name}' to non-empty table `
 						+ `'${this.schemaName}.${this._tableName}' without a DEFAULT value`,
@@ -1107,8 +1110,8 @@ export class MemoryTableManager {
 					// Tightening: scan for NULLs. If DEFAULT present, backfill first.
 					const defaultExpr = oldCol.defaultValue;
 					let defaultLiteral: SqlValue | undefined;
-					if (defaultExpr && defaultExpr.type === 'literal') {
-						defaultLiteral = getSyncLiteral(defaultExpr as LiteralExpr);
+					if (defaultExpr) {
+						defaultLiteral = tryFoldLiteral(defaultExpr);
 					}
 
 					const tree = this.baseLayer.primaryTree;

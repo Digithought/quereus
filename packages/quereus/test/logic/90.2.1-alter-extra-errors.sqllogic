@@ -37,16 +37,15 @@ drop table t_alt_nc;
 -- 3. ADD COLUMN whose backfill default would violate a CHECK
 -- ===================================
 
--- TODO bug: ALTER TABLE ADD COLUMN with column-level CHECK should validate the backfill default
--- create table t_bf (id integer primary key, a integer not null);
--- insert into t_bf values (1, 5), (2, 0);
---
--- -- default 0 backfilled into 'd', but CHECK requires d <> 0 → ALTER fails
--- alter table t_bf add column d integer not null default 0 check (d <> 0);
--- -- error:
---
--- -- table unchanged
--- select * from t_bf order by id;
--- → [{"id":1,"a":5},{"id":2,"a":0}]
---
--- drop table t_bf;
+create table t_bf (id integer primary key, a integer not null);
+insert into t_bf values (1, 5), (2, 0);
+
+-- default 0 backfilled into 'd', but CHECK requires d <> 0 → ALTER fails
+alter table t_bf add column d integer not null default 0 check (d <> 0);
+-- error:
+
+-- table unchanged
+select * from t_bf order by id;
+→ [{"id":1,"a":5},{"id":2,"a":0}]
+
+drop table t_bf;
