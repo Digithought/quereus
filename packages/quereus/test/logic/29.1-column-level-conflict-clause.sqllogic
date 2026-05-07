@@ -1,82 +1,79 @@
 -- Column-level ON CONFLICT directives in DDL (e.g.
--- `... PRIMARY KEY ON CONFLICT REPLACE`).  Quereus parses the syntax but does
--- NOT apply the directive as the default conflict resolution for that
--- constraint; statement-level OR clauses (or DEFAULT ABORT) win.  These cases
--- pin the actual Quereus behavior — without an explicit OR clause the duplicate
--- insert fails with the standard ABORT-style constraint error.
+-- `... PRIMARY KEY ON CONFLICT REPLACE`).  Quereus now honors these as the
+-- per-constraint default conflict resolution.  Statement-level OR clauses
+-- still take precedence over the column-level default.
 
 -- ===================================
--- 1. PRIMARY KEY ON CONFLICT REPLACE (column-level directive ignored)
+-- 1. PRIMARY KEY ON CONFLICT REPLACE — duplicate insert silently replaces
 -- ===================================
 
 create table pk_replace (a integer primary key on conflict replace, b text);
 insert into pk_replace values (1, 'first');
 
--- TODO bug: column-level ON CONFLICT REPLACE on PRIMARY KEY is parsed but not honored as default
--- duplicate insert should silently replace per the directive but Quereus aborts
 insert into pk_replace values (1, 'second');
--- error: UNIQUE constraint failed
 
 select a, b from pk_replace;
-→ [{"a":1,"b":"first"}]
+→ [{"a":1,"b":"second"}]
 
 drop table pk_replace;
 
 -- ===================================
--- 2. PRIMARY KEY ON CONFLICT IGNORE (column-level directive ignored)
+-- 2. PRIMARY KEY ON CONFLICT IGNORE — duplicate insert silently dropped
 -- ===================================
 
 create table pk_ignore (a integer primary key on conflict ignore, b text);
 insert into pk_ignore values (10, 'data');
 
--- TODO bug: column-level ON CONFLICT IGNORE on PRIMARY KEY is parsed but not honored as default
 insert into pk_ignore values (10, 'conflict');
--- error: UNIQUE constraint failed
 
-select count(*) as cnt from pk_ignore;
-→ [{"cnt":1}]
+select a, b from pk_ignore;
+→ [{"a":10,"b":"data"}]
 
 drop table pk_ignore;
 
 -- ===================================
--- 3. UNIQUE ON CONFLICT REPLACE (column-level directive ignored)
+-- 3. UNIQUE ON CONFLICT REPLACE — second insert replaces existing row
 -- ===================================
 
 create table uniq_replace (id integer primary key, email text unique on conflict replace);
 insert into uniq_replace values (1, 'a@x');
 
--- TODO bug: column-level ON CONFLICT REPLACE on UNIQUE is parsed but not honored as default
 insert into uniq_replace values (2, 'a@x');
--- error: UNIQUE constraint failed
 
-select count(*) as cnt from uniq_replace;
-→ [{"cnt":1}]
+-- The new row (id=2) wins; the old one is replaced.
+select id, email from uniq_replace order by id;
+→ [{"id":2,"email":"a@x"}]
 
 drop table uniq_replace;
 
 -- ===================================
--- 4. NOT NULL ON CONFLICT IGNORE (column-level directive ignored)
+-- 4. NOT NULL ON CONFLICT IGNORE — violating row silently skipped
 -- ===================================
 
 create table nn_ignore (id integer primary key, name text not null on conflict ignore);
 insert into nn_ignore values (1, 'valid');
 
--- TODO bug: column-level ON CONFLICT IGNORE on NOT NULL is parsed but not honored as default
 insert into nn_ignore (id) values (2);
--- error: NOT NULL constraint failed
 
-select count(*) as cnt from nn_ignore;
-→ [{"cnt":1}]
+select id, name from nn_ignore order by id;
+→ [{"id":1,"name":"valid"}]
 
 drop table nn_ignore;
 
 -- ===================================
--- 5. CHECK ON CONFLICT IGNORE (column-level directive ignored)
+-- 5. CHECK ON CONFLICT IGNORE — parser accepts; violations silently skipped
 -- ===================================
 
--- ON CONFLICT clause on a CHECK column constraint is not parsed by Quereus
 create table ck_ignore (id integer primary key, n integer check (n > 0) on conflict ignore);
--- error: forget a comma before 'on'
+insert into ck_ignore values (1, 10);
+
+-- CHECK violation under column-level IGNORE: row dropped.
+insert into ck_ignore values (2, -5);
+
+select id, n from ck_ignore order by id;
+→ [{"id":1,"n":10}]
+
+drop table ck_ignore;
 
 -- ===================================
 -- 6. Statement-level OR clause overrides column-level ON CONFLICT directive
@@ -85,7 +82,7 @@ create table ck_ignore (id integer primary key, n integer check (n > 0) on confl
 create table override_t (a integer primary key on conflict ignore, b text);
 insert into override_t values (1, 'first');
 
--- statement-level OR ABORT should win over column-level directive (and is the actual Quereus default)
+-- statement-level OR ABORT must beat the column-level IGNORE directive.
 insert or abort into override_t values (1, 'second');
 -- error: UNIQUE constraint failed
 

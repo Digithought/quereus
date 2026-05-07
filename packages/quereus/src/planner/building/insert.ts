@@ -21,7 +21,7 @@ import { ReturningNode } from '../nodes/returning-node.js';
 import { ProjectNode, type Projection } from '../nodes/project-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { DmlExecutorNode, type UpsertClausePlan } from '../nodes/dml-executor-node.js';
-import { buildConstraintChecks } from './constraint-builder.js';
+import { buildConstraintChecks, buildNotNullDefaults } from './constraint-builder.js';
 import { buildChildSideFKChecks } from './foreign-key-builder.js';
 import { validateDeterministicDefault, validateDeterministicGenerated } from '../validation/determinism-validator.js';
 import { validateReturningQualifiers } from '../validation/returning-qualifier-validator.js';
@@ -541,6 +541,12 @@ export function buildInsertStmt(
 		constraintChecks.push(...fkChecks);
 	}
 
+	// Pre-build DEFAULT evaluators for NOT NULL columns. Used by REPLACE to
+	// substitute the default when the user supplied NULL.
+	const notNullDefaults = buildNotNullDefaults(
+		ctx, tableReference.tableSchema, newAttributes, contextAttributes
+	);
+
 	const insertNode = new InsertNode(
 		ctx.scope,
 		tableReference,
@@ -563,7 +569,9 @@ export function buildInsertStmt(
 		constraintChecks,
 		mutationContextValues.size > 0 ? mutationContextValues : undefined,
 		contextAttributes.length > 0 ? contextAttributes : undefined,
-		contextDescriptor
+		contextDescriptor,
+		stmt.onConflict,
+		notNullDefaults.length > 0 ? notNullDefaults : undefined
 	);
 
 	// Build UPSERT clause plans if present

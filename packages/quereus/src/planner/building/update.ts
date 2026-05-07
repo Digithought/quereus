@@ -16,7 +16,7 @@ import { ConstraintCheckNode } from '../nodes/constraint-check-node.js';
 import { RowOpFlag } from '../../schema/table.js';
 import { ReturningNode } from '../nodes/returning-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
-import { buildConstraintChecks } from './constraint-builder.js';
+import { buildConstraintChecks, buildNotNullDefaults } from './constraint-builder.js';
 import { buildChildSideFKChecks, buildParentSideFKChecks } from './foreign-key-builder.js';
 import { isCommittedSchemaRef } from './schema-resolution.js';
 import { validateDeterministicGenerated } from '../validation/determinism-validator.js';
@@ -184,6 +184,11 @@ export function buildUpdateStmt(
     constraintChecks.push(...childFKChecks, ...parentFKChecks);
   }
 
+  // Pre-build DEFAULT evaluators for NOT NULL columns (used by REPLACE substitution).
+  const notNullDefaults = buildNotNullDefaults(
+    updateCtx, tableReference.tableSchema, newAttributes, contextAttributes
+  );
+
   if (stmt.returning && stmt.returning.length > 0) {
     // For RETURNING, create coordinated attribute IDs like we do for INSERT
     const returningScope = new RegisteredScope(updateCtx.scope);
@@ -316,7 +321,9 @@ export function buildUpdateStmt(
       constraintChecks,
       mutationContextValues.size > 0 ? mutationContextValues : undefined,
       contextAttributes.length > 0 ? contextAttributes : undefined,
-      contextDescriptor
+      contextDescriptor,
+      stmt.onConflict,
+      notNullDefaults.length > 0 ? notNullDefaults : undefined
     );
 
     const updateExecutorNode = new DmlExecutorNode(
@@ -324,7 +331,7 @@ export function buildUpdateStmt(
       constraintCheckNode,
       tableReference,
       'update',
-      undefined, // onConflict not used for UPDATE
+      stmt.onConflict,
       mutationContextValues.size > 0 ? mutationContextValues : undefined,
       contextAttributes.length > 0 ? contextAttributes : undefined,
       contextDescriptor
@@ -362,7 +369,9 @@ export function buildUpdateStmt(
     constraintChecks,
     mutationContextValues.size > 0 ? mutationContextValues : undefined,
     contextAttributes.length > 0 ? contextAttributes : undefined,
-    contextDescriptor
+    contextDescriptor,
+    stmt.onConflict,
+    notNullDefaults.length > 0 ? notNullDefaults : undefined
   );
 
   const updateExecutorNode = new DmlExecutorNode(
@@ -370,7 +379,7 @@ export function buildUpdateStmt(
     constraintCheckNode,
     tableReference,
     'update',
-    undefined, // onConflict not used for UPDATE
+    stmt.onConflict,
     mutationContextValues.size > 0 ? mutationContextValues : undefined,
     contextAttributes.length > 0 ? contextAttributes : undefined,
     contextDescriptor

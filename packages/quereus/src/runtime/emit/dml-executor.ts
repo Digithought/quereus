@@ -1,7 +1,7 @@
 import type { DmlExecutorNode } from '../../planner/nodes/dml-executor-node.js';
 import type { Instruction, RuntimeContext, InstructionRun, OutputValue } from '../types.js';
 import { emitPlanNode, emitCallFromPlan } from '../emitters.js';
-import { QuereusError, ConstraintError } from '../../common/errors.js';
+import { QuereusError, ConstraintError, FailConflictError, RollbackConflictError } from '../../common/errors.js';
 import { StatusCode, type Row, type SqlValue, isConstraintViolation } from '../../common/types.js';
 import { getVTable, disconnectVTable } from '../utils.js';
 import { ConflictResolution } from '../../common/constants.js';
@@ -234,6 +234,28 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		return { updatedRow, flatRow };
 	}
 
+	/**
+	 * Translate a generic ConstraintError into the right OR-clause subclass
+	 * based on the active statement-level conflict resolution. FAIL and
+	 * RollbackConflictError pass through unchanged. The iterator-level
+	 * cleanup uses the subclass to decide commit-vs-rollback semantics.
+	 */
+	function translateConflictError(
+		err: unknown,
+		stmtOR: ConflictResolution | undefined,
+	): unknown {
+		if (!(err instanceof ConstraintError)) return err;
+		if (err instanceof FailConflictError || err instanceof RollbackConflictError) return err;
+
+		if (stmtOR === ConflictResolution.FAIL) {
+			return new FailConflictError(err.message, err.code);
+		}
+		if (stmtOR === ConflictResolution.ROLLBACK) {
+			return new RollbackConflictError(err.message, err.code);
+		}
+		return err;
+	}
+
 	// INSERT ----------------------------------------------------
 	// Number of context evaluators (used to split params in runInsert)
 	const numContextEvaluators = contextEvaluatorInstructions.length;
@@ -264,133 +286,167 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 			}
 		}
 
+		// OR FAIL needs per-row rollback so a later row's failure doesn't undo prior rows.
+		// We open a savepoint, do the row's work, release on success, rollback on error.
+		const isFailMode = plan.onConflict === ConflictResolution.FAIL;
+		let failSavepointCounter = 0;
+
 		try {
 			for await (const flatRow of rows) {
-				const newRow = extractNewRowFromFlat(flatRow, tableSchema.columns.length);
-
-				// Build mutation statement if logging is enabled
-				let mutationStatement: string | undefined;
-				if (vtab.wantStatements) {
-					mutationStatement = buildInsertStatement(tableSchema, newRow, contextRow);
+				let savepointName: string | undefined;
+				if (isFailMode) {
+					savepointName = `__or_fail_${failSavepointCounter++}`;
+					await ctx.db._createSavepoint(savepointName);
 				}
 
-				const args: UpdateArgs = {
-					operation: 'insert',
-					values: newRow,
-					oldKeyValues: undefined,
-					onConflict: plan.onConflict ?? ConflictResolution.ABORT,
-					mutationStatement
-				};
-
-				const result = await vtab.update!(args);
-
-				// Handle constraint violations
-				if (isConstraintViolation(result)) {
-					// Check for UPSERT clause handling
-					if (result.constraint === 'unique' && runtimeUpsertClauses && result.existingRow) {
-						const matchingClause = matchUpsertClause(result.existingRow, newRow, runtimeUpsertClauses);
-
-						if (matchingClause) {
-							if (matchingClause.action === 'nothing') {
-								// DO NOTHING - skip this row silently
-								continue;
-							}
-
-							// DO UPDATE - execute the update path
-							const updateResult = await executeUpsertUpdate(
-								ctx,
-								vtab,
-								matchingClause,
-								result.existingRow,
-								newRow,
-								contextRow,
-								upsertEvaluators
-							);
-
-							if (updateResult) {
-								// Track change as UPDATE
-								const existingKeyValues = pkColumnIndicesInSchema.map(idx => result.existingRow![idx]);
-								const newKeyValues = pkColumnIndicesInSchema.map(idx => updateResult.updatedRow[idx]);
-								ctx.db._recordUpdate(
-									`${tableSchema.schemaName}.${tableSchema.name}`,
-									existingKeyValues,
-									newKeyValues
-								);
-
-								// Execute FK cascading actions (CASCADE, SET NULL, SET DEFAULT)
-								await executeForeignKeyActions(ctx.db, tableSchema, 'update', result.existingRow!, updateResult.updatedRow);
-
-								// Emit auto event for modules without native event support
-								if (needsAutoEvents) {
-									const changedColumns: string[] = [];
-									for (let i = 0; i < tableSchema.columns.length; i++) {
-										if (!sqlValuesEqual(result.existingRow![i], updateResult.updatedRow[i])) {
-											changedColumns.push(tableSchema.columns[i].name);
-										}
-									}
-									emitAutoDataEvent(
-										ctx,
-										tableSchema,
-										'update',
-										existingKeyValues,
-										[...result.existingRow!],
-										[...updateResult.updatedRow],
-										changedColumns
-									);
-								}
-
-								yield updateResult.flatRow;
-							}
-							continue;
-						}
+				let rowToYield: Row | undefined;
+				let succeeded = false;
+				try {
+					rowToYield = await processInsertRow(
+						ctx,
+						vtab,
+						needsAutoEvents,
+						flatRow,
+						contextRow,
+						runtimeUpsertClauses,
+						upsertEvaluators,
+					);
+					succeeded = true;
+				} catch (e) {
+					if (savepointName) {
+						try { await ctx.db._rollbackToSavepoint(savepointName); } catch { /* swallow */ }
+						try { await ctx.db._releaseSavepoint(savepointName); } catch { /* swallow */ }
+						savepointName = undefined;
 					}
-
-					// No UPSERT clause matched or not a unique constraint - propagate as error
-					throw new ConstraintError(result.message ?? `${result.constraint} constraint failed`, StatusCode.CONSTRAINT);
+					// Translate plain constraint violations to FAIL/ROLLBACK error subclasses
+					// so the iterator-level cleanup picks the right finalization branch.
+					throw translateConflictError(e, plan.onConflict);
 				}
 
-				// Skip if row was not inserted (e.g., IGNORE mode returned ok with no row)
-				if (!result.row) {
-					continue;
+				if (succeeded && savepointName) {
+					await ctx.db._releaseSavepoint(savepointName);
 				}
 
-				const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`;
-				const replacedRow = result.replacedRow;
-
-				if (replacedRow) {
-					// INSERT OR REPLACE replaced an existing row — track as UPDATE
-					const existingKeyValues = pkColumnIndicesInSchema.map(idx => replacedRow[idx]);
-					const newKeyValues = pkColumnIndicesInSchema.map(idx => newRow[idx]);
-					ctx.db._recordUpdate(tableKey, existingKeyValues, newKeyValues);
-
-					// Execute FK cascading actions — REPLACE is semantically delete+insert,
-					// so fire 'delete' actions on the replaced row (CASCADE DELETE, SET NULL, etc.)
-					await executeForeignKeyActions(ctx.db, tableSchema, 'delete', replacedRow);
-
-					if (needsAutoEvents) {
-						const changedColumns: string[] = [];
-						for (let i = 0; i < tableSchema.columns.length; i++) {
-							if (!sqlValuesEqual(replacedRow[i], newRow[i])) {
-								changedColumns.push(tableSchema.columns[i].name);
-							}
-						}
-						emitAutoDataEvent(ctx, tableSchema, 'update', newKeyValues, [...replacedRow], [...newRow], changedColumns);
-					}
-				} else {
-					// Fresh insert
-					const pkValues = tableSchema.primaryKeyDefinition.map(def => newRow[def.index]);
-					ctx.db._recordInsert(tableKey, pkValues);
-
-					if (needsAutoEvents) {
-						emitAutoDataEvent(ctx, tableSchema, 'insert', pkValues, undefined, [...newRow]);
-					}
+				if (rowToYield !== undefined) {
+					yield rowToYield;
 				}
-
-				yield flatRow; // make OLD/NEW available downstream (e.g. RETURNING)
 			}
 		} finally {
 			await disconnectVTable(ctx, vtab);
 		}
+	}
+
+	/**
+	 * Performs a single row's INSERT side-effects (vtab.update + bookkeeping +
+	 * UPSERT handling + REPLACE handling). Returns the row to yield downstream,
+	 * or undefined if the row should be skipped (IGNORE / DO NOTHING).
+	 *
+	 * Throws ConstraintError on violations the executor cannot recover from.
+	 */
+	async function processInsertRow(
+		ctx: RuntimeContext,
+		vtab: VirtualTable,
+		needsAutoEvents: boolean,
+		flatRow: Row,
+		contextRow: Row | undefined,
+		runtimeUpsertClauses: RuntimeUpsertClause[] | undefined,
+		upsertEvaluators: UpsertEvaluator[],
+	): Promise<Row | undefined> {
+		const newRow = extractNewRowFromFlat(flatRow, tableSchema.columns.length);
+
+		let mutationStatement: string | undefined;
+		if (vtab.wantStatements) {
+			mutationStatement = buildInsertStatement(tableSchema, newRow, contextRow);
+		}
+
+		const args: UpdateArgs = {
+			operation: 'insert',
+			values: newRow,
+			oldKeyValues: undefined,
+			// Pass undefined when there's no statement-level OR clause so the vtab
+			// can fall back to per-constraint defaultConflict directives. The memory
+			// module treats undefined as ABORT when no constraint default is set.
+			onConflict: plan.onConflict,
+			mutationStatement
+		};
+
+		const result = await vtab.update!(args);
+
+		if (isConstraintViolation(result)) {
+			if (result.constraint === 'unique' && runtimeUpsertClauses && result.existingRow) {
+				const matchingClause = matchUpsertClause(result.existingRow, newRow, runtimeUpsertClauses);
+				if (matchingClause) {
+					if (matchingClause.action === 'nothing') {
+						return undefined;
+					}
+					const updateResult = await executeUpsertUpdate(
+						ctx, vtab, matchingClause, result.existingRow, newRow, contextRow, upsertEvaluators,
+					);
+					if (!updateResult) return undefined;
+
+					const existingKeyValues = pkColumnIndicesInSchema.map(idx => result.existingRow![idx]);
+					const newKeyValues = pkColumnIndicesInSchema.map(idx => updateResult.updatedRow[idx]);
+					ctx.db._recordUpdate(
+						`${tableSchema.schemaName}.${tableSchema.name}`,
+						existingKeyValues,
+						newKeyValues
+					);
+					await executeForeignKeyActions(ctx.db, tableSchema, 'update', result.existingRow!, updateResult.updatedRow);
+
+					if (needsAutoEvents) {
+						const changedColumns: string[] = [];
+						for (let i = 0; i < tableSchema.columns.length; i++) {
+							if (!sqlValuesEqual(result.existingRow![i], updateResult.updatedRow[i])) {
+								changedColumns.push(tableSchema.columns[i].name);
+							}
+						}
+						emitAutoDataEvent(
+							ctx, tableSchema, 'update',
+							existingKeyValues,
+							[...result.existingRow!], [...updateResult.updatedRow],
+							changedColumns,
+						);
+					}
+					return updateResult.flatRow;
+				}
+			}
+			// No UPSERT clause matched — propagate; caller wraps for FAIL/ROLLBACK.
+			throw new ConstraintError(result.message ?? `${result.constraint} constraint failed`, StatusCode.CONSTRAINT);
+		}
+
+		// Skip if row was not inserted (e.g., IGNORE mode at vtab level)
+		if (!result.row) {
+			return undefined;
+		}
+
+		const tableKey = `${tableSchema.schemaName}.${tableSchema.name}`;
+		const replacedRow = result.replacedRow;
+
+		if (replacedRow) {
+			const existingKeyValues = pkColumnIndicesInSchema.map(idx => replacedRow[idx]);
+			const newKeyValues = pkColumnIndicesInSchema.map(idx => newRow[idx]);
+			ctx.db._recordUpdate(tableKey, existingKeyValues, newKeyValues);
+			await executeForeignKeyActions(ctx.db, tableSchema, 'delete', replacedRow);
+
+			if (needsAutoEvents) {
+				const changedColumns: string[] = [];
+				for (let i = 0; i < tableSchema.columns.length; i++) {
+					if (!sqlValuesEqual(replacedRow[i], newRow[i])) {
+						changedColumns.push(tableSchema.columns[i].name);
+					}
+				}
+				emitAutoDataEvent(ctx, tableSchema, 'update', newKeyValues, [...replacedRow], [...newRow], changedColumns);
+			}
+		} else {
+			const pkValues = tableSchema.primaryKeyDefinition.map(def => newRow[def.index]);
+			ctx.db._recordInsert(tableKey, pkValues);
+
+			if (needsAutoEvents) {
+				emitAutoDataEvent(ctx, tableSchema, 'insert', pkValues, undefined, [...newRow]);
+			}
+		}
+
+		return flatRow;
 	}
 
 	// UPDATE ----------------------------------------------------
@@ -434,7 +490,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					operation: 'update',
 					values: newRow,
 					oldKeyValues: keyValues,
-					onConflict: ConflictResolution.ABORT,
+					onConflict: plan.onConflict ?? ConflictResolution.ABORT,
 					mutationStatement
 				};
 
@@ -442,7 +498,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 
 				// Handle constraint violations
 				if (isConstraintViolation(result)) {
-					throw new ConstraintError(result.message ?? `${result.constraint} constraint failed`, StatusCode.CONSTRAINT);
+					const baseErr = new ConstraintError(result.message ?? `${result.constraint} constraint failed`, StatusCode.CONSTRAINT);
+					throw translateConflictError(baseErr, plan.onConflict);
 				}
 
 				// Skip if row was not updated (row not found returns ok with no row)
@@ -517,7 +574,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					operation: 'delete',
 					values: undefined,
 					oldKeyValues: keyValues,
-					onConflict: ConflictResolution.ABORT,
+					onConflict: plan.onConflict ?? ConflictResolution.ABORT,
 					mutationStatement
 				};
 
@@ -525,7 +582,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 
 				// Handle constraint violations (unlikely for DELETE, but be consistent)
 				if (isConstraintViolation(result)) {
-					throw new ConstraintError(result.message ?? `${result.constraint} constraint failed`, StatusCode.CONSTRAINT);
+					const baseErr = new ConstraintError(result.message ?? `${result.constraint} constraint failed`, StatusCode.CONSTRAINT);
+					throw translateConflictError(baseErr, plan.onConflict);
 				}
 
 				// Skip if row was not deleted (row not found returns ok with no row)

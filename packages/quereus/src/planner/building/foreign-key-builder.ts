@@ -240,6 +240,7 @@ export function buildChildSideFKChecks(
 				deferrable: true,
 				initiallyDeferred: true,
 				needsDeferred: true,
+				kind: 'fk-child',
 			});
 		} finally {
 			if (needsSchemaSwitch) ctx.schemaManager.setCurrentSchema(originalCurrentSchema);
@@ -371,6 +372,7 @@ export function buildParentSideFKChecks(
 						deferrable: !isRestrict,
 						initiallyDeferred: !isRestrict,
 						needsDeferred: !isRestrict, // RESTRICT must be immediate, not deferred
+						kind: 'fk-parent',
 					});
 				} finally {
 					if (needsSchemaSwitch) ctx.schemaManager.setCurrentSchema(originalCurrentSchema);

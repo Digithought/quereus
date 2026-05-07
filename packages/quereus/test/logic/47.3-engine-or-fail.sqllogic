@@ -1,0 +1,52 @@
+-- INSERT OR FAIL combined with engine-level constraints (NOT NULL / CHECK).
+-- The 47.2 case 7 covers OR FAIL + UNIQUE; this fills in the engine-level
+-- constraints so we know the FAIL→commit-prior-rows path applies uniformly.
+
+-- ===================================
+-- 1. OR FAIL on NOT NULL violation — earlier rows remain
+-- ===================================
+
+create table t_nn (id integer primary key, name text);
+insert into t_nn values (10, 'pre');
+
+insert or fail into t_nn values (1, 'a'), (2, 'b'), (3, null), (4, 'd');
+-- error: NOT NULL
+
+select id, name from t_nn order by id;
+→ [{"id":1,"name":"a"},{"id":2,"name":"b"},{"id":10,"name":"pre"}]
+
+drop table t_nn;
+
+-- ===================================
+-- 2. OR FAIL on CHECK violation — earlier rows remain
+-- ===================================
+
+create table t_ck (id integer primary key, n integer check (n > 0));
+insert into t_ck values (10, 100);
+
+insert or fail into t_ck values (1, 1), (2, 2), (3, -1), (4, 4);
+-- error: CHECK
+
+select id, n from t_ck order by id;
+→ [{"id":1,"n":1},{"id":2,"n":2},{"id":10,"n":100}]
+
+drop table t_ck;
+
+-- ===================================
+-- 3. OR ROLLBACK on engine-level CHECK rolls back the enclosing transaction
+-- ===================================
+
+create table t_rb (id integer primary key, n integer check (n > 0));
+insert into t_rb values (1, 10);
+-- run
+
+begin;
+   insert into t_rb values (2, 20);
+   insert or rollback into t_rb values (3, -5);
+   -- error: CHECK
+
+-- The enclosing transaction was auto-rolled-back; only the pre-tx insert remains.
+select id, n from t_rb order by id;
+→ [{"id":1,"n":10}]
+
+drop table t_rb;

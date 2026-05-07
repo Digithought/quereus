@@ -702,6 +702,7 @@ export class SchemaManager {
 						operations: opsToMask(con.operations),
 						deferrable: con.deferrable,
 						initiallyDeferred: con.initiallyDeferred,
+						defaultConflict: con.onConflict,
 						tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 					});
 				}
@@ -716,6 +717,7 @@ export class SchemaManager {
 					operations: opsToMask(con.operations),
 					deferrable: con.deferrable,
 					initiallyDeferred: con.initiallyDeferred,
+					defaultConflict: con.onConflict,
 					tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 				});
 			}
@@ -828,6 +830,7 @@ export class SchemaManager {
 						result.push({
 							name: con.name,
 							columns: Object.freeze([colIndex]),
+							defaultConflict: con.onConflict,
 							tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 						});
 					}
@@ -848,6 +851,7 @@ export class SchemaManager {
 				result.push({
 					name: con.name,
 					columns: Object.freeze(colIndices),
+					defaultConflict: con.onConflict,
 					tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 				});
 			}

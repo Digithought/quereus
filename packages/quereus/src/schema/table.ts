@@ -2,6 +2,7 @@ import type { ColumnSchema } from './column.js';
 import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { MemoryTableModule } from '../vtab/memory/module.js';
 import type { Expression } from '../parser/ast.js';
+import type { ConflictResolution } from '../common/constants.js';
 import { type ColumnDef, type TableConstraint } from '../parser/ast.js';
 import { RowOp, StatusCode, type SqlValue } from '../common/types.js';
 import type * as AST from '../parser/ast.js';
@@ -128,12 +129,21 @@ export function columnDefToSchema(def: ColumnDef, defaultNotNull: boolean = true
 			case 'primaryKey':
 				schema.primaryKey = true;
 				schema.pkDirection = constraint.direction;
+				if (constraint.onConflict !== undefined) {
+					schema.defaultConflict = constraint.onConflict;
+				}
 				break;
 			case 'notNull':
 				schema.notNull = true;
+				if (constraint.onConflict !== undefined) {
+					schema.defaultConflict = constraint.onConflict;
+				}
 				break;
 			case 'null':
 				schema.notNull = false;
+				if (constraint.onConflict !== undefined) {
+					schema.defaultConflict = constraint.onConflict;
+				}
 				break;
 			case 'unique':
 				break;
@@ -327,6 +337,11 @@ export interface RowConstraintSchema {
 	deferrable?: boolean;
 	/** Whether the constraint is initially deferred */
 	initiallyDeferred?: boolean;
+	/**
+	 * Default conflict resolution declared at the constraint level (e.g.,
+	 * `CHECK (...) ON CONFLICT IGNORE`). Statement-level OR clauses override.
+	 */
+	defaultConflict?: ConflictResolution;
 	/** Arbitrary metadata tags (informational only) */
 	tags?: Readonly<Record<string, SqlValue>>;
 }
@@ -358,6 +373,11 @@ export interface ForeignKeyConstraintSchema {
 	onUpdate: import('../parser/ast.js').ForeignKeyAction;
 	/** Whether enforcement is deferred to COMMIT */
 	deferred: boolean;
+	/**
+	 * Default conflict resolution declared at the FK constraint level. Statement-level
+	 * OR clauses override.
+	 */
+	defaultConflict?: ConflictResolution;
 	/** Arbitrary metadata tags (informational only) */
 	tags?: Readonly<Record<string, SqlValue>>;
 }
@@ -397,6 +417,11 @@ export interface UniqueConstraintSchema {
 	name?: string;
 	/** Column indices in this table that form the unique constraint */
 	columns: ReadonlyArray<number>;
+	/**
+	 * Default conflict resolution declared at the constraint level (e.g.,
+	 * `email TEXT UNIQUE ON CONFLICT REPLACE`). Statement-level OR clauses override.
+	 */
+	defaultConflict?: ConflictResolution;
 	/** Arbitrary metadata tags (informational only) */
 	tags?: Readonly<Record<string, SqlValue>>;
 }

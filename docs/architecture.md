@@ -131,6 +131,19 @@ While Quereus supports standard SQL syntax, it has several distinctive design ch
 - `FOREIGN KEY ... REFERENCES` with `ON DELETE CASCADE/SET NULL/RESTRICT` and `ON UPDATE CASCADE/SET NULL/RESTRICT`.
 - **`committed.tablename` pseudo-schema** — provides read-only access to the pre-transaction (committed) state of any table. Enables transition constraints that compare current and committed state (e.g., `CREATE ASSERTION no_decrease CHECK (NOT EXISTS (SELECT 1 FROM t JOIN committed.t ct ON t.id = ct.id WHERE t.val < ct.val))`). The committed view is pinned to the transaction-start snapshot and is unaffected by savepoints.
 - **Determinism Enforcement** — CHECK constraints and DEFAULT values must use only deterministic expressions. Non-deterministic values (like `datetime('now')` or `random()`) must be passed via mutation context to ensure captured statements are replayable. See [Runtime Documentation](runtime.md#determinism-validation).
+- **Conflict Resolution** — `INSERT OR {IGNORE,REPLACE,FAIL,ABORT,ROLLBACK}` covers every constraint class (NOT NULL, CHECK, FK existence, UNIQUE/PK). Column- and table-level `ON CONFLICT <action>` directives are honored as the per-constraint default; statement-level `OR` clauses always win. A subquery-deferred CHECK is evaluated at row time (not commit) when the active conflict resolution is non-default, so IGNORE/REPLACE can drop or substitute the row in place. UPDATE OR is not yet parsed — see [SQL Reference](sql.md#conflict-resolution-or-clause). NOTE: UPDATE OR support is a separate follow-up.
+
+  Action semantics summary:
+
+  | Class | IGNORE | REPLACE | FAIL | ABORT | ROLLBACK |
+  |---|---|---|---|---|---|
+  | NOT NULL (with DEFAULT) | skip row | substitute DEFAULT | abort stmt | abort stmt | abort stmt + rollback tx |
+  | NOT NULL (no DEFAULT) | skip row | abort stmt | abort stmt | abort stmt | abort stmt + rollback tx |
+  | CHECK | skip row | abort stmt | abort stmt | abort stmt | abort stmt + rollback tx |
+  | FK existence | skip row | abort stmt | abort stmt | abort stmt | abort stmt + rollback tx |
+  | UNIQUE / PK | skip row | replace existing | abort stmt | abort stmt | abort stmt + rollback tx |
+
+  FAIL keeps prior rows of the same statement that already succeeded. ROLLBACK auto-rolls-back the enclosing transaction (implicit or explicit).
 
 ## Sequential ID Generation
 

@@ -335,8 +335,8 @@ export class Statement {
 	 * implicit transactions on successful completion, rolls back on error.
 	 */
 	iterateRows(params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Row> {
-		return wrapAsyncIterator(this._iterateRowsRaw(params), (commit) =>
-			this.db._finalizeImplicitTransaction(commit)
+		return wrapAsyncIterator(this._iterateRowsRaw(params), (commit, error) =>
+			this.db._finalizeImplicitTransaction(commit, error)
 		);
 	}
 
@@ -347,7 +347,7 @@ export class Statement {
 	iterateRowsWithTrace(params: SqlParameters | SqlValue[] | undefined, tracer: InstructionTracer): AsyncIterableIterator<Row> {
 		return wrapAsyncIterator(
 			this._iterateRowsRawInternal(params, { tracer, enableMetrics: false }),
-			(commit) => this.db._finalizeImplicitTransaction(commit)
+			(commit, error) => this.db._finalizeImplicitTransaction(commit, error)
 		);
 	}
 
@@ -414,13 +414,17 @@ export class Statement {
 
 		await this.db._runWithMutex(async () => {
 			let success = false;
+			let runError: unknown;
 			try {
 				for await (const _ of this._iterateRowsRaw(params)) {
 					/* Consume all rows */
 				}
 				success = true;
+			} catch (e) {
+				runError = e;
+				throw e;
 			} finally {
-				await this.db._finalizeImplicitTransaction(success);
+				await this.db._finalizeImplicitTransaction(success, runError);
 			}
 		});
 	}
@@ -435,6 +439,7 @@ export class Statement {
 		return this.db._runWithMutex(async () => {
 			let result: Record<string, SqlValue> | undefined;
 			let success = false;
+			let getError: unknown;
 
 			try {
 				const names = this.getColumnNames();
@@ -444,8 +449,11 @@ export class Statement {
 				}
 				success = true;
 				return result;
+			} catch (e) {
+				getError = e;
+				throw e;
 			} finally {
-				await this.db._finalizeImplicitTransaction(success);
+				await this.db._finalizeImplicitTransaction(success, getError);
 			}
 		});
 	}
@@ -458,8 +466,8 @@ export class Statement {
 	all(params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Record<string, SqlValue>> {
 		this.validateStatement("get all rows for");
 
-		return wrapAsyncIterator(this._allGenerator(params), (commit) =>
-			this.db._finalizeImplicitTransaction(commit)
+		return wrapAsyncIterator(this._allGenerator(params), (commit, error) =>
+			this.db._finalizeImplicitTransaction(commit, error)
 		);
 	}
 

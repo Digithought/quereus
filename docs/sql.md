@@ -397,15 +397,28 @@ assignment:
 
 **Conflict Resolution (OR clause):**
 
-When inserting a row that would violate a UNIQUE constraint (including PRIMARY KEY), the `OR` clause specifies how to handle the conflict:
+When inserting a row that would violate a `UNIQUE`, `PRIMARY KEY`, `NOT NULL`, `CHECK`, or `FOREIGN KEY` constraint, the `OR` clause specifies how to handle the conflict:
 
-- **`OR ROLLBACK`**: Abort the current transaction and rollback all changes
-- **`OR ABORT`**: Abort the current statement and rollback changes (default behavior)
-- **`OR FAIL`**: Abort the current statement but do not rollback prior changes in the transaction
-- **`OR IGNORE`**: Silently skip the row that would cause a conflict
-- **`OR REPLACE`**: Delete the existing row that conflicts and insert the new row (destructive—loses unspecified column values)
+- **`OR ROLLBACK`**: Abort the current statement *and* automatically roll back the enclosing transaction (implicit or explicit). Any prior writes inside the transaction are discarded.
+- **`OR ABORT`**: Abort the current statement (default behavior). In autocommit mode the implicit transaction rolls back; inside an explicit transaction the prior writes are preserved (you must `ROLLBACK` manually if you want them undone).
+- **`OR FAIL`**: Abort the current statement but commit prior rows of the same statement that succeeded before the violation. Inside an explicit transaction those rows simply remain in the pending transaction.
+- **`OR IGNORE`**: Silently skip the row that would cause a conflict and continue with the next row.
+- **`OR REPLACE`**: For `UNIQUE`/`PRIMARY KEY` conflicts, delete the existing row and insert the new one (destructive—loses unspecified column values). For `NOT NULL` conflicts, substitute the column's `DEFAULT` value if one is declared (otherwise behaves like `ABORT`). `CHECK` and foreign-key constraints are *not* relaxed by `REPLACE` — those still abort.
 
-**Note:** The `OR` clause and `ON CONFLICT` clause are mutually exclusive. Use `OR REPLACE` for simple full-row replacement, and `ON CONFLICT DO UPDATE` for surgical column-level updates.
+**Per-constraint defaults.** A column- or table-level constraint may carry its own `ON CONFLICT <action>` clause:
+
+```sql
+create table products (
+  sku text primary key on conflict ignore,           -- duplicate INSERTs silently skipped
+  name text not null on conflict ignore,             -- NULL name → row skipped
+  price real check (price > 0) on conflict ignore,   -- non-positive price → row skipped
+  email text unique on conflict replace              -- duplicate email → existing row replaced
+);
+```
+
+The action precedence is: **statement-level OR clause > per-constraint default > ABORT**. So `INSERT OR ABORT INTO products ...` overrides every column-level directive above.
+
+**Note:** The `OR` clause and `ON CONFLICT DO ...` clause are mutually exclusive. Use `OR REPLACE` for simple full-row replacement, and `ON CONFLICT DO UPDATE` for surgical column-level updates.
 
 #### UPSERT (ON CONFLICT clause)
 

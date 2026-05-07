@@ -472,7 +472,7 @@ export class MemoryTableManager {
 		operation: 'insert' | 'update' | 'delete',
 		values: Row | undefined,
 		oldKeyValues?: Row,
-		onConflict: ConflictResolution = ConflictResolution.ABORT
+		onConflict?: ConflictResolution
 	): Promise<UpdateResult> {
 		this.validateMutationPermissions(operation);
 
@@ -532,7 +532,7 @@ export class MemoryTableManager {
 	private async performInsert(
 		targetLayer: TransactionLayer,
 		values: Row | undefined,
-		onConflict: ConflictResolution
+		onConflict: ConflictResolution | undefined
 	): Promise<UpdateResult> {
 		if (!values) {
 			throw new QuereusError("INSERT requires values.", StatusCode.MISUSE);
@@ -556,10 +556,12 @@ export class MemoryTableManager {
 		const existingRow = this.lookupEffectiveRow(primaryKey, targetLayer);
 
 		if (existingRow !== null) {
-			if (onConflict === ConflictResolution.IGNORE) {
+			// Resolve PK-conflict action: statement OR > column-level default > ABORT.
+			const pkAction = onConflict ?? resolvePkDefaultConflict(schema) ?? ConflictResolution.ABORT;
+			if (pkAction === ConflictResolution.IGNORE) {
 				return { status: 'ok', row: undefined };
 			}
-			if (onConflict === ConflictResolution.REPLACE) {
+			if (pkAction === ConflictResolution.REPLACE) {
 				targetLayer.recordUpsert(primaryKey, newRowData, existingRow);
 				return { status: 'ok', row: newRowData, replacedRow: existingRow };
 			}
@@ -583,7 +585,7 @@ export class MemoryTableManager {
 		targetLayer: TransactionLayer,
 		values: Row | undefined,
 		oldKeyValues: Row | undefined,
-		onConflict: ConflictResolution
+		onConflict: ConflictResolution | undefined
 	): Promise<UpdateResult> {
 		if (!values || !oldKeyValues) {
 			throw new QuereusError("UPDATE requires new values and old key values.", StatusCode.MISUSE);
@@ -639,12 +641,13 @@ export class MemoryTableManager {
 		newPrimaryKey: BTreeKeyForPrimary,
 		oldRowData: Row,
 		newRowData: Row,
-		onConflict: ConflictResolution
+		onConflict: ConflictResolution | undefined
 	): UpdateResult {
 		const existingRowAtNewKey = this.lookupEffectiveRow(newPrimaryKey, targetLayer);
 
 		if (existingRowAtNewKey !== null) {
-			if (onConflict === ConflictResolution.IGNORE) {
+			const pkAction = onConflict ?? resolvePkDefaultConflict(schema) ?? ConflictResolution.ABORT;
+			if (pkAction === ConflictResolution.IGNORE) {
 				return { status: 'ok', row: undefined };
 			}
 			// Return constraint violation with existing row
@@ -711,7 +714,7 @@ export class MemoryTableManager {
 		schema: TableSchema,
 		newRowData: Row,
 		newPrimaryKey: BTreeKeyForPrimary,
-		onConflict: ConflictResolution
+		onConflict: ConflictResolution | undefined
 	): UpdateResult | null {
 		if (!schema.uniqueConstraints) return null;
 
@@ -731,19 +734,22 @@ export class MemoryTableManager {
 		uc: UniqueConstraintSchema,
 		newRowData: Row,
 		newPrimaryKey: BTreeKeyForPrimary,
-		onConflict: ConflictResolution
+		onConflict: ConflictResolution | undefined
 	): UpdateResult | null {
 		// SQL semantics: UNIQUE allows multiple NULLs — skip if any constrained column is NULL
 		if (uc.columns.some(colIdx => newRowData[colIdx] === null)) return null;
 
+		// Resolve effective action: statement OR > constraint default > ABORT.
+		const effective = onConflict ?? uc.defaultConflict ?? ConflictResolution.ABORT;
+
 		// Find the matching secondary index for this constraint
 		const index = this.findIndexForConstraint(targetLayer, uc);
 		if (index) {
-			return this.checkUniqueViaIndex(targetLayer, schema, uc, index, newRowData, newPrimaryKey, onConflict);
+			return this.checkUniqueViaIndex(targetLayer, schema, uc, index, newRowData, newPrimaryKey, effective);
 		}
 
 		// Fallback: scan primary tree
-		return this.checkUniqueByScanning(targetLayer, schema, uc, newRowData, newPrimaryKey, onConflict);
+		return this.checkUniqueByScanning(targetLayer, schema, uc, newRowData, newPrimaryKey, effective);
 	}
 
 	private findIndexForConstraint(
@@ -1444,4 +1450,17 @@ export class MemoryTableManager {
 	public async* scanLayer(layer: Layer, plan: ScanPlan): AsyncIterable<Row> {
 		yield* scanLayerImpl(layer, plan);
 	}
+}
+
+/**
+ * Returns the first non-undefined `defaultConflict` declared on a primary-key
+ * column. PK conflicts conceptually point at the table's PK; if any PK column
+ * had `ON CONFLICT <action>` declared at column level, use that.
+ */
+function resolvePkDefaultConflict(schema: TableSchema): ConflictResolution | undefined {
+	for (const def of schema.primaryKeyDefinition) {
+		const col = schema.columns[def.index];
+		if (col && col.defaultConflict !== undefined) return col.defaultConflict;
+	}
+	return undefined;
 }

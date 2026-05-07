@@ -100,9 +100,9 @@ insert into fl values (5, 'pre');
 insert or fail into fl values (1, 'a'), (2, 'b'), (5, 'dup'), (3, 'c');
 -- error: UNIQUE constraint failed
 
--- TODO bug: INSERT OR FAIL should leave previously-successful rows inserted; Quereus rolls them back
--- select id, val from fl order by id;
--- → [{"id":1,"val":"a"},{"id":2,"val":"b"},{"id":5,"val":"pre"}]
+-- INSERT OR FAIL leaves previously-successful rows inserted
+select id, val from fl order by id;
+→ [{"id":1,"val":"a"},{"id":2,"val":"b"},{"id":5,"val":"pre"}]
 
 drop table fl;
 
@@ -112,18 +112,17 @@ drop table fl;
 
 create table rb (id integer primary key, val text);
 insert into rb values (1, 'pre');
+-- run
 
 begin;
    insert into rb values (10, 'committed_in_tx');
    insert or rollback into rb values (1, 'dup');
    -- error: UNIQUE constraint failed
 
--- TODO bug: INSERT OR ROLLBACK should automatically roll back the enclosing transaction; Quereus leaves prior inserts visible
--- select id, val from rb order by id;
--- → [{"id":1,"val":"pre"}]
-
--- explicit cleanup so subsequent blocks aren't inside the open transaction
-rollback;
+-- INSERT OR ROLLBACK auto-rolls-back the enclosing transaction; only the
+-- pre-tx insert remains.
+select id, val from rb order by id;
+→ [{"id":1,"val":"pre"}]
 
 drop table rb;
 
@@ -134,10 +133,9 @@ drop table rb;
 create table ck (id integer primary key, n integer check (n > 0));
 insert into ck values (1, 10);
 
--- TODO bug: INSERT OR IGNORE should silently skip CHECK violations (SQLite behavior); Quereus raises the error
--- insert or ignore into ck values (2, -5);
--- select count(*) as cnt from ck;
--- → [{"cnt":1}]
+insert or ignore into ck values (2, -5);
+select count(*) as cnt from ck;
+→ [{"cnt":1}]
 
 -- valid follow-up insert succeeds
 insert or ignore into ck values (3, 30);

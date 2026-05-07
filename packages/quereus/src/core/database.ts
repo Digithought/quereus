@@ -1,5 +1,5 @@
 import { createLogger } from '../common/logger.js';
-import { MisuseError, QuereusError } from '../common/errors.js';
+import { MisuseError, QuereusError, FailConflictError, RollbackConflictError } from '../common/errors.js';
 import { StatusCode, type SqlParameters, type SqlValue, type Row, type OutputValue } from '../common/types.js';
 import type { ScalarType } from '../common/datatype.js';
 import type { AnyVirtualTableModule } from '../vtab/module.js';
@@ -432,12 +432,27 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 
 	/**
 	 * Commits or rolls back an implicit transaction based on success.
-	 * No-op if no implicit transaction is active.
+	 * No-op if no implicit transaction is active — except when `error` is a
+	 * RollbackConflictError (OR ROLLBACK), in which case we unconditionally
+	 * roll back the active transaction (implicit or explicit) per SQLite
+	 * semantics. FailConflictError commits prior rows even though the
+	 * statement aborted (per OR FAIL semantics).
 	 * @internal
 	 */
-	async _finalizeImplicitTransaction(success: boolean): Promise<void> {
+	async _finalizeImplicitTransaction(success: boolean, error?: unknown): Promise<void> {
+		// OR ROLLBACK: roll back any active transaction (implicit or explicit).
+		if (!success && error instanceof RollbackConflictError) {
+			if (this.transactionManager.isInTransaction()) {
+				await this._rollbackTransaction();
+			}
+			return;
+		}
+
+		// OR FAIL: commit prior rows even though the statement aborted.
+		const effectiveSuccess = success || error instanceof FailConflictError;
+
 		if (this.transactionManager.isImplicitTransaction()) {
-			if (success) {
+			if (effectiveSuccess) {
 				await this._commitTransaction();
 			} else {
 				await this._rollbackTransaction();
@@ -1215,8 +1230,8 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 * ```
 	 */
 	eval(sql: string, params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Record<string, SqlValue>> {
-		return wrapAsyncIterator(this._evalGenerator(sql, params), (commit) =>
-			this._finalizeImplicitTransaction(commit)
+		return wrapAsyncIterator(this._evalGenerator(sql, params), (commit, error) =>
+			this._finalizeImplicitTransaction(commit, error)
 		);
 	}
 

@@ -3511,7 +3511,9 @@ export class Parser {
 			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
 			const expr = this.expression();
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			result = { type: 'check', name, expr, operations, loc: _createLoc(startToken, endToken) };
+			const onConflict = this.parseConflictClause();
+			if (onConflict) endToken = this.previous();
+			result = { type: 'check', name, expr, operations, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.DEFAULT)) {
 			const expr = this.expression();
 			endToken = this.previous();
@@ -3601,7 +3603,9 @@ export class Parser {
 			this.consume(TokenType.LPAREN, "Expected '(' after CHECK.");
 			const expr = this.expression();
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CHECK expression.");
-			result = { type: 'check', name, expr, operations, loc: _createLoc(startToken, endToken) };
+			const onConflict = this.parseConflictClause();
+			if (onConflict) endToken = this.previous();
+			result = { type: 'check', name, expr, operations, onConflict, loc: _createLoc(startToken, endToken) };
 		} else if (this.match(TokenType.FOREIGN)) {
 			this.consume(TokenType.KEY, "Expected KEY after FOREIGN.");
 			this.consume(TokenType.LPAREN, "Expected '(' before FOREIGN KEY columns.");
