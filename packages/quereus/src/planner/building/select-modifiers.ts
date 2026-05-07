@@ -96,7 +96,8 @@ export function applyOrderBy(
 	stmt: AST.SelectStmt,
 	selectContext: PlanningContext,
 	preAggregateSort: boolean,
-	projectionScope?: RegisteredScope
+	projectionScope?: RegisteredScope,
+	allowAggregates: boolean = false
 ): RelationalPlanNode {
 	if (stmt.orderBy && stmt.orderBy.length > 0 && !preAggregateSort) {
 		// Merge projection scope if available so ORDER BY can reference output column aliases
@@ -107,7 +108,7 @@ export function applyOrderBy(
 		}
 
 		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
-			const expression = buildExpression(orderByContext, orderByClause.expr);
+			const expression = buildExpression(orderByContext, orderByClause.expr, allowAggregates);
 			return {
 				expression,
 				direction: orderByClause.direction,

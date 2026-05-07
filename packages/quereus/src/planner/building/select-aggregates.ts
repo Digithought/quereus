@@ -37,6 +37,9 @@ export function buildAggregatePhase(
 	aggregateNode?: RelationalPlanNode;
 	groupByExpressions?: ScalarPlanNode[];
 	hasHavingOnlyAggregates?: boolean;
+	hasOrderByOnlyAggregates?: boolean;
+	orderByHasAggregates?: boolean;
+	aggregatesContext?: PlanningContext['aggregates'];
 } {
 	const hasGroupBy = stmt.groupBy && stmt.groupBy.length > 0;
 
@@ -50,6 +53,22 @@ export function buildAggregatePhase(
 			aggregates.push(...havingAggs);
 			hasAggregates = true;
 			hasHavingOnlyAggregates = true;
+		}
+	}
+
+	// Detect aggregate function references in ORDER BY. They are only legal when
+	// the query is otherwise an aggregate query (has aggregates in SELECT/HAVING
+	// or has a GROUP BY). When legal, any ORDER BY aggregate not already present
+	// in the SELECT or HAVING aggregate list must be added to the AggregateNode
+	// so it is computed and available to the post-aggregate sort.
+	const orderByHasAggregates = orderByContainsAggregates(stmt.orderBy, selectContext);
+	let hasOrderByOnlyAggregates = false;
+	if (orderByHasAggregates && (hasAggregates || hasGroupBy)) {
+		const orderByAggs = collectOrderByAggregates(stmt.orderBy!, selectContext, aggregates);
+		if (orderByAggs.length > 0) {
+			aggregates.push(...orderByAggs);
+			hasAggregates = true;
+			hasOrderByOnlyAggregates = true;
 		}
 	}
 
@@ -80,9 +99,13 @@ export function buildAggregatePhase(
 
 	// After (optional) early HAVING filter we continue with the existing pipeline
 	// ----------------------------------------------------------------------------
-	// Handle pre-aggregate sorting for ORDER BY without GROUP BY
-	const preAggregateSort = Boolean(hasAggregates && !hasGroupBy && stmt.orderBy && stmt.orderBy.length > 0);
-	currentInput = handlePreAggregateSort(currentInput, stmt, selectContext, hasAggregates, !!hasGroupBy);
+	// Handle pre-aggregate sorting for ORDER BY without GROUP BY. Skip when the
+	// ORDER BY contains aggregates — those need to run against the post-aggregate
+	// row(s), not the per-input rows.
+	const preAggregateSort = Boolean(
+		hasAggregates && !hasGroupBy && stmt.orderBy && stmt.orderBy.length > 0 && !orderByHasAggregates
+	);
+	currentInput = handlePreAggregateSort(currentInput, stmt, selectContext, hasAggregates, !!hasGroupBy, orderByHasAggregates);
 
 	// Build GROUP BY expressions
 	const groupByExpressions = stmt.groupBy ?
@@ -104,6 +127,21 @@ export function buildAggregatePhase(
 		aggregates
 	);
 
+	// Build the aggregates planning context entries so downstream builders
+	// (final projection, ORDER BY) can resolve aggregate function references
+	// to ColumnReferenceNodes against the AggregateNode output.
+	const aggregateAttributes = aggregateNode.getAttributes();
+	const aggregatesContext = aggregates.map((agg, index) => {
+		const columnIndex = groupByExpressions.length + index;
+		const attr = aggregateAttributes[columnIndex];
+		return {
+			expression: agg.expression,
+			alias: agg.alias,
+			columnIndex,
+			attributeId: attr.id,
+		};
+	});
+
 	// Handle HAVING clause *after* aggregation only when we did not already push
 	// it below the AggregateNode.
 	if (stmt.having && !shouldPushHavingBelowAggregate) {
@@ -111,9 +149,9 @@ export function buildAggregatePhase(
 	}
 
 	// Determine if final projection is needed.
-	// Force a final projection when HAVING-only aggregates were added, to
-	// strip them from the output (they exist only for the HAVING filter).
-	const needsFinalProjection = hasHavingOnlyAggregates || hasWrappedAggregates || checkNeedsFinalProjection(projections);
+	// Force a final projection when HAVING-only or ORDER-BY-only aggregates were
+	// added, to strip them from the output (they exist only for those clauses).
+	const needsFinalProjection = hasHavingOnlyAggregates || hasOrderByOnlyAggregates || hasWrappedAggregates || checkNeedsFinalProjection(projections);
 
 	return {
 		output: currentInput,
@@ -122,7 +160,10 @@ export function buildAggregatePhase(
 		preAggregateSort,
 		aggregateNode,
 		groupByExpressions,
-		hasHavingOnlyAggregates
+		hasHavingOnlyAggregates,
+		hasOrderByOnlyAggregates,
+		orderByHasAggregates,
+		aggregatesContext,
 	};
 }
 
@@ -134,10 +175,13 @@ function handlePreAggregateSort(
 	stmt: AST.SelectStmt,
 	selectContext: PlanningContext,
 	hasAggregates: boolean,
-	hasGroupBy: boolean
+	hasGroupBy: boolean,
+	orderByHasAggregates: boolean
 ): RelationalPlanNode {
-	// Special handling for ORDER BY with aggregates but no GROUP BY
-	if (hasAggregates && !hasGroupBy && stmt.orderBy && stmt.orderBy.length > 0) {
+	// Special handling for ORDER BY with aggregates but no GROUP BY.
+	// Skip when ORDER BY itself references aggregates — those must run
+	// post-aggregation, not on the per-row input.
+	if (hasAggregates && !hasGroupBy && stmt.orderBy && stmt.orderBy.length > 0 && !orderByHasAggregates) {
 		// Apply ORDER BY before aggregation
 		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
 			const expression = buildExpression(selectContext, orderByClause.expr);
@@ -435,10 +479,53 @@ function collectHavingAggregates(
 ): { expression: ScalarPlanNode; alias: string }[] {
 	const funcExprs: AST.FunctionExpr[] = [];
 	findAggregateFunctionExprs(havingExpr, selectContext, funcExprs);
+	return dedupeNewAggregates(funcExprs, selectContext, existingAggregates);
+}
 
+/**
+ * Collects aggregate functions from each ORDER BY clause expression that are not
+ * already present in the existing aggregates list. Returns new aggregates to add.
+ */
+function collectOrderByAggregates(
+	orderBy: AST.OrderByClause[],
+	selectContext: PlanningContext,
+	existingAggregates: { expression: ScalarPlanNode; alias: string }[]
+): { expression: ScalarPlanNode; alias: string }[] {
+	const funcExprs: AST.FunctionExpr[] = [];
+	for (const clause of orderBy) {
+		findAggregateFunctionExprs(clause.expr, selectContext, funcExprs);
+	}
+	return dedupeNewAggregates(funcExprs, selectContext, existingAggregates);
+}
+
+/**
+ * Returns true if any ORDER BY clause expression contains an aggregate function call.
+ */
+function orderByContainsAggregates(
+	orderBy: AST.OrderByClause[] | undefined,
+	selectContext: PlanningContext
+): boolean {
+	if (!orderBy || orderBy.length === 0) return false;
+	const found: AST.FunctionExpr[] = [];
+	for (const clause of orderBy) {
+		findAggregateFunctionExprs(clause.expr, selectContext, found);
+		if (found.length > 0) return true;
+	}
+	return false;
+}
+
+/**
+ * Given a list of aggregate function call AST nodes, builds aggregate plan nodes
+ * for the entries that are not already present in `existingAggregates` (matched by
+ * canonical AST string), de-duplicating against each other as well.
+ */
+function dedupeNewAggregates(
+	funcExprs: AST.FunctionExpr[],
+	selectContext: PlanningContext,
+	existingAggregates: { expression: ScalarPlanNode; alias: string }[]
+): { expression: ScalarPlanNode; alias: string }[] {
 	if (funcExprs.length === 0) return [];
 
-	// Build canonical keys from the AST expression stored in existing aggregate plan nodes
 	const existingKeys = new Set<string>();
 	for (const agg of existingAggregates) {
 		if (CapabilityDetectors.isAggregateFunction(agg.expression)) {
@@ -452,11 +539,9 @@ function collectHavingAggregates(
 	for (const funcExpr of funcExprs) {
 		const key = expressionToString(funcExpr).toLowerCase();
 
-		// Skip if already in SELECT aggregates or already collected
 		if (existingKeys.has(key)) continue;
 		if (newAggregates.some(a => a.alias.toLowerCase() === key)) continue;
 
-		// Build the aggregate plan node in the pre-aggregate scope
 		const aggNode = buildFunctionCall(selectContext, funcExpr, true);
 		newAggregates.push({ expression: aggNode, alias: expressionToString(funcExpr) });
 	}

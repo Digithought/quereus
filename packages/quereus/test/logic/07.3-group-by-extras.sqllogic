@@ -61,13 +61,12 @@ create table gn (id integer primary key, name text collate nocase, val integer);
 create table gc (id integer primary key, val integer);
 insert into gc values (1, 5), (2, 15), (3, 25), (4, 35), (5, 45);
 
--- TODO bug: ORDER BY referencing an aggregate (count(*)) is rejected — should be allowed
--- when the same query has a GROUP BY. (Aggregate-in-ORDER-BY rejection here is overly strict.)
--- select case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end as bucket,
---        count(*) as cnt
--- from gc group by case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end
--- order by count(*) desc, case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end;
--- → [{"bucket":"low","cnt":2},{"bucket":"mid","cnt":2},{"bucket":"high","cnt":1}]
+-- ORDER BY referencing an aggregate (count(*)) is allowed when the query has a GROUP BY.
+select case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end as bucket,
+       count(*) as cnt
+from gc group by case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end
+order by count(*) desc, case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end;
+→ [{"bucket":"low","cnt":2},{"bucket":"mid","cnt":2},{"bucket":"high","cnt":1}]
 
 -- Equivalent without aggregate in ORDER BY: sort by the GROUP BY expression
 select case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end as bucket,
@@ -77,6 +76,35 @@ order by case when val < 20 then 'low' when val < 40 then 'mid' else 'high' end;
 → [{"bucket":"high","cnt":1},{"bucket":"low","cnt":2},{"bucket":"mid","cnt":2}]
 
 drop table gc;
+
+-- ORDER BY aggregate function — additional coverage
+create table aob (id integer primary key, grp text, val integer);
+insert into aob values
+  (1, 'a', 10), (2, 'a', 20), (3, 'a', 30),
+  (4, 'b', 40), (5, 'b', 50),
+  (6, 'c', 70);
+
+-- Scalar aggregate sorted by itself: single-row result.
+select count(*) as c from aob order by count(*);
+→ [{"c":6}]
+
+-- Baseline: ORDER BY alias of an aggregate in SELECT.
+select grp, sum(val) as s from aob group by grp order by s desc;
+→ [{"grp":"b","s":90},{"grp":"c","s":70},{"grp":"a","s":60}]
+
+-- Same result via explicit aggregate expression in ORDER BY.
+select grp, sum(val) as s from aob group by grp order by sum(val) desc;
+→ [{"grp":"b","s":90},{"grp":"c","s":70},{"grp":"a","s":60}]
+
+-- Aggregate referenced in ORDER BY only (not in SELECT).
+select grp from aob group by grp order by max(val) desc;
+→ [{"grp":"c"},{"grp":"b"},{"grp":"a"}]
+
+-- Negative: ORDER BY aggregate in a non-aggregate query is still rejected.
+select id from aob order by sum(val);
+-- error: Aggregate function sum not allowed in this context
+
+drop table aob;
 
 -- GROUP BY everything filtered out: no rows
 create table gf (id integer primary key, grp text, val integer);

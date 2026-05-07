@@ -110,10 +110,14 @@ export function buildSelectStmt(
 		projections: columnProjections,
 		aggregates,
 		windowFunctions,
-		hasAggregates,
+		hasAggregates: hasAggregatesInSelect,
 		hasWindowFunctions,
 		hasWrappedAggregates
 	} = analyzeSelectColumns(stmt.columns, selectContext);
+	// `hasAggregates` may grow as buildAggregatePhase collects HAVING-only or
+	// ORDER-BY-only aggregates; track it locally so the post-aggregate branch
+	// is taken when those promote a non-aggregate query into an aggregate one.
+	let hasAggregates = hasAggregatesInSelect;
 
 	// Handle SELECT * separately
 	for (const column of stmt.columns) {
@@ -130,10 +134,36 @@ export function buildSelectStmt(
 	const aggregateResult = buildAggregatePhase(input, stmt, selectContext, aggregates, hasAggregates, projections, hasWrappedAggregates);
 	input = aggregateResult.output;
 	let preAggregateSort = aggregateResult.preAggregateSort;
+	let orderByAppliedEarly = false;
 
 	// Update context if we have aggregates
 	if (aggregateResult.aggregateScope) {
-		selectContext = { ...selectContext, scope: aggregateResult.aggregateScope };
+		// HAVING-only or ORDER-BY-only aggregates may have promoted this into an
+		// aggregate query even if SELECT had none — reflect that locally.
+		if (aggregateResult.hasHavingOnlyAggregates || aggregateResult.hasOrderByOnlyAggregates) {
+			hasAggregates = true;
+		}
+
+		selectContext = {
+			...selectContext,
+			scope: aggregateResult.aggregateScope,
+			aggregates: aggregateResult.aggregatesContext,
+		};
+
+		// When ORDER BY references aggregate functions, apply it now — *before*
+		// any stripping final projection — so it can resolve against the full
+		// AggregateNode output (which still includes ORDER-BY-only aggregates).
+		// Skipped when window functions are present (window output isn't
+		// available yet) or when pre-aggregate sort already handled ordering.
+		if (
+			aggregateResult.orderByHasAggregates &&
+			!preAggregateSort &&
+			!hasWindowFunctions &&
+			stmt.orderBy && stmt.orderBy.length > 0
+		) {
+			input = applyOrderBy(input, stmt, selectContext, preAggregateSort, undefined, true);
+			orderByAppliedEarly = true;
+		}
 
 		// Build final projections if needed
 		if (aggregateResult.needsFinalProjection && aggregateResult.aggregateNode && aggregateResult.groupByExpressions) {
@@ -145,9 +175,13 @@ export function buildSelectStmt(
 				aggregates,
 				aggregateResult.groupByExpressions
 			);
-			// When HAVING-only aggregates were added, don't preserve input columns
-			// so they are stripped from the output (they exist only for the filter).
-			const preserveForAggregate = preserveInputColumns && !aggregateResult.hasHavingOnlyAggregates;
+			// When HAVING-only or ORDER-BY-only aggregates were added, don't preserve
+			// input columns so they are stripped from the output (they exist only for
+			// those clauses).
+			const preserveForAggregate =
+				preserveInputColumns &&
+				!aggregateResult.hasHavingOnlyAggregates &&
+				!aggregateResult.hasOrderByOnlyAggregates;
 			input = new ProjectNode(selectScope, input, finalProjections, undefined, undefined, preserveForAggregate);
 		}
 	}
@@ -221,7 +255,11 @@ export function buildSelectStmt(
 	} else {
 		// Apply final modifiers without projection scope for aggregate/window cases
 		input = applyDistinct(input, stmt, selectScope);
-		input = applyOrderBy(input, stmt, selectContext, preAggregateSort);
+		if (!orderByAppliedEarly) {
+			// In the aggregate path, ORDER BY may legally reference aggregates; in the
+			// window path it may reference window outputs. Both are now in selectContext.
+			input = applyOrderBy(input, stmt, selectContext, preAggregateSort, undefined, hasAggregates);
+		}
 		input = applyLimitOffset(input, stmt, selectContext);
 	}
 
