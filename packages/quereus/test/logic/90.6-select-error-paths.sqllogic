@@ -21,9 +21,19 @@ select min(*) from eptab;
 select max(*) from eptab;
 -- error: max
 
--- Quereus treats integer literals in ORDER BY as constant expressions, not
--- positional references, so out-of-range / zero / negative ordinals do not
--- raise an error. (See TODO in 28.2 about positional ORDER BY support.)
+-- Out-of-range / zero / negative ordinal references in GROUP BY and ORDER BY
+-- raise an error at planning time.
+select a from eptab group by 0;
+-- error: GROUP BY position 0
+
+select a from eptab group by 2;
+-- error: GROUP BY position 2
+
+select a from eptab order by -1;
+-- error: ORDER BY position -1
+
+select a from eptab order by 99;
+-- error: ORDER BY position 99
 
 drop table eptab;
 

@@ -12,6 +12,7 @@ import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { buildExpression } from './expression.js';
 import { CapabilityDetectors } from '../framework/characteristics.js';
+import { resolveOrdinalReference } from './select-ordinal.js';
 
 /**
  * Creates final output projections and applies result column aliases
@@ -22,7 +23,8 @@ export function buildFinalProjections(
 	selectScope: Scope,
 	stmt: AST.SelectStmt,
 	selectContext: PlanningContext,
-	preserveInputColumns: boolean = true
+	preserveInputColumns: boolean = true,
+	selectListAsts: AST.Expression[] = []
 ): {
 	output: RelationalPlanNode;
 	finalContext: PlanningContext;
@@ -48,7 +50,8 @@ export function buildFinalProjections(
 	// Apply ORDER BY before projection if needed (compile expressions against input scope)
 	if (needsPreProjectionSort && stmt.orderBy && stmt.orderBy.length > 0) {
 		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
-			const expression = buildExpression(selectContext, orderByClause.expr);
+			const resolved = resolveOrdinalReference(orderByClause.expr, selectListAsts, 'ORDER BY');
+			const expression = buildExpression(selectContext, resolved ?? orderByClause.expr);
 			return {
 				expression,
 				direction: orderByClause.direction,
@@ -97,7 +100,8 @@ export function applyOrderBy(
 	selectContext: PlanningContext,
 	preAggregateSort: boolean,
 	projectionScope?: RegisteredScope,
-	allowAggregates: boolean = false
+	allowAggregates: boolean = false,
+	selectListAsts: AST.Expression[] = []
 ): RelationalPlanNode {
 	if (stmt.orderBy && stmt.orderBy.length > 0 && !preAggregateSort) {
 		// Merge projection scope if available so ORDER BY can reference output column aliases
@@ -108,7 +112,8 @@ export function applyOrderBy(
 		}
 
 		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
-			const expression = buildExpression(orderByContext, orderByClause.expr, allowAggregates);
+			const resolved = resolveOrdinalReference(orderByClause.expr, selectListAsts, 'ORDER BY');
+			const expression = buildExpression(orderByContext, resolved ?? orderByClause.expr, allowAggregates);
 			return {
 				expression,
 				direction: orderByClause.direction,

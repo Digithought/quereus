@@ -10,20 +10,17 @@ insert into gx values
   (4, 'b', 'y', 40),
   (5, 'a', 'x', 50);
 
--- TODO bug: GROUP BY ordinal (group by 1) not yet supported in Quereus
--- select grp, count(*) as cnt from gx group by 1 order by 1;
--- → [{"grp":"a","cnt":3},{"grp":"b","cnt":2}]
-
--- TODO bug: GROUP BY multiple ordinals not yet supported in Quereus
--- select grp, sub, sum(val) as total from gx group by 1, 2 order by 1, 2;
--- → [{"grp":"a","sub":"x","total":60},{"grp":"a","sub":"y","total":20},{"grp":"b","sub":"x","total":30},{"grp":"b","sub":"y","total":40}]
-
--- Equivalents using explicit expressions (parser-level form Quereus accepts)
-select grp, count(*) as cnt from gx group by grp order by grp;
+-- GROUP BY / ORDER BY positional ordinal references the Nth SELECT-list output
+select grp, count(*) as cnt from gx group by 1 order by 1;
 → [{"grp":"a","cnt":3},{"grp":"b","cnt":2}]
 
-select grp, sub, sum(val) as total from gx group by grp, sub order by grp, sub;
+-- Multiple ordinals in GROUP BY and ORDER BY
+select grp, sub, sum(val) as total from gx group by 1, 2 order by 1, 2;
 → [{"grp":"a","sub":"x","total":60},{"grp":"a","sub":"y","total":20},{"grp":"b","sub":"x","total":30},{"grp":"b","sub":"y","total":40}]
+
+-- Equivalent using explicit expressions
+select grp, count(*) as cnt from gx group by grp order by grp;
+→ [{"grp":"a","cnt":3},{"grp":"b","cnt":2}]
 
 -- GROUP BY mixed expression
 select grp || sub as combined, sum(val) as total
@@ -35,20 +32,18 @@ select val % 20 as bucket, count(*) as cnt
 from gx group by val % 20 order by val % 20;
 → [{"bucket":0,"cnt":2},{"bucket":10,"cnt":3}]
 
--- TODO bug: GROUP BY ordinal with HAVING not yet supported
--- select grp, count(*) as cnt from gx group by 1 having count(*) > 2 order by 1;
--- → [{"grp":"a","cnt":3}]
-
--- TODO bug: GROUP BY ordinal combined with ORDER BY ordinal on aggregate alias
--- select grp, sum(val) as total from gx group by 1 order by 2 desc;
--- → [{"grp":"b","total":70},{"grp":"a","total":80}]
-
--- Equivalents using named columns
-select grp, count(*) as cnt from gx group by grp having count(*) > 2 order by grp;
+-- GROUP BY ordinal combined with HAVING — the resolved expression is the same
+-- plan node as the GROUP BY key, so HAVING still validates against that key.
+select grp, count(*) as cnt from gx group by 1 having count(*) > 2 order by 1;
 → [{"grp":"a","cnt":3}]
 
-select grp, sum(val) as total from gx group by grp order by total desc;
+-- GROUP BY ordinal combined with ORDER BY ordinal on an aggregate output column
+select grp, sum(val) as total from gx group by 1 order by 2 desc;
 → [{"grp":"a","total":80},{"grp":"b","total":70}]
+
+-- Equivalent using named columns
+select grp, count(*) as cnt from gx group by grp having count(*) > 2 order by grp;
+→ [{"grp":"a","cnt":3}]
 
 drop table gx;
 

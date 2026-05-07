@@ -17,6 +17,7 @@ import { resolveFunctionSchema } from './schema-resolution.js';
 import { isAggregateFunctionSchema } from '../../schema/function.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { AggregateFunctionCallNode } from '../nodes/aggregate-function.js';
+import { resolveOrdinalReference } from './select-ordinal.js';
 
 /**
  * Processes GROUP BY, aggregates, and HAVING clauses
@@ -28,7 +29,8 @@ export function buildAggregatePhase(
 	aggregates: { expression: ScalarPlanNode; alias: string }[],
 	hasAggregates: boolean,
 	projections: Projection[],
-	hasWrappedAggregates: boolean = false
+	hasWrappedAggregates: boolean = false,
+	selectListAsts: AST.Expression[] = []
 ): {
 	output: RelationalPlanNode;
 	aggregateScope?: RegisteredScope;
@@ -105,11 +107,14 @@ export function buildAggregatePhase(
 	const preAggregateSort = Boolean(
 		hasAggregates && !hasGroupBy && stmt.orderBy && stmt.orderBy.length > 0 && !orderByHasAggregates
 	);
-	currentInput = handlePreAggregateSort(currentInput, stmt, selectContext, hasAggregates, !!hasGroupBy, orderByHasAggregates);
+	currentInput = handlePreAggregateSort(currentInput, stmt, selectContext, hasAggregates, !!hasGroupBy, orderByHasAggregates, selectListAsts);
 
-	// Build GROUP BY expressions
+	// Build GROUP BY expressions, resolving 1-based positional references against the SELECT list.
 	const groupByExpressions = stmt.groupBy ?
-		stmt.groupBy.map(expr => buildExpression(selectContext, expr, false)) : [];
+		stmt.groupBy.map(expr => {
+			const resolved = resolveOrdinalReference(expr, selectListAsts, 'GROUP BY');
+			return buildExpression(selectContext, resolved ?? expr, false);
+		}) : [];
 
 	// Validate aggregate/non-aggregate mixing (must run after groupByExpressions are built
 	// so we can check column-coverage of SELECT projections against GROUP BY)
@@ -176,7 +181,8 @@ function handlePreAggregateSort(
 	selectContext: PlanningContext,
 	hasAggregates: boolean,
 	hasGroupBy: boolean,
-	orderByHasAggregates: boolean
+	orderByHasAggregates: boolean,
+	selectListAsts: AST.Expression[]
 ): RelationalPlanNode {
 	// Special handling for ORDER BY with aggregates but no GROUP BY.
 	// Skip when ORDER BY itself references aggregates — those must run
@@ -184,7 +190,8 @@ function handlePreAggregateSort(
 	if (hasAggregates && !hasGroupBy && stmt.orderBy && stmt.orderBy.length > 0 && !orderByHasAggregates) {
 		// Apply ORDER BY before aggregation
 		const sortKeys: SortKey[] = stmt.orderBy.map(orderByClause => {
-			const expression = buildExpression(selectContext, orderByClause.expr);
+			const resolved = resolveOrdinalReference(orderByClause.expr, selectListAsts, 'ORDER BY');
+			const expression = buildExpression(selectContext, resolved ?? orderByClause.expr);
 			return {
 				expression,
 				direction: orderByClause.direction,

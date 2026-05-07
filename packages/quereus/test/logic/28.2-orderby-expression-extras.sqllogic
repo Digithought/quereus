@@ -14,17 +14,11 @@ insert into ob values
   (6,  1,    7,  's');
 
 -- ORDER BY positional reference (1 → first SELECT column)
--- TODO bug: ORDER BY positional ordinal not resolved; treated as literal constant
--- select a from ob order by 1;
--- → [{"a":1},{"a":5},{"a":10},{"a":15},{"a":20},{"a":30}]
-select a from ob order by a;
+select a from ob order by 1;
 → [{"a":1},{"a":5},{"a":10},{"a":15},{"a":20},{"a":30}]
 
 -- ORDER BY positional, multi-column, mixed direction
--- TODO bug: ORDER BY positional ordinal not resolved
--- select c, a from ob order by 1, 2 desc;
--- → [{"c":"p","a":15},{"c":"p","a":10},{"c":"q","a":30},{"c":"q","a":20},{"c":"r","a":5},{"c":"s","a":1}]
-select c, a from ob order by c, a desc;
+select c, a from ob order by 1, 2 desc;
 → [{"c":"p","a":15},{"c":"p","a":10},{"c":"q","a":30},{"c":"q","a":20},{"c":"r","a":5},{"c":"s","a":1}]
 
 -- ORDER BY with DESC on the first key, and an expression alias second
@@ -82,10 +76,8 @@ from many order by x;
 select abs(x - 5) as dist from many order by dist;
 → [{"dist":0},{"dist":1},{"dist":1},{"dist":2},{"dist":2},{"dist":3},{"dist":3},{"dist":4},{"dist":4}]
 
--- TODO bug: ORDER BY positional ordinal not resolved
--- select abs(x - 5) as dist from many order by 1;
--- → [{"dist":0},{"dist":1},{"dist":1},{"dist":2},{"dist":2},{"dist":3},{"dist":3},{"dist":4},{"dist":4}]
-select abs(x - 5) as dist from many order by dist;
+-- ORDER BY positional ordinal resolves to the SELECT-list expression
+select abs(x - 5) as dist from many order by 1;
 → [{"dist":0},{"dist":1},{"dist":1},{"dist":2},{"dist":2},{"dist":3},{"dist":3},{"dist":4},{"dist":4}]
 
 drop table many;

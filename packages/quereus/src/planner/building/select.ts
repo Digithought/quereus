@@ -32,6 +32,7 @@ import { buildAggregatePhase, buildFinalAggregateProjections } from './select-ag
 import { buildWindowPhase } from './select-window.js';
 import { buildFinalProjections, applyDistinct, applyOrderBy, applyLimitOffset } from './select-modifiers.js';
 import { SortNode, type SortKey } from '../nodes/sort.js';
+import { buildSelectListAsts, resolveOrdinalReference } from './select-ordinal.js';
 
 import { buildInsertStmt } from './insert.js';
 import { buildUpdateStmt } from './update.js';
@@ -130,8 +131,12 @@ export function buildSelectStmt(
 	// Add non-star projections
 	projections.push(...columnProjections);
 
+	// Build the source-order AST list of SELECT-list output columns (with stars expanded)
+	// for resolving GROUP BY / ORDER BY positional ordinals.
+	const selectListAsts = buildSelectListAsts(stmt.columns, input);
+
 	// Process aggregates if present
-	const aggregateResult = buildAggregatePhase(input, stmt, selectContext, aggregates, hasAggregates, projections, hasWrappedAggregates);
+	const aggregateResult = buildAggregatePhase(input, stmt, selectContext, aggregates, hasAggregates, projections, hasWrappedAggregates, selectListAsts);
 	input = aggregateResult.output;
 	let preAggregateSort = aggregateResult.preAggregateSort;
 	let orderByAppliedEarly = false;
@@ -161,7 +166,7 @@ export function buildSelectStmt(
 			!hasWindowFunctions &&
 			stmt.orderBy && stmt.orderBy.length > 0
 		) {
-			input = applyOrderBy(input, stmt, selectContext, preAggregateSort, undefined, true);
+			input = applyOrderBy(input, stmt, selectContext, preAggregateSort, undefined, true, selectListAsts);
 			orderByAppliedEarly = true;
 		}
 
@@ -207,11 +212,14 @@ export function buildSelectStmt(
 					const orderColumn = orderByClause.expr.name.toLowerCase();
 					if (!selectedColumns.has(orderColumn)) {
 						// Apply ORDER BY before window projections
-						const sortKeys: SortKey[] = stmt.orderBy.map(orderBy => ({
-							expression: buildExpression(selectContext, orderBy.expr),
-							direction: orderBy.direction,
-							nulls: orderBy.nulls
-						}));
+						const sortKeys: SortKey[] = stmt.orderBy.map(orderBy => {
+							const resolved = resolveOrdinalReference(orderBy.expr, selectListAsts, 'ORDER BY');
+							return {
+								expression: buildExpression(selectContext, resolved ?? orderBy.expr),
+								direction: orderBy.direction,
+								nulls: orderBy.nulls
+							};
+						});
 						input = new SortNode(selectContext.scope, input, sortKeys);
 						preWindowSort = true;
 						break;
@@ -243,14 +251,14 @@ export function buildSelectStmt(
 
 	// Handle final projections for non-aggregate, non-window cases
 	if (!hasAggregates && !hasWindowFunctions) {
-		const finalResult = buildFinalProjections(input, projections, selectScope, stmt, selectContext, preserveInputColumns);
+		const finalResult = buildFinalProjections(input, projections, selectScope, stmt, selectContext, preserveInputColumns, selectListAsts);
 		input = finalResult.output;
 		selectContext = finalResult.finalContext;
 		preAggregateSort = finalResult.preAggregateSort;
 
 		// Apply final modifiers with projection scope for column alias resolution
 		input = applyDistinct(input, stmt, selectScope);
-		input = applyOrderBy(input, stmt, selectContext, preAggregateSort, finalResult.projectionScope);
+		input = applyOrderBy(input, stmt, selectContext, preAggregateSort, finalResult.projectionScope, false, selectListAsts);
 		input = applyLimitOffset(input, stmt, selectContext, finalResult.projectionScope);
 	} else {
 		// Apply final modifiers without projection scope for aggregate/window cases
@@ -258,7 +266,7 @@ export function buildSelectStmt(
 		if (!orderByAppliedEarly) {
 			// In the aggregate path, ORDER BY may legally reference aggregates; in the
 			// window path it may reference window outputs. Both are now in selectContext.
-			input = applyOrderBy(input, stmt, selectContext, preAggregateSort, undefined, hasAggregates);
+			input = applyOrderBy(input, stmt, selectContext, preAggregateSort, undefined, hasAggregates, selectListAsts);
 		}
 		input = applyLimitOffset(input, stmt, selectContext);
 	}
