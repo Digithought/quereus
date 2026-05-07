@@ -1654,6 +1654,17 @@ option (maxrecursion 10000)  -- Limit to 10,000 iterations
 select count(*) from counter;
 ```
 
+A `limit`/`offset` written on the outer compound is also honored as an early-termination bound on the entire recursive output, applied after deduplication for `union`. Iteration stops as soon as the consumer has been served `limit` rows, so it can be used to cap an otherwise unbounded recursion:
+```sql
+with recursive counter(n) as (
+  select 1
+  union all
+  select n + 1 from counter
+  limit 5
+)
+select n from counter;  -- 1, 2, 3, 4, 5
+```
+
 **Performance Characteristics:**
 - **Non-recursive CTEs**: Executed once, results may be cached
 - **Recursive CTEs**: Semi-naïve evaluation with O(N) complexity
