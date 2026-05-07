@@ -1066,7 +1066,7 @@ Modifies an existing table's structure or name.
 ALTER TABLE old_name RENAME TO new_name;
 ```
 
-Renames a table. The old name becomes invalid immediately. Fails if the new name already exists.
+Renames a table. The old name becomes invalid immediately. Fails if the new name already exists. References to the old name in dependent objects are rewritten in place: CHECK expressions on every table in the schema, FOREIGN KEY `referencedTable` entries (across all schemas), and view bodies (`selectAst` and the cached `sql` text). The rewrite is best-effort AST replacement — a CTE that intentionally shadowed the old name is not preserved.
 
 **RENAME COLUMN**
 
@@ -1074,7 +1074,7 @@ Renames a table. The old name becomes invalid immediately. Fails if the new name
 ALTER TABLE table_name RENAME COLUMN old_col TO new_col;
 ```
 
-Renames a column. Data is preserved. Fails if the new name conflicts with an existing column or the old name doesn't exist.
+Renames a column. Data is preserved. Fails if the new name conflicts with an existing column or the old name doesn't exist. As with `RENAME TABLE`, references in CHECK expressions, FOREIGN KEY `referencedColumnNames`, and view bodies are propagated. Unqualified column references inside dependent SELECTs are rewritten when the renamed table is in the unaliased FROM scope.
 
 **ADD COLUMN**
 

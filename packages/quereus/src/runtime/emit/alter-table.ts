@@ -8,7 +8,9 @@ import type { TableSchema, PrimaryKeyColumnDefinition, RowConstraintSchema, Fore
 import { buildColumnIndexMap, opsToMask } from '../../schema/table.js';
 import type { ColumnDef } from '../../parser/ast.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
-import { quoteIdentifier, expressionToString } from '../../emit/ast-stringify.js';
+import { quoteIdentifier, expressionToString, selectToString } from '../../emit/ast-stringify.js';
+import { renameTableInAst, renameColumnInAst } from '../../schema/rename-rewriter.js';
+import type { Schema } from '../../schema/schema.js';
 
 const log = createLogger('runtime:emit:alter-table');
 
@@ -98,6 +100,11 @@ async function runRenameTable(
 		newObject: updatedTableSchema,
 	});
 
+	// Propagate the rename into dependent objects (CHECK / FK in this and other
+	// tables, view bodies). Best-effort AST rewrite — there is no global
+	// dependency tracker yet, so we walk the catalog and patch in-place.
+	propagateTableRename(rctx, tableSchema.schemaName, oldName, newName);
+
 	log('Renamed table %s.%s to %s', tableSchema.schemaName, oldName, newName);
 	return null;
 }
@@ -161,6 +168,10 @@ async function runRenameColumn(
 		oldObject: tableSchema,
 		newObject: updatedTableSchema,
 	});
+
+	// Propagate the rename into dependent objects (CHECK / FK in this and other
+	// tables, view bodies).
+	propagateColumnRename(rctx, tableSchema.schemaName, tableSchema.name, oldName, newName);
 
 	log('Renamed column %s.%s.%s to %s', tableSchema.schemaName, tableSchema.name, oldName, newName);
 	return null;
@@ -736,6 +747,188 @@ async function rebuildViaShadowTable(
 		} catch { /* ignore */ }
 		throw e;
 	}
+}
+
+/**
+ * Propagates a table rename into every dependent schema object the catalog
+ * knows about: CHECK expressions, FK references, and view bodies. Walks every
+ * schema (not just the renamed table's home schema) so cross-schema FK
+ * references are picked up. View `selectAst` is mutated in place because the
+ * planner re-walks it on every reference.
+ */
+function propagateTableRename(
+	rctx: RuntimeContext,
+	renamedSchemaName: string,
+	oldName: string,
+	newName: string,
+): void {
+	const notifier = rctx.db.schemaManager.getChangeNotifier();
+	for (const schema of rctx.db.schemaManager._getAllSchemas()) {
+		propagateTableRenameInSchema(schema, renamedSchemaName, oldName, newName, notifier);
+	}
+}
+
+function propagateTableRenameInSchema(
+	schema: Schema,
+	renamedSchemaName: string,
+	oldName: string,
+	newName: string,
+	notifier: import('../../schema/change-events.js').SchemaChangeNotifier,
+): void {
+	const renamedSchemaLower = renamedSchemaName.toLowerCase();
+
+	for (const table of Array.from(schema.getAllTables())) {
+		// Skip the just-renamed table when iterating the home schema; the FK
+		// `referencedTable` field on its own FKs (if any self-reference) is
+		// still pointing at the old name and needs rewriting too.
+		const updated = rewriteTableForTableRename(table, renamedSchemaLower, oldName, newName);
+		if (updated !== table) {
+			schema.addTable(updated);
+			notifier.notifyChange({
+				type: 'table_modified',
+				schemaName: schema.name,
+				objectName: updated.name,
+				oldObject: table,
+				newObject: updated,
+			});
+		}
+	}
+
+	if (schema.name.toLowerCase() === renamedSchemaLower) {
+		for (const view of Array.from(schema.getAllViews())) {
+			const changed = renameTableInAst(view.selectAst, oldName, newName, renamedSchemaName);
+			if (changed) {
+				const updatedView = { ...view, sql: selectToString(view.selectAst) };
+				schema.addView(updatedView);
+			}
+		}
+	}
+}
+
+function rewriteTableForTableRename(
+	table: TableSchema,
+	renamedSchemaLower: string,
+	oldName: string,
+	newName: string,
+): TableSchema {
+	const oldLower = oldName.toLowerCase();
+	let changed = false;
+
+	const newChecks = table.checkConstraints.map(cc => {
+		const rewrote = renameTableInAst(cc.expr, oldName, newName, renamedSchemaLower);
+		if (!rewrote) return cc;
+		changed = true;
+		return { ...cc };
+	});
+
+	const newFks = (table.foreignKeys ?? []).map(fk => {
+		const fkSchemaLower = (fk.referencedSchema ?? table.schemaName).toLowerCase();
+		if (fkSchemaLower !== renamedSchemaLower) return fk;
+		if (fk.referencedTable.toLowerCase() !== oldLower) return fk;
+		changed = true;
+		return { ...fk, referencedTable: newName };
+	});
+
+	if (!changed) return table;
+
+	return Object.freeze({
+		...table,
+		checkConstraints: Object.freeze(newChecks),
+		foreignKeys: table.foreignKeys ? Object.freeze(newFks) : table.foreignKeys,
+	});
+}
+
+function propagateColumnRename(
+	rctx: RuntimeContext,
+	renamedSchemaName: string,
+	tableName: string,
+	oldCol: string,
+	newCol: string,
+): void {
+	const notifier = rctx.db.schemaManager.getChangeNotifier();
+	for (const schema of rctx.db.schemaManager._getAllSchemas()) {
+		propagateColumnRenameInSchema(schema, renamedSchemaName, tableName, oldCol, newCol, notifier);
+	}
+}
+
+function propagateColumnRenameInSchema(
+	schema: Schema,
+	renamedSchemaName: string,
+	tableName: string,
+	oldCol: string,
+	newCol: string,
+	notifier: import('../../schema/change-events.js').SchemaChangeNotifier,
+): void {
+	const renamedSchemaLower = renamedSchemaName.toLowerCase();
+
+	for (const table of Array.from(schema.getAllTables())) {
+		const updated = rewriteTableForColumnRename(table, renamedSchemaLower, tableName, oldCol, newCol);
+		if (updated !== table) {
+			schema.addTable(updated);
+			notifier.notifyChange({
+				type: 'table_modified',
+				schemaName: schema.name,
+				objectName: updated.name,
+				oldObject: table,
+				newObject: updated,
+			});
+		}
+	}
+
+	if (schema.name.toLowerCase() === renamedSchemaLower) {
+		for (const view of Array.from(schema.getAllViews())) {
+			const changed = renameColumnInAst(view.selectAst, tableName, oldCol, newCol, renamedSchemaName);
+			if (changed) {
+				const updatedView = { ...view, sql: selectToString(view.selectAst) };
+				schema.addView(updatedView);
+			}
+		}
+	}
+}
+
+function rewriteTableForColumnRename(
+	table: TableSchema,
+	renamedSchemaLower: string,
+	tableName: string,
+	oldCol: string,
+	newCol: string,
+): TableSchema {
+	const oldColLower = oldCol.toLowerCase();
+	const tableLower = tableName.toLowerCase();
+	let changed = false;
+
+	const newChecks = table.checkConstraints.map(cc => {
+		const rewrote = renameColumnInAst(cc.expr, tableName, oldCol, newCol, renamedSchemaLower);
+		if (!rewrote) return cc;
+		changed = true;
+		return { ...cc };
+	});
+
+	const newFks = (table.foreignKeys ?? []).map(fk => {
+		const fkSchemaLower = (fk.referencedSchema ?? table.schemaName).toLowerCase();
+		if (fkSchemaLower !== renamedSchemaLower) return fk;
+		if (fk.referencedTable.toLowerCase() !== tableLower) return fk;
+		if (!fk.referencedColumnNames || fk.referencedColumnNames.length === 0) return fk;
+		let touched = false;
+		const newRefNames = fk.referencedColumnNames.map(n => {
+			if (n.toLowerCase() === oldColLower) {
+				touched = true;
+				return newCol;
+			}
+			return n;
+		});
+		if (!touched) return fk;
+		changed = true;
+		return { ...fk, referencedColumnNames: Object.freeze(newRefNames) };
+	});
+
+	if (!changed) return table;
+
+	return Object.freeze({
+		...table,
+		checkConstraints: Object.freeze(newChecks),
+		foreignKeys: table.foreignKeys ? Object.freeze(newFks) : table.foreignKeys,
+	});
 }
 
 /**
