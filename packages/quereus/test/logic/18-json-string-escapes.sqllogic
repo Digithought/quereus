@@ -8,9 +8,8 @@
 -- json_quote: escape characters in strings
 -- ============================================================
 
--- TODO bug: SQL string literal parser strips a backslash before space (e.g. '"\ ' becomes '" '), should preserve literally
--- SELECT json_quote('String "\ Test');
--- → [{"json_quote('String \"\\ Test')":"\"String \\\"\\\\ Test\""}]
+SELECT json_quote('String "\ Test');
+→ [{"json_quote('String \"\\ Test')":"\"String \\\"\\\\ Test\""}]
 
 -- Double quote (use char(92) to obtain a literal backslash safely)
 SELECT json_quote('he said "hi"');
@@ -29,9 +28,8 @@ b');
 SELECT json_array('he said "hi"');
 → [["he said \"hi\""]]
 
--- TODO bug: SQL string literal parser drops backslash before non-special chars (single-quoted should be literal)
--- SELECT json_array('a\\b');
--- → [["a\\b"]]
+SELECT json_array('a\\b');
+→ [["a\\\\b"]]
 
 -- Embedded forward slash (no escape required)
 SELECT json_array('a/b');
@@ -39,25 +37,19 @@ SELECT json_array('a/b');
 
 -- ============================================================
 -- json_extract: parse strings with standard escape sequences
--- TODO bug: SQL string literal parser drops backslashes inside single-quoted
--- strings, so JSON literals containing \" \\ \n \t cannot be tested from SQL.
 -- ============================================================
 
--- TODO bug: SQL parser strips backslashes; payload arrives as invalid JSON
--- SELECT json_extract('{"a":"he said \"hi\""}', '$.a');
--- → ["he said \"hi\""]
+SELECT json_extract('{"a":"he said \"hi\""}', '$.a');
+→ ["he said \"hi\""]
 
--- TODO bug: same root cause
--- SELECT json_extract('{"a":"a\\b"}', '$.a');
--- → ["a\\b"]
+SELECT json_extract('{"a":"a\\b"}', '$.a');
+→ ["a\\b"]
 
--- TODO bug: same root cause
--- SELECT json_extract('{"a":"line1\nline2"}', '$.a');
--- → ["line1\nline2"]
+SELECT json_extract('{"a":"line1\nline2"}', '$.a');
+→ ["line1\nline2"]
 
--- TODO bug: same root cause
--- SELECT json_extract('{"a":"col1\tcol2"}', '$.a');
--- → ["col1\tcol2"]
+SELECT json_extract('{"a":"col1\tcol2"}', '$.a');
+→ ["col1\tcol2"]
 
 -- \uXXXX: ASCII letter (no backslash so not affected)
 SELECT json_extract('{"a":"A"}', '$.a');
@@ -75,11 +67,11 @@ SELECT json_extract('{"a":"𝄞"}', '$.a');
 -- json_valid: malformed escape sequences rejected
 -- ============================================================
 
--- TODO bug: SQL parser strips backslashes from single-quoted literals; invalid JSON cannot be constructed in source
--- SELECT json_valid('{"a":"\xZZ"}');
--- → [{"...":0}]
--- SELECT json_valid('{"a":"\u00"}');
--- → [{"...":0}]
+SELECT json_valid('{"a":"\xZZ"}');
+→ [{"json_valid('{\"a\":\"\\xZZ\"}')":false}]
+
+SELECT json_valid('{"a":"\u00"}');
+→ [{"json_valid('{\"a\":\"\\u00\"}')":false}]
 
 -- ============================================================
 -- json_array_length on a string containing a structural character
