@@ -834,10 +834,62 @@ export class SchemaManager {
 	}
 
 	/**
-	 * Validates that all DEFAULT expressions in the column schemas are deterministic.
-	 * Skips expressions that reference columns (validated at INSERT time instead).
+	 * Walks an expression AST and rejects bind-parameter and (optionally)
+	 * column-reference nodes. Used by DDL-time DEFAULT/CHECK validators where
+	 * such references are illegal even though they may otherwise build cleanly.
+	 *
+	 * Throws a QuereusError on the first offending node, with a message
+	 * produced by the supplied formatters.
 	 */
-	private validateDefaultDeterminism(columns: ReadonlyArray<ColumnSchema>, tableName: string): void {
+	private rejectIllegalReferences(
+		expr: AST.AstNode,
+		options: {
+			rejectColumns: boolean;
+			formatParamError: () => string;
+			formatColumnError?: () => string;
+		}
+	): void {
+		let offendingType: 'parameter' | 'column' | undefined;
+		traverseAst(expr, {
+			enterNode: (node: AST.AstNode) => {
+				if (offendingType) return false;
+				if (node.type === 'parameter') {
+					offendingType = 'parameter';
+					return false;
+				}
+				if (options.rejectColumns && node.type === 'column') {
+					offendingType = 'column';
+					return false;
+				}
+			},
+		});
+		if (offendingType === 'parameter') {
+			throw new QuereusError(options.formatParamError(), StatusCode.ERROR);
+		}
+		if (offendingType === 'column') {
+			throw new QuereusError(options.formatColumnError!(), StatusCode.ERROR);
+		}
+	}
+
+	/**
+	 * Validates that all DEFAULT expressions in the column schemas are
+	 * deterministic and free of bind parameters or (when no mutation
+	 * context is defined) column references. Bind parameters and column
+	 * references are rejected up-front via an AST pre-walk so the error
+	 * messages stay specific (rather than degrading into "column not
+	 * found" during expression building).
+	 *
+	 * When `hasMutationContext` is true, column-style identifiers are
+	 * preserved because they may resolve to mutation-context variables at
+	 * INSERT time (the AST cannot distinguish a real column from a
+	 * context variable, and the build attempt is permitted to fail —
+	 * scope resolution is deferred to row-time).
+	 */
+	private validateDefaultDeterminism(
+		columns: ReadonlyArray<ColumnSchema>,
+		tableName: string,
+		hasMutationContext: boolean
+	): void {
 		const globalScope = new GlobalScope(this.db.schemaManager);
 		const parameterScope = new ParameterScope(globalScope);
 		const planningCtx: PlanningContext = {
@@ -857,40 +909,71 @@ export class SchemaManager {
 				continue;
 			}
 
+			this.rejectIllegalReferences(col.defaultValue as AST.AstNode, {
+				rejectColumns: !hasMutationContext,
+				formatParamError: () =>
+					`DEFAULT for column '${col.name}' in table '${tableName}' may not reference bind parameters.`,
+				formatColumnError: () =>
+					`DEFAULT for column '${col.name}' in table '${tableName}' may not reference columns; use a generated column instead.`,
+			});
+
 			let defaultExpr: ScalarPlanNode | undefined;
 			try {
 				defaultExpr = buildExpression(planningCtx, col.defaultValue as AST.Expression) as ScalarPlanNode;
-			} catch (_e) {
-				log('Skipping determinism validation for default on column %s.%s at CREATE TABLE time (will validate at INSERT time): %s',
-					tableName, col.name, (_e as Error).message);
-			}
-
-			if (defaultExpr) {
-				const result = checkDeterministic(defaultExpr);
-				if (!result.valid) {
+			} catch (e) {
+				if (hasMutationContext) {
+					// Column-style identifiers in DEFAULT may resolve to mutation
+					// context variables at INSERT time; the row scope isn't
+					// available here, so a build failure isn't necessarily a bug.
+					// Determinism is re-checked at INSERT time.
+					log('Skipping determinism validation for default on column %s.%s at CREATE TABLE time (deferred to INSERT, mutation context present): %s',
+						tableName, col.name, (e as Error).message);
+				} else {
+					const message = e instanceof Error ? e.message : String(e);
+					const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
 					throw new QuereusError(
-						`Non-deterministic expression not allowed in DEFAULT for column '${col.name}' in table '${tableName}'. ` +
-						`Expression: ${result.expression}. ` +
-						`Use mutation context to pass non-deterministic values (e.g., WITH CONTEXT (timestamp = datetime('now'))).`,
-						StatusCode.ERROR
+						`DEFAULT for column '${col.name}' in table '${tableName}' is invalid: ${message}`,
+						code,
+						e instanceof Error ? e : undefined
 					);
 				}
+			}
+
+			if (!defaultExpr) continue;
+
+			const result = checkDeterministic(defaultExpr);
+			if (!result.valid) {
+				throw new QuereusError(
+					`Non-deterministic expression not allowed in DEFAULT for column '${col.name}' in table '${tableName}'. ` +
+					`Expression: ${result.expression}. ` +
+					`Use mutation context to pass non-deterministic values (e.g., WITH CONTEXT (timestamp = datetime('now'))).`,
+					StatusCode.ERROR
+				);
 			}
 		}
 	}
 
 	/**
 	 * Validates that CHECK constraint expressions don't call non-deterministic
-	 * functions. Walks the AST and looks up each function call against the
-	 * registry; raises if any function lacks the DETERMINISTIC flag. Avoids the
-	 * full planning pipeline because CHECK expressions reference table columns
-	 * whose scope is not yet established at CREATE TABLE time.
+	 * functions and don't reference bind parameters. Walks the AST and looks
+	 * up each function call against the registry; raises if any function
+	 * lacks the DETERMINISTIC flag. Avoids the full planning pipeline because
+	 * CHECK expressions reference table columns whose scope is not yet
+	 * established at CREATE TABLE time.
 	 */
 	private validateCheckConstraintDeterminism(
 		checkConstraints: ReadonlyArray<RowConstraintSchema>,
 		tableName: string
 	): void {
 		for (const cc of checkConstraints) {
+			const constraintName = cc.name ?? `_check_${tableName}`;
+
+			this.rejectIllegalReferences(cc.expr as AST.AstNode, {
+				rejectColumns: false,
+				formatParamError: () =>
+					`CHECK constraint '${constraintName}' on table '${tableName}' may not reference bind parameters.`,
+			});
+
 			let offendingExpr: AST.FunctionExpr | undefined;
 			traverseAst(cc.expr as AST.AstNode, {
 				enterNode: (node: AST.AstNode) => {
@@ -907,7 +990,6 @@ export class SchemaManager {
 				},
 			});
 			if (offendingExpr) {
-				const constraintName = cc.name ?? `_check_${tableName}`;
 				throw new QuereusError(
 					`Non-deterministic expression not allowed in CHECK constraint '${constraintName}' on table '${tableName}'. ` +
 					`Function '${offendingExpr.name}' is not deterministic. ` +
@@ -1208,7 +1290,8 @@ export class SchemaManager {
 		const { moduleName, effectiveModuleArgs, moduleInfo } = this.resolveModuleInfo(stmt);
 		const baseTableSchema = this.buildTableSchemaFromAST(stmt, moduleName, effectiveModuleArgs, moduleInfo);
 
-		this.validateDefaultDeterminism(baseTableSchema.columns, tableName);
+		const hasMutationContext = !!baseTableSchema.mutationContext && baseTableSchema.mutationContext.length > 0;
+		this.validateDefaultDeterminism(baseTableSchema.columns, tableName, hasMutationContext);
 		this.validateCheckConstraintDeterminism(baseTableSchema.checkConstraints, tableName);
 
 		let tableInstance: VirtualTable;

@@ -86,16 +86,14 @@ drop table t_combo;
 -- 6. Bind parameter in DEFAULT rejected at DDL time
 -- ===================================
 
--- TODO bug: bind parameter in DEFAULT expression should be rejected at CREATE TABLE
--- create table t_param (id integer primary key, b text default (:xyz));
--- -- error:
--- drop table if exists t_param;
+create table t_param (id integer primary key, b text default (:xyz));
+-- error: bind parameters
+drop table if exists t_param;
 
 -- ===================================
 -- 7. Column reference inside DEFAULT rejected
 -- ===================================
 
--- TODO bug: column references in DEFAULT expression should be rejected
--- create table t_colref (id integer primary key, x integer not null, y integer default (x + 1));
--- -- error:
--- drop table if exists t_colref;
+create table t_colref (id integer primary key, x integer not null, y integer default (x + 1));
+-- error: generated column
+drop table if exists t_colref;

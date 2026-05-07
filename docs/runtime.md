@@ -940,12 +940,26 @@ db.createScalarFunction("my_upper",
 ### Validation Timing
 
 **CREATE TABLE:**
-- DEFAULT expressions validated if they don't reference table columns
-- CHECK constraints NOT validated (columns don't exist yet in scope)
+- DEFAULT expressions are rejected if they reference bind parameters
+  (`?`, `:name`) or table columns; both are detected via an AST pre-walk
+  before expression building.
+- DEFAULT expressions are then built and rejected if their physical
+  `deterministic` property is false (e.g. `random()`).
+- CHECK constraints are walked at DDL time: any function call is looked up
+  against the registry and rejected unless it has the `DETERMINISTIC` flag.
+  Bind parameters (`?`, `:name`) are also rejected at DDL time. Column
+  references inside CHECK predicates are validated later, at INSERT/UPDATE
+  time, when the row scope is established.
+
+These DDL-time guards currently fire only on `CREATE TABLE`. The `ALTER
+TABLE` paths (`ADD COLUMN`, `ADD CONSTRAINT`, `ALTER COLUMN ... SET
+DEFAULT`) do not yet route through the same validators — extending them is
+a known follow-up.
 
 **INSERT/UPDATE:**
 - DEFAULT expressions validated when building row expansion
-- CHECK constraints validated when building constraint checks
+- CHECK constraints validated when building constraint checks (full
+  column-scope resolution happens here)
 
 **ALTER TABLE ADD CONSTRAINT:**
 - Validation deferred to first INSERT/UPDATE (constraints may reference NEW/OLD)
