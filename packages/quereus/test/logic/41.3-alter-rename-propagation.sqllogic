@@ -103,7 +103,7 @@ drop table t_pidx2;
 -- 6. RENAME COLUMN referenced inside a CTE in a view
 -- ===================================
 
--- TODO bug: CREATE VIEW does not accept a leading WITH (CTE) in the body, and rename propagation is unimplemented
+-- TODO bug: rename propagation through views (including CTEs in views) is unimplemented
 -- create table t_cte (id integer primary key, k integer not null);
 -- insert into t_cte values (1, 10), (2, 20);
 --

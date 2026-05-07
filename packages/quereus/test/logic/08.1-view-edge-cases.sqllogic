@@ -40,10 +40,9 @@ select k, label, amount from cr_v order by k;
 
 drop view cr_v;
 
--- TODO bug: view column-list rename doesn't enforce matching arity (SQLite rejects mismatched counts)
--- create view cr_bad (a, b) as select id, name, val from cr_base;
--- -- error:
--- drop view if exists cr_bad;
+create view cr_bad (a, b) as select id, name, val from cr_base;
+-- error: declared columns
+drop view if exists cr_bad;
 
 drop table cr_base;
 

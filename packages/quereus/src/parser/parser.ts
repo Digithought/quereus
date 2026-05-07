@@ -2352,8 +2352,21 @@ export class Parser {
 
 		this.consumeKeyword('AS', "Expected 'AS' before SELECT statement for CREATE VIEW.");
 
+		// CREATE VIEW body may optionally start with a WITH (CTE) clause; the WITH attaches to
+		// the inner SELECT, not to the CREATE VIEW itself.
+		let innerWith: AST.WithClause | undefined;
+		if (this.check(TokenType.WITH)) {
+			innerWith = this.tryParseWithClause();
+		}
+
 		const selectStartToken = this.consume(TokenType.SELECT, "Expected 'SELECT' after 'AS' in CREATE VIEW.");
-		const select = this.selectStatement(selectStartToken, withClause);
+		const select = this.selectStatement(selectStartToken, innerWith ?? withClause);
+		if (innerWith) {
+			select.withClause = innerWith;
+			if (innerWith.loc && select.loc) {
+				select.loc.start = innerWith.loc.start;
+			}
+		}
 
 		// Parse optional WITH TAGS
 		let tags: Record<string, SqlValue> | undefined;

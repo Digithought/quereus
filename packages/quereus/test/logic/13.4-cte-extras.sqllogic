@@ -36,16 +36,14 @@ select a, b from v order by a;
 -- LIMIT applied inside a recursive CTE definition
 -- =============================================================================
 
--- TODO bug: LIMIT inside a recursive CTE body is not honored as an early-termination
--- bound — the recursive iteration runs to its WHERE-clause limit instead of stopping at LIMIT.
--- with recursive lim_cnt(n) as (
---   select 1
---   union all
---   select n + 1 from lim_cnt where n < 1000
---   limit 5
--- )
--- select n from lim_cnt order by n;
--- → [{"n":1},{"n":2},{"n":3},{"n":4},{"n":5}]
+with recursive lim_cnt(n) as (
+  select 1
+  union all
+  select n + 1 from lim_cnt where n < 1000
+  limit 5
+)
+select n from lim_cnt order by n;
+→ [{"n":1},{"n":2},{"n":3},{"n":4},{"n":5}]
 
 -- =============================================================================
 -- Nested WITH inside the base case of a recursive CTE — Quereus parser does
@@ -62,8 +60,7 @@ select n from r order by n;
 -- error: Expected SELECT, INSERT, UPDATE, or DELETE statement for CTE query
 
 -- =============================================================================
--- CTE inside a VIEW definition — Quereus CREATE VIEW only accepts a SELECT
--- body (not a WITH clause).
+-- CTE inside a VIEW definition — CREATE VIEW body may begin with a WITH clause.
 -- =============================================================================
 
 create table cte_src (id integer primary key, val integer);
@@ -72,16 +69,17 @@ insert into cte_src values (1, 10), (2, 20), (3, 30);
 create view cte_view as
   with positives as (select id, val from cte_src where val > 15)
   select id, val from positives;
--- error: Expected 'SELECT' after 'AS' in CREATE VIEW
 
+select id, val from cte_view order by id;
+→ [{"id":2,"val":20},{"id":3,"val":30}]
+
+drop view cte_view;
 drop table cte_src;
 
 -- =============================================================================
 -- CTE column count mismatch (declared columns vs SELECT columns)
--- TODO bug: Quereus does not validate that the number of CTE-declared columns
--- matches the number of SELECT columns; it silently accepts the mismatch.
 -- =============================================================================
 
--- with bad(a, b) as (select 1)
--- select * from bad;
--- -- error: column count
+with bad(a, b) as (select 1)
+select * from bad;
+-- error: declared columns
