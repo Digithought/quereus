@@ -66,10 +66,9 @@ select substr('abcdef', 4, -3) as result;
 select substr('abcdef', -2, -2) as result;
 → [{"result":""}]
 
--- TODO bug: substr indexes by UTF-16 code unit, not code point. Non-BMP `😀` (one code point,
---   two code units) is split. SQLite docs spec code-point indexing.
--- select substr('a😀b', 2, 1) as result;
--- → [{"result":"😀"}]
+-- substr indexes by Unicode code point. Non-BMP `😀` is one code point (was two UTF-16 code units).
+select substr('a😀b', 2, 1) as result;
+→ [{"result":"😀"}]
 
 -- BMP multi-byte character ('é' is one UTF-16 code unit) works correctly.
 select substr('café', 1, 4) as result;
