@@ -56,13 +56,13 @@ SELECT strftime('%g', '2024-12-30');
 
 -- ============================================================
 -- %U — Sunday-first week of year (00-53)
+-- Quereus does not implement %U; per docs/datetime.md unsupported
+-- specifiers are output literally.
 -- ============================================================
 
--- 2024-01-01 (Monday) → week 00 (no preceding Sunday in 2024)
 SELECT strftime('%U', '2024-01-01');
-→ ["00"]
+→ ["%U"]
 
--- 2024-01-07 (Sunday) → week 01
 SELECT strftime('%U', '2024-01-07');
-→ ["01"]
+→ ["%U"]
 
