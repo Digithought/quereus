@@ -45,33 +45,32 @@ pragma foreign_keys = true;
 -- 3. ON UPDATE CASCADE where the cascade collides with another FK
 -- ===================================
 
--- TODO bug: cascade-then-RESTRICT chain across two FKs isn't detected as a constraint violation
--- create table fa (id integer primary key);
--- create table fb (id integer primary key,
--- 	foreign key (id) references fa(id) on update cascade);
--- create table fc (b_id integer primary key,
--- 	foreign key (b_id) references fb(id));
---
--- insert into fa values (1);
--- insert into fb values (1);
--- insert into fc values (1);
---
--- -- updating fa.id cascades to fb.id; fb is referenced by fc with default
--- -- (RESTRICT) action → end-to-end fails atomically
--- update fa set id = 2 where id = 1;
--- -- error:
---
--- -- nothing changed
--- select id from fa;
--- → [{"id":1}]
--- select id from fb;
--- → [{"id":1}]
--- select b_id from fc;
--- → [{"b_id":1}]
---
--- drop table fc;
--- drop table fb;
--- drop table fa;
+create table fa (id integer primary key);
+create table fb (id integer primary key,
+	foreign key (id) references fa(id) on update cascade);
+create table fc (b_id integer primary key,
+	foreign key (b_id) references fb(id));
+
+insert into fa values (1);
+insert into fb values (1);
+insert into fc values (1);
+
+-- updating fa.id cascades to fb.id; fb is referenced by fc with default
+-- (RESTRICT) action → end-to-end fails atomically
+update fa set id = 2 where id = 1;
+-- error:
+
+-- nothing changed
+select id from fa;
+→ [{"id":1}]
+select id from fb;
+→ [{"id":1}]
+select b_id from fc;
+→ [{"b_id":1}]
+
+drop table fc;
+drop table fb;
+drop table fa;
 
 -- ===================================
 -- 4. Multi-row parent UPDATE cascades per-row
@@ -97,74 +96,70 @@ drop table mp;
 -- 5. Self-referential FK with composite UNIQUE target
 -- ===================================
 
--- TODO bug: self-referential composite FK doesn't reject mismatched (pid, tag)
--- create table tree (
--- 	id integer primary key,
--- 	pid integer not null,
--- 	tag text not null,
--- 	unique (id, tag),
--- 	foreign key (pid, tag) references tree(id, tag)
--- );
---
--- -- root self-match
--- insert into tree values (1, 1, 'a');
---
--- select * from tree;
--- → [{"id":1,"pid":1,"tag":"a"}]
---
--- -- valid child referencing existing (id, tag)
--- insert into tree values (2, 1, 'a');
---
--- -- invalid: (pid, tag) = (1, 'b') has no matching row
--- insert into tree values (3, 1, 'b');
--- -- error:
---
--- drop table tree;
+create table tree (
+	id integer primary key,
+	pid integer not null,
+	tag text not null,
+	unique (id, tag),
+	foreign key (pid, tag) references tree(id, tag)
+);
+
+-- root self-match
+insert into tree values (1, 1, 'a');
+
+select * from tree;
+→ [{"id":1,"pid":1,"tag":"a"}]
+
+-- valid child referencing existing (id, tag)
+insert into tree values (2, 1, 'a');
+
+-- invalid: (pid, tag) = (1, 'b') has no matching row
+insert into tree values (3, 1, 'b');
+-- error:
+
+drop table tree;
 
 -- ===================================
 -- 6. DROP TABLE of a parent while a child still references it
 -- ===================================
 
--- TODO bug: DROP TABLE of an FK-referenced parent should be rejected when child rows exist
--- create table fk_drop_parent (x integer primary key, y integer null);
--- create table fk_drop_child (a integer primary key, b integer null references fk_drop_parent(x));
---
--- insert into fk_drop_parent values (100, 1);
--- insert into fk_drop_child values (1, 100);
---
--- -- dropping the referenced parent must fail
--- drop table fk_drop_parent;
--- -- error:
---
--- -- correct order (child first) succeeds
--- drop table fk_drop_child;
--- drop table fk_drop_parent;
+create table fk_drop_parent (x integer primary key, y integer null);
+create table fk_drop_child (a integer primary key, b integer null references fk_drop_parent(x));
+
+insert into fk_drop_parent values (100, 1);
+insert into fk_drop_child values (1, 100);
+
+-- dropping the referenced parent must fail
+drop table fk_drop_parent;
+-- error:
+
+-- correct order (child first) succeeds
+drop table fk_drop_child;
+drop table fk_drop_parent;
 
 -- ===================================
 -- 7. DEFERRABLE INITIALLY DEFERRED column FK — auto-commit failure repeats cleanly
 -- ===================================
 
--- TODO bug: column-level "references t1" without column list and DEFERRABLE INITIALLY DEFERRED
--- doesn't enforce FK on auto-commit insert
--- create table t1 (a integer primary key, b integer null);
--- create table t2 (c integer null references t1 deferrable initially deferred, d integer null);
---
--- insert into t1 values (1, 2);
--- insert into t2 values (1, 3);
---
--- select * from t2;
--- → [{"c":1,"d":3}]
---
--- -- deferred FK still rejects on auto-commit (no enclosing tx)
--- insert into t2 values (2, 4);
--- -- error:
---
--- -- repeating it must fail the same way; no implicit tx left dangling
--- insert into t2 values (2, 4);
--- -- error:
---
--- select * from t2;
--- → [{"c":1,"d":3}]
---
--- drop table t2;
--- drop table t1;
+create table t1 (a integer primary key, b integer null);
+create table t2 (c integer null references t1 deferrable initially deferred, d integer null);
+
+insert into t1 values (1, 2);
+insert into t2 values (1, 3);
+
+select * from t2;
+→ [{"c":1,"d":3}]
+
+-- deferred FK still rejects on auto-commit (no enclosing tx)
+insert into t2 values (2, 4);
+-- error:
+
+-- repeating it must fail the same way; no implicit tx left dangling
+insert into t2 values (2, 4);
+-- error:
+
+select * from t2;
+→ [{"c":1,"d":3}]
+
+drop table t2;
+drop table t1;

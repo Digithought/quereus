@@ -340,9 +340,9 @@ export interface ForeignKeyConstraintSchema {
 	 * at enforcement time via {@link resolveReferencedColumns}.
 	 */
 	referencedColumnNames?: ReadonlyArray<string>;
-	/** Action on parent DELETE (default: 'ignore') */
+	/** Action on parent DELETE (default: 'restrict') */
 	onDelete: import('../parser/ast.js').ForeignKeyAction;
-	/** Action on parent UPDATE of referenced columns (default: 'ignore') */
+	/** Action on parent UPDATE of referenced columns (default: 'restrict') */
 	onUpdate: import('../parser/ast.js').ForeignKeyAction;
 	/** Whether enforcement is deferred to COMMIT */
 	deferred: boolean;

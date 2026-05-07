@@ -458,7 +458,7 @@ export interface ForeignKeyClause {
 }
 
 // Foreign key action
-export type ForeignKeyAction = 'setNull' | 'setDefault' | 'cascade' | 'restrict' | 'ignore';
+export type ForeignKeyAction = 'setNull' | 'setDefault' | 'cascade' | 'restrict';
 
 // Column in index definition
 export interface IndexedColumn {

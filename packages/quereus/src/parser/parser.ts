@@ -3710,7 +3710,7 @@ export class Parser {
 			return 'restrict';
 		} else if (this.match(TokenType.NO)) {
 			this.consume(TokenType.ACTION, "Expected ACTION after NO.");
-			return 'ignore';
+			return 'restrict';
 		}
 		throw this.error(this.peek(), "Expected foreign key action (SET NULL, SET DEFAULT, CASCADE, RESTRICT, NO ACTION).");
 	}

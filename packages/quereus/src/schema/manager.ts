@@ -25,6 +25,7 @@ import { ParameterScope } from '../planner/scopes/param.js';
 import type { ScalarPlanNode } from '../planner/nodes/plan-node.js';
 import { hasNativeEventSupport } from '../util/event-support.js';
 import type { VTableSchemaChangeEvent } from '../vtab/events.js';
+import { quoteIdentifier } from '../emit/ast-stringify.js';
 
 const log = createLogger('schema:manager');
 const warnLog = log.extend('warn');
@@ -422,6 +423,58 @@ export class SchemaManager {
 	}
 
 	/**
+	 * Asserts that no other table has FK rows referencing the table being dropped.
+	 * Self-referential FKs are skipped — those rows go away with the table.
+	 * No-op when foreign_keys is off.
+	 */
+	private async assertNoReferencingChildrenForDrop(parentSchemaName: string, parentTableName: string): Promise<void> {
+		if (!this.db.options.getBooleanOption('foreign_keys')) return;
+
+		const parentSchemaLower = parentSchemaName.toLowerCase();
+		const parentTableLower = parentTableName.toLowerCase();
+
+		for (const schema of this._getAllSchemas()) {
+			for (const childTable of schema.getAllTables()) {
+				if (!childTable.foreignKeys) continue;
+				// Skip the table being dropped itself — self-FK rows are going away with it.
+				if (childTable.schemaName.toLowerCase() === parentSchemaLower &&
+					childTable.name.toLowerCase() === parentTableLower) continue;
+
+				for (const fk of childTable.foreignKeys) {
+					if (fk.referencedTable.toLowerCase() !== parentTableLower) continue;
+					const targetSchema = fk.referencedSchema ?? childTable.schemaName;
+					if (targetSchema.toLowerCase() !== parentSchemaLower) continue;
+
+					// MATCH SIMPLE: row is referencing iff every FK column is non-NULL.
+					const childColNames = fk.columns.map(idx => quoteIdentifier(childTable.columns[idx].name));
+					const whereClause = childColNames.map(c => `${c} IS NOT NULL`).join(' AND ');
+					const schemaPrefix = childTable.schemaName.toLowerCase() !== 'main'
+						? `${quoteIdentifier(childTable.schemaName)}.`
+						: '';
+					const sql = `select 1 from ${schemaPrefix}${quoteIdentifier(childTable.name)} where ${whereClause} limit 1`;
+
+					const stmt = this.db.prepare(sql);
+					try {
+						let referenced = false;
+						for await (const _row of stmt._iterateRowsRaw()) {
+							referenced = true;
+							break;
+						}
+						if (referenced) {
+							throw new QuereusError(
+								`FOREIGN KEY constraint failed: cannot drop table '${parentTableName}' because table '${childTable.name}' still has rows referencing it`,
+								StatusCode.CONSTRAINT,
+							);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+				}
+			}
+		}
+	}
+
+	/**
 	 * Drops a table from the specified schema
 	 *
 	 * @param schemaName The name of the schema
@@ -445,6 +498,12 @@ export class SchemaManager {
 			}
 			throw new QuereusError(`Table ${tableName} not found in schema ${schemaName}`, StatusCode.NOTFOUND);
 		}
+
+		// FK guard: when foreign_keys is on, refuse to drop a parent that still has
+		// non-NULL FK rows in any child table (excluding self-FK; those rows go away
+		// with the table). MATCH SIMPLE: a row is "referencing" iff every FK column
+		// is non-NULL.
+		await this.assertNoReferencingChildrenForDrop(schemaName, tableName);
 
 		// Remove any active connections for this table before destroying the module.
 		// Connections become stale once the table is dropped and must not be reused
@@ -691,6 +750,12 @@ export class SchemaManager {
 
 					// Parent column resolution is deferred — store names for now
 					// We need the parent table schema to resolve indices, but it may not exist yet
+					if (fk.columns && fk.columns.length !== 1) {
+						throw new QuereusError(
+							`FK constraint '${con.name ?? `_fk_${tableName}_${colDef.name}`}' on table '${tableName}': child column count (1) does not match parent column count (${fk.columns.length})`,
+							StatusCode.ERROR,
+						);
+					}
 					result.push({
 						name: con.name ?? `_fk_${tableName}_${colDef.name}`,
 						columns: Object.freeze([childColIndex]),
@@ -698,8 +763,8 @@ export class SchemaManager {
 						referencedSchema: schemaName,
 						referencedColumns: Object.freeze([]), // resolved at enforcement time
 						referencedColumnNames: fk.columns, // deferred resolution via resolveReferencedColumns
-						onDelete: fk.onDelete ?? 'ignore',
-						onUpdate: fk.onUpdate ?? 'ignore',
+						onDelete: fk.onDelete ?? 'restrict',
+						onUpdate: fk.onUpdate ?? 'restrict',
 						deferred: fk.initiallyDeferred ?? false,
 						tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 					});
@@ -719,6 +784,12 @@ export class SchemaManager {
 					return idx;
 				});
 
+				if (fk.columns && fk.columns.length !== childColIndices.length) {
+					throw new QuereusError(
+						`FK constraint '${con.name ?? `_fk_${tableName}_${con.columns.map(c => c.name).join('_')}`}' on table '${tableName}': child column count (${childColIndices.length}) does not match parent column count (${fk.columns.length})`,
+						StatusCode.ERROR,
+					);
+				}
 				result.push({
 					name: con.name ?? `_fk_${tableName}_${con.columns.map(c => c.name).join('_')}`,
 					columns: Object.freeze(childColIndices),
@@ -726,8 +797,8 @@ export class SchemaManager {
 					referencedSchema: schemaName,
 					referencedColumns: Object.freeze([]), // resolved at enforcement time
 					referencedColumnNames: fk.columns, // deferred resolution via resolveReferencedColumns
-					onDelete: fk.onDelete ?? 'ignore',
-					onUpdate: fk.onUpdate ?? 'ignore',
+					onDelete: fk.onDelete ?? 'restrict',
+					onUpdate: fk.onUpdate ?? 'restrict',
 					deferred: fk.initiallyDeferred ?? false,
 					tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 				});

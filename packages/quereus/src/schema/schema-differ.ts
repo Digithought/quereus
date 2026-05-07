@@ -115,12 +115,15 @@ export function computeSchemaDiff(
 		}
 	}
 
-	// Find tables to drop (in actual but not in declared)
+	// Find tables to drop (in actual but not in declared). Order matters under
+	// FK enforcement: a child table must be dropped before its parent. Topo-sort
+	// so any to-be-dropped table that FK-references another to-be-dropped table
+	// comes first.
+	const dropSet = new Set<string>();
 	for (const [name] of actualTables) {
-		if (!declaredTables.has(name)) {
-			diff.tablesToDrop.push(name);
-		}
+		if (!declaredTables.has(name)) dropSet.add(name);
 	}
+	diff.tablesToDrop = orderDropsByFKDependency(dropSet, actualTables);
 
 	// Find views to create/drop
 	for (const [name, declaredView] of declaredViews) {
@@ -437,6 +440,41 @@ function pkSequencesEqual(
  */
 export function serializeSchemaDiff(diff: SchemaDiff): string {
 	return JSON.stringify(diff, null, 2);
+}
+
+/**
+ * Topologically sort the to-be-dropped table set so that, for every edge
+ * "child references parent" within the set, child appears before parent.
+ * Falls back to the input order on a cycle (shouldn't happen for simple FKs,
+ * but self/cyclic FKs would otherwise hang the migration).
+ */
+function orderDropsByFKDependency(
+	dropSet: Set<string>,
+	actualTables: Map<string, import('./catalog.js').CatalogTable>,
+): string[] {
+	const result: string[] = [];
+	const visited = new Set<string>();
+	const visiting = new Set<string>();
+
+	function visit(name: string): void {
+		if (visited.has(name)) return;
+		if (visiting.has(name)) return; // cycle; bail out gracefully
+		visiting.add(name);
+		const table = actualTables.get(name);
+		if (table) {
+			for (const refName of table.referencedTables) {
+				if (dropSet.has(refName) && refName !== name) visit(refName);
+			}
+		}
+		visiting.delete(name);
+		visited.add(name);
+		result.push(name);
+	}
+
+	// DFS post-order along child→parent edges puts parents first; reverse to
+	// drop children before parents.
+	for (const name of dropSet) visit(name);
+	return result.reverse();
 }
 
 /**

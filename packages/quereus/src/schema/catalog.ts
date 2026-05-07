@@ -28,6 +28,8 @@ export interface CatalogTable {
 		defaultValue: AST.Expression | null;
 	}>;
 	primaryKey: Array<{ columnName: string; desc: boolean }>;
+	/** Lowercased names of tables this table FK-references (within the same schema). */
+	referencedTables: string[];
 }
 
 export interface CatalogView {
@@ -120,11 +122,27 @@ function tableSchemaToCatalog(tableSchema: TableSchema, db: Database): CatalogTa
 		desc: pk.desc ?? false,
 	}));
 
+	// FK references within the same schema (cross-schema FKs are excluded — drop
+	// ordering only matters for tables whose lifetimes are tied to this schema).
+	const ownSchemaLower = tableSchema.schemaName.toLowerCase();
+	const referencedTables: string[] = [];
+	const seen = new Set<string>();
+	for (const fk of tableSchema.foreignKeys ?? []) {
+		const refSchema = (fk.referencedSchema ?? tableSchema.schemaName).toLowerCase();
+		if (refSchema !== ownSchemaLower) continue;
+		const refName = fk.referencedTable.toLowerCase();
+		if (refName === tableSchema.name.toLowerCase()) continue; // self-FK
+		if (seen.has(refName)) continue;
+		seen.add(refName);
+		referencedTables.push(refName);
+	}
+
 	return {
 		name: tableSchema.name,
 		ddl,
 		columns,
 		primaryKey,
+		referencedTables,
 	};
 }
 

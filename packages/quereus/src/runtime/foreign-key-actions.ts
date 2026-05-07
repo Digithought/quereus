@@ -54,8 +54,8 @@ export async function executeForeignKeyActions(
 
 					const action = operation === 'delete' ? fk.onDelete : fk.onUpdate;
 
-					// RESTRICT and NO ACTION are handled by constraint checks, not actions
-					if (action === 'restrict' || action === 'ignore') continue;
+					// RESTRICT is handled by parent-side constraint checks, not actions
+					if (action === 'restrict') continue;
 
 					const parentColIndices = resolveReferencedColumns(fk, parentTable);
 					if (parentColIndices.length !== fk.columns.length) continue;

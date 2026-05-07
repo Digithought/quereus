@@ -293,9 +293,12 @@ function extractColumnLevelForeignKeys(
 		const fk = con.foreignKey;
 		// child column index gets resolved by caller after module.alterTable returns
 		// the updated schema with the new column appended.
-		// When the ADD COLUMN clause omits ON DELETE/UPDATE, default to 'restrict' so
-		// the FK is actually enforced child-side on INSERT/UPDATE — buildChildSideFKChecks
-		// skips FKs whose onDelete and onUpdate are both 'ignore'.
+		if (fk.columns && fk.columns.length !== 1) {
+			throw new QuereusError(
+				`FK constraint '${con.name ?? `_fk_${columnDef.name}`}' on ADD COLUMN '${columnDef.name}': child column count (1) does not match parent column count (${fk.columns.length})`,
+				StatusCode.ERROR,
+			);
+		}
 		result.push({
 			name: con.name ?? `_fk_${columnDef.name}`,
 			columns: Object.freeze([]),

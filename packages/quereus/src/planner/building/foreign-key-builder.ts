@@ -134,27 +134,36 @@ export function buildChildSideFKChecks(
 	const checks: ConstraintCheck[] = [];
 
 	for (const fk of tableSchema.foreignKeys) {
-		// Skip entirely-ignored FKs (both actions are 'ignore' = no enforcement)
-		if (fk.onDelete === 'ignore' && fk.onUpdate === 'ignore') continue;
-
-		// Resolve parent table
+		// Resolve parent table. If absent, MATCH SIMPLE still allows the row when any
+		// FK column is NULL — but otherwise no parent row can match, so the check must
+		// fail. Build a null-guard chain terminated by a falsy literal in that case.
 		const parentSchema = ctx.schemaManager.findTable(
 			fk.referencedTable,
 			fk.referencedSchema,
 		);
+
+		let existsExpr: AST.Expression;
 		if (!parentSchema) {
-			log(`FK check skipped: parent table '${fk.referencedTable}' not found`);
-			continue;
-		}
+			log(`FK '${fk.name}': parent table '${fk.referencedTable}' not found; emitting null-guards-only check`);
+			const nullGuards: AST.UnaryExpr[] = fk.columns.map((childColIdx) => ({
+				type: 'unary',
+				operator: 'IS NULL',
+				expr: { type: 'column', name: tableSchema.columns[childColIdx].name, table: 'NEW' } as AST.ColumnExpr,
+			}));
+			existsExpr = nullGuards.reduceRight<AST.Expression>(
+				(acc, guard) => ({ type: 'binary', operator: 'OR', left: guard, right: acc } as AST.BinaryExpr),
+				{ type: 'literal', value: 0 } as AST.LiteralExpr,
+			);
+		} else {
+			const parentColIndices = resolveReferencedColumns(fk, parentSchema);
+			if (parentColIndices.length !== fk.columns.length) {
+				log(`FK check skipped: column count mismatch for FK '${fk.name}'`);
+				continue;
+			}
 
-		const parentColIndices = resolveReferencedColumns(fk, parentSchema);
-		if (parentColIndices.length !== fk.columns.length) {
-			log(`FK check skipped: column count mismatch for FK '${fk.name}'`);
-			continue;
+			// Synthesize EXISTS(SELECT 1 FROM parent WHERE parent.ref = NEW.fk)
+			existsExpr = synthesizeExistsCheck(fk, tableSchema, parentSchema, parentColIndices, 'new');
 		}
-
-		// Synthesize EXISTS(SELECT 1 FROM parent WHERE parent.ref = NEW.fk)
-		const existsExpr = synthesizeExistsCheck(fk, tableSchema, parentSchema, parentColIndices, 'new');
 
 		// Build as a RowConstraintSchema so it integrates with existing infrastructure
 		const syntheticConstraint: RowConstraintSchema = {

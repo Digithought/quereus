@@ -122,8 +122,9 @@ declare schema main {
 -- run
 
 -- Step 15: Diff should show DROP statements for posts and comments
+-- (comments must be dropped before posts because it FK-references posts)
 diff schema main;
-→ [{"ddl": "DROP TABLE IF EXISTS posts"}, {"ddl": "DROP TABLE IF EXISTS comments"}]
+→ [{"ddl": "DROP TABLE IF EXISTS comments"}, {"ddl": "DROP TABLE IF EXISTS posts"}]
 
 -- Step 16: Apply to drop extra tables
 apply schema main;
