@@ -20,13 +20,11 @@ select *, 'lit' as marker from t1;
 -- Qualified column refs over a self-join (cross join)
 insert into t1 values (2, 'two');
 
--- TODO bug: self cross join with aliases collapses to single row instead of cartesian product
--- select A.a as la, B.a as ra from t1 as A cross join t1 as B order by la, ra;
--- → [{"la":1,"ra":1},{"la":1,"ra":2},{"la":2,"ra":1},{"la":2,"ra":2}]
+select A.a as la, B.a as ra from t1 as A cross join t1 as B order by la, ra;
+→ [{"la":1,"ra":1},{"la":1,"ra":2},{"la":2,"ra":1},{"la":2,"ra":2}]
 
--- TODO bug: A.*, B.* across self cross join only emits one side's columns
--- select A.*, B.* from t1 as A cross join t1 as B order by A.a, B.a;
--- → [{"a":1,"b":"one","a:1":1,"b:1":"one"},{"a":1,"b":"one","a:1":2,"b:1":"two"},{"a":2,"b":"two","a:1":1,"b:1":"one"},{"a":2,"b":"two","a:1":2,"b:1":"two"}]
+select A.*, B.* from t1 as A cross join t1 as B order by A.a, B.a;
+→ [{"a":1,"b":"one","a:1":1,"b:1":"one"},{"a":1,"b":"one","a:1":2,"b:1":"two"},{"a":2,"b":"two","a:1":1,"b:1":"one"},{"a":2,"b":"two","a:1":2,"b:1":"two"}]
 
 drop table t1;
 
