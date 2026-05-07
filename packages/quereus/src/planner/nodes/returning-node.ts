@@ -53,22 +53,16 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     const nameCount = new Map<string, number>();
 
     const columns = this.projections.map((proj) => {
-      // Determine base column name
+      // Determine base column name; preserve the spelling supplied by the user
+      // (matches ProjectNode behaviour for SELECT — case-insensitive matching is
+      // a resolution concern, not an output-name concern).
       let baseName: string;
       if (proj.alias) {
-        baseName = proj.alias.toLowerCase();
+        baseName = proj.alias;
       } else if (proj.node instanceof ColumnReferenceNode) {
-        // For column references, check if there's a table qualifier (like NEW or OLD)
         const expr = proj.node.expression;
-        if (expr.table) {
-          // Use qualified name for NEW.id, OLD.id, etc., normalized to lowercase
-          baseName = `${expr.table.toLowerCase()}.${expr.name.toLowerCase()}`;
-        } else {
-          // Use the unqualified column name, normalized to lowercase
-          baseName = expr.name.toLowerCase();
-        }
+        baseName = expr.table ? `${expr.table}.${expr.name}` : expr.name;
       } else {
-        // For expressions, use the string representation
         baseName = expressionToString(proj.node.expression);
       }
 

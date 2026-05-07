@@ -260,15 +260,14 @@ export function buildUpdateStmt(
       // TODO: Support RETURNING *
       if (rc.type === 'all') throw new QuereusError('RETURNING * not yet supported', StatusCode.UNSUPPORTED);
 
-      // Infer alias from column name if not explicitly provided
+      // Infer alias from column name if not explicitly provided.
+      // Preserve the spelling the user wrote so quoted identifiers like
+      // [Name] / "Name" round-trip to the result column name unchanged.
       let alias = rc.alias;
       if (!alias && rc.expr.type === 'column') {
-        // For qualified column references like NEW.id or OLD.id, normalize to lowercase
-        if (rc.expr.table) {
-          alias = `${rc.expr.table.toLowerCase()}.${rc.expr.name.toLowerCase()}`;
-        } else {
-          alias = rc.expr.name.toLowerCase();
-        }
+        alias = rc.expr.table
+          ? `${rc.expr.table}.${rc.expr.name}`
+          : rc.expr.name;
       }
 
       const columnIndex = tableReference.tableSchema.columns.findIndex(col => col.name.toLowerCase() === (rc.expr.type === 'column' ? rc.expr.name.toLowerCase() : ''));

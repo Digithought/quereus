@@ -222,13 +222,14 @@ export function buildDeleteStmt(
       // NEW-in-DELETE guard fires before any "column not found" error.
       validateReturningQualifiers(rc.expr, 'DELETE');
 
-      // Infer alias from column name if not explicitly provided
+      // Infer alias from column name if not explicitly provided.
+      // Preserve the spelling the user wrote so quoted identifiers like
+      // [Name] / "Name" round-trip to the result column name unchanged.
       let alias = rc.alias;
       if (!alias && rc.expr.type === 'column') {
-        // For qualified column references like OLD.id, normalize to lowercase
         alias = rc.expr.table
-					? `${rc.expr.table.toLowerCase()}.${rc.expr.name.toLowerCase()}`
-					: rc.expr.name.toLowerCase();
+          ? `${rc.expr.table}.${rc.expr.name}`
+          : rc.expr.name;
       }
 
       return {

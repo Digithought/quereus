@@ -44,9 +44,9 @@ create table quoted_cols (id integer primary key, "Name" text);
 insert into quoted_cols values (1, 'first') returning id, "Name" as name_out;
 → [{"id":1,"name_out":"first"}]
 
--- TODO bug: bracket-quoted identifier [Name] in RETURNING projection returns lowercased column name
--- insert into quoted_cols values (2, 'second') returning id, [Name];
--- → [{"id":2,"Name":"second"}]
+-- bracket-quoted identifier [Name] in RETURNING projection preserves case
+insert into quoted_cols values (2, 'second') returning id, [Name];
+→ [{"id":2,"Name":"second"}]
 
 drop table quoted_cols;
 
