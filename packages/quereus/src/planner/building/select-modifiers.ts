@@ -183,7 +183,7 @@ function shouldApplyOrderByBeforeProjection(
 /**
  * Creates a scope for projection output columns
  */
-function createProjectionOutputScope(projectionNode: RelationalPlanNode): RegisteredScope {
+export function createProjectionOutputScope(projectionNode: RelationalPlanNode): RegisteredScope {
 	const projectionOutputScope = new RegisteredScope();
 	const projectionAttributes = projectionNode.getAttributes();
 

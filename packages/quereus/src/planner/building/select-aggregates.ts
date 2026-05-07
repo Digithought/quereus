@@ -393,17 +393,21 @@ function buildHavingFilter(
 }
 
 /**
- * Checks if a final projection is needed for complex expressions
+ * Checks if a final projection is needed for complex expressions or for
+ * aliasing simple column refs whose alias differs from the underlying column.
  */
 function checkNeedsFinalProjection(projections: Projection[]): boolean {
 	if (projections.length === 0) {
 		return false;
 	}
 
-	// Check if any of the projections are complex expressions (not just column refs)
 	return projections.some(proj => {
-		// If it's not a simple ColumnReferenceNode, we need final projection
-		return !CapabilityDetectors.isColumnReference(proj.node);
+		// Non-trivial expression — always needs the projection.
+		if (!CapabilityDetectors.isColumnReference(proj.node)) return true;
+		// Simple column ref — needs projection if the alias renames it, so the
+		// SELECT-list alias survives to the output column name.
+		const underlyingName = (proj.node as ColumnReferenceNode).expression.name.toLowerCase();
+		return Boolean(proj.alias && proj.alias.toLowerCase() !== underlyingName);
 	});
 }
 

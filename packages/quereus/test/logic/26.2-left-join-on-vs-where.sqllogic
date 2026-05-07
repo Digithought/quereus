@@ -35,12 +35,9 @@ select ow_l.id as lid, ow_r.id as rid from ow_l left join ow_r on ow_l.id = ow_r
 → [{"lid":2,"rid":null},{"lid":3,"rid":null}]
 
 -- HAVING on count post-LEFT JOIN: zero-count groups excluded.
--- Note: when HAVING is present, the projection alias (`lid`) is not visible in
--- ORDER BY and is also dropped from the output column name (Quereus quirk;
--- TODO bug: HAVING discards SELECT aliases).
--- TODO bug: alias `lid` lost from projection when GROUP BY + HAVING are used
+-- SELECT-list aliases survive on grouped column references too.
 select ow_l.id as lid, count(ow_r.id) as cnt from ow_l left join ow_r on ow_l.id = ow_r.l_id group by ow_l.id having count(ow_r.id) > 0 order by ow_l.id;
-→ [{"id":1,"cnt":1},{"id":2,"cnt":1}]
+→ [{"lid":1,"cnt":1},{"lid":2,"cnt":1}]
 
 drop table ow_l;
 drop table ow_r;

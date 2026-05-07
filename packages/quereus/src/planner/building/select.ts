@@ -30,7 +30,7 @@ import { buildCompoundSelect } from './select-compound.js';
 import { analyzeSelectColumns, buildStarProjections } from './select-projections.js';
 import { buildAggregatePhase, buildFinalAggregateProjections } from './select-aggregates.js';
 import { buildWindowPhase } from './select-window.js';
-import { buildFinalProjections, applyDistinct, applyOrderBy, applyLimitOffset } from './select-modifiers.js';
+import { buildFinalProjections, applyDistinct, applyOrderBy, applyLimitOffset, createProjectionOutputScope } from './select-modifiers.js';
 import { SortNode, type SortKey } from '../nodes/sort.js';
 import { buildSelectListAsts, resolveOrdinalReference } from './select-ordinal.js';
 
@@ -140,6 +140,7 @@ export function buildSelectStmt(
 	input = aggregateResult.output;
 	let preAggregateSort = aggregateResult.preAggregateSort;
 	let orderByAppliedEarly = false;
+	let aggregateProjectionScope: RegisteredScope | undefined;
 
 	// Update context if we have aggregates
 	if (aggregateResult.aggregateScope) {
@@ -188,6 +189,9 @@ export function buildSelectStmt(
 				!aggregateResult.hasHavingOnlyAggregates &&
 				!aggregateResult.hasOrderByOnlyAggregates;
 			input = new ProjectNode(selectScope, input, finalProjections, undefined, undefined, preserveForAggregate);
+			// Expose final-projection output column names (including SELECT-list aliases)
+			// so subsequent ORDER BY can reference aliases like the non-aggregate path.
+			aggregateProjectionScope = createProjectionOutputScope(input);
 		}
 	}
 
@@ -261,14 +265,17 @@ export function buildSelectStmt(
 		input = applyOrderBy(input, stmt, selectContext, preAggregateSort, finalResult.projectionScope, false, selectListAsts);
 		input = applyLimitOffset(input, stmt, selectContext, finalResult.projectionScope);
 	} else {
-		// Apply final modifiers without projection scope for aggregate/window cases
+		// Apply final modifiers. For the aggregate path, expose the final-projection
+		// output scope so ORDER BY can resolve SELECT-list aliases (the non-aggregate
+		// path already does this via finalResult.projectionScope). The window path
+		// keeps its existing scope handling.
 		input = applyDistinct(input, stmt, selectScope);
 		if (!orderByAppliedEarly) {
 			// In the aggregate path, ORDER BY may legally reference aggregates; in the
 			// window path it may reference window outputs. Both are now in selectContext.
-			input = applyOrderBy(input, stmt, selectContext, preAggregateSort, undefined, hasAggregates, selectListAsts);
+			input = applyOrderBy(input, stmt, selectContext, preAggregateSort, aggregateProjectionScope, hasAggregates, selectListAsts);
 		}
-		input = applyLimitOffset(input, stmt, selectContext);
+		input = applyLimitOffset(input, stmt, selectContext, aggregateProjectionScope);
 	}
 
 	return input;

@@ -45,6 +45,19 @@ select grp, sum(val) as total from gx group by 1 order by 2 desc;
 select grp, count(*) as cnt from gx group by grp having count(*) > 2 order by grp;
 → [{"grp":"a","cnt":3}]
 
+-- SELECT-list alias on a grouped column reference survives to the output and
+-- is available to ORDER BY.
+select grp as g, count(*) as cnt from gx group by grp order by g;
+→ [{"g":"a","cnt":3},{"g":"b","cnt":2}]
+
+-- Same with HAVING — alias still survives.
+select grp as g, count(*) as cnt from gx group by grp having count(*) > 0 order by g;
+→ [{"g":"a","cnt":3},{"g":"b","cnt":2}]
+
+-- Minimal repro: alias-only on a grouped column ref with no aggregates.
+select grp as g from gx group by grp order by g;
+→ [{"g":"a"},{"g":"b"}]
+
 drop table gx;
 
 -- GROUP BY with COLLATE NOCASE on a TEXT column is not supported by Quereus
