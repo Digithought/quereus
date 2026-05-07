@@ -14,6 +14,25 @@ import type { ModuleCapabilities } from '../capabilities.js';
 
 const logger = createMemoryTableLoggers('module');
 
+const EMPTY_COLUMN_SET: ReadonlySet<number> = new Set<number>();
+
+/**
+ * Collect column indexes bound by an equality predicate (`=` or single-value `IN`).
+ * These columns are constants for the access plan and don't contribute ordering.
+ */
+function collectEqualityBoundColumns(filters: readonly PredicateConstraint[]): ReadonlySet<number> {
+	const cols = new Set<number>();
+	for (const f of filters) {
+		if (!f.usable) continue;
+		if (f.op === '=') {
+			cols.add(f.columnIndex);
+		} else if (f.op === 'IN' && Array.isArray(f.value) && (f.value as unknown[]).length === 1) {
+			cols.add(f.columnIndex);
+		}
+	}
+	return cols.size === 0 ? EMPTY_COLUMN_SET : cols;
+}
+
 /**
  * A module that provides in-memory table functionality using BTree (inheritree).
  * Tables created with this module persist only for the lifetime of the
@@ -416,9 +435,22 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 		request: BestAccessPlanRequest,
 		availableIndexes: IndexSchema[]
 	): BestAccessPlanResult {
-		// Check if any index can provide the required ordering
-		for (const index of availableIndexes) {
-			if (this.indexSatisfiesOrdering(index, request.requiredOrdering!)) {
+		// Columns bound by an equality predicate are constants for this scan and
+		// therefore contribute no ordering information — they can be skipped when
+		// aligning an index against the required ordering.
+		const equalityCols = collectEqualityBoundColumns(request.filters);
+
+		// When the plan already binds a specific index for filtering/seeking, the
+		// scan iteration order is dictated by that index — only it can claim to
+		// satisfy the required ordering. A full-scan plan (no indexName) is free
+		// to be converted into an ordering-providing IndexScan over any index.
+		const candidates = plan.indexName
+			? availableIndexes.filter(idx => idx.name === plan.indexName)
+			: availableIndexes;
+
+		// Check if any candidate index can provide the required ordering
+		for (const index of candidates) {
+			if (this.indexSatisfiesOrdering(index, request.requiredOrdering!, equalityCols)) {
 				// This index can provide ordering - prefer it even if slightly more expensive
 				const adjustedCost = plan.cost * 0.9; // 10% discount for avoiding sort
 
@@ -437,24 +469,46 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	}
 
 	/**
-	 * Check if an index can satisfy ordering requirements
+	 * Check if an index can satisfy ordering requirements.
+	 *
+	 * Leading index columns that are bound by equality (and therefore constant
+	 * for this scan) are skipped before aligning against the required ordering
+	 * keys. The per-column direction comparison still applies to the remaining
+	 * (unbound) suffix.
 	 */
 	private indexSatisfiesOrdering(
 		index: IndexSchema,
-		requiredOrdering: readonly OrderingSpec[]
+		requiredOrdering: readonly OrderingSpec[],
+		equalityCols: ReadonlySet<number> = EMPTY_COLUMN_SET
 	): boolean {
-		if (requiredOrdering.length > index.columns.length) {
-			return false;
+		let i = 0; // pointer into index.columns
+		let j = 0; // pointer into requiredOrdering
+
+		// Skip leading equality-bound index columns; they contribute no ordering.
+		while (i < index.columns.length && equalityCols.has(index.columns[i].index)) {
+			i++;
 		}
 
-		for (let i = 0; i < requiredOrdering.length; i++) {
-			const required = requiredOrdering[i];
+		while (j < requiredOrdering.length) {
+			if (i >= index.columns.length) return false;
+			const required = requiredOrdering[j];
 			const indexCol = index.columns[i];
 
-			if (required.columnIndex !== indexCol.index ||
-				required.desc !== (indexCol.desc ?? false)) {
-				return false;
+			if (required.columnIndex === indexCol.index &&
+				required.desc === (indexCol.desc ?? false)) {
+				i++;
+				j++;
+				continue;
 			}
+
+			// Allow equality-bound columns interleaved after the matched prefix:
+			// they don't break ordering on later columns.
+			if (equalityCols.has(indexCol.index)) {
+				i++;
+				continue;
+			}
+
+			return false;
 		}
 
 		return true;

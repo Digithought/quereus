@@ -1378,6 +1378,7 @@ order by expression [asc | desc] [nulls first | nulls last]
 - `nulls first`: NULL values sort before non-NULL values
 - `nulls last`: NULL values sort after non-NULL values
 - Expression can be a column name, alias, or expression
+- Aggregate functions are permitted when the query is itself an aggregate query (has aggregates in `select`/`having`, or has `group by`)
 
 **Examples:**
 ```sql
@@ -1396,6 +1397,12 @@ order by total desc;
 -- Ordering with NULLS FIRST/LAST
 select * from users
 order by last_login desc nulls last;
+
+-- Aggregate function in ORDER BY (legal with GROUP BY or other aggregates)
+select grp, count(*) as cnt from t group by grp order by count(*) desc;
+
+-- Aggregate referenced only in ORDER BY (not in SELECT)
+select grp from t group by grp order by max(val) desc;
 ```
 
 ### 3.6 LIMIT and OFFSET Clauses

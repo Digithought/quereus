@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-05-07T16:17:56.828Z (agent: claude)
+  Log file: C:\projects\quereus\tickets\.logs\2-fix-composite-asc-desc-index-ordering.implement.2026-05-07T16-17-56-826Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 description: Composite (ASC, DESC) index isn't consumed for `equality on leading + ORDER BY DESC on trailing` — equality-bound prefix columns must be skipped when matching index ordering against required ordering.
 prereq:
 files:
