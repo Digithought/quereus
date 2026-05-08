@@ -68,6 +68,8 @@ Task workflow in `tickets/` folder (see `tickets/AGENTS.md`).
 - Only `packages/quereus` has a lint script (`eslint`)
 - On Windows, lint globs must be single-quoted to avoid command line too long errors
 - Tests use Mocha + ts-node/esm for quereus, Vitest for some other packages
+- Default cwd is the repo root. If you've already `cd packages/quereus` in a prior Bash call, the Bash tool's cwd persists — don't re-prefix subsequent commands with `cd packages/quereus &&`. Either chain everything in one Bash call, or use absolute paths / `yarn workspace @quereus/quereus run <script>` from the root.
+- Streaming long-running output: `2>&1 | tee /tmp/foo.log` is the recommended pattern, but under Windows + Git Bash the `| tee | tail` pipeline can drop stdout to the agent (silent buffering). If `tee` produces nothing, don't rebuild — chain a separate read instead: `yarn test 2>&1 | tee /tmp/test.log; tail -n 80 /tmp/test.log`. Under PowerShell, use `Tee-Object` rather than `tee`.
 
 ## Key Architecture Notes
 - All tables are virtual tables (VTab-centric design)
