@@ -288,8 +288,8 @@ export function buildParentSideFKChecks(
 				const parentColIndices = resolveReferencedColumns(fk, tableSchema);
 				if (parentColIndices.length !== fk.columns.length) continue;
 
-				// For UPDATE, only check if the referenced columns are being modified
-				// (this optimization can be added later; for now check always)
+				// For UPDATE, the runtime skips this check when none of `parentColIndices`
+				// changed (see emit/constraint-check.ts).
 
 				// Synthesize NOT EXISTS(SELECT 1 FROM child WHERE child.fk = OLD.pk)
 				const notExistsExpr = synthesizeNotExistsCheck(fk, childTable, tableSchema, parentColIndices);
@@ -373,6 +373,7 @@ export function buildParentSideFKChecks(
 						initiallyDeferred: !isRestrict,
 						needsDeferred: !isRestrict, // RESTRICT must be immediate, not deferred
 						kind: 'fk-parent',
+						referencedColumnIndices: parentColIndices,
 					});
 				} finally {
 					if (needsSchemaSwitch) ctx.schemaManager.setCurrentSchema(originalCurrentSchema);

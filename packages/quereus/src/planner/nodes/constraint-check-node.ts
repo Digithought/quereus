@@ -16,6 +16,9 @@ export interface ConstraintCheck {
   needsDeferred: boolean;            // Whether this constraint must be deferred (subquery, committed ref, etc.)
   /** Constraint class for conflict-resolution dispatch at runtime. */
   kind?: 'check' | 'fk-child' | 'fk-parent';
+  /** For 'fk-parent' UPDATE checks: parent-table column indices the FK references.
+   *  When set, the runtime can skip the check when none of these indices changed. */
+  referencedColumnIndices?: ReadonlyArray<number>;
 }
 
 /**

@@ -12,6 +12,7 @@ import { ConflictResolution } from '../../common/constants.js';
 import { withAsyncRowContext, createRowSlot } from '../context-helpers.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { composeCombinedDescriptor } from '../descriptor-helpers.js';
+import { sqlValuesEqual } from '../../util/comparison.js';
 
 interface ConstraintMetadataEntry {
 	schema: RowConstraintSchema;
@@ -24,6 +25,8 @@ interface ConstraintMetadataEntry {
 	contextRow?: Row; // Mutation context row if present
 	contextDescriptor?: RowDescriptor; // Mutation context row descriptor
 	kind: 'check' | 'fk-child' | 'fk-parent';
+	/** For 'fk-parent' UPDATE checks: parent-table column indices the FK references. */
+	referencedColumnIndices?: ReadonlyArray<number>;
 }
 
 interface NotNullDefaultRuntime {
@@ -107,6 +110,7 @@ export function emitConstraintCheck(plan: ConstraintCheckNode, ctx: EmissionCont
 			contextRow: undefined,
 			contextDescriptor,
 			kind: check.kind ?? 'check',
+			referencedColumnIndices: check.referencedColumnIndices,
 		};
 	});
 
@@ -301,6 +305,26 @@ async function checkCheckConstraints(
 	for (let i = 0; i < constraintMetadata.length; i++) {
 		const metadata = constraintMetadata[i];
 		const evaluator = evaluatorFunctions[i] ?? metadata.evaluator;
+
+		// Parent-side FK UPDATE: skip the NOT EXISTS subquery when none of the
+		// referenced parent columns actually changed.
+		if (
+			plan.operation === RowOpFlag.UPDATE &&
+			metadata.kind === 'fk-parent' &&
+			metadata.referencedColumnIndices
+		) {
+			const numCols = tableSchema.columns.length;
+			let anyChanged = false;
+			for (const colIdx of metadata.referencedColumnIndices) {
+				const oldVal = row[colIdx] as SqlValue;           // OLD section: 0..n-1
+				const newVal = row[numCols + colIdx] as SqlValue; // NEW section: n..2n-1
+				if (!sqlValuesEqual(oldVal, newVal)) {
+					anyChanged = true;
+					break;
+				}
+			}
+			if (!anyChanged) continue;
+		}
 
 		// Resolve effective action up front; non-default actions (IGNORE/REPLACE/FAIL/ROLLBACK)
 		// must be applied at row time, so we cannot let those defer to commit.
