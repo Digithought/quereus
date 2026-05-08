@@ -74,6 +74,8 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode, Li
 			estimatedRows: this.estimatedRows,
 			ordering: sourcePhysical?.ordering,
 			uniqueKeys: sourcePhysical?.uniqueKeys,
+			// LIMIT/OFFSET preserves monotonicOn — slicing a sorted prefix preserves ordering.
+			monotonicOn: sourcePhysical?.monotonicOn,
 		};
 	}
 

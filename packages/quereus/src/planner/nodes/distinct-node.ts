@@ -74,10 +74,19 @@ export class DistinctNode extends PlanNode implements UnaryRelationalNode {
     const sourcePhysical = childrenPhysical[0];
     const colCount = this.source.getAttributes().length;
     const allColsKey = [Array.from({ length: colCount }, (_, i) => i)];
+
+    // Distinct strengthens an already-monotonic input from non-strict to strict.
+    // It does not establish ordering on its own.
+    const sourceMonotonic = sourcePhysical?.monotonicOn;
+    const monotonicOn = sourceMonotonic && sourceMonotonic.length > 0
+      ? sourceMonotonic.map(m => ({ ...m, strict: true }))
+      : undefined;
+
     return {
       uniqueKeys: allColsKey,
       estimatedRows: this.estimatedRows,
       ordering: sourcePhysical?.ordering,
+      monotonicOn,
     };
   }
 

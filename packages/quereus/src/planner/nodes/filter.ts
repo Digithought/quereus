@@ -79,6 +79,8 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 			estimatedRows: rows,
 			ordering: sourcePhysical?.ordering,
 			uniqueKeys,
+			// Filter preserves monotonicOn — a predicate doesn't reorder rows.
+			monotonicOn: sourcePhysical?.monotonicOn,
 		};
 	}
 

@@ -6,6 +6,21 @@ import type { OutputValue, Row } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
 
 /**
+ * Information about an attribute the relation is monotonically ordered on.
+ * Stronger than `ordering`: meaningful only for total-order-preserving sources
+ * (vtab access plans that advertise it; sort nodes; certain merge operators)
+ * and survives only the propagation rules documented in characteristics.ts.
+ */
+export interface MonotonicOnInfo {
+  /** Attribute over which the relation is ordered. Stable across plan transformations. */
+  readonly attrId: number;
+  /** True iff the relation guarantees no two rows share the value of attrId. */
+  readonly strict: boolean;
+  /** Direction; default 'asc'. */
+  readonly direction: 'asc' | 'desc';
+}
+
+/**
  * Physical properties that execution nodes can provide or require
  */
 export interface PhysicalProperties {
@@ -21,6 +36,17 @@ export interface PhysicalProperties {
    * the operation (e.g., DISTINCT creates a unique key on all columns)
    */
   uniqueKeys?: number[][];
+
+  /**
+   * Attributes the relation is monotonically ordered on. Stronger than `ordering`:
+   * meaningful only for total-order-preserving sources (vtab access plans that
+   * advertise it; sort nodes; certain merge operators) and survives only the
+   * propagation rules documented in characteristics.ts.
+   *
+   * `monotonicOn` strictly implies `ordering` on the same attribute in the same
+   * direction; nodes are permitted (not required) to populate one from the other.
+   */
+  monotonicOn?: readonly MonotonicOnInfo[];
 
   /**
    * Whether this node is read-only (does not mutate external state).

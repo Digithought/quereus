@@ -183,6 +183,8 @@ export class HashAggregateNode extends PlanNode implements UnaryRelationalNode {
 			uniqueKeys: this.groupBy.length > 0 ?
 				[this.groupBy.map((_, idx) => idx)] :
 				[[]],
+			// Aggregation boundary: drop monotonicOn (the grouped relation is a set).
+			monotonicOn: undefined,
 		};
 	}
 

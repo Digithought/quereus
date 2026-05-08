@@ -1,5 +1,5 @@
 import { isRelationalNode, PlanNode } from './plan-node.js';
-import type { RelationalPlanNode, Attribute, BinaryRelationalNode } from './plan-node.js';
+import type { RelationalPlanNode, Attribute, BinaryRelationalNode, PhysicalProperties } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
@@ -50,6 +50,16 @@ export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
 
   getRelations(): readonly [RelationalPlanNode, RelationalPlanNode] {
     return [this.left, this.right];
+  }
+
+  computePhysical(_childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+    // All set operations drop monotonicOn in this pass.
+    // TODO: UNION ALL with disjoint X-ranges on both sides could preserve
+    // MonotonicOn(X); see ticket 1-monotonic-on-characteristic for the deferred
+    // range-bound reasoning.
+    return {
+      monotonicOn: undefined,
+    };
   }
 
   withChildren(newChildren: readonly PlanNode[]): PlanNode {

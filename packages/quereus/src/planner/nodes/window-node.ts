@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type Attribute, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode } from './plan-node.js';
+import { PlanNode, type Attribute, type RelationalPlanNode, type UnaryRelationalNode, type ScalarPlanNode, type PhysicalProperties } from './plan-node.js';
 import type { WindowFunctionCallNode } from './window-function.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
@@ -162,6 +162,18 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 
 	getRelations(): readonly [RelationalPlanNode] {
 		return [this.source];
+	}
+
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		const sourcePhysical = childrenPhysical[0];
+		// Window functions append columns and pass rows through; within a partition
+		// the input row order is preserved, so monotonicOn carries over unchanged.
+		return {
+			estimatedRows: this.estimatedRows,
+			ordering: sourcePhysical?.ordering,
+			uniqueKeys: sourcePhysical?.uniqueKeys,
+			monotonicOn: sourcePhysical?.monotonicOn,
+		};
 	}
 
 	get estimatedRows(): number | undefined {

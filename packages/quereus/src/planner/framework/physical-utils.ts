@@ -4,7 +4,7 @@
  */
 
 import { PlanNodeType } from '../nodes/plan-node-type.js';
-import type { ScalarPlanNode } from '../nodes/plan-node.js';
+import type { MonotonicOnInfo, ScalarPlanNode } from '../nodes/plan-node.js';
 import type { ColumnReferenceNode } from '../nodes/reference.js';
 
 /**
@@ -231,4 +231,60 @@ export function projectOrdering(
 	}
 
 	return result;
+}
+
+/**
+ * Filter `monotonicOn` entries to those whose attrId is in the preserved set.
+ * Returns undefined if nothing survives (so callers can omit the field).
+ */
+export function projectMonotonicOnByAttrId(
+	monotonicOn: readonly MonotonicOnInfo[] | undefined,
+	preservedAttrIds: ReadonlySet<number>,
+): readonly MonotonicOnInfo[] | undefined {
+	if (!monotonicOn || monotonicOn.length === 0) return undefined;
+	const survived = monotonicOn.filter(m => preservedAttrIds.has(m.attrId));
+	return survived.length > 0 ? survived : undefined;
+}
+
+/**
+ * Intersect two `monotonicOn` lists by attrId+direction. Strictness is the
+ * conjunction (AND) of the two sides.
+ */
+export function intersectMonotonicOn(
+	left: readonly MonotonicOnInfo[] | undefined,
+	right: readonly MonotonicOnInfo[] | undefined,
+): readonly MonotonicOnInfo[] | undefined {
+	if (!left || !right || left.length === 0 || right.length === 0) return undefined;
+	const result: MonotonicOnInfo[] = [];
+	for (const l of left) {
+		const r = right.find(x => x.attrId === l.attrId && x.direction === l.direction);
+		if (r) {
+			result.push({
+				attrId: l.attrId,
+				direction: l.direction,
+				strict: l.strict && r.strict,
+			});
+		}
+	}
+	return result.length > 0 ? result : undefined;
+}
+
+/**
+ * Derive an ordering specification from `monotonicOn` entries by mapping
+ * attrIds to column indices in the supplied attribute list. Each surviving
+ * entry yields one ordering element.
+ */
+export function deriveOrderingFromMonotonicOn(
+	monotonicOn: readonly MonotonicOnInfo[] | undefined,
+	attrs: readonly { id: number }[],
+): { column: number; desc: boolean }[] | undefined {
+	if (!monotonicOn || monotonicOn.length === 0) return undefined;
+	const result: { column: number; desc: boolean }[] = [];
+	for (const m of monotonicOn) {
+		const idx = attrs.findIndex(a => a.id === m.attrId);
+		if (idx >= 0) {
+			result.push({ column: idx, desc: m.direction === 'desc' });
+		}
+	}
+	return result.length > 0 ? result : undefined;
 }

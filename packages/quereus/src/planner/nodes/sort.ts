@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute, isRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute, type MonotonicOnInfo, isRelationalNode } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { formatSortKey } from '../../util/plan-formatter.js';
@@ -7,6 +7,7 @@ import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { extractOrderingFromSortKeys } from '../framework/physical-utils.js';
 import { SortCapable } from '../framework/characteristics.js';
+import { ColumnReferenceNode } from './reference.js';
 
 /**
  * Represents a sort key for ordering results
@@ -75,10 +76,32 @@ export class SortNode extends PlanNode implements UnaryRelationalNode, SortCapab
 		// Extract ordering from sort keys if they are trivial column references
 		const ordering = extractOrderingFromSortKeys(this.sortKeys, sourceAttributes);
 
+		// Establish monotonicOn from the leading sort key when it is a trivial
+		// column reference. Strict iff the input was unique on that single column.
+		let monotonicOn: readonly MonotonicOnInfo[] | undefined;
+		if (this.sortKeys.length > 0) {
+			const leadingKey = this.sortKeys[0];
+			if (leadingKey.expression instanceof ColumnReferenceNode) {
+				const leadAttrId = leadingKey.expression.attributeId;
+				const leadIdx = sourceAttributes.findIndex(a => a.id === leadAttrId);
+				if (leadIdx >= 0) {
+					const strict = (sourcePhysical?.uniqueKeys ?? []).some(
+						key => key.length === 1 && key[0] === leadIdx,
+					);
+					monotonicOn = [{
+						attrId: leadAttrId,
+						direction: leadingKey.direction,
+						strict,
+					}];
+				}
+			}
+		}
+
 		return {
 			estimatedRows: this.estimatedRows,
 			ordering,
 			uniqueKeys: sourcePhysical?.uniqueKeys,
+			monotonicOn,
 		};
 	}
 

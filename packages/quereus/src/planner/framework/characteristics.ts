@@ -7,7 +7,7 @@
  * optimization rules.
  */
 
-import type { PlanNode, RelationalPlanNode, ScalarPlanNode, ConstantNode, TableDescriptor } from '../nodes/plan-node.js';
+import type { PlanNode, RelationalPlanNode, ScalarPlanNode, ConstantNode, TableDescriptor, MonotonicOnInfo } from '../nodes/plan-node.js';
 import { isRelationalNode } from '../nodes/plan-node.js';
 import type * as AST from '../../parser/ast.js';
 import type { TableSchema } from '../../schema/table.js';
@@ -57,6 +57,15 @@ export class PlanNodeCharacteristics {
 
 	static getOrdering(node: PlanNode): { column: number; desc: boolean }[] | undefined {
 		return node.physical.ordering;
+	}
+
+	// MonotonicOn capabilities
+	static getMonotonicOn(node: PlanNode): readonly MonotonicOnInfo[] {
+		return node.physical.monotonicOn ?? [];
+	}
+
+	static isMonotonicOn(node: PlanNode, attrId: number): MonotonicOnInfo | undefined {
+		return node.physical.monotonicOn?.find(m => m.attrId === attrId);
 	}
 
 	// Cardinality analysis

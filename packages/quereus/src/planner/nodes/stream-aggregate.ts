@@ -205,6 +205,8 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
       uniqueKeys: this.groupBy.length > 0 ?
         [this.groupBy.map((_, idx) => idx)] :
         [[]], // Single row if no GROUP BY
+      // Aggregation boundary: drop monotonicOn (the grouped relation is a set).
+      monotonicOn: undefined,
     };
   }
 

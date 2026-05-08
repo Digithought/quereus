@@ -11,7 +11,7 @@ import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { ProjectionCapable } from '../framework/characteristics.js';
 import type { PhysicalProperties } from './plan-node.js';
-import { projectOrdering } from '../framework/physical-utils.js';
+import { projectMonotonicOnByAttrId, projectOrdering } from '../framework/physical-utils.js';
 
 export interface Projection {
 	node: ScalarPlanNode;
@@ -167,11 +167,15 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 		// Build mapping from source index -> projected index for ColumnReferences
 		const map = new Map<number, number>();
 		const sourceAttrs = this.source.getAttributes();
+		const preservedAttrIds = new Set<number>();
 		this.projections.forEach((proj, outIdx) => {
 			if (proj.node instanceof ColumnReferenceNode) {
 				const colRef = proj.node as ColumnReferenceNode;
 				const srcIndex = sourceAttrs.findIndex(a => a.id === colRef.attributeId);
 				if (srcIndex >= 0 && !map.has(srcIndex)) map.set(srcIndex, outIdx);
+				// Track attrIds preserved by trivial column-reference projections.
+				// Until expression-properties land, only these survive monotonicOn.
+				preservedAttrIds.add(colRef.attributeId);
 			}
 		});
 		const uniqueKeys = (sourcePhysical?.uniqueKeys || [])
@@ -189,6 +193,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 			estimatedRows: this.source.estimatedRows,
 			ordering: projectOrdering(sourcePhysical?.ordering, map),
 			uniqueKeys,
+			monotonicOn: projectMonotonicOnByAttrId(sourcePhysical?.monotonicOn, preservedAttrIds),
 		};
 	}
 

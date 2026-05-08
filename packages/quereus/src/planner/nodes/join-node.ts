@@ -12,7 +12,7 @@ import { normalizePredicate } from '../analysis/predicate-normalizer.js';
 import { combineJoinKeys, analyzeJoinKeyCoverage } from '../util/key-utils.js';
 import { BinaryOpNode } from './scalar.js';
 import { ColumnReferenceNode } from './reference.js';
-import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows } from './join-utils.js';
+import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, propagateJoinMonotonicOn } from './join-utils.js';
 
 export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross' | 'semi' | 'anti';
 
@@ -97,10 +97,12 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 		const rightPhys = childrenPhysical[1];
 		const leftType = this.left.getType();
 		const rightType = this.right.getType();
+		const leftAttrs = this.left.getAttributes();
+		const rightAttrs = this.right.getAttributes();
 
 		// Extract equi-join index pairs from condition
 		const pairs = extractEquiPairsFromCondition(
-			this.condition, this.left.getAttributes(), this.right.getAttributes()
+			this.condition, leftAttrs, rightAttrs
 		);
 
 		const result = analyzeJoinKeyCoverage(
@@ -109,9 +111,17 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 			leftType.columns.length,
 		);
 
+		// Map column-index equi-pairs to attribute-id pairs for monotonicOn propagation.
+		const attrIdPairs = pairs.map(p => ({
+			leftAttrId: leftAttrs[p.left]?.id,
+			rightAttrId: rightAttrs[p.right]?.id,
+		})).filter(p => p.leftAttrId !== undefined && p.rightAttrId !== undefined) as
+			Array<{ leftAttrId: number; rightAttrId: number }>;
+
 		return {
 			uniqueKeys: result.uniqueKeys,
 			estimatedRows: result.estimatedRows,
+			monotonicOn: propagateJoinMonotonicOn(this.joinType, leftPhys, rightPhys, attrIdPairs),
 		};
 	}
 

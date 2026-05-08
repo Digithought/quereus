@@ -1,4 +1,4 @@
-import type { Attribute } from './plan-node.js';
+import type { Attribute, MonotonicOnInfo, PhysicalProperties } from './plan-node.js';
 import type { JoinType } from './join-node.js';
 import type { RelationType, ColRef } from '../../common/datatype.js';
 
@@ -84,6 +84,57 @@ export function buildJoinRelationType(
 		keys: (keys ?? []) as ColRef[][],
 		rowConstraints: [...leftType.rowConstraints, ...rightType.rowConstraints],
 	};
+}
+
+/**
+ * Propagate `monotonicOn` through a join operator.
+ *
+ * Rules (see `1-monotonic-on-characteristic` ticket):
+ * - cross / full-outer:                drop on both sides.
+ * - semi / anti:                       preserve left's monotonicOn unchanged.
+ * - inner / left / right:              for each equi-pair (l.X, r.X) where both
+ *                                      sides are MonotonicOn on their respective X
+ *                                      with matching direction, the non-null-extended
+ *                                      side(s) propagate their monotonicOn(X) to the
+ *                                      output (strictness = AND of the two inputs).
+ *                                      Other monotonicOn entries (those not coupled
+ *                                      by an equi-pair) are dropped.
+ */
+export function propagateJoinMonotonicOn(
+	joinType: JoinType,
+	leftPhys: PhysicalProperties | undefined,
+	rightPhys: PhysicalProperties | undefined,
+	equiPairs: ReadonlyArray<{ leftAttrId: number; rightAttrId: number }>,
+): readonly MonotonicOnInfo[] | undefined {
+	if (joinType === 'cross' || joinType === 'full') return undefined;
+
+	const leftMon = leftPhys?.monotonicOn;
+	if (joinType === 'semi' || joinType === 'anti') {
+		return leftMon && leftMon.length > 0 ? leftMon : undefined;
+	}
+
+	const rightMon = rightPhys?.monotonicOn;
+	if (!leftMon || !rightMon || leftMon.length === 0 || rightMon.length === 0) return undefined;
+	if (equiPairs.length === 0) return undefined;
+
+	const leftPreserved = joinType === 'inner' || joinType === 'left';
+	const rightPreserved = joinType === 'inner' || joinType === 'right';
+
+	const result: MonotonicOnInfo[] = [];
+	for (const pair of equiPairs) {
+		const l = leftMon.find(m => m.attrId === pair.leftAttrId);
+		if (!l) continue;
+		const r = rightMon.find(m => m.attrId === pair.rightAttrId && m.direction === l.direction);
+		if (!r) continue;
+		const strict = l.strict && r.strict;
+		if (leftPreserved) {
+			result.push({ attrId: pair.leftAttrId, direction: l.direction, strict });
+		}
+		if (rightPreserved) {
+			result.push({ attrId: pair.rightAttrId, direction: l.direction, strict });
+		}
+	}
+	return result.length > 0 ? result : undefined;
 }
 
 /**
