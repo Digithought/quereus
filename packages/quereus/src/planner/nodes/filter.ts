@@ -7,6 +7,7 @@ import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { PredicateCapable, type PredicateSourceCapable } from '../framework/characteristics.js';
 import { createTableInfoFromNode, extractConstraints } from '../analysis/constraint-extractor.js';
+import { normalizePredicate } from '../analysis/predicate-normalizer.js';
 
 /**
  * Represents a filter operation (WHERE clause).
@@ -137,8 +138,11 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 		return new FilterNode(this.scope, this.source, newPredicate);
 	}
 
-	// PredicateSourceCapable interface implementation
+	// PredicateSourceCapable interface implementation:
+	// expose a normalized form so plan-walk callers (constraint extractor, etc.)
+	// see canonical predicates regardless of NOT-wrapping in the source AST.
+	// Mirrors JoinNode.getPredicates().
 	getPredicates(): readonly ScalarPlanNode[] {
-		return [this.predicate];
+		return [normalizePredicate(this.predicate)];
 	}
 }
