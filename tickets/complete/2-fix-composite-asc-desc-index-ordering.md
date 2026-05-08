@@ -37,12 +37,12 @@ Regression — covered by `Extended constraint pushdown > OR predicates > handle
 ## Tests
 
 - `packages/quereus/test/optimizer/desc-index-ordering.spec.ts` — all 3 tests pass (the previously skipped composite test is now active).
-- `packages/quereus/test/optimizer/extended-constraint-pushdown.spec.ts` — `OR predicates > handles OR with range predicate as residual correctly` passes.
-- Full quereus suite: 993 passing, 1 failing (`Predicate normalizer > double negation: NOT NOT (a > 10) equals a > 10`). That failure is **pre-existing and unrelated to this ticket** — it reproduces with both the pre-fix and post-fix code on `module.ts` (verified by stashing and re-running). Investigation belongs in a separate fix ticket.
-- `yarn lint` for `packages/quereus` clean (exit 0).
+- `packages/quereus/test/optimizer/extended-constraint-pushdown.spec.ts > OR predicates > handles OR with range predicate as residual correctly` — passes.
+- Full quereus suite: 993 passing, 1 failing (`Predicate normalizer > double negation: NOT NOT (a > 10) equals a > 10`). This failure is pre-existing and unrelated to this ticket; tracked separately under `fix/fix-predicate-normalizer-double-negation.md`.
+- `yarn workspace @quereus/quereus lint` clean (exit 0).
 
-## Review focus
+## Review notes
 
-- Confirm the `usesOrRange` guard placement in `adjustPlanForOrdering` is the right layer. Alternative: have `evaluateIndexAccess` mark the plan with a "non-monotonic" flag for OR_RANGE, but that surfaces a memory-module-internal concern in the shared `BestAccessPlanResult` shape.
-- Sanity-check that no other access paths emit non-monotonic row order without a corresponding signal (composite multi-seek? trailing-range? — they're internally monotonic on the seek prefix and the trailing range).
-- The pre-existing `double negation` failure should get its own fix ticket if it isn't already tracked.
+- OR_RANGE guard placement (top of `adjustPlanForOrdering`, short-circuiting) is appropriate. The alternative — surfacing a `non-monotonic` flag on `BestAccessPlanResult` — would leak a memory-module-internal concern into the shared interface. Keeping the policy decision local to the module is cleaner.
+- DRY/quality check: helper extraction (`collectEqualityBoundColumns`, `EMPTY_COLUMN_SET` sentinel) is reasonable; functions are small and single-purpose; no dead code.
+- A separate latent issue surfaced during review: index multi-seek on a multi-value `IN` list (unsorted IN list) with `ORDER BY` on the IN'd column claims ordering it does not provide — verified against `WHERE n IN (40,10,30) ORDER BY n`, which yields `[40, 10, 30]`. This existed before this ticket and is **not** introduced by the equality-skip or OR_RANGE changes. Tracked under `fix/fix-index-multi-seek-in-ordering-claim.md`.
