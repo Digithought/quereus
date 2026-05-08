@@ -194,13 +194,27 @@ describe('MonotonicOn characteristic propagation', () => {
 		expect(agg!.monotonicOn ?? []).to.deep.equal([]);
 	});
 
-	it('Window function preserves source monotonicOn', async () => {
+	it('Window function derives monotonicOn from its own ORDER BY when un-partitioned', async () => {
 		await setupNonUnique();
+		// Window's ORDER BY x matches source's monotonicOn(x), so it carries through
+		// (output is sorted by x within the single partition).
 		const sql = "SELECT k, x, row_number() OVER (ORDER BY x) AS rn FROM (SELECT k, x FROM nu ORDER BY x) s";
 		const rows = await getPhysicalRows(db, sql);
 		const win = physicalOf(rows, r => r.op === 'WINDOW');
 		expect(win, 'window node present').to.not.equal(undefined);
 		expect(win!.monotonicOn).to.be.an('array').with.lengthOf(1);
+		expect(win!.monotonicOn![0].direction).to.equal('asc');
+	});
+
+	it('Window function drops monotonicOn when PARTITION BY reorders rows', async () => {
+		await setupNonUnique();
+		// PARTITION BY k groups rows by partition-key insertion order, breaking the
+		// global monotonic-on-x ordering even though the source was sorted on x.
+		const sql = "SELECT k, x, row_number() OVER (PARTITION BY k ORDER BY x) AS rn FROM (SELECT k, x FROM nu ORDER BY x) s";
+		const rows = await getPhysicalRows(db, sql);
+		const win = physicalOf(rows, r => r.op === 'WINDOW');
+		expect(win, 'window node present').to.not.equal(undefined);
+		expect(win!.monotonicOn ?? []).to.deep.equal([]);
 	});
 
 	it('EXPLAIN serializes monotonicOn in physical JSON', async () => {

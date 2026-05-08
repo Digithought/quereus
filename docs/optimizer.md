@@ -135,7 +135,8 @@ interface OptimizationPass {
 - Provides debugging and tracing infrastructure
 
 **Physical Properties** (`src/planner/framework/physical-utils.ts`)
-- Captures execution characteristics: ordering, uniqueness, cardinality
+- Captures execution characteristics: ordering, uniqueness, cardinality, monotonic-on-attribute
+- `monotonicOn` (per `MonotonicOnInfo` in `nodes/plan-node.ts`) is stronger than `ordering`: it identifies an attribute the relation is totally ordered on (with optional `strict` to assert no duplicates), and is meaningful only for total-order-preserving sources (vtab access plans that advertise it; sort nodes; merge join). Propagation rules live alongside each operator's `computePhysical`.
 - Propagates properties through plan transformations
 - Enables property-based optimization decisions
 
