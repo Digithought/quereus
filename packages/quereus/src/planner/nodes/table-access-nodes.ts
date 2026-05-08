@@ -144,17 +144,31 @@ export abstract class TableAccessNode extends PlanNode implements UnaryRelationa
 export class SeqScanNode extends TableAccessNode {
 	override readonly nodeType = PlanNodeType.SeqScan;
 
+	constructor(
+		scope: Scope,
+		source: TableReferenceNode,
+		filterInfo: FilterInfo,
+		estimatedCostOverride?: number,
+		public readonly rangeBoundedOn?: PhysicalProperties['rangeBoundedOn'],
+		/** When true, suppress the lifted `monotonicOn` advertisement (defensive escalation). */
+		public readonly suppressMonotonic: boolean = false,
+	) {
+		super(scope, source, filterInfo, estimatedCostOverride);
+	}
+
 	getAccessMethod(): 'sequential' {
 		return 'sequential';
 	}
 
 	computePhysical(): Partial<PhysicalProperties> {
-		return {
+		const out: Partial<PhysicalProperties> = {
 			estimatedRows: this.source.estimatedRows,
 			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			// Sequential scans don't provide any specific ordering
-			ordering: undefined
+			ordering: undefined,
 		};
+		if (this.rangeBoundedOn) out.rangeBoundedOn = this.rangeBoundedOn;
+		return out;
 	}
 
 	override toString(): string {
@@ -182,7 +196,10 @@ export class SeqScanNode extends TableAccessNode {
 		return new SeqScanNode(
 			this.scope,
 			newSource,
-			this.filterInfo
+			this.filterInfo,
+			undefined,
+			this.rangeBoundedOn,
+			this.suppressMonotonic,
 		);
 	}
 }
@@ -202,6 +219,9 @@ export class IndexScanNode extends TableAccessNode {
 		public readonly providesOrdering?: { column: number; desc: boolean }[],
 		estimatedCostOverride?: number,
 		public readonly advertisement?: AccessPathAdvertisement,
+		public readonly rangeBoundedOn?: PhysicalProperties['rangeBoundedOn'],
+		/** When true, suppress the lifted `monotonicOn` advertisement (defensive escalation). */
+		public readonly suppressMonotonic: boolean = false,
 	) {
 		super(scope, source, filterInfo, estimatedCostOverride);
 	}
@@ -212,13 +232,20 @@ export class IndexScanNode extends TableAccessNode {
 
 	computePhysical(): Partial<PhysicalProperties> {
 		const lifted = liftAdvertisement(this.source, this.advertisement);
-		return {
+		if (this.suppressMonotonic) {
+			delete lifted.monotonicOn;
+			// Capabilities below all imply monotonicOn — drop them too.
+			delete lifted.accessCapabilities;
+		}
+		const out: Partial<PhysicalProperties> = {
 			estimatedRows: this.source.estimatedRows,
 			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			// Index scans can provide ordering
 			ordering: this.providesOrdering,
 			...lifted,
 		};
+		if (this.rangeBoundedOn) out.rangeBoundedOn = this.rangeBoundedOn;
+		return out;
 	}
 
 	override toString(): string {
@@ -262,6 +289,8 @@ export class IndexScanNode extends TableAccessNode {
 			this.providesOrdering,
 			undefined,
 			this.advertisement,
+			this.rangeBoundedOn,
+			this.suppressMonotonic,
 		);
 	}
 }
@@ -319,6 +348,9 @@ export class IndexSeekNode extends TableAccessNode {
 		public readonly providesOrdering?: { column: number; desc: boolean }[],
 		estimatedCostOverride?: number,
 		public readonly advertisement?: AccessPathAdvertisement,
+		public readonly rangeBoundedOn?: PhysicalProperties['rangeBoundedOn'],
+		/** When true, suppress the lifted `monotonicOn` advertisement (defensive escalation). */
+		public readonly suppressMonotonic: boolean = false,
 	) {
 		super(scope, source, filterInfo, estimatedCostOverride);
 	}
@@ -329,12 +361,18 @@ export class IndexSeekNode extends TableAccessNode {
 
 	computePhysical(): Partial<PhysicalProperties> {
 		const lifted = liftAdvertisement(this.source, this.advertisement);
+		if (this.suppressMonotonic) {
+			delete lifted.monotonicOn;
+			// Capabilities below all imply monotonicOn — drop them too.
+			delete lifted.accessCapabilities;
+		}
 		const base = {
 			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			ordering: this.providesOrdering,
 			estimatedRows: Math.min(this.source.estimatedRows || 1000, 100),
 			...lifted,
 		} as Partial<PhysicalProperties>;
+		if (this.rangeBoundedOn) base.rangeBoundedOn = this.rangeBoundedOn;
 		if (!this.isRange && this.indexName === 'primary') {
 			const pk = this.source.tableSchema.primaryKeyDefinition ?? [];
 			if (pk.length > 0 && this.seekKeys.length >= pk.length) {
@@ -409,6 +447,8 @@ export class IndexSeekNode extends TableAccessNode {
 			this.providesOrdering,
 			undefined,
 			this.advertisement,
+			this.rangeBoundedOn,
+			this.suppressMonotonic,
 		);
 	}
 }

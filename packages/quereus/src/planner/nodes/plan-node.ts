@@ -2,7 +2,7 @@ import { PlanNodeType } from './plan-node-type.js';
 import type { Scope } from '../scopes/scope.js';
 import type { BaseType, RelationType, ScalarType } from '../../common/datatype.js';
 import type { Expression } from '../../parser/ast.js';
-import type { OutputValue, Row } from '../../common/types.js';
+import type { OutputValue, Row, SqlValue } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
 
 /**
@@ -65,6 +65,21 @@ export interface PhysicalProperties {
     ordinalSeek?: boolean;
     /** Path can be driven as the right side of a streaming asof join. Implies monotonicOn. */
     asofRight?: boolean;
+  };
+
+  /**
+   * Symbolic range bound that downstream rules / EXPLAIN can read off. Set by
+   * rule-monotonic-range-access on physical leaves whose access plan walks a
+   * MonotonicOn(x) path bounded by a recognized range predicate on x. The
+   * lower/upper fields are absent for unbounded sides (half-open ranges).
+   *
+   * Non-relational: lives on the physical leaf where the access plan was
+   * resolved. Pass-through nodes do NOT propagate it.
+   */
+  rangeBoundedOn?: {
+    attrId: number;
+    lower?: { op: '>=' | '>'; valueLiteral?: SqlValue };
+    upper?: { op: '<=' | '<'; valueLiteral?: SqlValue };
   };
 
   /**

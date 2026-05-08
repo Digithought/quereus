@@ -18,6 +18,7 @@ import { ruleMaterializationAdvisory } from './rules/cache/rule-materialization-
 // Phase 1.5 rules
 import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js';
 import { ruleMonotonicLimitPushdown } from './rules/access/rule-monotonic-limit-pushdown.js';
+import { ruleMonotonicRangeAccess } from './rules/access/rule-monotonic-range-access.js';
 import { ruleGrowRetrieve } from './rules/retrieve/rule-grow-retrieve.js';
 import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown.js';
 import { ruleFilterMerge } from './rules/predicate/rule-filter-merge.js';
@@ -246,6 +247,39 @@ export class Optimizer {
 			phase: 'impl',
 			fn: ruleMonotonicLimitPushdown,
 			priority: 8
+		});
+
+		// Monotonic range-scan recognition. Runs on physical leaves to annotate
+		// `rangeBoundedOn` when a handled range/equality bounds the monotonic
+		// column. Also runs on Filter nodes for the defensive escalation: drop
+		// `monotonicOn` from a leaf when an unhandled range predicate sits in a
+		// directly-overhead Filter. Runs after the limit pushdown (priority 9)
+		// so that an OrdinalSlice rewrite has already replaced any leaf it
+		// would have annotated; ordering vs. join-physical-selection (priority 5)
+		// is not load-bearing — `rangeBoundedOn` is a pure annotation today and
+		// the defensive drop only matters for downstream rules that check
+		// `physical.monotonicOn` (asof/merge-join/limit-pushdown), which run
+		// later in the same pass or have already run.
+		const rangeAccessLeafTypes = [
+			PlanNodeType.IndexScan,
+			PlanNodeType.IndexSeek,
+			PlanNodeType.SeqScan,
+		];
+		for (const nodeType of rangeAccessLeafTypes) {
+			this.passManager.addRuleToPass(PassId.PostOptimization, {
+				id: `monotonic-range-access-${nodeType}`,
+				nodeType,
+				phase: 'rewrite',
+				fn: ruleMonotonicRangeAccess,
+				priority: 9
+			});
+		}
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'monotonic-range-access-filter',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleMonotonicRangeAccess,
+			priority: 9
 		});
 
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
