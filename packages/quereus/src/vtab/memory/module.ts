@@ -446,6 +446,23 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			return plan;
 		}
 
+		// A multi-value IN multi-seek visits IN values in IN-list order, not
+		// sorted order. If the IN'd column appears in the required ordering, the
+		// concatenated output is not monotonic on it (or on any later ordering
+		// column) — so the index cannot satisfy ORDER BY. Fall through to the
+		// no-claim path so the planner inserts an explicit SORT.
+		const orderingColumns = new Set(request.requiredOrdering!.map(o => o.columnIndex));
+		const usesMultiInOnOrderedCol = request.filters.some(
+			(f, i) => plan.handledFilters[i]
+				&& f.op === 'IN'
+				&& Array.isArray(f.value)
+				&& (f.value as unknown[]).length > 1
+				&& orderingColumns.has(f.columnIndex)
+		);
+		if (usesMultiInOnOrderedCol) {
+			return plan;
+		}
+
 		// Columns bound by an equality predicate are constants for this scan and
 		// therefore contribute no ordering information — they can be skipped when
 		// aligning an index against the required ordering.

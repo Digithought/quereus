@@ -52,6 +52,39 @@ describe('DESC index — ordering and access path selection', () => {
 		expect(rows.map(r => r.n)).to.deep.equal([100, 90, 75]);
 	});
 
+	it('inserts SORT when ORDER BY targets a multi-value IN column (unsorted IN list)', async () => {
+		await db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER) USING memory");
+		await db.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)");
+		await db.exec("CREATE INDEX ix_t_n ON t(n)");
+
+		const sql = "SELECT n FROM t WHERE n IN (40, 10, 30) ORDER BY n";
+		const sorts: Array<{ c: number }> = [];
+		for await (const r of db.eval("SELECT COUNT(*) AS c FROM query_plan(?) WHERE op = 'SORT'", [sql])) {
+			sorts.push(r as unknown as { c: number });
+		}
+		expect(sorts).to.have.lengthOf(1);
+		expect(sorts[0].c, 'multi-value IN multi-seek visits values in IN-list order; ORDER BY must be enforced by an explicit SORT').to.equal(1);
+
+		const rows: Array<{ n: number }> = [];
+		for await (const r of db.eval(sql)) {
+			rows.push(r as unknown as { n: number });
+		}
+		expect(rows.map(r => r.n)).to.deep.equal([10, 30, 40]);
+	});
+
+	it('inserts SORT for composite multi-IN with ORDER BY on the IN column', async () => {
+		await db.exec("CREATE TABLE e (id INTEGER PRIMARY KEY, category TEXT, year INTEGER) USING memory");
+		await db.exec("INSERT INTO e VALUES (1, 'a', 2025), (2, 'a', 2024), (3, 'a', 2026)");
+		await db.exec("CREATE INDEX ix_e ON e(category, year)");
+
+		const sql = "SELECT year FROM e WHERE category = 'a' AND year IN (2025, 2024, 2026) ORDER BY year";
+		const rows: Array<{ year: number }> = [];
+		for await (const r of db.eval(sql)) {
+			rows.push(r as unknown as { year: number });
+		}
+		expect(rows.map(r => r.year)).to.deep.equal([2024, 2025, 2026]);
+	});
+
 	it('uses composite (ASC, DESC) index for matching ORDER BY without SORT', async () => {
 		await db.exec("CREATE TABLE m (id INTEGER PRIMARY KEY, category TEXT, score INTEGER) USING memory");
 		await db.exec("INSERT INTO m VALUES (1, 'a', 10), (2, 'a', 30), (3, 'a', 20), (4, 'b', 5), (5, 'b', 25)");
