@@ -303,20 +303,40 @@ function fallbackIndexSupports(
 		log('Extracted ordering requirement of length %d', request.requiredOrdering.length);
 
 	} else if (node.nodeType === PlanNodeType.LimitOffset) {
-		// Extract limit from LimitOffset node when constant
+		// Extract limit + offset from LimitOffset when both are constants. We
+		// surface OFFSET to the module via `request.offset` so modules pushing
+		// LIMIT into the scan can stamp `scan-side limit = limit + offset` and
+		// avoid underproducing the runtime LimitOffsetNode (which still applies
+		// the OFFSET skip above whatever the scan emits).
 		const lim = node as unknown as LimitOffsetNode;
+		let limitVal: number | undefined;
+		let offsetVal = 0;
 		if (lim.limit && lim.limit.nodeType === _PlanNodeType.Literal) {
-			const limitVal = (lim.limit as unknown as LiteralNode).expression.value;
-			if (typeof limitVal === 'number') {
-				request.limit = Math.max(0, Math.floor(limitVal));
-				log('Extracted limit value: %d', request.limit);
+			const v = (lim.limit as unknown as LiteralNode).expression.value;
+			if (typeof v === 'number') limitVal = Math.max(0, Math.floor(v));
+		}
+		if (lim.offset) {
+			if (lim.offset.nodeType === _PlanNodeType.Literal) {
+				const v = (lim.offset as unknown as LiteralNode).expression.value;
+				if (typeof v === 'number') {
+					offsetVal = Math.max(0, Math.floor(v));
+				} else {
+					// Non-numeric literal OFFSET — refuse to push the LIMIT,
+					// because we cannot soundly compute `limit + offset`.
+					limitVal = undefined;
+				}
+			} else {
+				// Non-literal OFFSET (e.g. parameter) — refuse to push the LIMIT.
+				limitVal = undefined;
 			}
 		}
-		// We ignore OFFSET for now (modules can implement it internally if desired)
-		if (!request.limit) {
-			log('No usable constant LIMIT found');
+		if (limitVal === undefined) {
+			log('No usable constant LIMIT (or non-literal OFFSET present)');
 			return undefined;
 		}
+		request.limit = limitVal;
+		request.offset = offsetVal;
+		log('Extracted limit=%d offset=%d', limitVal, offsetVal);
 
 	} else {
 		log('Node type %s not supported by index-style fallback', node.nodeType);

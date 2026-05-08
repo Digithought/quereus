@@ -77,6 +77,13 @@ export interface BestAccessPlanRequest {
 	requiredOrdering?: readonly OrderingSpec[];
 	/** LIMIT value known at plan time */
 	limit?: number | null;
+	/**
+	 * OFFSET value known at plan time. Modules pushing LIMIT into the scan
+	 * must read this and stamp `scan-side limit = limit + offset`, because the
+	 * runtime LimitOffsetNode still applies the OFFSET skip above whatever the
+	 * scan emits — pushing only `limit` would underproduce by `offset` rows.
+	 */
+	offset?: number | null;
 	/** Estimated rows hint from planner (may be unknown) */
 	estimatedRows?: number;
 }
