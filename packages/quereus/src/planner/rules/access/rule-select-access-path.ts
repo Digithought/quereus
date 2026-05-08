@@ -17,7 +17,7 @@ import { isRelationalNode, type RelationalPlanNode } from '../../nodes/plan-node
 import type { OptContext } from '../../framework/context.js';
 import { RetrieveNode } from '../../nodes/retrieve-node.js';
 import { RemoteQueryNode } from '../../nodes/remote-query-node.js';
-import { SeqScanNode, IndexScanNode, IndexSeekNode, EmptyResultNode } from '../../nodes/table-access-nodes.js';
+import { SeqScanNode, IndexScanNode, IndexSeekNode, EmptyResultNode, type AccessPathAdvertisement } from '../../nodes/table-access-nodes.js';
 import { seqScanCost } from '../../cost/index.js';
 import type { ColumnMeta, BestAccessPlanRequest, BestAccessPlanResult } from '../../../vtab/best-access-plan.js';
 import { FilterInfo } from '../../../vtab/filter-info.js';
@@ -32,6 +32,23 @@ import type * as AST from '../../../parser/ast.js';
 import { IndexConstraintOp } from '../../../common/constants.js';
 
 const log = createLogger('optimizer:rule:select-access-path');
+
+/**
+ * Extract the monotonic-ordering advertisement from a `BestAccessPlanResult`,
+ * or return undefined when nothing is advertised. The result is forwarded to
+ * the physical leaf node so it can lift the advertisement onto its
+ * `physical.monotonicOn` / `physical.accessCapabilities`.
+ */
+function extractAdvertisement(plan: BestAccessPlanResult): AccessPathAdvertisement | undefined {
+	if (!plan.monotonicOn && !plan.supportsOrdinalSeek && !plan.supportsAsofRight) {
+		return undefined;
+	}
+	const advertisement: AccessPathAdvertisement = {};
+	if (plan.monotonicOn) advertisement.monotonicOn = plan.monotonicOn;
+	if (plan.supportsOrdinalSeek) advertisement.supportsOrdinalSeek = true;
+	if (plan.supportsAsofRight) advertisement.supportsAsofRight = true;
+	return advertisement;
+}
 
 export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanNode | null {
 	// Guard: node must be a RetrieveNode
@@ -259,6 +276,7 @@ function selectPhysicalNodeFromPlan(
 	filterInfo: FilterInfo,
 	providesOrdering: { column: number; desc: boolean }[] | undefined
 ): SeqScanNode | IndexScanNode | IndexSeekNode {
+	const advertisement = extractAdvertisement(accessPlan);
 	const seekCols = accessPlan.seekColumnIndexes!;
 	// Map accessPlan.indexName to physical node indexName ('_primary_' → 'primary')
 	const physicalIndexName = accessPlan.indexName === '_primary_' ? 'primary' : accessPlan.indexName!;
@@ -332,7 +350,8 @@ function selectPhysicalNodeFromPlan(
 				seekKeys,
 				false,
 				providesOrdering,
-				accessPlan.cost
+				accessPlan.cost,
+				advertisement,
 			);
 		}
 
@@ -392,7 +411,8 @@ function selectPhysicalNodeFromPlan(
 				seekKeys,
 				false,
 				providesOrdering,
-				accessPlan.cost
+				accessPlan.cost,
+				advertisement,
 			);
 		}
 
@@ -423,7 +443,8 @@ function selectPhysicalNodeFromPlan(
 			seekKeys,
 			false,
 			providesOrdering,
-			accessPlan.cost
+			accessPlan.cost,
+			advertisement,
 		);
 	}
 
@@ -495,7 +516,8 @@ function selectPhysicalNodeFromPlan(
 				seekKeys,
 				true,
 				providesOrdering,
-				accessPlan.cost
+				accessPlan.cost,
+				advertisement,
 			);
 		}
 	}
@@ -542,7 +564,8 @@ function selectPhysicalNodeFromPlan(
 			seekKeys,
 			true,
 			providesOrdering,
-			accessPlan.cost
+			accessPlan.cost,
+			advertisement,
 		);
 	}
 
@@ -597,7 +620,8 @@ function selectPhysicalNodeFromPlan(
 			seekKeys,
 			true,
 			providesOrdering,
-			accessPlan.cost
+			accessPlan.cost,
+			advertisement,
 		);
 	}
 
@@ -623,7 +647,8 @@ function selectPhysicalNodeFromPlan(
 			orderingFilterInfo,
 			orderingIndexName,
 			providesOrdering,
-			accessPlan.cost
+			accessPlan.cost,
+			advertisement,
 		);
 	}
 
@@ -643,6 +668,7 @@ function selectPhysicalNodeLegacy(
 	filterInfo: FilterInfo,
 	providesOrdering: { column: number; desc: boolean }[] | undefined
 ): SeqScanNode | IndexScanNode | IndexSeekNode {
+	const advertisement = extractAdvertisement(accessPlan);
 	// Analyze the access plan to determine node type
 	const handledByCol = new Set<number>();
 	constraints.forEach((c, i) => {
@@ -685,7 +711,8 @@ function selectPhysicalNodeLegacy(
 			seekKeys,
 			false,
 			providesOrdering,
-			accessPlan.cost
+			accessPlan.cost,
+			advertisement,
 		);
 	}
 
@@ -728,7 +755,8 @@ function selectPhysicalNodeLegacy(
 			seekKeys,
 			true,
 			providesOrdering,
-			accessPlan.cost
+			accessPlan.cost,
+			advertisement,
 		);
 	}
 
@@ -753,7 +781,8 @@ function selectPhysicalNodeLegacy(
 			orderingFilterInfo,
 			indexName,
 			providesOrdering,
-			accessPlan.cost
+			accessPlan.cost,
+			advertisement,
 		);
 	}
 

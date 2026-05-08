@@ -245,7 +245,73 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 			bestPlan = { ...bestPlan, handledFilters: mergedHandled };
 		}
 
+		// Advertise monotonicOn / supportsAsofRight when the chosen path is
+		// index-style and walks a sorted index. Downstream optimizer rules use
+		// these to license rewrites that depend on total-order emit, not just
+		// per-row ordering.
+		// TODO: supportsOrdinalSeek is deferred for memory-table — the layered
+		// store's scan does not cheaply support O(log N) seek to the kth row.
+		const advertisement = this.buildMonotonicAdvertisement(bestPlan, request, availableIndexes);
+		if (advertisement.monotonicOn) {
+			bestPlan = { ...bestPlan, ...advertisement };
+		}
+
 		return bestPlan;
+	}
+
+	/**
+	 * Compute the monotonic-ordering advertisement for a chosen access plan.
+	 * Returns an empty object when the path is non-monotonic (multi-IN multi-seek,
+	 * OR_RANGE multi-range, or a single-row equality seek).
+	 */
+	private buildMonotonicAdvertisement(
+		bestPlan: BestAccessPlanResult,
+		request: BestAccessPlanRequest,
+		availableIndexes: IndexSchema[],
+	): Pick<BestAccessPlanResult, 'monotonicOn' | 'supportsAsofRight'> {
+		// Multi-value IN multi-seek visits values in IN-list order; OR_RANGE
+		// concatenates disjoint ranges. Neither emits in monotonic order.
+		for (let i = 0; i < bestPlan.handledFilters.length; i++) {
+			if (!bestPlan.handledFilters[i]) continue;
+			const f = request.filters[i];
+			if (f.op === 'IN' && Array.isArray(f.value) && (f.value as unknown[]).length > 1) return {};
+			if (f.op === 'OR_RANGE') return {};
+		}
+
+		// Locate the index being walked. Prefer a filter-side index, else the
+		// orderingIndexName (set by adjustPlanForOrdering / the PK-ordering post-pass).
+		const indexName = bestPlan.indexName ?? bestPlan.orderingIndexName;
+		if (!indexName) return {};
+		const usedIndex = availableIndexes.find(idx => idx.name === indexName);
+		if (!usedIndex || usedIndex.columns.length === 0) return {};
+
+		// Find the leading non-equality-bound column. Equality-bound columns are
+		// constants over the scan and don't contribute to monotonic ordering.
+		const equalityBound = collectEqualityBoundColumns(request.filters);
+		const trailingNonBound = usedIndex.columns.filter(c => !equalityBound.has(c.index));
+		if (trailingNonBound.length === 0) return {}; // single-row equality seek
+
+		const leadingCol = trailingNonBound[0];
+
+		// Strict iff the leading non-bound column alone determines uniqueness within
+		// the path: a unique index (PK or declared unique) where the leading column
+		// is the sole remaining unbound key. (For composite PK with a free leading
+		// column, the leading column may have duplicate values across rows.)
+		const isUnique = indexName === '_primary_' || (usedIndex.unique ?? false);
+		const strict = isUnique && trailingNonBound.length === 1;
+
+		// Direction follows the index's natural sort order, but if the planner
+		// produced an explicit providesOrdering covering this column, honor that
+		// (adjustPlanForOrdering may have selected a descending ORDER BY against
+		// an asc index — for that we'd need to reverse-walk the index, which the
+		// memory-table scan-plan supports). For now, the index's own desc flag
+		// is the single source of truth.
+		const direction: 'asc' | 'desc' = leadingCol.desc ? 'desc' : 'asc';
+
+		return {
+			monotonicOn: { columnIndex: leadingCol.index, direction, strict },
+			supportsAsofRight: true,
+		};
 	}
 
 	/**

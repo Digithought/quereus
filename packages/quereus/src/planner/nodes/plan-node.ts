@@ -49,6 +49,25 @@ export interface PhysicalProperties {
   monotonicOn?: readonly MonotonicOnInfo[];
 
   /**
+   * Capability flags advertised by the underlying access path. Unlike
+   * `monotonicOn`, these are not relational characteristics — they describe
+   * what the access path's iterator can be driven to do (ordinal seek for
+   * pushed-down LIMIT/OFFSET, forward-only repositioning for asof joins).
+   *
+   * These survive only on the physical leaf node where the access plan was
+   * resolved. Single-input pass-through nodes (Filter, LimitOffset, Alias,
+   * etc.) MUST NOT propagate these — once another operator sits between the
+   * vtab leaf and the consumer, the leaf's iterator is no longer the
+   * consumer's iterator.
+   */
+  accessCapabilities?: {
+    /** Path supports O(log N) seek to the kth monotonic row. Implies monotonicOn. */
+    ordinalSeek?: boolean;
+    /** Path can be driven as the right side of a streaming asof join. Implies monotonicOn. */
+    asofRight?: boolean;
+  };
+
+  /**
    * Whether this node is read-only (does not mutate external state).
    * false = has side effects, true = pure/read-only
    */

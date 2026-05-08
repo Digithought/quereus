@@ -241,5 +241,73 @@ describe('AccessPlanBuilder', () => {
 			};
 			expect(() => validateAccessPlan(request, result)).not.to.throw();
 		});
+
+		it('should pass when monotonicOn references a valid column', () => {
+			const request = makeRequest(0);
+			const result: BestAccessPlanResult = {
+				handledFilters: [],
+				cost: 10,
+				rows: 5,
+				monotonicOn: { columnIndex: 0, direction: 'asc', strict: true },
+			};
+			expect(() => validateAccessPlan(request, result)).not.to.throw();
+		});
+
+		it('should throw for out-of-range monotonicOn column index', () => {
+			const request = makeRequest(0);
+			const result: BestAccessPlanResult = {
+				handledFilters: [],
+				cost: 10,
+				rows: 5,
+				monotonicOn: { columnIndex: 99, direction: 'asc', strict: true },
+			};
+			expect(() => validateAccessPlan(request, result)).to.throw(/monotonicOn column index/i);
+		});
+
+		it('should throw for negative monotonicOn column index', () => {
+			const request = makeRequest(0);
+			const result: BestAccessPlanResult = {
+				handledFilters: [],
+				cost: 10,
+				rows: 5,
+				monotonicOn: { columnIndex: -1, direction: 'asc', strict: false },
+			};
+			expect(() => validateAccessPlan(request, result)).to.throw(/monotonicOn column index/i);
+		});
+
+		it('should throw when supportsOrdinalSeek is set without monotonicOn', () => {
+			const request = makeRequest(0);
+			const result: BestAccessPlanResult = {
+				handledFilters: [],
+				cost: 10,
+				rows: 5,
+				supportsOrdinalSeek: true,
+			};
+			expect(() => validateAccessPlan(request, result)).to.throw(/supportsOrdinalSeek requires monotonicOn/i);
+		});
+
+		it('should throw when supportsAsofRight is set without monotonicOn', () => {
+			const request = makeRequest(0);
+			const result: BestAccessPlanResult = {
+				handledFilters: [],
+				cost: 10,
+				rows: 5,
+				supportsAsofRight: true,
+			};
+			expect(() => validateAccessPlan(request, result)).to.throw(/supportsAsofRight requires monotonicOn/i);
+		});
+
+		it('should pass when capability flags accompany monotonicOn', () => {
+			const request = makeRequest(0);
+			const result: BestAccessPlanResult = {
+				handledFilters: [],
+				cost: 10,
+				rows: 5,
+				monotonicOn: { columnIndex: 0, direction: 'asc', strict: true },
+				supportsOrdinalSeek: true,
+				supportsAsofRight: true,
+			};
+			expect(() => validateAccessPlan(request, result)).not.to.throw();
+		});
 	});
 });

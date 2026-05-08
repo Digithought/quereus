@@ -4,7 +4,7 @@
  */
 
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute } from './plan-node.js';
+import { PlanNode, type UnaryRelationalNode, type PhysicalProperties, type Attribute, type MonotonicOnInfo } from './plan-node.js';
 import { TableReferenceNode } from './reference.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
@@ -12,6 +12,51 @@ import { Cached } from '../../util/cached.js';
 import type { FilterInfo } from '../../vtab/filter-info.js';
 import type { ScalarPlanNode } from './plan-node.js';
 import { TableAccessCapable } from '../framework/characteristics.js';
+
+/**
+ * Advertisement lifted from a `BestAccessPlanResult` onto a physical leaf node:
+ * the monotonicOn property keyed by table-relative column index (translated to
+ * attrId at lift time), plus access-path capability flags.
+ */
+export interface AccessPathAdvertisement {
+	/** Monotonic ordering provided by the underlying storage. */
+	monotonicOn?: { columnIndex: number; direction: 'asc' | 'desc'; strict: boolean };
+	/** Whether the path supports O(log N) seek to the kth monotonic row. */
+	supportsOrdinalSeek?: boolean;
+	/** Whether the path can serve as the right side of a streaming asof join. */
+	supportsAsofRight?: boolean;
+}
+
+/**
+ * Lift an `AccessPathAdvertisement` onto `PhysicalProperties` overrides.
+ * Translates `monotonicOn.columnIndex` to an attrId via the table reference's
+ * attributes and emits a single-element `monotonicOn` array on the result.
+ */
+function liftAdvertisement(
+	source: TableReferenceNode,
+	advertisement: AccessPathAdvertisement | undefined,
+): { monotonicOn?: readonly MonotonicOnInfo[]; accessCapabilities?: PhysicalProperties['accessCapabilities'] } {
+	if (!advertisement) return {};
+	const out: { monotonicOn?: readonly MonotonicOnInfo[]; accessCapabilities?: PhysicalProperties['accessCapabilities'] } = {};
+	if (advertisement.monotonicOn) {
+		const attrs = source.getAttributes();
+		const colIdx = advertisement.monotonicOn.columnIndex;
+		if (colIdx >= 0 && colIdx < attrs.length) {
+			out.monotonicOn = [{
+				attrId: attrs[colIdx].id,
+				direction: advertisement.monotonicOn.direction,
+				strict: advertisement.monotonicOn.strict,
+			}];
+		}
+	}
+	if (advertisement.supportsOrdinalSeek || advertisement.supportsAsofRight) {
+		const caps: { ordinalSeek?: boolean; asofRight?: boolean } = {};
+		if (advertisement.supportsOrdinalSeek) caps.ordinalSeek = true;
+		if (advertisement.supportsAsofRight) caps.asofRight = true;
+		out.accessCapabilities = caps;
+	}
+	return out;
+}
 
 /**
  * Base class for physical table access operations
@@ -155,7 +200,8 @@ export class IndexScanNode extends TableAccessNode {
 		filterInfo: FilterInfo,
 		public readonly indexName: string,
 		public readonly providesOrdering?: { column: number; desc: boolean }[],
-		estimatedCostOverride?: number
+		estimatedCostOverride?: number,
+		public readonly advertisement?: AccessPathAdvertisement,
 	) {
 		super(scope, source, filterInfo, estimatedCostOverride);
 	}
@@ -165,11 +211,13 @@ export class IndexScanNode extends TableAccessNode {
 	}
 
 	computePhysical(): Partial<PhysicalProperties> {
+		const lifted = liftAdvertisement(this.source, this.advertisement);
 		return {
 			estimatedRows: this.source.estimatedRows,
 			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			// Index scans can provide ordering
-			ordering: this.providesOrdering
+			ordering: this.providesOrdering,
+			...lifted,
 		};
 	}
 
@@ -211,7 +259,9 @@ export class IndexScanNode extends TableAccessNode {
 			newSource,
 			this.filterInfo,
 			this.indexName,
-			this.providesOrdering
+			this.providesOrdering,
+			undefined,
+			this.advertisement,
 		);
 	}
 }
@@ -267,7 +317,8 @@ export class IndexSeekNode extends TableAccessNode {
 		public readonly seekKeys: ScalarPlanNode[],
 		public readonly isRange: boolean = false,
 		public readonly providesOrdering?: { column: number; desc: boolean }[],
-		estimatedCostOverride?: number
+		estimatedCostOverride?: number,
+		public readonly advertisement?: AccessPathAdvertisement,
 	) {
 		super(scope, source, filterInfo, estimatedCostOverride);
 	}
@@ -277,10 +328,12 @@ export class IndexSeekNode extends TableAccessNode {
 	}
 
 	computePhysical(): Partial<PhysicalProperties> {
+		const lifted = liftAdvertisement(this.source, this.advertisement);
 		const base = {
 			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			ordering: this.providesOrdering,
-			estimatedRows: Math.min(this.source.estimatedRows || 1000, 100)
+			estimatedRows: Math.min(this.source.estimatedRows || 1000, 100),
+			...lifted,
 		} as Partial<PhysicalProperties>;
 		if (!this.isRange && this.indexName === 'primary') {
 			const pk = this.source.tableSchema.primaryKeyDefinition ?? [];
@@ -353,7 +406,9 @@ export class IndexSeekNode extends TableAccessNode {
 			this.indexName,
 			newSeekKeys as ScalarPlanNode[],
 			this.isRange,
-			this.providesOrdering
+			this.providesOrdering,
+			undefined,
+			this.advertisement,
 		);
 	}
 }
