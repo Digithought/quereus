@@ -116,6 +116,17 @@ export class SchemaManager {
 	}
 
 	/**
+	 * Iterates registered virtual table modules in registration order.
+	 * Each entry yields the registered (lowercased) name, the module, and
+	 * any auxData supplied at registration time.
+	 */
+	*allModules(): IterableIterator<{ name: string; module: AnyVirtualTableModule; auxData?: unknown }> {
+		for (const [name, reg] of this.modules) {
+			yield { name, module: reg.module, auxData: reg.auxData };
+		}
+	}
+
+	/**
 	 * Sets the default virtual table module to use when USING is omitted
 	 *
 	 * @param name Module name. Must be a registered module.

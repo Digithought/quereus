@@ -210,6 +210,32 @@ export interface VirtualTableModule<
 		oldName: string,
 		newName: string,
 	): Promise<void>;
+
+	/**
+	 * Optional. Called once by APPLY SCHEMA before the migration-DDL loop runs,
+	 * iff there are migration statements to execute. The module may use this to
+	 * open an in-memory overlay/batch that subsequent create/destroy/alter
+	 * callbacks (during the loop) join, so the whole APPLY SCHEMA produces a
+	 * single substrate commit.
+	 *
+	 * The hook runs inside the engine's exec() mutex hold, so the batch lives
+	 * entirely within one engine-level execution scope.
+	 *
+	 * Modules that own no tables in `schemaName` should no-op.
+	 */
+	beginSchemaBatch?(db: Database, schemaName: string): Promise<void>;
+
+	/**
+	 * Optional. Called exactly once per successful `beginSchemaBatch`, on both
+	 * success (`error` undefined) and failure (`error` is the failure that
+	 * aborted the migration loop). On error, the module should discard the
+	 * in-flight overlay; on success, it commits.
+	 *
+	 * Errors thrown from `endSchemaBatch` itself are logged and rethrown only
+	 * if no prior loop error exists — if a loop error is being propagated, the
+	 * end-batch failure is logged and swallowed so the original cause survives.
+	 */
+	endSchemaBatch?(db: Database, schemaName: string, error?: unknown): Promise<void>;
 }
 
 /**

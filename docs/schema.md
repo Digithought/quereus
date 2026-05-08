@@ -281,13 +281,21 @@ Destructive changes (drops) require explicit acknowledgement. See the [SQL Refer
 
 This ordering ensures that dropped tables free their names before creates run, and that forward references between tables (e.g. foreign keys to later-declared tables) work because declarations are order-independent.
 
+### Module Batch Hooks
+
+Virtual table modules may opt into a per-`apply schema` batch by implementing the optional `beginSchemaBatch` / `endSchemaBatch` callbacks on `VirtualTableModule`. When the migration loop has at least one DDL statement, the engine calls `beginSchemaBatch(db, schemaName)` on every registered module that defines it (in registration order), runs the migration loop, and then calls `endSchemaBatch(db, schemaName, error?)` on those same modules in reverse order — passing the loop error on failure or `undefined` on success.
+
+This lets a storage-backed module fold the entire migration into a single substrate commit: open an in-memory overlay in begin, have subsequent `create` / `destroy` / `alterTable` calls join it, then commit (or discard) in end. Modules without the hooks pay nothing — they're skipped. The idempotent fast-path (no DDL to run) skips both hooks.
+
+If `beginSchemaBatch` itself throws, already-started modules receive `endSchemaBatch(error)` with the begin failure and the error propagates out of `apply schema`. Errors from `endSchemaBatch` are rethrown only when no prior loop error exists; otherwise they are logged so the original cause survives.
+
 ### Seed Data
 
 Declared schemas can include seed data (`seed <tableName> values ...`). When `apply schema ... with seed` is executed:
 
 1. Existing rows in each seeded table are deleted (`DELETE FROM`)
 2. Declared seed rows are inserted
-3. This happens per-table, after all structural migrations complete
+3. This happens per-table, after all structural migrations complete (and after `endSchemaBatch` has fired)
 
 ### Schema Hashing
 

@@ -8,6 +8,8 @@ import { computeSchemaDiff, generateMigrationDDL } from '../../schema/schema-dif
 import { computeShortSchemaHash } from '../../schema/schema-hasher.js';
 import type * as AST from '../../parser/ast.js';
 import type { PlanNode } from '../../planner/nodes/plan-node.js';
+import type { Database } from '../../core/database.js';
+import type { AnyVirtualTableModule } from '../../vtab/module.js';
 
 const log = createLogger('runtime:emit:declare');
 
@@ -121,21 +123,10 @@ export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruct
 		// Generate migration DDL
 		const migrationStatements = generateMigrationDDL(diff, schemaName);
 
-		// Execute each migration statement using _execWithinTransaction to avoid mutex deadlock
-		// (we're already inside an exec() call that holds the mutex)
-		for (const ddl of migrationStatements) {
-			log('Executing migration DDL: %s', ddl);
-			try {
-				await rctx.db._execWithinTransaction(ddl);
-			} catch (e) {
-				log('Migration failed for DDL: %s', ddl);
-				const errorMessage = e instanceof Error ? e.message : String(e);
-				throw new QuereusError(
-					`Failed to execute DDL: ${ddl}\nError: ${errorMessage}`,
-					StatusCode.ERROR,
-					e instanceof Error ? e : undefined
-				);
-			}
+		// Run the migration loop. When there are no statements we keep the
+		// idempotency fast-path: no module batch hooks fire.
+		if (migrationStatements.length > 0) {
+			await runBatchedMigrationLoop(rctx.db, schemaName, migrationStatements);
 		}
 
 		// Apply seed data if requested
@@ -224,4 +215,102 @@ export function emitExplainSchema(plan: PlanNode, _ctx: EmissionContext): Instru
 	};
 }
 
+/**
+ * Drives the per-DDL migration loop wrapped in module-level batch hooks.
+ * Modules that opt in via `beginSchemaBatch` may fold the entire
+ * APPLY SCHEMA into a single substrate commit. Modules without the hook
+ * pay nothing — they're filtered out before the loop.
+ */
+async function runBatchedMigrationLoop(
+	db: Database,
+	schemaName: string,
+	migrationStatements: readonly string[],
+): Promise<void> {
+	const startedModules = await beginSchemaBatchAll(db, schemaName);
+	let loopError: unknown;
+	try {
+		for (const ddl of migrationStatements) {
+			log('Executing migration DDL: %s', ddl);
+			try {
+				await db._execWithinTransaction(ddl);
+			} catch (e) {
+				log('Migration failed for DDL: %s', ddl);
+				const errorMessage = e instanceof Error ? e.message : String(e);
+				throw new QuereusError(
+					`Failed to execute DDL: ${ddl}\nError: ${errorMessage}`,
+					StatusCode.ERROR,
+					e instanceof Error ? e : undefined
+				);
+			}
+		}
+	} catch (e) {
+		loopError = e;
+		throw e;
+	} finally {
+		await endSchemaBatchAll(startedModules, db, schemaName, loopError);
+	}
+}
 
+interface StartedModule {
+	name: string;
+	module: AnyVirtualTableModule;
+}
+
+/**
+ * Calls `beginSchemaBatch` on every module that defines it, in registration
+ * order. Returns the modules that successfully began. If any module's
+ * begin throws, already-started modules are torn down (in reverse order)
+ * with the begin-time error and the original failure is rethrown.
+ */
+async function beginSchemaBatchAll(
+	db: Database,
+	schemaName: string,
+): Promise<StartedModule[]> {
+	const started: StartedModule[] = [];
+	for (const { name, module } of db.schemaManager.allModules()) {
+		if (typeof module.beginSchemaBatch !== 'function') continue;
+		try {
+			await module.beginSchemaBatch(db, schemaName);
+			started.push({ name, module });
+		} catch (e) {
+			log('beginSchemaBatch failed for module %s: %O', name, e);
+			await endSchemaBatchAll(started, db, schemaName, e);
+			throw e;
+		}
+	}
+	return started;
+}
+
+/**
+ * Calls `endSchemaBatch` on previously-started modules in reverse order.
+ * On success path (`loopError === undefined`), the first end-error is
+ * captured and rethrown after every remaining end fires. On failure path,
+ * end-errors are logged but never shadow the original loop error.
+ */
+async function endSchemaBatchAll(
+	startedModules: readonly StartedModule[],
+	db: Database,
+	schemaName: string,
+	loopError: unknown,
+): Promise<void> {
+	let firstEndError: unknown;
+	for (let i = startedModules.length - 1; i >= 0; i--) {
+		const { name, module } = startedModules[i];
+		if (typeof module.endSchemaBatch !== 'function') continue;
+		try {
+			await module.endSchemaBatch(db, schemaName, loopError);
+		} catch (e) {
+			if (loopError !== undefined) {
+				log('endSchemaBatch failed for module %s after loop error; swallowing: %O', name, e);
+			} else if (firstEndError === undefined) {
+				log('endSchemaBatch failed for module %s: %O', name, e);
+				firstEndError = e;
+			} else {
+				log('endSchemaBatch failed for module %s (subsequent): %O', name, e);
+			}
+		}
+	}
+	if (loopError === undefined && firstEndError !== undefined) {
+		throw firstEndError;
+	}
+}
