@@ -12,15 +12,13 @@ import { joinOutputRow } from './join-output.js';
 
 const log = createLogger('runtime:emit:asof-scan');
 
-interface PartitionMapping {
-	leftIdx: number;
-	rightIdx: number;
-	collation: CollationFunction;
-}
-
 /**
  * Build a string-encoded composite partition key from a row.
  * Returns null when any partition value is NULL — NULL partitions never match.
+ *
+ * Uses BINARY-equivalent encoding (typed string repr): two values match iff
+ * their types and string representations match. Collation-aware partition
+ * equality (NOCASE etc.) is not supported and is a known limitation.
  */
 function buildPartitionKey(row: Row, indices: number[]): string | null {
 	if (indices.length === 0) return '';
@@ -64,21 +62,17 @@ export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruct
 	const matchCollationName = leftAttrs[leftMatchIdx].type.collationName ?? rightAttrs[rightMatchIdx].type.collationName;
 	const matchCollation: CollationFunction = matchCollationName ? ctx.resolveCollation(matchCollationName) : BINARY_COLLATION;
 
-	const partitionMappings: PartitionMapping[] = plan.partitionAttrs.map(p => {
+	const leftPartitionIndices: number[] = [];
+	const rightPartitionIndices: number[] = [];
+	for (const p of plan.partitionAttrs) {
 		const leftIdx = leftAttrs.findIndex(a => a.id === p.leftAttrId);
 		const rightIdx = rightAttrs.findIndex(a => a.id === p.rightAttrId);
 		if (leftIdx === -1 || rightIdx === -1) {
 			throw new Error(`AsofScan: could not resolve partition-attr ids ${p.leftAttrId}/${p.rightAttrId}`);
 		}
-		const collationName = leftAttrs[leftIdx].type.collationName ?? rightAttrs[rightIdx].type.collationName;
-		return {
-			leftIdx,
-			rightIdx,
-			collation: collationName ? ctx.resolveCollation(collationName) : BINARY_COLLATION,
-		};
-	});
-	const leftPartitionIndices = partitionMappings.map(m => m.leftIdx);
-	const rightPartitionIndices = partitionMappings.map(m => m.rightIdx);
+		leftPartitionIndices.push(leftIdx);
+		rightPartitionIndices.push(rightIdx);
+	}
 
 	const rightOutputColumnIndices = plan.getRightOutputColumnIndices();
 	const projectedRightColCount = rightOutputColumnIndices.length;
