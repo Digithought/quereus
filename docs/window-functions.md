@@ -175,6 +175,55 @@ The planner automatically groups window functions with identical specifications:
 - **Partitioned functions**: Buffer only current partition
 - **Frame-bounded aggregates**: Process only necessary frame data
 
+### Streaming fast path over `MonotonicOn`
+
+When the source already arrives in `[PARTITION BY..., ORDER BY[0]]` order — its
+`physical.monotonicOn` covers the leading ORDER BY key and `physical.ordering`
+shows the partition keys as an emit-order prefix — `rule-monotonic-window` tags
+the `WindowNode` with a `streaming` config and the runtime switches from the
+buffer/sort path to a one-pass emitter (`runStreaming` in `runtime/emit/window.ts`).
+
+The streaming emitter:
+
+- Walks the source in source order, emitting in source order.
+- Maintains `O(P)` per-partition state where `P` is the open partition (only one
+  partition is alive at a time since input is partition-sorted), with sub-state
+  per function: ranking counters, LAG ring buffers, LEAD read-ahead queues,
+  FIRST_VALUE caches, and running-aggregate accumulators with peer-group
+  buffering for RANGE-mode frames.
+- Skips the sort entirely — `O(N log N)` per partition saved.
+- Skips materialization — `O(N)` memory saved.
+- Preserves the source's `monotonicOn` on the `WindowNode`'s output so
+  downstream rules (`monotonic-limit-pushdown`, `monotonic-merge-join`,
+  `monotonic-range-access`) compose cleanly above streaming windows.
+
+**Recognized functions** (the rule fires only when *all* functions in a single
+WindowNode are individually recognized):
+
+| Function class | Recognized | Notes |
+| --- | --- | --- |
+| `ROW_NUMBER`, `RANK`, `DENSE_RANK` | yes | per-partition counter + last-key |
+| `LAG`, `LEAD` | yes | offset must be a non-negative integer literal |
+| `FIRST_VALUE`, `LAST_VALUE` | yes | LAST_VALUE only under default frame |
+| Running `SUM`, `COUNT`, `AVG`, `MIN`, `MAX` | yes | default frame (`UNBOUNDED PRECEDING TO CURRENT ROW`, ROWS or RANGE) |
+| `NTILE`, `PERCENT_RANK`, `CUME_DIST` | no | need partition size up-front |
+| Sliding frames (`ROWS BETWEEN n PRECEDING AND m FOLLOWING`, `RANGE` offsets) | no | future work |
+| `DISTINCT` aggregates | no | future work |
+
+**Bail conditions** (any one drops to the buffered path):
+
+- The leading ORDER BY key is not a trivial column reference, or doesn't match
+  source's `monotonicOn` direction.
+- Source's `physical.ordering` doesn't cover the full ORDER BY key set.
+- PARTITION BY columns aren't an emit-order prefix of the source ordering.
+- Any partition-by expression is non-trivial (not a column reference).
+- Any function falls outside the recognized set.
+- Frame is anything other than the default (or the explicit equivalent
+  `UNBOUNDED PRECEDING TO CURRENT ROW`).
+
+The rule id `monotonic-window` can be disabled via `tuning.disabledRules`. See
+[Monotonic streaming-window recognition](./optimizer.md#monotonic-streaming-window-recognition).
+
 ## Testing
 
 Window functions are comprehensively tested through SQL Logic Tests (`test/logic/07.5-window.sqllogic`):

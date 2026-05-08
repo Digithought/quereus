@@ -401,3 +401,79 @@ FROM range_test ORDER BY id;
 → [{"id":1,"val":10,"first_peer_id":1,"last_peer_id":1},{"id":2,"val":20,"first_peer_id":2,"last_peer_id":3},{"id":3,"val":20,"first_peer_id":2,"last_peer_id":3},{"id":4,"val":30,"first_peer_id":4,"last_peer_id":4},{"id":5,"val":50,"first_peer_id":5,"last_peer_id":5}]
 
 DROP TABLE range_test;
+
+-- =============================================================================
+-- Streaming fast-path tests (rule: monotonic-window).
+--
+-- These verify the streaming emitter produces identical output to the buffered
+-- emitter on a variety of monotonic-input cases. The leaf table's PK provides
+-- the monotonicOn(id) advertisement that the rule keys off; queries below
+-- exercise ranking, navigation, and running-aggregate functions over
+-- ORDER BY id.
+-- =============================================================================
+
+CREATE TABLE stream_t (id INTEGER PRIMARY KEY, val INTEGER, grp TEXT);
+INSERT INTO stream_t VALUES
+  (1, 10, 'A'), (2, 20, 'A'), (3, 30, 'A'),
+  (4, 40, 'B'), (5, 50, 'B'), (6, 60, 'B');
+
+-- ROW_NUMBER over monotonic PK: streaming.
+SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn FROM stream_t ORDER BY id;
+→ [{"id":1,"rn":1},{"id":2,"rn":2},{"id":3,"rn":3},{"id":4,"rn":4},{"id":5,"rn":5},{"id":6,"rn":6}]
+
+-- RANK / DENSE_RANK with no peer ties (PK is unique).
+SELECT id, val, RANK() OVER (ORDER BY id) AS r, DENSE_RANK() OVER (ORDER BY id) AS dr
+FROM stream_t ORDER BY id;
+→ [{"id":1,"val":10,"r":1,"dr":1},{"id":2,"val":20,"r":2,"dr":2},{"id":3,"val":30,"r":3,"dr":3},{"id":4,"val":40,"r":4,"dr":4},{"id":5,"val":50,"r":5,"dr":5},{"id":6,"val":60,"r":6,"dr":6}]
+
+-- LAG with default offset = 1.
+SELECT id, LAG(val) OVER (ORDER BY id) AS prv FROM stream_t ORDER BY id;
+→ [{"id":1,"prv":null},{"id":2,"prv":10},{"id":3,"prv":20},{"id":4,"prv":30},{"id":5,"prv":40},{"id":6,"prv":50}]
+
+-- LAG with literal offset 2 and a non-NULL default.
+SELECT id, LAG(val, 2, -1) OVER (ORDER BY id) AS prv2 FROM stream_t ORDER BY id;
+→ [{"id":1,"prv2":-1},{"id":2,"prv2":-1},{"id":3,"prv2":10},{"id":4,"prv2":20},{"id":5,"prv2":30},{"id":6,"prv2":40}]
+
+-- LEAD with default offset and no default value (NULL at boundary).
+SELECT id, LEAD(val) OVER (ORDER BY id) AS nxt FROM stream_t ORDER BY id;
+→ [{"id":1,"nxt":20},{"id":2,"nxt":30},{"id":3,"nxt":40},{"id":4,"nxt":50},{"id":5,"nxt":60},{"id":6,"nxt":null}]
+
+-- LEAD with literal offset 1 and a non-NULL default at partition end.
+SELECT id, LEAD(val, 1, -99) OVER (ORDER BY id) AS nxt FROM stream_t ORDER BY id;
+→ [{"id":1,"nxt":20},{"id":2,"nxt":30},{"id":3,"nxt":40},{"id":4,"nxt":50},{"id":5,"nxt":60},{"id":6,"nxt":-99}]
+
+-- Running SUM over default RANGE frame (UNBOUNDED PRECEDING TO CURRENT ROW).
+SELECT id, val, SUM(val) OVER (ORDER BY id) AS rs FROM stream_t ORDER BY id;
+→ [{"id":1,"val":10,"rs":10},{"id":2,"val":20,"rs":30},{"id":3,"val":30,"rs":60},{"id":4,"val":40,"rs":100},{"id":5,"val":50,"rs":150},{"id":6,"val":60,"rs":210}]
+
+-- Running MIN over explicit ROWS UNBOUNDED PRECEDING.
+SELECT id, val, MIN(val) OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS rm FROM stream_t ORDER BY id;
+→ [{"id":1,"val":10,"rm":10},{"id":2,"val":20,"rm":10},{"id":3,"val":30,"rm":10},{"id":4,"val":40,"rm":10},{"id":5,"val":50,"rm":10},{"id":6,"val":60,"rm":10}]
+
+-- FIRST_VALUE caches the first row's expr for the partition.
+SELECT id, FIRST_VALUE(val) OVER (ORDER BY id) AS fv FROM stream_t ORDER BY id;
+→ [{"id":1,"fv":10},{"id":2,"fv":10},{"id":3,"fv":10},{"id":4,"fv":10},{"id":5,"fv":10},{"id":6,"fv":10}]
+
+-- LAST_VALUE under default frame (== current row in RANGE mode for unique keys).
+SELECT id, LAST_VALUE(val) OVER (ORDER BY id) AS lv FROM stream_t ORDER BY id;
+→ [{"id":1,"lv":10},{"id":2,"lv":20},{"id":3,"lv":30},{"id":4,"lv":40},{"id":5,"lv":50},{"id":6,"lv":60}]
+
+-- All-NULL expr column for LAG: defaults bubble through unchanged.
+CREATE TABLE stream_n (id INTEGER PRIMARY KEY, x INTEGER NULL);
+INSERT INTO stream_n VALUES (1, NULL), (2, NULL), (3, NULL);
+SELECT id, LAG(x) OVER (ORDER BY id) AS prv FROM stream_n ORDER BY id;
+→ [{"id":1,"prv":null},{"id":2,"prv":null},{"id":3,"prv":null}]
+
+-- Single-row "partition" — running aggregate equals the value itself.
+CREATE TABLE stream_one (id INTEGER PRIMARY KEY, val INTEGER);
+INSERT INTO stream_one VALUES (1, 42);
+SELECT id, val, SUM(val) OVER (ORDER BY id) AS rs FROM stream_one ORDER BY id;
+→ [{"id":1,"val":42,"rs":42}]
+
+-- Empty result via WHERE 1=0: streaming yields zero rows, no errors.
+SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn FROM stream_t WHERE 1=0;
+→ []
+
+DROP TABLE stream_t;
+DROP TABLE stream_n;
+DROP TABLE stream_one;

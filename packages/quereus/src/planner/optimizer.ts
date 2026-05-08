@@ -31,6 +31,7 @@ import { ruleQuickPickJoinEnumeration } from './rules/join/rule-quickpick-enumer
 import { ruleJoinPhysicalSelection } from './rules/join/rule-join-physical-selection.js';
 import { ruleMonotonicMergeJoin } from './rules/join/rule-monotonic-merge-join.js';
 import { ruleLateralTop1Asof } from './rules/join/rule-lateral-top1-asof.js';
+import { ruleMonotonicWindow } from './rules/window/rule-monotonic-window.js';
 // Constraint rules removed - now handled in builders for correctness
 import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
@@ -228,6 +229,18 @@ export class Optimizer {
 			phase: 'impl',
 			fn: ruleMonotonicMergeJoin,
 			priority: 4
+		});
+
+		// Monotonic streaming-window recognition. Runs after monotonic-merge-join
+		// (priority 4) so child joins have already become MergeJoins and
+		// propagate their `monotonicOn`; runs before monotonic-limit-pushdown
+		// (priority 8) but does not interact with it (different node type).
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'monotonic-window',
+			nodeType: PlanNodeType.Window,
+			phase: 'impl',
+			fn: ruleMonotonicWindow,
+			priority: 6
 		});
 
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
