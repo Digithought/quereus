@@ -13,6 +13,7 @@ interface PhysicalProps {
 interface AsofProps {
 	outer: boolean;
 	strict: boolean;
+	direction: 'asc' | 'desc';
 	matchAttr: { left: number; right: number };
 	partitionAttrs: { left: number; right: number }[];
 	rightOutputColumnIndices?: number[];
@@ -68,7 +69,47 @@ describe('AsofScan rule (lateral-top-1 → AsofScanNode)', () => {
 		expect(asof, 'AsofScan node present').to.not.equal(undefined);
 		expect(asof!.outer).to.equal(true);
 		expect(asof!.strict).to.equal(false);
+		expect(asof!.direction).to.equal('desc');
 		expect(asof!.partitionAttrs).to.be.an('array').with.lengthOf(0);
+	});
+
+	it('recognizes the ASC variant (q.ts >= t.ts order by q.ts asc) — earliest right ≥ left', async () => {
+		const sql = `select t.id, q.bid from (select id, symbol, ts from trades order by ts) t left join lateral (
+			select bid from quotes q where q.symbol = t.symbol and q.ts >= t.ts order by q.ts asc limit 1
+		) q on true`;
+		const rows = await getPlanRows(db, sql);
+		const asof = asofPropsOf(rows);
+		expect(asof, 'AsofScan node present').to.not.equal(undefined);
+		expect(asof!.direction).to.equal('asc');
+		expect(asof!.strict).to.equal(false);
+		expect(asof!.partitionAttrs).to.be.an('array').with.lengthOf(1);
+	});
+
+	it('recognizes the strict ASC variant (q.ts > t.ts order by q.ts asc)', async () => {
+		const sql = `select t.id, q.bid from (select id, symbol, ts from trades order by ts) t left join lateral (
+			select bid from quotes q where q.symbol = t.symbol and q.ts > t.ts order by q.ts asc limit 1
+		) q on true`;
+		const rows = await getPlanRows(db, sql);
+		const asof = asofPropsOf(rows);
+		expect(asof, 'AsofScan node present').to.not.equal(undefined);
+		expect(asof!.direction).to.equal('asc');
+		expect(asof!.strict).to.equal(true);
+	});
+
+	it('does not fire when sort direction disagrees with the predicate (q.ts <= t.ts but order by asc)', async () => {
+		const sql = `select t.id, q.bid from (select id, symbol, ts from trades order by ts) t left join lateral (
+			select bid from quotes q where q.symbol = t.symbol and q.ts <= t.ts order by q.ts asc limit 1
+		) q on true`;
+		const rows = await getPlanRows(db, sql);
+		expect(findOp(rows, 'ASOFSCAN'), 'no asof scan when sort/predicate directions disagree').to.equal(undefined);
+	});
+
+	it('does not fire when sort direction disagrees with the predicate (q.ts >= t.ts but order by desc)', async () => {
+		const sql = `select t.id, q.bid from (select id, symbol, ts from trades order by ts) t left join lateral (
+			select bid from quotes q where q.symbol = t.symbol and q.ts >= t.ts order by q.ts desc limit 1
+		) q on true`;
+		const rows = await getPlanRows(db, sql);
+		expect(findOp(rows, 'ASOFSCAN'), 'no asof scan when sort/predicate directions disagree').to.equal(undefined);
 	});
 
 	it('recognizes a partitioned non-strict left lateral-top-1', async () => {

@@ -101,6 +101,58 @@ SELECT t.id, q.bid FROM (SELECT id, ts FROM asof_trades ORDER BY ts) t LEFT JOIN
 ) q ON true ORDER BY t.id;
 → [{"id":1,"bid":1},{"id":2,"bid":1},{"id":3,"bid":2},{"id":4,"bid":1.5},{"id":5,"bid":2.5}]
 
+-- ASC variant plan-shape: ASOF SCAN must appear (left sorted on ts, q.ts >= t.ts ORDER BY q.ts ASC).
+SELECT op FROM query_plan('select t.id, q.bid from (select id, symbol, ts from asof_trades order by ts) t left join lateral (select bid from asof_quotes q where q.symbol = t.symbol and q.ts >= t.ts order by q.ts asc limit 1) q on true') WHERE op = 'ASOFSCAN';
+→ [{"op":"ASOFSCAN"}]
+
+-- Partitioned non-strict ASC lateral. Left sorted by ts.
+-- A quotes by ts: 50, 150, 250 ; B quotes by ts: 180
+-- t.id=1 (A,75):  earliest A ≥ 75  → 150 → 1.5
+-- t.id=2 (A,100): earliest A ≥ 100 → 150 → 1.5
+-- t.id=4 (B,150): earliest B ≥ 150 → 180 → 2.0
+-- t.id=3 (A,200): earliest A ≥ 200 → 250 → 2.5
+-- t.id=5 (C,500): no C quote → null
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts >= t.ts ORDER BY q.ts ASC LIMIT 1
+) q ON true ORDER BY t.id;
+→ [{"id":1,"bid":1.5},{"id":2,"bid":1.5},{"id":3,"bid":2.5},{"id":4,"bid":2},{"id":5,"bid":null}]
+
+-- Strict ASC variant (q.ts > t.ts) — boundary tie at q.ts = t.ts is excluded.
+-- Add an exact-match quote to exercise the tie.
+INSERT INTO asof_quotes VALUES (200, 'A', 7.7);
+
+-- Non-strict ASC: t.id=3 (ts=200) sees the tied 7.7.
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts >= t.ts ORDER BY q.ts ASC LIMIT 1
+) q ON true WHERE t.id = 3;
+→ [{"id":3,"bid":7.7}]
+
+-- Strict ASC: t.id=3 (ts=200) skips the tie; falls through to ts=250 → 2.5.
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts > t.ts ORDER BY q.ts ASC LIMIT 1
+) q ON true WHERE t.id = 3;
+→ [{"id":3,"bid":2.5}]
+
+DELETE FROM asof_quotes WHERE ts = 200 AND bid = 7.7;
+
+-- Inner cross-join lateral (ASC) drops left rows with no match.
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t CROSS JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts >= t.ts ORDER BY q.ts ASC LIMIT 1
+) q ORDER BY t.id;
+→ [{"id":1,"bid":1.5},{"id":2,"bid":1.5},{"id":3,"bid":2.5},{"id":4,"bid":2}]
+
+-- Unpartitioned ASC: any earliest quote ≥ t.ts regardless of symbol.
+-- All quotes by ts: 50, 150, 180, 250
+-- t.id=1 (75):  earliest ≥ 75  → 150 → 1.5
+-- t.id=2 (100): earliest ≥ 100 → 150 → 1.5
+-- t.id=4 (150): earliest ≥ 150 → 150 → 1.5
+-- t.id=3 (200): earliest ≥ 200 → 250 → 2.5
+-- t.id=5 (500): earliest ≥ 500 → none → null
+SELECT t.id, q.bid FROM (SELECT id, ts FROM asof_trades ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.ts >= t.ts ORDER BY q.ts ASC LIMIT 1
+) q ON true ORDER BY t.id;
+→ [{"id":1,"bid":1.5},{"id":2,"bid":1.5},{"id":3,"bid":2.5},{"id":4,"bid":1.5},{"id":5,"bid":null}]
+
 -- Cleanup
 DROP TABLE asof_trades;
 DROP TABLE asof_quotes;

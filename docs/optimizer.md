@@ -607,19 +607,35 @@ if (shouldCache(node, context)) {
 
 ## Streaming asof scan
 
-The "asof join" — for each left row, the latest right row whose key is ≤ the
-left's key, optionally per partition — is a recurring shape in time-series and
-event-stream queries. Standard SQL writes it as a lateral-top-1 subquery:
+The "asof join" — for each left row, a single right row whose key relates to
+the left's key by the asof predicate, optionally per partition — is a recurring
+shape in time-series and event-stream queries. Two symmetric forms are
+recognized:
+
+- **Latest-le** (`direction = 'desc'`): largest right.K ≤ left.K. Predicate
+  `q.K <= t.K` (or strict `<`), sort `order by q.K desc limit 1`.
+- **Earliest-ge** (`direction = 'asc'`): smallest right.K ≥ left.K. Predicate
+  `q.K >= t.K` (or strict `>`), sort `order by q.K asc limit 1`.
+
+Standard SQL writes both as a lateral-top-1 subquery:
 
 ```sql
+-- Latest-le (desc):
 select t.*, q.bid, q.ask
 from (select * from trades order by ts) t
 left join lateral (
-  select bid, ask
-  from quotes q
+  select bid, ask from quotes q
   where q.symbol = t.symbol and q.ts <= t.ts
-  order by q.ts desc
-  limit 1
+  order by q.ts desc limit 1
+) q on true;
+
+-- Earliest-ge (asc):
+select t.*, q.bid
+from (select * from trades order by ts) t
+left join lateral (
+  select bid from quotes q
+  where q.symbol = t.symbol and q.ts >= t.ts
+  order by q.ts asc limit 1
 ) q on true;
 ```
 
@@ -634,14 +650,15 @@ cursor: `O(L + R)`.
 ```
 JoinNode (joinType ∈ {inner, left, cross}, condition absent or trivially true)
   left:  Left
-  right: ProjectNode? | LimitOffsetNode(LIMIT 1, no OFFSET) | SortNode (single key, desc)
+  right: ProjectNode? | LimitOffsetNode(LIMIT 1, no OFFSET) | SortNode (single column key)
             └─ FilterNode (ANDed: q.K op left.K  AND  q.P_i = left.P_i ...)
                   └─ ...some pipeline... TableReference
 ```
 
-`op` is `<` (strict) or `<=` (non-strict). The lateral-side projection must be
-trivial column references (so the rule can preserve attribute IDs). The Sort
-must be a single descending column reference.
+`op` is `<=`/`<` (latest-le) or `>=`/`>` (earliest-ge). The lateral-side
+projection must be trivial column references (so the rule can preserve
+attribute IDs). The Sort must be a single column reference; its direction must
+agree with the predicate (`desc` ↔ `<=`/`<`, `asc` ↔ `>=`/`>`).
 
 **Required vtab capabilities**: the underlying right table's `getBestAccessPlan`
 must advertise `monotonicOn(K)` and `supportsAsofRight: true` for an ordered
@@ -662,6 +679,7 @@ and the existing nested-loop lateral path executes unchanged.
 - the lateral's projection contains a non-trivial expression,
 - `LIMIT n` for `n ≠ 1` or `OFFSET ≠ 0`,
 - the sort is on a computed expression (not a trivial column reference),
+- the sort direction disagrees with the predicate (e.g. `q.K <= t.K` with `order by q.K asc`),
 - the left is not monotonic on the match attribute.
 
 The rule runs in the Structural pass at priority 5 — before

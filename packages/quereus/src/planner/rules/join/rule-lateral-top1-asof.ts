@@ -110,15 +110,15 @@ function isLiteralZeroOrUndefined(node: ScalarPlanNode): boolean {
 }
 
 /**
- * Verify the SortNode has a single descending key that is a trivial column
- * reference. Returns the attribute id of that column, or null.
+ * Verify the SortNode has a single key that is a trivial column reference and
+ * a definite direction. Returns the attribute id and direction, or null.
  */
-function extractSortAttrId(sort: SortNode): number | null {
+function extractSortAttrId(sort: SortNode): { attrId: number; direction: 'asc' | 'desc' } | null {
 	if (sort.sortKeys.length !== 1) return null;
 	const key = sort.sortKeys[0];
-	if (key.direction !== 'desc') return null;
+	if (key.direction !== 'desc' && key.direction !== 'asc') return null;
 	if (!(key.expression instanceof ColumnReferenceNode)) return null;
-	return key.expression.attributeId;
+	return { attrId: key.expression.attributeId, direction: key.direction };
 }
 
 /** Walk an AND tree, returning each leaf conjunct. */
@@ -137,7 +137,7 @@ function flattenAnd(node: ScalarPlanNode): ScalarPlanNode[] {
 }
 
 interface PredicateClassification {
-	asof: { rightAttrId: number; leftAttrId: number; strict: boolean };
+	asof: { rightAttrId: number; leftAttrId: number; strict: boolean; direction: 'asc' | 'desc' };
 	partition: AsofAttrPair[];
 }
 
@@ -178,26 +178,32 @@ function classifyPredicates(
 			continue;
 		}
 
-		// Asof inequality. Operators canonicalize so the predicate reads
-		// "rightCol <= leftCol" (or "<" when strict).
-		// Original SQL forms supported:
-		//   - q.K <= t.K      (q on left side of op, t on right side)  → strict=false
-		//   - q.K <  t.K                                                → strict=true
-		//   - t.K >= q.K      (mirror)                                  → strict=false
-		//   - t.K >  q.K                                                → strict=true
+		// Asof inequality. Two directions are supported:
+		//   'desc' — right ≤ left (latest right ≤ left); strict variant: right < left.
+		//   'asc'  — right ≥ left (earliest right ≥ left); strict variant: right > left.
+		// All operator forms canonicalize to (right op left) before mapping:
+		//   - q.K <= t.K  → desc, strict=false        - q.K >= t.K  → asc, strict=false
+		//   - q.K <  t.K  → desc, strict=true         - q.K >  t.K  → asc, strict=true
+		//   - t.K >= q.K  → desc, strict=false        - t.K <= q.K  → asc, strict=false
+		//   - t.K >  q.K  → desc, strict=true         - t.K <  q.K  → asc, strict=true
 		let strict: boolean | undefined;
+		let direction: 'asc' | 'desc' | undefined;
 		if (lFromRight) {
 			// op is between (right.col, left.col)
-			if (op === '<=') strict = false;
-			else if (op === '<') strict = true;
+			if (op === '<=') { strict = false; direction = 'desc'; }
+			else if (op === '<') { strict = true; direction = 'desc'; }
+			else if (op === '>=') { strict = false; direction = 'asc'; }
+			else if (op === '>') { strict = true; direction = 'asc'; }
 		} else {
 			// op is between (left.col, right.col); flip
-			if (op === '>=') strict = false;
-			else if (op === '>') strict = true;
+			if (op === '>=') { strict = false; direction = 'desc'; }
+			else if (op === '>') { strict = true; direction = 'desc'; }
+			else if (op === '<=') { strict = false; direction = 'asc'; }
+			else if (op === '<') { strict = true; direction = 'asc'; }
 		}
-		if (strict === undefined) return null;
+		if (strict === undefined || direction === undefined) return null;
 		if (asof) return null; // multiple asof inequalities — bail
-		asof = { rightAttrId, leftAttrId, strict };
+		asof = { rightAttrId, leftAttrId, strict, direction };
 	}
 
 	if (!asof) return null;
@@ -338,8 +344,8 @@ export function ruleLateralTop1Asof(node: PlanNode, context: OptContext): PlanNo
 
 	if (!isLimitOne(peeled.limit)) return null;
 
-	const sortAttrId = extractSortAttrId(peeled.sort);
-	if (sortAttrId === null) return null;
+	const sortInfo = extractSortAttrId(peeled.sort);
+	if (sortInfo === null) return null;
 
 	// The Filter's source defines the right attribute set we'll classify against.
 	const filterSourceAttrs = peeled.filter.source.getAttributes();
@@ -350,7 +356,9 @@ export function ruleLateralTop1Asof(node: PlanNode, context: OptContext): PlanNo
 	if (!classified) return null;
 
 	// Sort key must match the asof match attribute on the right.
-	if (classified.asof.rightAttrId !== sortAttrId) return null;
+	if (classified.asof.rightAttrId !== sortInfo.attrId) return null;
+	// Sort direction must match the asof direction (desc → latest-le, asc → earliest-ge).
+	if (sortInfo.direction !== classified.asof.direction) return null;
 
 	// Locate the underlying table reference at the bottom of the lateral.
 	const tableRef = findTableReference(peeled.filter.source);
@@ -404,13 +412,14 @@ export function ruleLateralTop1Asof(node: PlanNode, context: OptContext): PlanNo
 		{ leftAttrId: classified.asof.leftAttrId, rightAttrId: classified.asof.rightAttrId },
 		classified.partition,
 		classified.asof.strict,
+		classified.asof.direction,
 		joinType === 'left',
 		projection.columnIndices,
 		projection.attrs,
 	);
 
-	log('Recognized lateral-top-1 asof: outer=%s, strict=%s, partitions=%d',
-		joinType === 'left', classified.asof.strict, classified.partition.length);
+	log('Recognized lateral-top-1 asof: outer=%s, direction=%s, strict=%s, partitions=%d',
+		joinType === 'left', classified.asof.direction, classified.asof.strict, classified.partition.length);
 
 	return asof;
 }

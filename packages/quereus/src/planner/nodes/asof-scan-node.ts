@@ -19,9 +19,13 @@ export interface AsofAttrPair {
 /**
  * Physical plan node implementing a streaming asof scan.
  *
- * For each left row, emits the right row with the largest match value ≤ the
- * left's match value (or strictly < when `strict`), optionally bucketed by
- * partition keys. Requires the right input to advertise `MonotonicOn(matchAttr)`
+ * For each left row, emits a single right row matched against the left's match
+ * value, optionally bucketed by partition keys. Two directions are supported:
+ *
+ *   - `direction = 'desc'`: latest right ≤ left.match (or strict <).
+ *   - `direction = 'asc'`:  earliest right ≥ left.match (or strict >).
+ *
+ * Requires the right input to advertise `MonotonicOn(matchAttr)` (ascending)
  * and `accessCapabilities.asofRight`.
  *
  * Output attributes: left attributes followed by the projected right output
@@ -43,12 +47,18 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 		public readonly left: RelationalPlanNode,
 		/** Right input. Must advertise MonotonicOn(matchAttr.right) and accessCapabilities.asofRight. */
 		public readonly right: RelationalPlanNode,
-		/** Asof match attribute pair (left.match >= right.match, or > when `strict`). */
+		/** Asof match attribute pair. */
 		public readonly matchAttr: AsofAttrPair,
 		/** Equi-partition keys (zero or more). Empty array = single bucket. */
 		public readonly partitionAttrs: readonly AsofAttrPair[],
-		/** Strict (<) vs non-strict (≤) on the asof comparison. */
+		/** Strict (open) vs non-strict (closed) on the asof comparison. */
 		public readonly strict: boolean,
+		/**
+		 * Direction of the asof match.
+		 *   'desc' → largest right.match ≤ left.match (or < when strict)
+		 *   'asc'  → smallest right.match ≥ left.match (or > when strict)
+		 */
+		public readonly direction: 'asc' | 'desc',
 		/** LEFT JOIN semantics: emit unmatched left rows with NULL right columns. */
 		public readonly outer: boolean,
 		/**
@@ -178,6 +188,7 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 			this.matchAttr,
 			this.partitionAttrs,
 			this.strict,
+			this.direction,
 			this.outer,
 			this.rightOutputColumnIndices,
 			this.rightOutputAttrs,
@@ -185,7 +196,10 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 	}
 
 	override toString(): string {
-		const op = this.strict ? '<' : '<=';
+		// 'desc' → right ≤/< left; 'asc' → right ≥/> left.
+		const op = this.direction === 'desc'
+			? (this.strict ? '<' : '<=')
+			: (this.strict ? '>' : '>=');
 		const parts: string[] = [];
 		parts.push(`right.${this.matchAttr.rightAttrId} ${op} left.${this.matchAttr.leftAttrId}`);
 		for (const p of this.partitionAttrs) {
@@ -198,6 +212,7 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 		return {
 			outer: this.outer,
 			strict: this.strict,
+			direction: this.direction,
 			matchAttr: { left: this.matchAttr.leftAttrId, right: this.matchAttr.rightAttrId },
 			partitionAttrs: this.partitionAttrs.map(p => ({ left: p.leftAttrId, right: p.rightAttrId })),
 			rightOutputColumnIndices: this.rightOutputColumnIndices ? [...this.rightOutputColumnIndices] : undefined,

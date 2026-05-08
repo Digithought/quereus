@@ -36,15 +36,21 @@ function buildPartitionKey(row: Row, indices: number[]): string | null {
  *
  * Algorithm (hash-bucketed):
  * 1. Bucket the right input by partition key (single bucket if no partition).
- *    Within each bucket, rows arrive in monotonicOn(matchAttr) order from the
- *    right access plan. Right rows with NULL match values are dropped.
+ *    Within each bucket, rows arrive in monotonicOn(matchAttr, asc) order from
+ *    the right access plan. Right rows with NULL match values are dropped.
  * 2. For each left row:
  *    - Look up its partition's bucket. If absent, emit NULL-padded (outer) or
  *      drop (inner).
- *    - Advance the bucket cursor while the next row's match still satisfies
- *      the asof predicate (≤ left.match, or < when strict).
- *    - Emit (left, projected right) when the cursor's row matches; otherwise
- *      NULL-pad (outer) or drop (inner).
+ *    - 'desc' direction (latest right ≤ left.match): cursor starts at -1 and
+ *      advances forward while the next bucket row's match still qualifies
+ *      (≤ left.match, or < when strict). The cursor sits on the last
+ *      qualifying row.
+ *    - 'asc' direction (earliest right ≥ left.match): cursor starts at 0 and
+ *      advances forward while the current bucket row's match is too small
+ *      (< left.match, or ≤ when strict). The cursor sits on the first
+ *      qualifying row, or past-the-end when no row qualifies.
+ *    - Emit (left, projected right) when the cursor lands on a match;
+ *      otherwise NULL-pad (outer) or drop (inner).
  * 3. Left rows with NULL match values are NULL-padded (outer) or dropped.
  */
 export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruction {
@@ -78,6 +84,7 @@ export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruct
 	const projectedRightColCount = rightOutputColumnIndices.length;
 	const outerJoinType: 'left' | 'inner' = plan.outer ? 'left' : 'inner';
 	const strict = plan.strict;
+	const direction = plan.direction;
 
 	function projectRight(row: Row): Row {
 		const out: Row = new Array(projectedRightColCount);
@@ -92,8 +99,8 @@ export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruct
 		leftSource: AsyncIterable<Row>,
 		rightSource: AsyncIterable<Row>,
 	): AsyncIterable<Row> {
-		log('Starting %s asof scan: %d partition keys, strict=%s',
-			plan.outer ? 'LEFT' : 'INNER', plan.partitionAttrs.length, strict);
+		log('Starting %s asof scan: direction=%s, %d partition keys, strict=%s',
+			plan.outer ? 'LEFT' : 'INNER', direction, plan.partitionAttrs.length, strict);
 
 		const leftSlot = createRowSlot(rctx, leftRowDescriptor);
 		const rightSlot = createRowSlot(rctx, rightRowDescriptor);
@@ -147,29 +154,40 @@ export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruct
 					continue;
 				}
 
-				let cursor = cursors.get(pk) ?? -1;
-				// Advance cursor while bucket[cursor+1].match still satisfies the asof
-				// predicate vs. left.match (i.e., next row's match ≤ left.match, or < when strict).
-				while (cursor + 1 < bucket.length) {
-					const candidate = bucket[cursor + 1];
-					const candidateMatch = candidate[rightMatchIdx];
-					const cmp = compareSqlValuesFast(candidateMatch, leftMatch, matchCollation);
-					if (strict ? cmp < 0 : cmp <= 0) {
-						cursor++;
-					} else {
-						break;
-					}
-				}
-				cursors.set(pk, cursor);
+				const initialCursor = direction === 'desc' ? -1 : 0;
+				let cursor = cursors.get(pk) ?? initialCursor;
+				let matchedRight: Row | undefined;
 
-				if (cursor < 0) {
-					// No row in this bucket satisfies the predicate yet.
+				if (direction === 'desc') {
+					// Cursor is the index of the last qualifying row (or -1 before any).
+					// Advance while bucket[cursor+1].match still qualifies (≤ left.match, or <).
+					while (cursor + 1 < bucket.length) {
+						const candidate = bucket[cursor + 1];
+						const cmp = compareSqlValuesFast(candidate[rightMatchIdx], leftMatch, matchCollation);
+						if (strict ? cmp < 0 : cmp <= 0) cursor++;
+						else break;
+					}
+					cursors.set(pk, cursor);
+					if (cursor >= 0) matchedRight = bucket[cursor];
+				} else {
+					// 'asc': cursor is the index of the first qualifying row (or bucket.length when none).
+					// Advance while bucket[cursor].match is still too small (< left.match, or ≤).
+					while (cursor < bucket.length) {
+						const candidate = bucket[cursor];
+						const cmp = compareSqlValuesFast(candidate[rightMatchIdx], leftMatch, matchCollation);
+						if (strict ? cmp <= 0 : cmp < 0) cursor++;
+						else break;
+					}
+					cursors.set(pk, cursor);
+					if (cursor < bucket.length) matchedRight = bucket[cursor];
+				}
+
+				if (!matchedRight) {
+					// No row in this bucket qualifies for the current left.match.
 					const padding = joinOutputRow(outerJoinType, false, false, leftRow, projectedRightColCount, rightSlot);
 					if (padding) yield padding;
 					continue;
 				}
-
-				const matchedRight = bucket[cursor];
 				rightSlot.set(matchedRight);
 
 				const projectedRight = projectRight(matchedRight);
