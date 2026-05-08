@@ -49,6 +49,7 @@ export enum PlanNodeType {
   NestedLoopJoin = 'NestedLoopJoin',
   HashJoin = 'HashJoin',
   MergeJoin = 'MergeJoin',
+  AsofScan = 'AsofScan',            // Streaming asof join: per left row, latest right with key ≤ left's
   Materialize = 'Materialize',      // Materialize intermediate results
 
   // Scalar expression nodes

@@ -384,6 +384,8 @@ export interface JoinClause extends AstNode {
 	right: FromClause;
 	condition?: Expression; // For ON clause
 	columns?: string[];     // For USING clause
+	/** Right side is a LATERAL (correlated) subquery — the left's columns are visible inside. */
+	isLateral?: boolean;
 }
 
 // ORDER BY clause

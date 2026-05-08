@@ -51,6 +51,7 @@ import { emitAlterTable } from './emit/alter-table.js';
 import { emitLoopJoin } from './emit/join.js';
 import { emitBloomJoin } from './emit/bloom-join.js';
 import { emitMergeJoin } from './emit/merge-join.js';
+import { emitAsofScan } from './emit/asof-scan.js';
 import { emitCache } from './emit/cache.js';
 import { emitReturning } from './emit/returning.js';
 import { emitSink } from './emit/sink.js';
@@ -154,6 +155,7 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.Join, emitLoopJoin as EmitterFunc);
 	registerEmitter(PlanNodeType.HashJoin, emitBloomJoin as EmitterFunc);
 	registerEmitter(PlanNodeType.MergeJoin, emitMergeJoin as EmitterFunc);
+	registerEmitter(PlanNodeType.AsofScan, emitAsofScan as EmitterFunc);
 
 	// Cache emitter
 	registerEmitter(PlanNodeType.Cache, emitCache as EmitterFunc);

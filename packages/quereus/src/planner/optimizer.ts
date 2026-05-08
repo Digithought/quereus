@@ -27,6 +27,7 @@ import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js'
 import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
 import { ruleQuickPickJoinEnumeration } from './rules/join/rule-quickpick-enumeration.js';
 import { ruleJoinPhysicalSelection } from './rules/join/rule-join-physical-selection.js';
+import { ruleLateralTop1Asof } from './rules/join/rule-lateral-top1-asof.js';
 // Constraint rules removed - now handled in builders for correctness
 import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
@@ -197,6 +198,18 @@ export class Optimizer {
 			phase: 'impl',
 			fn: ruleAggregatePhysical,
 			priority: 20
+		});
+
+		// Recognize lateral-top-1 asof. Runs in the Structural pass (before
+		// predicate-pushdown at priority 20) so the lateral's Filter still
+		// carries the asof predicate intact — predicate-pushdown would
+		// otherwise consume it into the inner Retrieve pipeline.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'lateral-top1-asof',
+			nodeType: PlanNodeType.Join,
+			phase: 'rewrite',
+			fn: ruleLateralTop1Asof,
+			priority: 5
 		});
 
 		// Post-optimization pass rules (bottom-up) - for cleanup and caching

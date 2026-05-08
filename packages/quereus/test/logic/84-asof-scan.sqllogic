@@ -1,0 +1,106 @@
+-- asof-scan.sqllogic — Streaming asof scan correctness via lateral-top-1 rule.
+-- The rule fires only when the left input is monotonic on the match attribute,
+-- so each query wraps the left side in `ORDER BY ts` (per partition or globally).
+
+-- Setup: trades stream (left) and quotes stream (right, partitioned by symbol).
+CREATE TABLE asof_trades (id INTEGER PRIMARY KEY, symbol TEXT, ts INTEGER);
+CREATE TABLE asof_quotes (ts INTEGER PRIMARY KEY, symbol TEXT, bid REAL);
+
+-- Trades inserted in ts order so the natural PK scan also yields ts-sorted rows
+-- via id, but we still wrap the left in ORDER BY ts to keep the rule's
+-- monotonicOn precondition explicit.
+INSERT INTO asof_trades VALUES
+  (1, 'A', 75),
+  (2, 'A', 100),
+  (3, 'A', 200),
+  (4, 'B', 150),
+  (5, 'C', 500);
+
+INSERT INTO asof_quotes VALUES
+  (50,  'A', 1.0),
+  (150, 'A', 1.5),
+  (180, 'B', 2.0),
+  (250, 'A', 2.5);
+
+-- Plan shape: ASOF SCAN must appear in the plan (when left is sorted on ts).
+SELECT op FROM query_plan('select t.id, q.bid from (select id, symbol, ts from asof_trades order by ts) t left join lateral (select bid from asof_quotes q where q.symbol = t.symbol and q.ts <= t.ts order by q.ts desc limit 1) q on true') WHERE op = 'ASOFSCAN';
+→ [{"op":"ASOFSCAN"}]
+
+-- Partitioned non-strict left lateral. Left is sorted by ts.
+-- t.id=1 (A,75): A quotes ≤ 75 are {50:1.0}. → 1.0
+-- t.id=2 (A,100): {50:1.0}. → 1.0
+-- t.id=3 (A,200): {50:1.0, 150:1.5}. → 1.5
+-- t.id=4 (B,150): no B quote ≤ 150 (only ts=180 in B). → null
+-- t.id=5 (C,500): no C quotes. → null
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts <= t.ts ORDER BY q.ts DESC LIMIT 1
+) q ON true ORDER BY t.id;
+→ [{"id":1,"bid":1},{"id":2,"bid":1},{"id":3,"bid":1.5},{"id":4,"bid":null},{"id":5,"bid":null}]
+
+-- Inner cross join lateral drops left rows with no match.
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t CROSS JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts <= t.ts ORDER BY q.ts DESC LIMIT 1
+) q ORDER BY t.id;
+→ [{"id":1,"bid":1},{"id":2,"bid":1},{"id":3,"bid":1.5}]
+
+-- Strict variant (q.ts < t.ts, no equality at the boundary).
+-- t.id=1 (A,75): A quotes < 75 are {50:1.0}. → 1.0
+-- t.id=2 (A,100): A quotes < 100 are {50:1.0}. → 1.0
+-- t.id=3 (A,200): A quotes < 200 are {50, 150}. → 1.5
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts < t.ts ORDER BY q.ts DESC LIMIT 1
+) q ON true ORDER BY t.id;
+→ [{"id":1,"bid":1},{"id":2,"bid":1},{"id":3,"bid":1.5},{"id":4,"bid":null},{"id":5,"bid":null}]
+
+-- Boundary tie: when q.ts equals t.ts, non-strict matches; strict skips.
+INSERT INTO asof_quotes VALUES (100, 'A', 9.9);
+
+-- Non-strict (=): t.id=2 (ts=100) sees the tied 9.9.
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts <= t.ts ORDER BY q.ts DESC LIMIT 1
+) q ON true WHERE t.id = 2;
+→ [{"id":2,"bid":9.9}]
+
+-- Strict (<): t.id=2 (ts=100) skips the tie; falls back to ts=50, bid=1.0.
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts < t.ts ORDER BY q.ts DESC LIMIT 1
+) q ON true WHERE t.id = 2;
+→ [{"id":2,"bid":1}]
+
+DELETE FROM asof_quotes WHERE ts = 100;
+
+-- Empty right: outer left-pads, inner drops.
+DELETE FROM asof_quotes;
+
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts <= t.ts ORDER BY q.ts DESC LIMIT 1
+) q ON true ORDER BY t.id;
+→ [{"id":1,"bid":null},{"id":2,"bid":null},{"id":3,"bid":null},{"id":4,"bid":null},{"id":5,"bid":null}]
+
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades ORDER BY ts) t CROSS JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.symbol = t.symbol AND q.ts <= t.ts ORDER BY q.ts DESC LIMIT 1
+) q ORDER BY t.id;
+→ []
+
+-- Restore quotes for the unpartitioned case.
+INSERT INTO asof_quotes VALUES
+  (50,  'A', 1.0),
+  (150, 'A', 1.5),
+  (180, 'B', 2.0),
+  (250, 'A', 2.5);
+
+-- Unpartitioned asof: any latest quote ≤ t.ts regardless of symbol.
+-- Left sorted by ts: t.id=1(75), 2(100), 4(150), 3(200), 5(500)
+-- t.id=1 (75):  ≤75  → 50  → 1.0
+-- t.id=2 (100): ≤100 → 50  → 1.0
+-- t.id=4 (150): ≤150 → 150 → 1.5
+-- t.id=3 (200): ≤200 → 180 → 2.0
+-- t.id=5 (500): ≤500 → 250 → 2.5
+SELECT t.id, q.bid FROM (SELECT id, ts FROM asof_trades ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes q WHERE q.ts <= t.ts ORDER BY q.ts DESC LIMIT 1
+) q ON true ORDER BY t.id;
+→ [{"id":1,"bid":1},{"id":2,"bid":1},{"id":3,"bid":2},{"id":4,"bid":1.5},{"id":5,"bid":2.5}]
+
+-- Cleanup
+DROP TABLE asof_trades;
+DROP TABLE asof_quotes;

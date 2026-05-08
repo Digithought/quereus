@@ -389,6 +389,7 @@ Rules are organized by optimization family in `src/planner/rules/`:
 
 **Join** (`join/`)
 - `ruleJoinPhysicalSelection`: Selects hash join or merge join over nested loop for equi-joins when cheaper. Three-way cost comparison (nested-loop vs hash vs merge). Supports INNER, LEFT, SEMI, and ANTI join types.
+- `ruleLateralTop1Asof`: Recognizes the lateral-top-1 idiom and rewrites it to a streaming `AsofScanNode` (see "Streaming asof scan" below).
 
 **Predicate** (`predicate/`)
 - `rulePredicatePushdown`: Pushes filter predicates down across safe commuting nodes (Sort, Distinct, Alias, eligible Project) and into RetrieveNode boundaries where the virtual table module supports them, reducing rows processed upstream.
@@ -601,6 +602,69 @@ if (shouldCache(node, context)) {
 - **OR predicate extraction**: The constraint extractor handles OR-of-equality disjunctions (collapsed to IN for index multi-seek) and OR-of-range disjunctions on the same indexed column (collapsed to OR_RANGE for multi-range index seek). OR disjunctions across different indexes (`tickets/plan/2-or-to-union-rewriting.md`) remain as residual filters.
 - **Constant Folding**: Both scalar and relational constant folding are implemented. Constant relational subtrees (e.g., all-literal VALUES, constant subqueries) are replaced with `TableLiteralNode` via deferred materialization. See `docs/optimizer-const.md`.
 - **Access Path Selection**: Supports primary and secondary index seek/range via module-provided `indexName`/`seekColumnIndexes`. Prefix-equality + trailing-range on composite indexes is not yet supported (`tickets/plan/2-composite-index-advanced-seeks.md`).
+
+## Streaming asof scan
+
+The "asof join" — for each left row, the latest right row whose key is ≤ the
+left's key, optionally per partition — is a recurring shape in time-series and
+event-stream queries. Standard SQL writes it as a lateral-top-1 subquery:
+
+```sql
+select t.*, q.bid, q.ask
+from (select * from trades order by ts) t
+left join lateral (
+  select bid, ask
+  from quotes q
+  where q.symbol = t.symbol and q.ts <= t.ts
+  order by q.ts desc
+  limit 1
+) q on true;
+```
+
+Without specialization this executes as a per-left-row re-evaluation of the
+lateral subquery — `O(L · log R)` at best. The `ruleLateralTop1Asof` rule
+recognizes the pattern and rewrites the JoinNode to an `AsofScanNode`, which
+buckets the right side once and streams the left through with a per-bucket
+cursor: `O(L + R)`.
+
+**Required pattern** (peeled in any nesting order; AliasNode is transparent):
+
+```
+JoinNode (joinType ∈ {inner, left, cross}, condition absent or trivially true)
+  left:  Left
+  right: ProjectNode? | LimitOffsetNode(LIMIT 1, no OFFSET) | SortNode (single key, desc)
+            └─ FilterNode (ANDed: q.K op left.K  AND  q.P_i = left.P_i ...)
+                  └─ ...some pipeline... TableReference
+```
+
+`op` is `<` (strict) or `<=` (non-strict). The lateral-side projection must be
+trivial column references (so the rule can preserve attribute IDs). The Sort
+must be a single descending column reference.
+
+**Required vtab capabilities**: the underlying right table's `getBestAccessPlan`
+must advertise `monotonicOn(K)` and `supportsAsofRight: true` for an ordered
+scan on the asof match column. The `memory` module advertises this for the
+leading column of the primary key.
+
+**Required left ordering**: the left input must expose
+`physical.monotonicOn(matchAttr)` — typically by wrapping the left in
+`ORDER BY matchAttr` (or by relying on a PK that orders by the match column).
+Without this, the per-bucket cursor would regress and produce wrong rows for
+out-of-order left input. When the precondition is unmet the rule does not fire
+and the existing nested-loop lateral path executes unchanged.
+
+**Bail conditions**: the rule does not fire when
+
+- the right access plan lacks `monotonicOn(K)` or `supportsAsofRight`,
+- the lateral has multiple inequalities on the right key,
+- the lateral's projection contains a non-trivial expression,
+- `LIMIT n` for `n ≠ 1` or `OFFSET ≠ 0`,
+- the sort is on a computed expression (not a trivial column reference),
+- the left is not monotonic on the match attribute.
+
+The rule runs in the Structural pass at priority 5 — before
+`predicate-pushdown` (priority 20) — so the lateral's `FilterNode` carrying
+the asof predicate is intact when matching.
 
 ## Future Directions
 

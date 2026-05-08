@@ -1099,7 +1099,7 @@ export class Parser {
 		this.consume(TokenType.JOIN, "Expected 'JOIN'.");
 
 		// Optional LATERAL before right side
-		const _isLateral = this.match(TokenType.LATERAL);
+		const isLateral = this.match(TokenType.LATERAL);
 		// Parse right side of join
 		const right = this.tableSource(withClause);
 
@@ -1132,6 +1132,7 @@ export class Parser {
 			right,
 			condition,
 			columns,
+			isLateral: isLateral || undefined,
 			loc: _createLoc(joinStartToken, endToken),
 		};
 	}

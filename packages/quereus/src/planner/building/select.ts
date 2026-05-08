@@ -556,9 +556,21 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
  * Builds a join plan node from an AST join clause
  */
 function buildJoin(joinClause: AST.JoinClause, parentContext: PlanningContext, cteNodes: Map<string, CTEScopeNode>): JoinNode {
-	// Build left and right sides recursively
+	// Build left and right sides recursively. For LATERAL joins, expose the
+	// left's output scope to the right's build context so the inner subquery
+	// can reference outer columns (this is what makes LATERAL correlated).
 	const leftNode = buildFrom(joinClause.left, parentContext, cteNodes);
-	const rightNode = buildFrom(joinClause.right, parentContext, cteNodes);
+	let rightContext = parentContext;
+	if (joinClause.isLateral) {
+		const leftOutputScope = parentContext.outputScopes.get(leftNode);
+		if (leftOutputScope) {
+			rightContext = {
+				...parentContext,
+				scope: new ShadowScope([leftOutputScope, parentContext.scope]),
+			};
+		}
+	}
+	const rightNode = buildFrom(joinClause.right, rightContext, cteNodes);
 
 	// Create a combined scope for join expressions
 	const leftScope = parentContext.outputScopes.get(leftNode);
