@@ -1281,6 +1281,13 @@ interface BestAccessPlanResult {
   providesOrdering?: readonly OrderingSpec[];
   isSet?: boolean;
   explains?: string;
+
+  // Optional monotonic-storage advertisements. The optimizer lifts these onto
+  // the physical leaf node so downstream rules (streaming asof, monotonic merge
+  // join, ordinal-seek pushdown) can rely on storage-level total-order emit.
+  monotonicOn?: { columnIndex: number; direction: 'asc' | 'desc'; strict: boolean };
+  supportsOrdinalSeek?: boolean; // implies monotonicOn
+  supportsAsofRight?: boolean;   // implies monotonicOn
 }
 
 // Helper class for building access plans

@@ -419,6 +419,13 @@ interface BestAccessPlanResult {
   rows: number | undefined;
   providesOrdering?: OrderingSpec;
   uniqueRows?: boolean;
+
+  // Optional monotonic-storage advertisements. Lifted onto the physical leaf's
+  // `physical.monotonicOn` / `physical.accessCapabilities`; not propagated by
+  // single-input pass-through nodes (Filter, LimitOffset, Alias).
+  monotonicOn?: { columnIndex: number; direction: 'asc' | 'desc'; strict: boolean };
+  supportsOrdinalSeek?: boolean; // implies monotonicOn
+  supportsAsofRight?: boolean;   // implies monotonicOn
 }
 ```
 

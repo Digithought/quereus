@@ -143,6 +143,15 @@ interface BestAccessPlanResult {
   isSet?: boolean;                     // If result is guaranteed unique
   explains?: string;                   // Free-text explanation for debugging
   residualFilter?: (row: any) => boolean; // Optional JS filter for residual predicates
+
+  // Optional monotonic-storage advertisements. The optimizer lifts these onto
+  // the physical leaf node's `physical.monotonicOn` / `physical.accessCapabilities`
+  // and downstream rules use them to license rewrites that depend on
+  // total-order emit (streaming asof, monotonic merge join, ordinal-seek
+  // pushdown). Not propagated through pass-through nodes.
+  monotonicOn?: { columnIndex: number; direction: 'asc' | 'desc'; strict: boolean };
+  supportsOrdinalSeek?: boolean;       // Implies monotonicOn; O(log N) seek to kth row
+  supportsAsofRight?: boolean;         // Implies monotonicOn; forward-only repositioning
 }
 ```
 
