@@ -47,8 +47,9 @@ export function emitBinaryOp(plan: BinaryOpNode, ctx: EmissionContext): Instruct
 
 /** Handle arithmetic when at least one operand is bigint.
  *  Both bigint → use bigint arithmetic directly.
- *  Mixed (one bigint, one number):
- *    - integer number → promote to BigInt, stay in bigint domain
+ *  Mixed (one bigint, one non-bigint):
+ *    Non-bigint operand is coerced through SQL arithmetic affinity (string/bool/blob → number).
+ *    - integer-valued number → promote to BigInt, stay in bigint domain
  *    - fractional number → demote bigint to Number, use float arithmetic */
 function mixedBigIntArithmetic(
 	v1: SqlValue, v2: SqlValue,
@@ -62,21 +63,25 @@ function mixedBigIntArithmetic(
 			return null;
 		}
 	}
-	// Mixed: one bigint, one number
-	const num = typeof v1 === 'bigint' ? v2 as number : v1 as number;
+	// Mixed: one bigint, one non-bigint. Coerce the non-bigint side through
+	// SQL arithmetic affinity so strings/booleans/blobs map to numbers
+	// consistently with the non-bigint arithmetic path.
+	const v1n: bigint | number = typeof v1 === 'bigint' ? v1 : coerceToNumberForArithmetic(v1);
+	const v2n: bigint | number = typeof v2 === 'bigint' ? v2 : coerceToNumberForArithmetic(v2);
+	const num = typeof v1n === 'bigint' ? v2n as number : v1n as number;
 	if (Number.isInteger(num)) {
 		try {
 			return innerBigInt(
-				typeof v1 === 'bigint' ? v1 : BigInt(v1 as number),
-				typeof v2 === 'bigint' ? v2 : BigInt(v2 as number)
+				typeof v1n === 'bigint' ? v1n : BigInt(v1n),
+				typeof v2n === 'bigint' ? v2n : BigInt(v2n)
 			);
 		} catch {
 			// Fall through to float path (e.g., division by zero)
 		}
 	}
 	// Float path: convert bigint → Number, use float arithmetic
-	const n1 = typeof v1 === 'bigint' ? Number(v1) : v1 as number;
-	const n2 = typeof v2 === 'bigint' ? Number(v2) : v2 as number;
+	const n1 = typeof v1n === 'bigint' ? Number(v1n) : v1n;
+	const n2 = typeof v2n === 'bigint' ? Number(v2n) : v2n;
 	const result = inner(n1, n2);
 	if (!Number.isFinite(result)) return null;
 	return result;
