@@ -155,6 +155,11 @@ interface BestAccessPlanResult {
 }
 ```
 
+**Capability contracts**:
+- `monotonicOn` is the leaf's natural emit order (storage property, not request-dependent). Stronger than `providesOrdering` — implies a total order with no gaps in coverage.
+- `supportsOrdinalSeek` enables the `monotonic-limit-pushdown` rule: when advertised, the runtime may stamp `FilterInfo.offset`/`FilterInfo.limit` and the module must seek directly to the kth monotonic row (see `query()` contract above). Modules that advertise `supportsOrdinalSeek` but ignore the directives at runtime degrade to a streaming `LIMIT` (the rule's slice operator enforces the cap above the leaf).
+- `supportsAsofRight` enables the `lateral-top1-asof` rule: forward-only repositioning per left row.
+
 **When to use**: Most modules (in-memory tables, file-based storage, traditional indexes).
 
 **Example**: Memory table with primary key index:
@@ -219,10 +224,14 @@ interface VirtualTable {
 interface FilterInfo {
   args: SqlValue[];           // Constraint values
   argIndices: number[];       // Which constraints are provided
+  limit?: number;             // Optional row cap (LIMIT pushdown)
+  offset?: number;            // Optional kth-row seek (only valid when supportsOrdinalSeek was advertised)
 }
 ```
 
 The module receives individual constraints and returns matching rows.
+
+**Pushdown directives**: `FilterInfo.limit` is a soft row cap — modules may stop emitting once `limit` rows have been yielded. `FilterInfo.offset` is a seek-to-kth-row directive and is only set when the access plan advertised `supportsOrdinalSeek` for this query — modules without ordinal-seek support can ignore both fields safely (a streaming guard above the leaf still enforces correctness).
 
 ## Optimization Integration Points
 

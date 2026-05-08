@@ -50,6 +50,7 @@ export enum PlanNodeType {
   HashJoin = 'HashJoin',
   MergeJoin = 'MergeJoin',
   AsofScan = 'AsofScan',            // Streaming asof join: per left row, latest right with key ≤ left's
+  OrdinalSlice = 'OrdinalSlice',    // O(log N) seek to kth row over a monotonic, ordinal-seek-capable leaf
   Materialize = 'Materialize',      // Materialize intermediate results
 
   // Scalar expression nodes

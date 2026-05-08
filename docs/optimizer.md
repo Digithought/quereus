@@ -666,6 +666,38 @@ The rule runs in the Structural pass at priority 5 — before
 `predicate-pushdown` (priority 20) — so the lateral's `FilterNode` carrying
 the asof predicate is intact when matching.
 
+## Monotonic LIMIT/OFFSET pushdown
+
+Paginating into the middle of a sorted result — `select … from t order by x limit n offset k` — is a common shape. Without specialization the runtime sorts/buffers `k + n` rows and discards `k` of them. When the access path advertises both `monotonicOn(x)` and `supportsOrdinalSeek`, the `monotonic-limit-pushdown` rule replaces the `LimitOffset[/Sort]/leaf` subtree with an `OrdinalSliceNode` that stamps `offset`/`limit` onto the leaf's `FilterInfo` so the vtab seeks directly to the kth row in `O(log N)` and emits at most `n` rows.
+
+**Required pattern** (peeled top-down from `LimitOffsetNode`):
+
+```
+LimitOffsetNode
+  └─ SortNode?           (single trivial column ref matching leaf monotonicOn)
+        └─ (ProjectNode | AliasNode)*   (only trivial column-reference projections)
+              └─ IndexScan / IndexSeek / SeqScan
+                    (advertises monotonicOn AND accessCapabilities.ordinalSeek)
+```
+
+`OrdinalSliceNode` slots in directly above the leaf, preserving the original `Project`/`Alias` chain above it. The `Sort` is dropped — the slice's source already emits in the requested order, and re-sorting would be wasted work.
+
+**Required vtab capabilities**: the leaf's access plan must advertise both `monotonicOn` and `supportsOrdinalSeek`. The vtab's `query()` implementation must honor `FilterInfo.offset` (positioning its iterator at the kth monotonic row) and `FilterInfo.limit` (capping output). Modules that advertise `supportsOrdinalSeek` but ignore the directives degrade silently to a streaming `LIMIT` (the slice still enforces the row cap as a guard above the leaf).
+
+**Bail conditions**: the rule does not fire when
+
+- the leaf lacks `accessCapabilities.ordinalSeek` or `monotonicOn`,
+- a `Sort` sits between `LimitOffset` and the leaf with a different attribute, direction, or multiple keys,
+- a non-trivial intermediate node (`Filter`, `Distinct`, `Aggregate`, `Project` with computed expressions, etc.) sits between `LimitOffset` and the leaf — the offset arithmetic only holds when the chain preserves row count and order,
+- both `LIMIT` and `OFFSET` are absent (degenerate node),
+- `ORDER BY` references multiple columns.
+
+When the precondition is unmet the rule does not fire and the existing `LimitOffsetNode` path executes unchanged. The `memory` module currently does **not** advertise `supportsOrdinalSeek` (its layered store does not cheaply support ordinal seek across overlay layers); custom modules with native ordinal indexing — IndexedDB-backed stores, sorted external datasets — can opt in.
+
+The rule runs in the PostOptimization pass at priority 8 (after `join-physical-selection`, before `mutating-subquery-cache`) — late enough that `select-access-path` has produced the physical leaf with its capabilities, early enough to interact with downstream cache and materialization rules.
+
+The rule id `monotonic-limit-pushdown` can be disabled via `tuning.disabledRules`.
+
 ## Future Directions
 
 The overarching optimization strategy is **progressive, JIT-inspired**: robust heuristic defaults that avoid catastrophic plans without any statistics, with runtime execution feedback driving incremental improvement. See [Progressive Query Optimization](./progressive-optimizer.md) for the full architecture.

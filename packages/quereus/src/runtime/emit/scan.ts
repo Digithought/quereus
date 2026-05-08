@@ -3,6 +3,7 @@ import { SeqScanNode, IndexScanNode, IndexSeekNode } from "../../planner/nodes/t
 import { QuereusError } from "../../common/errors.js";
 import type { VirtualTable } from "../../vtab/table.js";
 import type { BaseModuleConfig, AnyVirtualTableModule } from "../../vtab/module.js";
+import type { FilterInfo } from "../../vtab/filter-info.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { EmissionContext } from "../emission-context.js";
 import { createValidatedInstruction, emitPlanNode } from "../emitters.js";
@@ -11,9 +12,32 @@ import { buildRowDescriptor } from "../../util/row-descriptor.js";
 import { createRowSlot } from "../context-helpers.js";
 
 /**
- * Emits instructions for physical table access nodes (SeqScan, IndexScan, IndexSeek)
+ * Optional override hook supplied by callers that need to mutate the
+ * `FilterInfo` handed to the vtab at runtime — e.g., `OrdinalSlice`
+ * stamping `limit` / `offset` after resolving its scalar expressions.
+ *
+ * The override receives the plan's `FilterInfo` (already augmented with
+ * any IndexSeek dynamic args) and returns a possibly-cloned, possibly-
+ * augmented copy. Returning the input unchanged is legal.
  */
-export function emitSeqScan(plan: SeqScanNode | IndexScanNode | IndexSeekNode, ctx: EmissionContext): Instruction {
+export type FilterInfoOverride = (
+	baseFilterInfo: FilterInfo,
+	runtimeCtx: RuntimeContext,
+	dynamicArgs: SqlValue[],
+) => FilterInfo | Promise<FilterInfo>;
+
+/**
+ * Emits instructions for physical table access nodes (SeqScan, IndexScan, IndexSeek).
+ *
+ * Optionally accepts a `filterInfoOverride` so wrapping operators (e.g.,
+ * `OrdinalSlice`) can push `limit`/`offset` directives into the vtab call
+ * without re-emitting the leaf or duplicating connect/disconnect lifecycle.
+ */
+export function emitSeqScan(
+	plan: SeqScanNode | IndexScanNode | IndexSeekNode,
+	ctx: EmissionContext,
+	filterInfoOverride?: FilterInfoOverride,
+): Instruction {
 	// Handle physical access nodes
 	const source = plan.source;
 	const schema = source.tableSchema;
@@ -70,12 +94,13 @@ export function emitSeqScan(plan: SeqScanNode | IndexScanNode | IndexSeekNode, c
 		const rowSlot = createRowSlot(runtimeCtx, rowDescriptor);
 		try {
       // If this is an IndexSeek with dynamic seek keys, populate args from params
-      const effectiveFilterInfo = (() => {
-        if (plan instanceof IndexSeekNode && dynamicArgs && dynamicArgs.length > 0) {
-          return { ...plan.filterInfo, args: dynamicArgs };
-        }
-        return plan.filterInfo;
-      })();
+      let effectiveFilterInfo: FilterInfo = (plan instanceof IndexSeekNode && dynamicArgs && dynamicArgs.length > 0)
+        ? { ...plan.filterInfo, args: dynamicArgs }
+        : plan.filterInfo;
+
+      if (filterInfoOverride) {
+        effectiveFilterInfo = await filterInfoOverride(effectiveFilterInfo, runtimeCtx, dynamicArgs);
+      }
 
       const asyncRowIterable = vtabInstance.query(effectiveFilterInfo);
 			for await (const row of asyncRowIterable) {

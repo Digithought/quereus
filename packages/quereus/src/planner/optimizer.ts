@@ -17,6 +17,7 @@ import { PassManager, PassId } from './framework/pass.js';
 import { ruleMaterializationAdvisory } from './rules/cache/rule-materialization-advisory.js';
 // Phase 1.5 rules
 import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js';
+import { ruleMonotonicLimitPushdown } from './rules/access/rule-monotonic-limit-pushdown.js';
 import { ruleGrowRetrieve } from './rules/retrieve/rule-grow-retrieve.js';
 import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown.js';
 import { ruleFilterMerge } from './rules/predicate/rule-filter-merge.js';
@@ -221,6 +222,17 @@ export class Optimizer {
 			phase: 'impl',
 			fn: ruleJoinPhysicalSelection,
 			priority: 5
+		});
+
+		// Monotonic LIMIT/OFFSET pushdown: replace LimitOffset[/Sort]/access-leaf
+		// with OrdinalSlice when the leaf advertises supportsOrdinalSeek. Runs in
+		// PostOptimization so the leaf already carries its physical capabilities.
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'monotonic-limit-pushdown',
+			nodeType: PlanNodeType.LimitOffset,
+			phase: 'impl',
+			fn: ruleMonotonicLimitPushdown,
+			priority: 8
 		});
 
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
