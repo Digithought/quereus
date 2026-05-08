@@ -18,147 +18,16 @@ import { JoinNode } from '../../nodes/join-node.js';
 import { BloomJoinNode, type EquiJoinPair } from '../../nodes/bloom-join-node.js';
 import { MergeJoinNode } from '../../nodes/merge-join-node.js';
 import { SortNode } from '../../nodes/sort.js';
-import { BinaryOpNode } from '../../nodes/scalar.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
-import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { nestedLoopJoinCost, hashJoinCost, mergeJoinCost } from '../../cost/index.js';
-import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
+import {
+	extractEquiPairs,
+	extractEquiPairsFromUsing,
+	isOrderedOnEquiPairs,
+	reorderEquiPairsForMerge,
+} from './equi-pair-extractor.js';
 
 const log = createLogger('optimizer:rule:join-physical-selection');
-
-/**
- * Extract equi-join pairs and residual predicates from an ON condition.
- * Returns null if no equi-pairs found.
- */
-function extractEquiPairs(
-	condition: ScalarPlanNode | undefined,
-	leftAttrIds: Set<number>,
-	rightAttrIds: Set<number>
-): { equiPairs: EquiJoinPair[]; residual: ScalarPlanNode | undefined } | null {
-	if (!condition) return null;
-
-	const norm = normalizePredicate(condition);
-	const equiPairs: EquiJoinPair[] = [];
-	const residuals: ScalarPlanNode[] = [];
-
-	// Walk AND-tree and classify each conjunct
-	const stack: ScalarPlanNode[] = [norm];
-	while (stack.length) {
-		const n = stack.pop()!;
-		if (n instanceof BinaryOpNode && n.expression.operator === 'AND') {
-			stack.push(n.left, n.right);
-			continue;
-		}
-
-		// Check for equi-join: col_ref = col_ref across left/right
-		let isEqui = false;
-		if (n instanceof BinaryOpNode && n.expression.operator === '=') {
-			if (n.left instanceof ColumnReferenceNode && n.right instanceof ColumnReferenceNode) {
-				const lId = n.left.attributeId;
-				const rId = n.right.attributeId;
-
-				if (leftAttrIds.has(lId) && rightAttrIds.has(rId)) {
-					equiPairs.push({ leftAttrId: lId, rightAttrId: rId });
-					isEqui = true;
-				} else if (leftAttrIds.has(rId) && rightAttrIds.has(lId)) {
-					equiPairs.push({ leftAttrId: rId, rightAttrId: lId });
-					isEqui = true;
-				}
-			}
-		}
-
-		if (!isEqui) {
-			residuals.push(n);
-		}
-	}
-
-	if (equiPairs.length === 0) return null;
-
-	// Combine residuals back into an AND-tree
-	let residual: ScalarPlanNode | undefined;
-	if (residuals.length > 0) {
-		residual = residuals.reduce((acc, cur) =>
-			new BinaryOpNode(
-				cur.scope,
-				{ type: 'binary', operator: 'AND', left: acc.expression, right: cur.expression },
-				acc,
-				cur
-			)
-		);
-	}
-
-	return { equiPairs, residual };
-}
-
-/**
- * Check if a source's ordering covers the given equi-pair columns.
- * Returns true if the source is already sorted ascending on the equi-pair
- * columns in the exact order the equi-pairs specify.  Positional matching
- * is required because the merge-join emitter compares keys in equi-pair
- * order; a mismatch (e.g. source sorted (b, a) vs equi-pairs (a, b))
- * would break the linear-scan invariant.
- */
-function isOrderedOnEquiPairs(
-	source: RelationalPlanNode,
-	equiPairs: readonly EquiJoinPair[],
-	side: 'left' | 'right'
-): boolean {
-	const ordering = PlanNodeCharacteristics.getOrdering(source);
-	if (!ordering || ordering.length === 0) return false;
-	if (equiPairs.length > ordering.length) return false;
-
-	const attrs = source.getAttributes();
-
-	for (let i = 0; i < equiPairs.length; i++) {
-		const attrId = side === 'left' ? equiPairs[i].leftAttrId : equiPairs[i].rightAttrId;
-		const idx = attrs.findIndex(a => a.id === attrId);
-		if (idx === -1) return false;
-
-		// Ordering entry at position i must match this equi-pair column and
-		// must be ascending (merge join's compareKeys assumes ASC order).
-		if (ordering[i].column !== idx || ordering[i].desc) return false;
-	}
-
-	return true;
-}
-
-/**
- * Reorder equi-pairs to match the left source's physical ordering prefix.
- * The merge-join emitter compares keys in equi-pair order, so the pairs
- * must align with both sources' sort order.  Returns null if the pairs
- * cannot be reordered to match both sides simultaneously.
- */
-function reorderEquiPairsForMerge(
-	equiPairs: readonly EquiJoinPair[],
-	left: RelationalPlanNode,
-	right: RelationalPlanNode
-): EquiJoinPair[] | null {
-	const leftOrdering = PlanNodeCharacteristics.getOrdering(left);
-	if (!leftOrdering || leftOrdering.length < equiPairs.length) return null;
-
-	const leftAttrs = left.getAttributes();
-
-	// Build a map from left column index → equi-pair index
-	const colToEqIdx = new Map<number, number>();
-	for (let i = 0; i < equiPairs.length; i++) {
-		const attrIdx = leftAttrs.findIndex(a => a.id === equiPairs[i].leftAttrId);
-		if (attrIdx === -1) return null;
-		colToEqIdx.set(attrIdx, i);
-	}
-
-	// Reorder to match the left ordering prefix
-	const reordered: EquiJoinPair[] = [];
-	for (let i = 0; i < equiPairs.length; i++) {
-		const eqIdx = colToEqIdx.get(leftOrdering[i].column);
-		if (eqIdx === undefined || leftOrdering[i].desc) return null;
-		reordered.push(equiPairs[eqIdx]);
-	}
-
-	// Verify the reordered pairs also match the right source's ordering
-	if (!isOrderedOnEquiPairs(right, reordered, 'right')) return null;
-
-	return reordered;
-}
 
 /**
  * Create a SortNode that sorts a source on the equi-pair columns for this side.
@@ -212,19 +81,7 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 	if (node.condition) {
 		extracted = extractEquiPairs(node.condition, leftAttrIds, rightAttrIds);
 	} else if (node.usingColumns) {
-		// Convert USING columns to equi-pairs
-		const equiPairs: EquiJoinPair[] = [];
-		for (const colName of node.usingColumns) {
-			const lowerName = colName.toLowerCase();
-			const leftAttr = leftAttrs.find(a => a.name.toLowerCase() === lowerName);
-			const rightAttr = rightAttrs.find(a => a.name.toLowerCase() === lowerName);
-			if (leftAttr && rightAttr) {
-				equiPairs.push({ leftAttrId: leftAttr.id, rightAttrId: rightAttr.id });
-			}
-		}
-		if (equiPairs.length > 0) {
-			extracted = { equiPairs, residual: undefined };
-		}
+		extracted = extractEquiPairsFromUsing(node.usingColumns, leftAttrs, rightAttrs);
 	}
 
 	if (!extracted || extracted.equiPairs.length === 0) return null;

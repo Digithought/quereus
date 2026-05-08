@@ -388,7 +388,8 @@ Rules are organized by optimization family in `src/planner/rules/`:
 - `ruleProjectionPruning`: Prunes unused inner projections in Project-on-Project patterns (common after view expansion). Collects attribute IDs referenced by the outer project's scalar expressions, then filters the inner project to only those projections whose output attributes are referenced. Skips when all inner projections are used or pruning would yield zero projections. Runs in the Structural pass at priority 19 (between distinct-elimination at 18 and predicate-pushdown at 20).
 
 **Join** (`join/`)
-- `ruleJoinPhysicalSelection`: Selects hash join or merge join over nested loop for equi-joins when cheaper. Three-way cost comparison (nested-loop vs hash vs merge). Supports INNER, LEFT, SEMI, and ANTI join types.
+- `ruleJoinPhysicalSelection`: Selects hash join or merge join over nested loop for equi-joins when cheaper. Three-way cost comparison (nested-loop vs hash vs merge). Supports INNER, LEFT, SEMI, and ANTI join types. Merge-join recognition here is positional on `physical.ordering`.
+- `ruleMonotonicMergeJoin`: Recognises merge-join opportunities whenever both sides advertise `MonotonicOn` on the equi-pair attributes — strictly broader than ordering-based recognition. Picks up cases the ordering-based rule misses (notably parent joins on a child `MergeJoin`'s right-side equi-pair attribute, where the child's `physical.ordering` reflects only the left side but `monotonicOn` covers both). Single driving equi-pair in v1; remaining equi-pairs become residual conjuncts. Defers to `ruleJoinPhysicalSelection` whenever ordering already covers all pairs (so multi-key merge joins keep full unique-key propagation). Runs at priority 4 in PostOptimization, ahead of `ruleJoinPhysicalSelection` (priority 5).
 - `ruleLateralTop1Asof`: Recognizes the lateral-top-1 idiom and rewrites it to a streaming `AsofScanNode` (see "Streaming asof scan" below).
 
 **Predicate** (`predicate/`)

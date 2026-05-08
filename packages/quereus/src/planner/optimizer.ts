@@ -28,6 +28,7 @@ import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js'
 import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
 import { ruleQuickPickJoinEnumeration } from './rules/join/rule-quickpick-enumeration.js';
 import { ruleJoinPhysicalSelection } from './rules/join/rule-join-physical-selection.js';
+import { ruleMonotonicMergeJoin } from './rules/join/rule-monotonic-merge-join.js';
 import { ruleLateralTop1Asof } from './rules/join/rule-lateral-top1-asof.js';
 // Constraint rules removed - now handled in builders for correctness
 import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
@@ -216,6 +217,18 @@ export class Optimizer {
 		// Post-optimization pass rules (bottom-up) - for cleanup and caching
 		// Physical join selection runs here (after Physical pass) so QuickPick can
 		// see the full logical join tree before any physical conversion happens.
+		// Monotonic-aware merge-join recognition runs first (lower priority) so
+		// it can recognise cases where both sides advertise MonotonicOn but
+		// `physical.ordering` does not match positionally — once it converts a
+		// Join into a MergeJoin, the ordering-based rule no-ops on it.
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'monotonic-merge-join',
+			nodeType: PlanNodeType.Join,
+			phase: 'impl',
+			fn: ruleMonotonicMergeJoin,
+			priority: 4
+		});
+
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
 			id: 'join-physical-selection',
 			nodeType: PlanNodeType.Join,
