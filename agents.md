@@ -97,7 +97,7 @@ For all but the most trivial asks, read and maintain the relevant docs along wit
 - Query is prose ("where do we evict pages", "what handles JWT refresh", you don't yet know the identifier)? → `search_code`.
 - About to run more than one `grep` to reconstruct context? → run `search_code` first instead. That is the moment it pays off, even when you already know an identifier.
 
-`search_code` embeds the query as natural language, so a bag of identifiers collapses to noise (negative cosine, "weak top" warning). Phrase semantic queries as questions or descriptions, not as identifier lists. If `search_code` returns a weak-top warning, treat the hits as noise — switch to `find_references` or rephrase, do **not** trust the relative-percentage ranking on noisy results.
+`search_code` embeds the query as natural language. Identifier-bag queries can still work when the identifiers co-locate in real code, but prose phrasing is more reliable. If `search_code` returns a weak-top warning, the relative-percentage ranking is unreliable — switch to `find_references` or rephrase as prose, do **not** trust the ordering on noisy results.
 
 **Tools:**
 
