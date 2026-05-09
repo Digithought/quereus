@@ -3018,7 +3018,11 @@ export class Parser {
 					else if (key === 'allow_destructive') options.allowDestructive = this.consumeBooleanLiteral();
 					else if (key === 'rename_policy') {
 						const vtok = this.consume(TokenType.STRING, "Expected string for rename_policy.");
-						options.renamePolicy = String(vtok.literal) as 'require-hint' | 'infer-id';
+						const v = String(vtok.literal);
+						if (v !== 'allow' && v !== 'require-hint' && v !== 'deny') {
+							throw new ParseError(vtok, `Unknown rename_policy '${v}'. Expected 'allow', 'require-hint', or 'deny'.`);
+						}
+						options.renamePolicy = v;
 					} else {
 						// consume literal
 						if (this.check(TokenType.STRING) || this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT) || this.check(TokenType.IDENTIFIER)) this.advance();
@@ -3549,8 +3553,12 @@ export class Parser {
 			throw this.error(this.peek(), "Expected column constraint type (PRIMARY KEY, NOT NULL, UNIQUE, CHECK, DEFAULT, COLLATE, REFERENCES, GENERATED).");
 		}
 
-		// Parse optional trailing WITH TAGS for the constraint
-		if (this.matchKeyword('WITH')) {
+		// Parse optional trailing WITH TAGS for the constraint.
+		// Only consume here for *named* constraints (CONSTRAINT <name> ...).
+		// Unnamed inline constraints leave any trailing WITH TAGS for the
+		// surrounding column-level parser, since users naturally write
+		// `name text not null with tags (...)` to tag the column.
+		if (name !== undefined && this.matchKeyword('WITH')) {
 			if (this.matchKeyword('TAGS')) {
 				result.tags = this.parseTags();
 			} else {

@@ -266,8 +266,8 @@ Errors include source location (`line`, `column`) when available from the AST no
 
 The `declare schema` / `diff schema` / `apply schema` workflow provides order-independent, end-state schema declarations. The engine computes diffs against the current catalog (`computeSchemaDiff`) and generates migration DDL (`generateMigrationDDL`). Key diff types:
 
-- `SchemaDiff` — tables/views/indexes/assertions to create, drop, or alter
-- `TableAlterDiff` — columns to add or drop within an existing table
+- `SchemaDiff` — tables/views/indexes/assertions to create, drop, alter, or rename
+- `TableAlterDiff` — columns to rename, add, alter, or drop within an existing table; named-constraint renames
 
 Destructive changes (drops) require explicit acknowledgement. See the [SQL Reference](sql.md#20-declarative-schema-optional-order-independent) for full syntax and examples.
 
@@ -275,11 +275,24 @@ Destructive changes (drops) require explicit acknowledgement. See the [SQL Refer
 
 `generateMigrationDDL` produces DDL in a fixed order:
 
-1. **Drops first** — `DROP TABLE`, `DROP VIEW`, `DROP INDEX` for objects not in the declaration
-2. **Creates second** — `CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX` for new objects
-3. **Alters third** — `ALTER TABLE ADD COLUMN` / `DROP COLUMN` for changed tables
+1. **Renames first** — `ALTER TABLE ... RENAME TO` for objects with a stable identity hint (`quereus.id` / `quereus.previous_name`). This frees the old name before any create reuses it and lets the engine's rename rewriter propagate references through dependents.
+2. **Drops second** — `DROP TABLE`, `DROP VIEW`, `DROP INDEX` for objects neither declared nor consumed by a rename.
+3. **Creates third** — `CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX` for new objects.
+4. **Alters last** — within each `TableAlterDiff`: `RENAME COLUMN` first (so subsequent phases see post-rename names), then `ADD COLUMN`, `ALTER COLUMN`, `ALTER PRIMARY KEY`, `DROP COLUMN`.
 
 This ordering ensures that dropped tables free their names before creates run, and that forward references between tables (e.g. foreign keys to later-declared tables) work because declarations are order-independent.
+
+### Rename Detection
+
+`computeSchemaDiff(declared, actual, policy?)` accepts an optional `RenamePolicy` (`'allow' | 'require-hint' | 'deny'`, default `'allow'`):
+
+- Under `'allow'`, declared objects whose name doesn't match an actual object are tested for `quereus.id` then `quereus.previous_name` matches against the catalog. A hit emits a `RenameOp` and consumes the actual so it isn't dropped.
+- Under `'require-hint'`, any unhinted name change is rejected: if the diff produces both a drop and a create of the same kind (table, view, index), `computeSchemaDiff` throws.
+- Under `'deny'`, hints are ignored entirely — every mismatch becomes drop+create.
+
+Conflicts (declared name and hint resolving to two distinct existing objects) always throw, independent of policy beyond `'deny'`.
+
+The same resolution runs at column granularity inside `computeTableAlterDiff` and at named-constraint granularity. Column renames emit `ALTER TABLE ... RENAME COLUMN`. View, index, and named-constraint renames have no engine-level rename primitive and currently fall back to drop+recreate via the standard buckets.
 
 ### Module Batch Hooks
 

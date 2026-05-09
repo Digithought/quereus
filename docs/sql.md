@@ -169,7 +169,21 @@ apply schema main to version '1.0.0' options (
 **Safety:**
 - Seed data application is destructive (clears table before inserting).
 - Future enhancements will add `allow_destructive` gating for schema changes.
-- Rename hints and stable IDs (planned) will prevent accidental drops during renames.
+- Rename hints prevent accidental drops during renames — see "Rename detection" below.
+
+**Rename detection (`rename_policy`):**
+
+`apply schema` understands rename hints carried via the reserved `quereus.id` and `quereus.previous_name` tags (see §2.6.3). The `rename_policy` option in `OPTIONS (...)` controls how strictly the differ behaves when names change:
+
+| Value | Behavior |
+|-------|----------|
+| `'allow'` (default) | Use hints when present; without hints, fall through to drop+create. |
+| `'require-hint'` | Reject any name change that lacks a hint — if drops *and* creates of the same kind both remain after rename matching, error rather than executing destructive DDL. |
+| `'deny'` | Ignore hints entirely. Any name mismatch becomes drop+create. Escape hatch for opting back into the legacy behavior. |
+
+A rename detected via `quereus.id` is authoritative: when both `id` and `previous_name` would resolve, `id` wins. A *conflict* — declared name and the hint resolving to two distinct existing actuals — is always an error regardless of policy.
+
+Renames apply to tables, views, indexes, named constraints (table-level `CONSTRAINT <name> ...`), and columns. Tables and columns rename via the `ALTER TABLE ... RENAME` primitives, which propagate references through dependent CHECK expressions, FK targets, and view bodies. View, index, and named-constraint renames currently fall back to drop+recreate when no rename primitive exists.
 
 **Notes:**
 - Keywords `schema`, `version`, and `seed` are contextual and don't conflict with column names or function calls like `schema()`.
@@ -1071,6 +1085,31 @@ create index idx_name on Products (name) with tags (purpose = 'search optimizati
 Tag values can be strings, numbers, booleans (`true`/`false`), or `null`. Tag keys are identifiers. `TAGS` is a contextual keyword and can still be used as a regular identifier. `WITH TAGS` can appear alongside `WITH CONTEXT` in any order.
 
 Tags are available on the schema interfaces (`TableSchema.tags`, `ColumnSchema.tags`, etc.) and via the programmatic API (`SchemaManager.getTableTags()`, `SchemaManager.setTableTags()`).
+
+**Reserved namespace `quereus.*`:** keys whose name starts with `quereus.` are reserved for the engine. Tag keys with dots must use the quoted-identifier form (`"quereus.id"`). Currently recognized keys:
+
+| Key | Used by | Effect |
+|-----|---------|--------|
+| `"quereus.id"` | `apply schema` / `diff schema` | Stable identifier — when a declared and actual object share the same `quereus.id` but have different names, the differ emits a rename instead of a drop+create. Authoritative; wins over `previous_name`. |
+| `"quereus.previous_name"` | `apply schema` / `diff schema` | One or more comma-separated old names. The differ matches a declared object whose name is missing in the catalog against an actual object whose name appears in this list. |
+
+Unrecognized `quereus.*` keys are accepted with a soft warning so future versions may add new keys without breaking older parsers.
+
+Example — declaring a renamed table and column:
+
+```sql
+declare schema main {
+  table customer with tags (
+    "quereus.id" = 'tbl-customer',
+    "quereus.previous_name" = 'client'
+  ) {
+    customer_id integer primary key with tags ("quereus.previous_name" = 'client_id'),
+    full_name text not null with tags ("quereus.previous_name" = 'name')
+  }
+}
+```
+
+Against an existing `client(client_id, name)`, this diffs to `ALTER TABLE client RENAME TO customer` plus two `ALTER TABLE customer RENAME COLUMN ...` rather than dropping and recreating.
 
 ### 2.7 ALTER TABLE Statement
 

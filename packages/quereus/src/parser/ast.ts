@@ -630,7 +630,7 @@ export interface ApplySchemaStmt extends AstNode {
 		dryRun?: boolean;
 		validateOnly?: boolean;
 		allowDestructive?: boolean;
-		renamePolicy?: 'require-hint' | 'infer-id';
+		renamePolicy?: 'allow' | 'require-hint' | 'deny';
 	};
 }
 

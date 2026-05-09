@@ -117,8 +117,8 @@ export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruct
 		// Collect actual catalog
 		const actualCatalog = collectSchemaCatalog(rctx.db, schemaName);
 
-		// Compute diff
-		const diff = computeSchemaDiff(declaredSchema, actualCatalog);
+		// Compute diff (default rename_policy = 'allow' when unspecified)
+		const diff = computeSchemaDiff(declaredSchema, actualCatalog, applyStmt.options?.renamePolicy ?? 'allow');
 
 		// Generate migration DDL
 		const migrationStatements = generateMigrationDDL(diff, schemaName);
