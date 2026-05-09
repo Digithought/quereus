@@ -53,8 +53,11 @@ select * from t_or_def where id = 1;
 drop table t_or_def;
 
 -- ===================================
--- 4. UPDATE OR IGNORE / OR REPLACE: not supported by Quereus parser; deleted.
+-- 4. UPDATE OR IGNORE / OR REPLACE — intentionally not supported.
 -- ===================================
+-- Per-statement conflict overrides on UPDATE are SQLite-only syntax; pinned closed.
+-- Schema-level ON CONFLICT on the NOT NULL constraint covers the IGNORE/REPLACE defaults.
+-- See docs/sql.md §11.
 
 -- ===================================
 -- 5. INSERT...SELECT propagates a NOT NULL violation from source

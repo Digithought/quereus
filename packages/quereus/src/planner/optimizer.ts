@@ -19,6 +19,7 @@ import { ruleMaterializationAdvisory } from './rules/cache/rule-materialization-
 import { ruleSelectAccessPath } from './rules/access/rule-select-access-path.js';
 import { ruleMonotonicLimitPushdown } from './rules/access/rule-monotonic-limit-pushdown.js';
 import { ruleMonotonicRangeAccess } from './rules/access/rule-monotonic-range-access.js';
+import { ruleAsofStrategySelect } from './rules/access/rule-asof-strategy-select.js';
 import { ruleGrowRetrieve } from './rules/retrieve/rule-grow-retrieve.js';
 import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown.js';
 import { ruleFilterMerge } from './rules/predicate/rule-filter-merge.js';
@@ -301,6 +302,17 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleMutatingSubqueryCache,
 			priority: 10
+		});
+
+		// AsofScan strategy selection (hash → merge). Runs after the leaves'
+		// physical.ordering / monotonicOn are finalized (range-access at
+		// priority 9) so the predicate-driven check can read them off.
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'asof-strategy-select',
+			nodeType: PlanNodeType.AsofScan,
+			phase: 'impl',
+			fn: ruleAsofStrategySelect,
+			priority: 11
 		});
 
 		this.passManager.addRuleToPass(PassId.PostOptimization, {

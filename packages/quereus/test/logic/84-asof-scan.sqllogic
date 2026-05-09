@@ -1,6 +1,10 @@
 -- asof-scan.sqllogic — Streaming asof scan correctness via lateral-top-1 rule.
 -- The rule fires only when the left input is monotonic on the match attribute,
 -- so each query wraps the left side in `ORDER BY ts` (per partition or globally).
+-- These cases run with the default `asof.mergeRowThreshold` (10000), keeping
+-- the AsofScanNode on its `'hash'` strategy. The `'merge'` strategy's
+-- equivalence is validated end-to-end in test/optimizer/asof-scan.spec.ts
+-- (with `mergeRowThreshold = 0` forcing the promotion).
 
 -- Setup: trades stream (left) and quotes stream (right, partitioned by symbol).
 CREATE TABLE asof_trades (id INTEGER PRIMARY KEY, symbol TEXT, ts INTEGER);

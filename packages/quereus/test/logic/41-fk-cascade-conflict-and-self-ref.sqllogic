@@ -37,8 +37,11 @@ drop table c_oc;
 drop table p_oc;
 
 -- ===================================
--- 2. UPDATE OR IGNORE / OR ABORT: not supported by Quereus parser; deleted.
+-- 2. UPDATE OR IGNORE / OR ABORT — intentionally not supported.
 -- ===================================
+-- Per-statement conflict overrides on UPDATE are SQLite-only syntax; pinned closed.
+-- Schema-level ON CONFLICT on the constraint covers the IGNORE/ABORT defaults.
+-- See docs/sql.md §11.
 
 -- ===================================
 -- 3. ON UPDATE CASCADE where the cascade collides with another FK

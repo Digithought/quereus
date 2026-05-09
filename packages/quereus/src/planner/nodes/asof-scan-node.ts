@@ -34,8 +34,17 @@ export interface AsofAttrPair {
  * original logical JoinNode — without it, all of `right`'s attributes are
  * emitted unchanged.
  *
- * Cost: O(left.rows + right.rows) — the right is bucketed once and the left
- * streams through with a monotonic per-bucket cursor.
+ * Two emitter strategies (selected by `rule-asof-strategy-select`):
+ *
+ *   - `'hash'` (default): bucket the right by partition key (`Map<string, Row[]>`),
+ *     stream the left with per-bucket cursors. Memory O(R), latency = first
+ *     emit after R fully arrives.
+ *   - `'merge'`: co-stream both inputs in lockstep when both are pre-ordered
+ *     by `[partition cols..., matchAttr]`. Memory O(1) (one in-flight
+ *     partition), emits as left rows arrive.
+ *
+ * Cost: O(left.rows + right.rows) regardless of strategy — the difference is
+ * constant factors / memory.
  */
 export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 	override readonly nodeType = PlanNodeType.AsofScan;
@@ -73,6 +82,12 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 		 * full right attribute count when no projection is given).
 		 */
 		public readonly rightOutputAttrs?: readonly Attribute[],
+		/**
+		 * Emitter strategy. Default is `'hash'`; the strategy-select rule may
+		 * upgrade to `'merge'` when both inputs are co-partition-ordered and the
+		 * right's row count crosses the configured threshold.
+		 */
+		public readonly strategy: 'hash' | 'merge' = 'hash',
 	) {
 		const leftRows = left.estimatedRows ?? 100;
 		const rightRows = right.estimatedRows ?? 100;
@@ -192,6 +207,28 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 			this.outer,
 			this.rightOutputColumnIndices,
 			this.rightOutputAttrs,
+			this.strategy,
+		);
+	}
+
+	/**
+	 * Return this node with `strategy` set to the given value. Returns `this`
+	 * when the strategy is unchanged.
+	 */
+	withStrategy(strategy: 'hash' | 'merge'): AsofScanNode {
+		if (strategy === this.strategy) return this;
+		return new AsofScanNode(
+			this.scope,
+			this.left,
+			this.right,
+			this.matchAttr,
+			this.partitionAttrs,
+			this.strict,
+			this.direction,
+			this.outer,
+			this.rightOutputColumnIndices,
+			this.rightOutputAttrs,
+			strategy,
 		);
 	}
 
@@ -205,7 +242,7 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 		for (const p of this.partitionAttrs) {
 			parts.push(`right.${p.rightAttrId} = left.${p.leftAttrId}`);
 		}
-		return `${this.outer ? 'LEFT ' : ''}ASOF SCAN on [${parts.join(', ')}]`;
+		return `${this.outer ? 'LEFT ' : ''}ASOF SCAN [${this.strategy}] on [${parts.join(', ')}]`;
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
@@ -213,6 +250,7 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 			outer: this.outer,
 			strict: this.strict,
 			direction: this.direction,
+			strategy: this.strategy,
 			matchAttr: { left: this.matchAttr.leftAttrId, right: this.matchAttr.rightAttrId },
 			partitionAttrs: this.partitionAttrs.map(p => ({ left: p.leftAttrId, right: p.rightAttrId })),
 			rightOutputColumnIndices: this.rightOutputColumnIndices ? [...this.rightOutputColumnIndices] : undefined,

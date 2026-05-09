@@ -60,13 +60,16 @@ insert or replace into rr values (1, 'new') returning id, val;
 drop table rr;
 
 -- ===================================
--- 5. UPDATE OR REPLACE on UNIQUE conflict — old conflicting row deleted
+-- 5. UPDATE OR <action> is intentionally not supported
 -- ===================================
+-- SQLite-only syntax with no precedent in Postgres / SQL Server / MySQL / Oracle / ANSI.
+-- Per-statement conflict overrides on UPDATE are pinned closed; use schema-level
+-- ON CONFLICT defaults (column / table constraint clauses) or rewrite via
+-- WHERE NOT EXISTS / explicit DELETE+UPDATE in a transaction. See docs/sql.md §11.
 
 create table uor (id integer primary key, code text unique);
 insert into uor values (1, 'aaa'), (2, 'bbb');
 
--- UPDATE OR REPLACE is not supported by Quereus's parser
 update or replace uor set code = 'aaa' where id = 2;
 -- error: Expected table name
 

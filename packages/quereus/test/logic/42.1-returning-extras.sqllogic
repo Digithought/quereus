@@ -95,13 +95,14 @@ insert into gen_t (id, name) values (2, 'bob') returning id, name, display;
 drop table gen_t;
 
 -- ===================================
--- 7. RETURNING after UPDATE OR IGNORE that did skip a row returns empty
+-- 7. UPDATE OR <action> is intentionally not supported
 -- ===================================
+-- Per-statement conflict overrides on UPDATE are SQLite-only syntax; pinned closed.
+-- See docs/sql.md §11.
 
 create table or_ig (id integer primary key, code text unique);
 insert into or_ig values (1, 'x'), (2, 'y');
 
--- UPDATE OR IGNORE is not supported by Quereus's parser
 update or ignore or_ig set code = 'x' where id = 2 returning id, code;
 -- error: Expected table name
 

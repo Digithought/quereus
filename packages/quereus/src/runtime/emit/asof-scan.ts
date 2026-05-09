@@ -14,9 +14,105 @@ import { joinOutputRow } from './join-output.js';
 const log = createLogger('runtime:emit:asof-scan');
 
 /**
- * Emits an asof scan instruction.
+ * Resolved emitter setup shared by hash and merge variants. Computes
+ * attribute indices, collations, projection, and join-type discriminator
+ * from the plan node — handed to the strategy-specific emitter below.
+ */
+interface AsofScanSetup {
+	leftMatchIdx: number;
+	rightMatchIdx: number;
+	matchCollation: CollationFunction;
+	leftPartitionIndices: number[];
+	rightPartitionIndices: number[];
+	partitionCollations: CollationFunction[];
+	keyNormalizers: ((s: string) => string)[];
+	rightOutputColumnIndices: readonly number[];
+	projectedRightColCount: number;
+	outerJoinType: 'left' | 'inner';
+	strict: boolean;
+	direction: 'asc' | 'desc';
+	leftRowDescriptor: ReturnType<typeof buildRowDescriptor>;
+	rightRowDescriptor: ReturnType<typeof buildRowDescriptor>;
+	projectRight: (row: Row) => Row;
+}
+
+function resolveSetup(plan: AsofScanNode, ctx: EmissionContext): AsofScanSetup {
+	const leftAttrs = plan.left.getAttributes();
+	const rightAttrs = plan.right.getAttributes();
+
+	const leftRowDescriptor = buildRowDescriptor(leftAttrs);
+	const rightRowDescriptor = buildRowDescriptor(rightAttrs);
+
+	const leftMatchIdx = leftAttrs.findIndex(a => a.id === plan.matchAttr.leftAttrId);
+	const rightMatchIdx = rightAttrs.findIndex(a => a.id === plan.matchAttr.rightAttrId);
+	if (leftMatchIdx === -1 || rightMatchIdx === -1) {
+		throw new Error(`AsofScan: could not resolve match-attr ids ${plan.matchAttr.leftAttrId}/${plan.matchAttr.rightAttrId}`);
+	}
+	const matchCollationName = leftAttrs[leftMatchIdx].type.collationName ?? rightAttrs[rightMatchIdx].type.collationName;
+	const matchCollation: CollationFunction = matchCollationName ? ctx.resolveCollation(matchCollationName) : BINARY_COLLATION;
+
+	const leftPartitionIndices: number[] = [];
+	const rightPartitionIndices: number[] = [];
+	const partitionCollations: CollationFunction[] = [];
+	const keyNormalizers: ((s: string) => string)[] = [];
+	for (const p of plan.partitionAttrs) {
+		const leftIdx = leftAttrs.findIndex(a => a.id === p.leftAttrId);
+		const rightIdx = rightAttrs.findIndex(a => a.id === p.rightAttrId);
+		if (leftIdx === -1 || rightIdx === -1) {
+			throw new Error(`AsofScan: could not resolve partition-attr ids ${p.leftAttrId}/${p.rightAttrId}`);
+		}
+		leftPartitionIndices.push(leftIdx);
+		rightPartitionIndices.push(rightIdx);
+		const collationName = leftAttrs[leftIdx].type.collationName ?? rightAttrs[rightIdx].type.collationName;
+		partitionCollations.push(collationName ? ctx.resolveCollation(collationName) : BINARY_COLLATION);
+		keyNormalizers.push(resolveKeyNormalizer(collationName));
+	}
+
+	const rightOutputColumnIndices = plan.getRightOutputColumnIndices();
+	const projectedRightColCount = rightOutputColumnIndices.length;
+
+	const projectRight = (row: Row): Row => {
+		const out: Row = new Array(projectedRightColCount);
+		for (let i = 0; i < projectedRightColCount; i++) {
+			out[i] = row[rightOutputColumnIndices[i]];
+		}
+		return out;
+	};
+
+	return {
+		leftMatchIdx,
+		rightMatchIdx,
+		matchCollation,
+		leftPartitionIndices,
+		rightPartitionIndices,
+		partitionCollations,
+		keyNormalizers,
+		rightOutputColumnIndices,
+		projectedRightColCount,
+		outerJoinType: plan.outer ? 'left' : 'inner',
+		strict: plan.strict,
+		direction: plan.direction,
+		leftRowDescriptor,
+		rightRowDescriptor,
+		projectRight,
+	};
+}
+
+/**
+ * Dispatch on `plan.strategy` to the appropriate emitter. The strategy is
+ * chosen by `rule-asof-strategy-select` during optimization; runtime carries
+ * it through verbatim.
+ */
+export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruction {
+	return plan.strategy === 'merge'
+		? emitAsofScanMerge(plan, ctx)
+		: emitAsofScanHash(plan, ctx);
+}
+
+/**
+ * Hash-bucketed asof scan.
  *
- * Algorithm (hash-bucketed):
+ * Algorithm:
  * 1. Bucket the right input by partition key (single bucket if no partition).
  *    Within each bucket, rows arrive in monotonicOn(matchAttr, asc) order from
  *    the right access plan. Right rows with NULL match values are dropped.
@@ -34,57 +130,27 @@ const log = createLogger('runtime:emit:asof-scan');
  *    - Emit (left, projected right) when the cursor lands on a match;
  *      otherwise NULL-pad (outer) or drop (inner).
  * 3. Left rows with NULL match values are NULL-padded (outer) or dropped.
+ *
+ * Memory: O(R). Latency: all R right rows must arrive before the first emit.
  */
-export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruction {
-	const leftAttrs = plan.left.getAttributes();
-	const rightAttrs = plan.right.getAttributes();
-
-	const leftRowDescriptor = buildRowDescriptor(leftAttrs);
-	const rightRowDescriptor = buildRowDescriptor(rightAttrs);
-
-	const leftMatchIdx = leftAttrs.findIndex(a => a.id === plan.matchAttr.leftAttrId);
-	const rightMatchIdx = rightAttrs.findIndex(a => a.id === plan.matchAttr.rightAttrId);
-	if (leftMatchIdx === -1 || rightMatchIdx === -1) {
-		throw new Error(`AsofScan: could not resolve match-attr ids ${plan.matchAttr.leftAttrId}/${plan.matchAttr.rightAttrId}`);
-	}
-	const matchCollationName = leftAttrs[leftMatchIdx].type.collationName ?? rightAttrs[rightMatchIdx].type.collationName;
-	const matchCollation: CollationFunction = matchCollationName ? ctx.resolveCollation(matchCollationName) : BINARY_COLLATION;
-
-	const leftPartitionIndices: number[] = [];
-	const rightPartitionIndices: number[] = [];
-	const keyNormalizers: ((s: string) => string)[] = [];
-	for (const p of plan.partitionAttrs) {
-		const leftIdx = leftAttrs.findIndex(a => a.id === p.leftAttrId);
-		const rightIdx = rightAttrs.findIndex(a => a.id === p.rightAttrId);
-		if (leftIdx === -1 || rightIdx === -1) {
-			throw new Error(`AsofScan: could not resolve partition-attr ids ${p.leftAttrId}/${p.rightAttrId}`);
-		}
-		leftPartitionIndices.push(leftIdx);
-		rightPartitionIndices.push(rightIdx);
-		const collationName = leftAttrs[leftIdx].type.collationName ?? rightAttrs[rightIdx].type.collationName;
-		keyNormalizers.push(resolveKeyNormalizer(collationName));
-	}
-
-	const rightOutputColumnIndices = plan.getRightOutputColumnIndices();
-	const projectedRightColCount = rightOutputColumnIndices.length;
-	const outerJoinType: 'left' | 'inner' = plan.outer ? 'left' : 'inner';
-	const strict = plan.strict;
-	const direction = plan.direction;
-
-	function projectRight(row: Row): Row {
-		const out: Row = new Array(projectedRightColCount);
-		for (let i = 0; i < projectedRightColCount; i++) {
-			out[i] = row[rightOutputColumnIndices[i]];
-		}
-		return out;
-	}
+function emitAsofScanHash(plan: AsofScanNode, ctx: EmissionContext): Instruction {
+	const setup = resolveSetup(plan, ctx);
+	const {
+		leftMatchIdx, rightMatchIdx, matchCollation,
+		leftPartitionIndices, rightPartitionIndices,
+		keyNormalizers,
+		projectedRightColCount,
+		outerJoinType, strict, direction,
+		leftRowDescriptor, rightRowDescriptor,
+		projectRight,
+	} = setup;
 
 	async function* run(
 		rctx: RuntimeContext,
 		leftSource: AsyncIterable<Row>,
 		rightSource: AsyncIterable<Row>,
 	): AsyncIterable<Row> {
-		log('Starting %s asof scan: direction=%s, %d partition keys, strict=%s',
+		log('Starting %s asof scan [hash]: direction=%s, %d partition keys, strict=%s',
 			plan.outer ? 'LEFT' : 'INNER', direction, plan.partitionAttrs.length, strict);
 
 		const leftSlot = createRowSlot(rctx, leftRowDescriptor);
@@ -190,6 +256,284 @@ export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruct
 	return {
 		params: [leftInstruction, rightInstruction],
 		run: run as InstructionRun,
-		note: `${plan.outer ? 'left' : 'inner'} asof scan${strict ? ' strict' : ''}`,
+		note: `${plan.outer ? 'left' : 'inner'} asof scan [hash]${strict ? ' strict' : ''}`,
+	};
+}
+
+/**
+ * Co-streaming (merge-by-partition-key) asof scan.
+ *
+ * Both inputs must be pre-ordered by `[partition cols..., matchAttr]` —
+ * `rule-asof-strategy-select` validates this against the children's
+ * `physical.ordering` before promoting the strategy.
+ *
+ * Algorithm:
+ * 1. Walk both iterators with peek-1 lookahead.
+ * 2. For each left row in turn:
+ *    - Skip (padding/drop) NULL-match or NULL-partition left rows.
+ *    - On entering a new partition: drain right of NULLs and rows in earlier
+ *      partitions; reset the per-partition `descMatched` state.
+ *    - Run the per-row inner loop:
+ *      • `'desc'` (latest right ≤ left.match): consume right rows while
+ *        next.matchAttr still qualifies. The most recently consumed
+ *        qualifier persists across left rows in the same partition.
+ *      • `'asc'`  (earliest right ≥ left.match): consume right rows while
+ *        next.matchAttr is too small; the first qualifier is read off peek
+ *        but NOT consumed (it may match subsequent left rows).
+ * 3. Emit (left, projected right) on a match; pad/drop on miss.
+ *
+ * Memory: O(1) (one row of state per side plus one saved partition match).
+ * Latency: emits as left rows arrive.
+ */
+function emitAsofScanMerge(plan: AsofScanNode, ctx: EmissionContext): Instruction {
+	const setup = resolveSetup(plan, ctx);
+	const {
+		leftMatchIdx, rightMatchIdx, matchCollation,
+		leftPartitionIndices, rightPartitionIndices,
+		partitionCollations,
+		projectedRightColCount,
+		outerJoinType, strict, direction,
+		leftRowDescriptor, rightRowDescriptor,
+		projectRight,
+	} = setup;
+
+	const partitionLen = plan.partitionAttrs.length;
+	// All ordering positions in the recognized merge case agree on direction
+	// across left and right; the rule validated this. We need the per-position
+	// direction to invert comparisons so "right is behind" remains consistent
+	// under descending partition ordering. Read off the left-side ordering
+	// positions [0..partitionLen) directly at emit time; if the rule promoted
+	// to merge, they exist.
+	const leftOrdering = plan.left.physical.ordering ?? [];
+	const partitionDescending: boolean[] = [];
+	for (let i = 0; i < partitionLen; i++) {
+		partitionDescending.push(leftOrdering[i]?.desc ?? false);
+	}
+
+	function hasNullPartitionLeft(row: Row): boolean {
+		for (const idx of leftPartitionIndices) {
+			if (row[idx] === null) return true;
+		}
+		return false;
+	}
+	function hasNullPartitionRight(row: Row): boolean {
+		for (const idx of rightPartitionIndices) {
+			if (row[idx] === null) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Compare partition tuples drawn from a left row and a right row, using
+	 * per-position collations and the agreed direction. Returns negative when
+	 * left's partition is "before" right's in the agreed direction, positive
+	 * when "after", zero when equal.
+	 */
+	function comparePartitions(leftRow: Row, rightRow: Row): number {
+		for (let i = 0; i < partitionLen; i++) {
+			const a = leftRow[leftPartitionIndices[i]];
+			const b = rightRow[rightPartitionIndices[i]];
+			let c = compareSqlValuesFast(a, b, partitionCollations[i]);
+			if (partitionDescending[i]) c = -c;
+			if (c !== 0) return c;
+		}
+		return 0;
+	}
+
+	/** Variant of `comparePartitions` for two left rows (e.g. tracking the active partition). */
+	function compareLeftPartitions(a: Row, b: Row): number {
+		for (let i = 0; i < partitionLen; i++) {
+			const idx = leftPartitionIndices[i];
+			let c = compareSqlValuesFast(a[idx], b[idx], partitionCollations[i]);
+			if (partitionDescending[i]) c = -c;
+			if (c !== 0) return c;
+		}
+		return 0;
+	}
+
+	async function* run(
+		rctx: RuntimeContext,
+		leftSource: AsyncIterable<Row>,
+		rightSource: AsyncIterable<Row>,
+	): AsyncIterable<Row> {
+		log('Starting %s asof scan [merge]: direction=%s, %d partition keys, strict=%s',
+			plan.outer ? 'LEFT' : 'INNER', direction, partitionLen, strict);
+
+		const leftSlot = createRowSlot(rctx, leftRowDescriptor);
+		const rightSlot = createRowSlot(rctx, rightRowDescriptor);
+
+		const leftIter = peekableAsyncIterator(leftSource);
+		const rightIter = peekableAsyncIterator(rightSource);
+
+		// Per-partition state. `activePartitionRow` is the left row that
+		// established the current partition's identity; on a partition change
+		// we reset `descMatched` and drain right.
+		let activePartitionRow: Row | undefined;
+		let descMatched: Row | undefined;
+
+		try {
+			while (true) {
+				const leftRow = await leftIter.peek();
+				if (!leftRow) break;
+
+				// NULL match or partition on left: pad/drop and advance.
+				if (leftRow[leftMatchIdx] === null || hasNullPartitionLeft(leftRow)) {
+					leftSlot.set(leftRow);
+					const padding = joinOutputRow(outerJoinType, false, false, leftRow, projectedRightColCount, rightSlot);
+					if (padding) yield padding;
+					leftIter.consume();
+					continue;
+				}
+
+				// Partition transition?
+				const partitionChanged = !activePartitionRow ||
+					compareLeftPartitions(activePartitionRow, leftRow) !== 0;
+				if (partitionChanged) {
+					descMatched = undefined;
+					activePartitionRow = leftRow;
+					// Drain right of NULLs and rows in earlier partitions.
+					while (true) {
+						const r = await rightIter.peek();
+						if (!r) break;
+						if (r[rightMatchIdx] === null || hasNullPartitionRight(r)) {
+							rightIter.consume();
+							continue;
+						}
+						const cmpP = comparePartitions(leftRow, r);
+						if (cmpP > 0) {
+							rightIter.consume();
+							continue;
+						}
+						break;
+					}
+				}
+
+				// Run the per-leftRow inner loop.
+				leftSlot.set(leftRow);
+				const leftMatch = leftRow[leftMatchIdx];
+				let matched: Row | undefined;
+
+				if (direction === 'desc') {
+					// Advance while next-right's matchAttr still qualifies (≤, or < when strict).
+					// `descMatched` persists across consecutive same-partition left rows.
+					while (true) {
+						const r = await rightIter.peek();
+						if (!r) break;
+						if (r[rightMatchIdx] === null || hasNullPartitionRight(r)) {
+							rightIter.consume();
+							continue;
+						}
+						const cmpP = comparePartitions(leftRow, r);
+						if (cmpP !== 0) break; // partition advanced past current
+						const cmpM = compareSqlValuesFast(r[rightMatchIdx], leftMatch, matchCollation);
+						if (!(strict ? cmpM < 0 : cmpM <= 0)) break;
+						descMatched = r;
+						rightIter.consume();
+					}
+					matched = descMatched;
+				} else {
+					// 'asc': advance while peek's matchAttr is too small. The first
+					// qualifier is the answer; do NOT consume it (it may match
+					// subsequent left rows in the same partition).
+					while (true) {
+						const r = await rightIter.peek();
+						if (!r) break;
+						if (r[rightMatchIdx] === null || hasNullPartitionRight(r)) {
+							rightIter.consume();
+							continue;
+						}
+						const cmpP = comparePartitions(leftRow, r);
+						if (cmpP !== 0) break;
+						const cmpM = compareSqlValuesFast(r[rightMatchIdx], leftMatch, matchCollation);
+						if (strict ? cmpM <= 0 : cmpM < 0) {
+							rightIter.consume();
+							continue;
+						}
+						matched = r;
+						break;
+					}
+				}
+
+				if (matched) {
+					rightSlot.set(matched);
+					const projectedRight = projectRight(matched);
+					// The right scan's own rowSlot (created when its iterator started)
+					// holds the cursor's *current* peek — by the time we land here
+					// it's the row that broke the desc loop / first qualifier of asc,
+					// not necessarily `matched`. Reclaim our descriptor so
+					// downstream attribute-index lookups for the right's attr ids
+					// resolve through *our* slot rather than the scan's cursor.
+					rightSlot.reactivate();
+					yield [...leftRow, ...projectedRight] as Row;
+				} else {
+					const padding = joinOutputRow(outerJoinType, false, false, leftRow, projectedRightColCount, rightSlot);
+					if (padding) {
+						// Same shadowing concern as the matched branch: ensure NULL
+						// padding wins the attributeIndex race against the still-
+						// running right scan's slot.
+						rightSlot.reactivate();
+						yield padding;
+					}
+				}
+
+				leftIter.consume();
+			}
+		} finally {
+			leftSlot.close();
+			rightSlot.close();
+			await leftIter.close();
+			await rightIter.close();
+		}
+	}
+
+	const leftInstruction = emitPlanNode(plan.left, ctx);
+	const rightInstruction = emitPlanNode(plan.right, ctx);
+
+	return {
+		params: [leftInstruction, rightInstruction],
+		run: run as InstructionRun,
+		note: `${plan.outer ? 'left' : 'inner'} asof scan [merge]${strict ? ' strict' : ''}`,
+	};
+}
+
+/**
+ * Peek-1 wrapper over an `AsyncIterable<Row>`. `peek()` lazily fetches and
+ * caches the head row; `consume()` discards it; `close()` returns the
+ * iterator if it has a `return` method.
+ */
+interface PeekableAsyncIter {
+	peek(): Promise<Row | undefined>;
+	consume(): void;
+	close(): Promise<void>;
+}
+
+function peekableAsyncIterator(source: AsyncIterable<Row>): PeekableAsyncIter {
+	const it = source[Symbol.asyncIterator]();
+	let head: Row | undefined;
+	let hasHead = false;
+	let done = false;
+
+	return {
+		async peek(): Promise<Row | undefined> {
+			if (hasHead) return head;
+			if (done) return undefined;
+			const r = await it.next();
+			if (r.done) {
+				done = true;
+				return undefined;
+			}
+			head = r.value;
+			hasHead = true;
+			return head;
+		},
+		consume(): void {
+			head = undefined;
+			hasHead = false;
+		},
+		async close(): Promise<void> {
+			if (it.return) {
+				try { await it.return(); } catch { /* ignore */ }
+			}
+		},
 	};
 }

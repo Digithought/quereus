@@ -642,8 +642,19 @@ left join lateral (
 Without specialization this executes as a per-left-row re-evaluation of the
 lateral subquery — `O(L · log R)` at best. The `ruleLateralTop1Asof` rule
 recognizes the pattern and rewrites the JoinNode to an `AsofScanNode`, which
-buckets the right side once and streams the left through with a per-bucket
-cursor: `O(L + R)`.
+runs in `O(L + R)`.
+
+The node carries a `strategy` discriminator picked up by
+`rule-asof-strategy-select` after the children's physical properties are
+finalized:
+
+- **`'hash'`** (default): bucket the right by partition key into
+  `Map<string, Row[]>`; stream the left with per-bucket cursors. Memory `O(R)`,
+  latency = first emit after R fully arrives. The right's monotonic
+  matchAttr advertisement is the only ordering required.
+- **`'merge'`**: co-stream both inputs in lockstep when both already arrive in
+  `[partition cols..., matchAttr]` order. Memory `O(1)` (one in-flight
+  partition's saved match), emits as left rows arrive.
 
 **Required pattern** (peeled in any nesting order; AliasNode is transparent):
 
@@ -685,6 +696,40 @@ and the existing nested-loop lateral path executes unchanged.
 The rule runs in the Structural pass at priority 5 — before
 `predicate-pushdown` (priority 20) — so the lateral's `FilterNode` carrying
 the asof predicate is intact when matching.
+
+### Strategy selection (hash → merge)
+
+`rule-asof-strategy-select` runs in the PostOptimization pass at priority 11,
+after `monotonic-range-access` has finalized the leaves' `physical.ordering` /
+`monotonicOn` advertisements. It is a predicate-driven rewrite (no cost-side
+search) that promotes `AsofScanNode.strategy` from `'hash'` to `'merge'` when:
+
+- Both children's `physical.ordering` carries a leading
+  `[partition cols..., matchAttr]` prefix. Partition columns may appear in any
+  permutation, but the *positions* on left and right must pair via the
+  `partitionAttrs` equi-pairs, with matching directions on each side.
+- The trailing match-attr ordering is **ASC** on both sides. The merge emitter
+  walks both inputs forward — `direction='desc'` accumulates the latest
+  qualifier seen, `direction='asc'` returns the first qualifier — and that
+  forward walk requires ascending match-attr sort regardless of asof
+  direction.
+- The right's estimated row count meets `tuning.asof.mergeRowThreshold`
+  (default `10000`). Below the threshold, hash buffering's constant factors
+  beat merge-state bookkeeping.
+
+Bails (and the node stays on `'hash'`) on any failure. Disable via
+`tuning.disabledRules` containing `'asof-strategy-select'`. Force-enable for
+testing by setting `tuning.asof.mergeRowThreshold` to `0`.
+
+The merge variant assumes the children's iterator already emits in the
+required order; it does not synthesize the ordering. The current
+`ruleLateralTop1Asof` precondition (`physical.monotonicOn(left.matchAttr)`)
+typically requires the user to wrap the left in `ORDER BY matchAttr` — which
+provides global match-attr monotonicity but no partition prefix. The
+unpartitioned (`partitionAttrs.length === 0`) case is the natural fit today;
+partitioned merge requires a left input with `[partition..., matchAttr]`
+ordering, which is not yet recognized as "monotonic within partition" by the
+recognition rule. That extension is a follow-up.
 
 ## Monotonic LIMIT/OFFSET pushdown
 

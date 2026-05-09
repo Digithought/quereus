@@ -1,5 +1,5 @@
 ---
-description: Declarative schema remaining work (rename detection, imports, seeds, etc.)
+description: Declarative schema remaining work (imports, seeds, domains, helper TVFs, etc.)
 prereq: Declarative schema core, DDL engine
 
 ---
@@ -9,7 +9,6 @@ prereq: Declarative schema core, DDL engine
 *Details to be filled out during planning phase.*
 
 Enhancements to declarative schema:
-- Rename detection with `old name` hints and stable `id` matching
 - Destructive change gating with `allow_destructive`
 - validate_only and dry_run modes
 - Import support with cache and versioning

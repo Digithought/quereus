@@ -48,6 +48,16 @@ export interface OptimizerTuning {
 		readonly spillEnabled: boolean;
 	};
 
+	/** AsofScan emitter strategy selection */
+	readonly asof: {
+		/**
+		 * Right-side row count below which the hash strategy is preferred over
+		 * merge. Below this threshold, hash buffering's constant factors beat
+		 * the merge variant's per-row state bookkeeping.
+		 */
+		readonly mergeRowThreshold: number;
+	};
+
 	/** Set of rule IDs to skip during optimization (test/debug use) */
 	readonly disabledRules?: ReadonlySet<string>;
 
@@ -95,6 +105,9 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 		spillThreshold: 100000,
 		maxSpillBuffer: 10000,
 		spillEnabled: true
+	},
+	asof: {
+		mergeRowThreshold: 10000
 	},
 	debug: {
 		validatePlan: false // Default to disabled in production
