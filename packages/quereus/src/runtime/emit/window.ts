@@ -166,10 +166,14 @@ async function groupByPartitions(
 
 	for (const row of rows) {
 		sourceSlot.set(row);
-		const partitionValues = await Promise.all(partitionCallbacks.map(callback =>
-			callback(rctx)
-		));
-		const partitionKey = serializeKeyNullGrouping(partitionValues as SqlValue[], keyNormalizers);
+		// Sequential evaluation: parallel callbacks that share a plan subtree
+		// (e.g. PARTITION BY (SELECT ... FROM cte), (SELECT ... FROM cte))
+		// would race on the shared inner-scan RowSlot.
+		const partitionValues: SqlValue[] = [];
+		for (const callback of partitionCallbacks) {
+			partitionValues.push(await callback(rctx) as SqlValue);
+		}
+		const partitionKey = serializeKeyNullGrouping(partitionValues, keyNormalizers);
 
 		if (!partitions.has(partitionKey)) {
 			partitions.set(partitionKey, []);
@@ -286,33 +290,28 @@ async function sortRows(
 		return { rows, orderByValues: rows.map(() => []) };
 	}
 
-	// Pre-evaluate ORDER BY values for all rows to avoid async in sort
-	const rowsWithValues = await Promise.all(rows.map(async (row) => {
+	// Pre-evaluate ORDER BY values for all rows to avoid async in sort.
+	// Sequential outer loop: parallel iterations would race on the shared
+	// sourceSlot. Sequential inner loop: parallel callbacks that share a
+	// plan subtree would race on the shared inner-scan RowSlot.
+	const rowsWithValues: Array<{ row: Row; values: SqlValue[] }> = [];
+	for (const row of rows) {
 		sourceSlot.set(row);
-		const values = await Promise.all(orderByCallbacks.map(async (callback) => {
-			const result = callback(rctx);
-			return await Promise.resolve(result);
-		}));
-		return { row, values };
-	}));
+		const values: SqlValue[] = [];
+		for (const callback of orderByCallbacks) {
+			values.push(await callback(rctx) as SqlValue);
+		}
+		rowsWithValues.push({ row, values });
+	}
 
 	// Now sort using the pre-evaluated values
 	rowsWithValues.sort((a, b) => {
 		// Compare each ORDER BY expression in sequence
 		for (let i = 0; i < orderBy.length; i++) {
-			const comparator = preResolvedComparators[i];
-			const valueA = a.values[i] as SqlValue;
-			const valueB = b.values[i] as SqlValue;
-
-			// Use pre-created optimized comparator
-			const comparison = comparator(valueA, valueB);
-
-			// If not equal, return comparison result
+			const comparison = preResolvedComparators[i](a.values[i], b.values[i]);
 			if (comparison !== 0) {
 				return comparison;
 			}
-
-			// Equal, continue to next ORDER BY expression
 		}
 
 		return 0; // All ORDER BY expressions are equal
@@ -320,7 +319,7 @@ async function sortRows(
 
 	return {
 		rows: rowsWithValues.map(item => item.row),
-		orderByValues: rowsWithValues.map(item => item.values as SqlValue[])
+		orderByValues: rowsWithValues.map(item => item.values)
 	};
 }
 
@@ -946,16 +945,20 @@ async function* runStreaming(
 	for await (const row of source) {
 		promote(row);
 
-		// Resolve partition key
-		const partitionValues: SqlValue[] = await Promise.all(
-			partitionCallbacks.map(cb => Promise.resolve(cb(rctx))),
-		) as SqlValue[];
+		// Resolve partition key. Sequential evaluation: parallel callbacks
+		// that share a plan subtree would race on the shared inner-scan
+		// RowSlot.
+		const partitionValues: SqlValue[] = [];
+		for (const cb of partitionCallbacks) {
+			partitionValues.push(await cb(rctx) as SqlValue);
+		}
 		const partitionKey = serializeKeyNullGrouping(partitionValues, partitionKeyNormalizers);
 
-		// Resolve ORDER BY values
-		const orderByValues: SqlValue[] = await Promise.all(
-			orderByCallbacks.map(cb => Promise.resolve(cb(rctx))),
-		) as SqlValue[];
+		// Resolve ORDER BY values (same shared-subtree concern as above).
+		const orderByValues: SqlValue[] = [];
+		for (const cb of orderByCallbacks) {
+			orderByValues.push(await cb(rctx) as SqlValue);
+		}
 
 		// Partition boundary: close out the previous partition.
 		if (state !== null && partitionKey !== curPartitionKey) {

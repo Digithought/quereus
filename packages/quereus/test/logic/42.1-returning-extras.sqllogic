@@ -107,3 +107,23 @@ update or ignore or_ig set code = 'x' where id = 2 returning id, code;
 -- error: Expected table name
 
 drop table or_ig;
+
+-- ===================================
+-- 8. RETURNING with two scalar subqueries that share a plan subtree.
+-- (Regression: shared-subtree row-context collision under store mode —
+-- see ticket serialize-emit-callbacks-returning-window. The cache rule
+-- deduplicates the two textually-identical derived tables, so both
+-- subqueries iterate the same inner scan; without serialized
+-- evaluation they raced on the shared RowSlot under LevelDB.)
+-- ===================================
+
+create table tr (id integer primary key, v integer);
+insert into tr values (1, 10), (2, 20), (3, 30);
+
+insert into tr values (4, 40)
+returning
+  (select count(*) from (select * from tr where v >= 20) sub1) as count,
+  (select sum(v) from (select * from tr where v >= 20) sub2) as sum;
+→ [{"count":3,"sum":90}]
+
+drop table tr;

@@ -477,3 +477,44 @@ SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn FROM stream_t WHERE 1=0;
 DROP TABLE stream_t;
 DROP TABLE stream_n;
 DROP TABLE stream_one;
+
+-- =============================================================================
+-- Shared-subtree row-context regression tests.
+--
+-- Two scalar subqueries against the same CTE share a plan subtree. Without
+-- serialized callback evaluation (see ticket
+-- serialize-emit-callbacks-returning-window), parallel `Promise.all` over
+-- the partition / ORDER BY callbacks raced on the shared inner-scan RowSlot
+-- under real async I/O (LevelDB store), producing wrong/null partition keys.
+-- =============================================================================
+
+create table tr (id integer primary key, v integer);
+insert into tr values (1, 10), (2, 20), (3, 30);
+
+-- PARTITION BY with two scalar subqueries against the same CTE.
+-- Both keys are constants (same for every row), so all rows land in a single
+-- partition and rn must be 1,2,3.
+with high as (select * from tr where v >= 20)
+select
+  row_number() over (
+    partition by (select count(*) from high), (select sum(v) from high)
+    order by id
+  ) as rn
+from tr
+order by id;
+→ [{"rn":1},{"rn":2},{"rn":3}]
+
+-- ORDER BY with two scalar subqueries against the same CTE.
+-- Both keys are constants, so the entire result is one peer group; the outer
+-- ORDER BY v then yields rn=1,2,3 in v order.
+with high as (select * from tr where v >= 20)
+select
+  v,
+  row_number() over (
+    order by (select count(*) from high), (select sum(v) from high)
+  ) as rn
+from tr
+order by v;
+→ [{"v":10,"rn":1},{"v":20,"rn":2},{"v":30,"rn":3}]
+
+drop table tr;
