@@ -164,19 +164,6 @@ describe('Monotonic streaming-window rule', () => {
 			]);
 		});
 
-		it('ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING — sliding frame, buffered path', async () => {
-			await setupPK();
-			const result = await evalRows(db,
-				'SELECT id, SUM(val) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS s FROM t ORDER BY id');
-			// Sum across [i-1, i, i+1]
-			expect(result).to.deep.equal([
-				{ id: 1, s: 30 },   // 10+20
-				{ id: 2, s: 60 },   // 10+20+30
-				{ id: 3, s: 90 },   // 20+30+40
-				{ id: 4, s: 70 },   // 30+40
-			]);
-		});
-
 		it('LAG with non-literal offset (column ref) is buffered', async () => {
 			await db.exec('CREATE TABLE k (id INTEGER PRIMARY KEY, val INTEGER, off INTEGER) USING memory');
 			await db.exec('INSERT INTO k VALUES (1,10,1),(2,20,1),(3,30,1)');
@@ -253,6 +240,72 @@ describe('Monotonic streaming-window rule', () => {
 					{ id: 3, nxt: 40 },
 					{ id: 4, nxt: -99 },
 				]);
+			} finally {
+				db.optimizer.updateTuning(baseTuning);
+			}
+		});
+
+		it('streaming and buffered paths agree on sliding ROWS BETWEEN n PRECEDING AND m FOLLOWING', async () => {
+			await setupPK();
+			const sql = 'SELECT id, SUM(val) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS s, MIN(val) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS mn, MAX(val) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS mx FROM t ORDER BY id';
+
+			const withRule = await evalRows(db, sql);
+
+			const baseTuning = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...baseTuning,
+				disabledRules: new Set([
+					...(baseTuning.disabledRules ?? []),
+					'monotonic-window',
+				]),
+			});
+			try {
+				const withoutRule = await evalRows(db, sql);
+				expect(withRule).to.deep.equal(withoutRule);
+			} finally {
+				db.optimizer.updateTuning(baseTuning);
+			}
+		});
+
+		it('streaming and buffered paths agree on sliding ROWS asymmetric (2 PRECEDING AND 0 FOLLOWING)', async () => {
+			await setupPK();
+			const sql = 'SELECT id, SUM(val) OVER (ORDER BY id ROWS BETWEEN 2 PRECEDING AND 0 FOLLOWING) AS s FROM t ORDER BY id';
+
+			const withRule = await evalRows(db, sql);
+
+			const baseTuning = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...baseTuning,
+				disabledRules: new Set([
+					...(baseTuning.disabledRules ?? []),
+					'monotonic-window',
+				]),
+			});
+			try {
+				const withoutRule = await evalRows(db, sql);
+				expect(withRule).to.deep.equal(withoutRule);
+			} finally {
+				db.optimizer.updateTuning(baseTuning);
+			}
+		});
+
+		it('streaming and buffered paths agree on sliding FIRST_VALUE / LAST_VALUE', async () => {
+			await setupPK();
+			const sql = 'SELECT id, FIRST_VALUE(val) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS fv, LAST_VALUE(val) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS lv FROM t ORDER BY id';
+
+			const withRule = await evalRows(db, sql);
+
+			const baseTuning = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...baseTuning,
+				disabledRules: new Set([
+					...(baseTuning.disabledRules ?? []),
+					'monotonic-window',
+				]),
+			});
+			try {
+				const withoutRule = await evalRows(db, sql);
+				expect(withRule).to.deep.equal(withoutRule);
 			} finally {
 				db.optimizer.updateTuning(baseTuning);
 			}

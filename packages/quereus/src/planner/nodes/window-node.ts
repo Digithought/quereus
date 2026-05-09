@@ -25,6 +25,10 @@ export interface WindowSpec {
  *   - lastValue — under the streaming default frame (`UNBOUNDED PRECEDING TO
  *     CURRENT ROW`) `LAST_VALUE(expr)` is `expr` evaluated on the current row.
  *   - runningAgg — fold via the registered step/final hooks (default frame only).
+ *   - slidingAgg — `SUM/COUNT/AVG/MIN/MAX/FIRST_VALUE/LAST_VALUE` over a sliding
+ *     frame of the form `ROWS BETWEEN n PRECEDING AND m FOLLOWING` (literal `n`,
+ *     `m`, both ≥ 0) or `RANGE BETWEEN <num> PRECEDING AND <num> FOLLOWING`
+ *     (single numeric ORDER BY, literal non-negative offsets).
  */
 export type StreamingWindowFunctionMode =
 	| { kind: 'rowNumber' }
@@ -34,7 +38,17 @@ export type StreamingWindowFunctionMode =
 	| { kind: 'lead'; offset: number }
 	| { kind: 'firstValue' }
 	| { kind: 'lastValue' }
-	| { kind: 'runningAgg' };
+	| { kind: 'runningAgg' }
+	| {
+		kind: 'slidingAgg';
+		/** Underlying aggregate / value function name (lower-case). */
+		name: 'sum' | 'count' | 'avg' | 'min' | 'max' | 'first_value' | 'last_value';
+		frameMode: 'rows' | 'range';
+		/** Non-negative integer literal for ROWS; non-negative numeric literal for RANGE. */
+		preceding: number;
+		/** Same constraints as preceding. */
+		following: number;
+	};
 
 /**
  * Marker added to a `WindowNode` by `rule-monotonic-window` when the source's

@@ -18,6 +18,10 @@
  *   - `SUM` / `COUNT` / `AVG` / `MIN` / `MAX` over the default frame
  *     (`UNBOUNDED PRECEDING TO CURRENT ROW`, ROWS or RANGE — RANGE handles peer
  *     groups via delayed emit at peer boundaries)
+ *   - `SUM` / `COUNT` / `AVG` / `MIN` / `MAX` / `FIRST_VALUE` / `LAST_VALUE`
+ *     over a sliding frame `ROWS BETWEEN n PRECEDING AND m FOLLOWING` (literal
+ *     non-negative integers `n`, `m`) or `RANGE BETWEEN <num> PRECEDING AND
+ *     <num> FOLLOWING` (single numeric ORDER BY, literal non-negative offsets)
  *
  * Bail conditions:
  *
@@ -28,11 +32,14 @@
  *   - any partition-by expression is non-trivial (not a column reference)
  *   - any function falls outside the recognized set, or is `DISTINCT`
  *   - frame is anything other than the default (or the explicit equivalent
- *     `UNBOUNDED PRECEDING TO CURRENT ROW` in `ROWS` or `RANGE`)
+ *     `UNBOUNDED PRECEDING TO CURRENT ROW` in `ROWS` or `RANGE`), or a
+ *     supported sliding shape (see above)
  *
  * Out of scope (deferred): NTILE/PERCENT_RANK/CUME_DIST (need partition size up
- * front), sliding frames, DISTINCT aggregates, splitting a mixed WindowNode
- * into streaming + buffered halves.
+ * front), DISTINCT aggregates, asymmetric sliding shapes
+ * (`UNBOUNDED PRECEDING AND m FOLLOWING`, `n PRECEDING AND UNBOUNDED FOLLOWING`,
+ * `CURRENT ROW AND m FOLLOWING`), splitting a mixed WindowNode into streaming +
+ * buffered halves.
  */
 
 import { createLogger } from '../../../common/logger.js';
@@ -47,11 +54,13 @@ import type * as AST from '../../../parser/ast.js';
 const log = createLogger('optimizer:rule:monotonic-window');
 
 const RECOGNIZED_RUNNING_AGG = new Set(['sum', 'count', 'avg', 'min', 'max']);
+const RECOGNIZED_SLIDING_AGG = new Set(['sum', 'count', 'avg', 'min', 'max', 'first_value', 'last_value']);
 
 /**
  * Verify the frame is either absent (default) or the explicit equivalent of
  * UNBOUNDED PRECEDING TO CURRENT ROW (in either ROWS or RANGE mode). Anything
- * else is a sliding frame and disqualifies streaming for v1.
+ * else is either a sliding frame (handled by `recognizeSlidingFrame`) or
+ * disqualifies streaming.
  */
 function isDefaultEquivalentFrame(frame: AST.WindowFrame | undefined): boolean {
 	if (!frame) return true;
@@ -63,18 +72,58 @@ function isDefaultEquivalentFrame(frame: AST.WindowFrame | undefined): boolean {
 }
 
 /**
+ * Recognize a sliding-frame shape supported by streaming.
+ *
+ *   - `ROWS BETWEEN n PRECEDING AND m FOLLOWING`: both `n` and `m` are
+ *     non-negative integer literals.
+ *   - `RANGE BETWEEN <num> PRECEDING AND <num> FOLLOWING`: both offsets are
+ *     non-negative finite numeric literals.
+ *
+ * Returns the recognized shape, or null when the frame is not a supported
+ * sliding shape (caller falls back to other recognition paths).
+ */
+function recognizeSlidingFrame(
+	frame: AST.WindowFrame | undefined,
+): { mode: 'rows' | 'range'; preceding: number; following: number } | null {
+	if (!frame) return null;
+	if (frame.exclusion && frame.exclusion !== 'no others') return null;
+	if (frame.end === null) return null;
+	if (frame.start.type !== 'preceding') return null;
+	if (frame.end.type !== 'following') return null;
+	if (frame.type !== 'rows' && frame.type !== 'range') return null;
+
+	const preceding = tryExtractNumericLiteral(frame.start.value);
+	const following = tryExtractNumericLiteral(frame.end.value);
+	if (preceding === undefined || following === undefined) return null;
+	if (!Number.isFinite(preceding) || !Number.isFinite(following)) return null;
+	if (preceding < 0 || following < 0) return null;
+	if (frame.type === 'rows') {
+		if (!Number.isInteger(preceding) || !Number.isInteger(following)) return null;
+	}
+	return { mode: frame.type, preceding, following };
+}
+
+/**
  * Decide the streaming mode for a single window function. Returns null if the
  * function is not streaming-capable under v1 preconditions.
+ *
+ * `orderByLength` is the number of ORDER BY keys on the WindowNode — required
+ * for the RANGE-sliding-frame check, which mandates a single numeric ORDER BY
+ * key.
  */
 function recognizeFunctionMode(
 	functionName: string,
 	isDistinct: boolean,
 	args: readonly { expression: AST.Expression }[],
 	frame: AST.WindowFrame | undefined,
+	orderByLength: number,
 ): StreamingWindowFunctionMode | null {
 	if (isDistinct) return null;
 	const name = functionName.toLowerCase();
 
+	// LAG/LEAD/RANK/DENSE_RANK/ROW_NUMBER do not accept a frame at all in
+	// SQL standard, but if one is present we keep the existing default-only
+	// gate. Sliding shapes are out of scope for these.
 	switch (name) {
 		case 'row_number':
 			return { kind: 'rowNumber' };
@@ -82,14 +131,41 @@ function recognizeFunctionMode(
 			return { kind: 'rank' };
 		case 'dense_rank':
 			return { kind: 'denseRank' };
-		case 'first_value':
-			return args.length >= 1 ? { kind: 'firstValue' } : null;
-		case 'last_value':
-			// LAST_VALUE under the default frame == current row, so it's just
-			// expr-on-current-row. A non-default frame (e.g. UNBOUNDED FOLLOWING)
-			// would change the semantics — bail out so the buffered path runs.
-			if (!isDefaultEquivalentFrame(frame)) return null;
-			return args.length >= 1 ? { kind: 'lastValue' } : null;
+		case 'first_value': {
+			if (args.length < 1) return null;
+			// Default-equivalent frame: cache first row's value for the partition.
+			if (isDefaultEquivalentFrame(frame)) return { kind: 'firstValue' };
+			// Sliding frame: defer to slidingAgg machinery.
+			const sliding = recognizeSlidingFrame(frame);
+			if (sliding) {
+				if (sliding.mode === 'range' && orderByLength !== 1) return null;
+				return {
+					kind: 'slidingAgg',
+					name: 'first_value',
+					frameMode: sliding.mode,
+					preceding: sliding.preceding,
+					following: sliding.following,
+				};
+			}
+			return null;
+		}
+		case 'last_value': {
+			if (args.length < 1) return null;
+			// LAST_VALUE under the default frame == current row.
+			if (isDefaultEquivalentFrame(frame)) return { kind: 'lastValue' };
+			const sliding = recognizeSlidingFrame(frame);
+			if (sliding) {
+				if (sliding.mode === 'range' && orderByLength !== 1) return null;
+				return {
+					kind: 'slidingAgg',
+					name: 'last_value',
+					frameMode: sliding.mode,
+					preceding: sliding.preceding,
+					following: sliding.following,
+				};
+			}
+			return null;
+		}
 		case 'lag':
 		case 'lead': {
 			if (args.length < 1) return null;
@@ -106,8 +182,21 @@ function recognizeFunctionMode(
 		}
 		default:
 			if (RECOGNIZED_RUNNING_AGG.has(name)) {
-				if (!isDefaultEquivalentFrame(frame)) return null;
-				return { kind: 'runningAgg' };
+				if (isDefaultEquivalentFrame(frame)) return { kind: 'runningAgg' };
+				if (RECOGNIZED_SLIDING_AGG.has(name)) {
+					const sliding = recognizeSlidingFrame(frame);
+					if (sliding) {
+						if (sliding.mode === 'range' && orderByLength !== 1) return null;
+						return {
+							kind: 'slidingAgg',
+							name: name as 'sum' | 'count' | 'avg' | 'min' | 'max',
+							frameMode: sliding.mode,
+							preceding: sliding.preceding,
+							following: sliding.following,
+						};
+					}
+				}
+				return null;
 			}
 			return null;
 	}
@@ -236,7 +325,9 @@ export function ruleMonotonicWindow(node: PlanNode, _context: OptContext): PlanN
 		// LAG/LEAD/FIRST_VALUE/LAST_VALUE need the actual literal AST for the
 		// offset. We approximate by inspecting LiteralNode in args.
 		const argDescriptors = args.map(a => ({ expression: a.expression }));
-		const mode = recognizeFunctionMode(func.functionName, func.isDistinct, argDescriptors, frame);
+		const mode = recognizeFunctionMode(
+			func.functionName, func.isDistinct, argDescriptors, frame, node.orderByExpressions.length,
+		);
 		if (!mode) {
 			log('Function %s not streaming-capable; falling back', func.functionName);
 			return null;

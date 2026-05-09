@@ -823,6 +823,36 @@ interface StreamingFuncState {
 	aggRowCount?: number;
 	/** RANGE mode running aggs: pending peer group entries waiting for fill. */
 	pendingPeerEntries?: StreamingRowEntry[];
+	/** Sliding-frame ring buffer of {argVal, orderByVal0} for rows currently in scope. */
+	slidingBuffer?: SlidingBufEntry[];
+	/** Partition row index of slidingBuffer[0] (ROWS sliding). */
+	slidingHead?: number;
+	/** Running { sum, count } accumulator for SUM/COUNT/AVG sliding (ROWS step+unstep). */
+	slidingAcc?: { sum: number; count: number };
+	/** Partition row index of next ROWS-sliding entry to finalize. */
+	slidingNextFinalizeIdx?: number;
+	/** ROWS sliding: pending entries awaiting finalization (oldest first). */
+	slidingPending?: StreamingRowEntry[];
+	/** RANGE sliding: pending entries with metadata. */
+	slidingRangePending?: SlidingRangePendingEntry[];
+}
+
+/** Per-row entry in a sliding-frame buffer (ROWS or RANGE). */
+interface SlidingBufEntry {
+	argVal: SqlValue;
+	/** Number(orderByValues[0]) — NaN for null/non-numeric. Used by RANGE only. */
+	orderByVal0: number;
+}
+
+/** Pending entry for a RANGE-sliding function. */
+interface SlidingRangePendingEntry {
+	entry: StreamingRowEntry;
+	/** Numeric ORDER BY value at this entry's row (NaN if non-finite). */
+	v_j: number;
+	/** Pre-computed `Number.isFinite(v_j)`. */
+	isFinite: boolean;
+	/** Right edge has been crossed by a later arrival. */
+	rightClosed: boolean;
 }
 
 function makeFuncState(
@@ -843,6 +873,17 @@ function makeFuncState(
 			s.aggAccumulator = null;
 			s.aggRowCount = 0;
 			s.pendingPeerEntries = [];
+			break;
+		case 'slidingAgg':
+			s.slidingBuffer = [];
+			s.slidingHead = 0;
+			s.slidingAcc = { sum: 0, count: 0 };
+			s.slidingNextFinalizeIdx = 0;
+			if (mode.frameMode === 'rows') {
+				s.slidingPending = [];
+			} else {
+				s.slidingRangePending = [];
+			}
 			break;
 		default:
 			break;
@@ -1000,6 +1041,9 @@ async function* runStreaming(
 			}
 		}
 
+		// Numeric form of the leading ORDER BY value, used by RANGE-sliding.
+		const orderByVal0Num = orderByValues.length > 0 ? Number(orderByValues[0]) : NaN;
+
 		// Allocate a new queue entry for this row.
 		const sourceColCount = (row as SqlValue[]).length;
 		const outRow: SqlValue[] = new Array(sourceColCount + funcCount);
@@ -1047,6 +1091,9 @@ async function* runStreaming(
 					break;
 				case 'runningAgg':
 					stepRunningAgg(entry, fi, fs, fc, argVal, isRangeMode);
+					break;
+				case 'slidingAgg':
+					handleSlidingArrival(entry, fi, fs, argVal, orderByVal0Num);
 					break;
 			}
 		}
@@ -1218,6 +1265,14 @@ async function* finalizePartition(
 			}
 		}
 	}
+	// Finalize trailing pending entries for sliding-frame functions. Their
+	// frames clamp at the partition end; values are computed from the
+	// current sliding state.
+	for (let fi = 0; fi < funcContexts.length; fi++) {
+		const fs = state.funcStates[fi];
+		if (fs.mode.kind !== 'slidingAgg') continue;
+		finalizeSlidingTrailing(fi, fs);
+	}
 	// Yield queued entries in order. Promote our slot to each entry's row so
 	// downstream attribute resolution sees the correct row.
 	for (const entry of state.queue) {
@@ -1225,5 +1280,374 @@ async function* finalizePartition(
 		yield entry.row as Row;
 	}
 	state.queue.length = 0;
+}
+
+// ============================================================================
+// Sliding-frame helpers (slidingAgg mode)
+// ============================================================================
+//
+// Activated when `rule-monotonic-window` recognizes
+// `ROWS BETWEEN n PRECEDING AND m FOLLOWING` or
+// `RANGE BETWEEN <num> PRECEDING AND <num> FOLLOWING` (with literal
+// non-negative offsets) over the supported aggregates / value functions.
+//
+// ROWS strategy (per function):
+//   - `slidingBuffer` holds {argVal, orderByVal0} for rows with index in
+//     [slidingHead, currentRow]; entries fall off the front as they age out
+//     of the leftmost-pending entry's frame.
+//   - SUM/COUNT/AVG: maintain a `{ sum, count }` accumulator with step+unstep;
+//     skip null argVals (matches the schema's null-skipping semantics).
+//   - MIN/MAX/FIRST_VALUE/LAST_VALUE: recompute from the buffer slice on each
+//     finalize (acceptable for v1 — windows are typically small).
+//   - Each pending entry is finalized when row `j + following` arrives
+//     (mid-partition) or at partition close (right edge clamps to last row).
+//
+// RANGE strategy (per function):
+//   - Bounds advance by ORDER BY value, not by row offset.
+//   - Each pending entry tracks its `v_j` and a `rightClosed` flag flipped on
+//     by a later arrival whose value strictly exceeds `v_j + following`.
+//   - On finalize: scan the buffer for rows in [v_j - preceding, v_j +
+//     following] (finite v_j) or for the contiguous non-finite peer span
+//     (non-finite v_j); compute the aggregate by direct scan in v1 (no
+//     incremental acc — keeps the code simple and handles non-finite v
+//     entries cleanly).
+
+function slidingStepNum(acc: { sum: number; count: number }, argVal: SqlValue): void {
+	if (argVal === null) return;
+	acc.sum += Number(argVal);
+	acc.count += 1;
+}
+
+function slidingUnstepNum(acc: { sum: number; count: number }, argVal: SqlValue): void {
+	if (argVal === null) return;
+	acc.sum -= Number(argVal);
+	acc.count -= 1;
+}
+
+function slidingFinalAcc(name: string, acc: { sum: number; count: number }): SqlValue {
+	switch (name) {
+		case 'sum': return acc.count === 0 ? null : acc.sum;
+		case 'count': return acc.count;
+		case 'avg': return acc.count === 0 ? null : acc.sum / acc.count;
+		default: return null;
+	}
+}
+
+function slidingScanMin(buf: SlidingBufEntry[], lo: number, hi: number): SqlValue {
+	let best: SqlValue = null;
+	for (let k = lo; k <= hi; k++) {
+		const v = buf[k].argVal;
+		if (v === null) continue;
+		if (best === null || v < best) best = v;
+	}
+	return best;
+}
+
+function slidingScanMax(buf: SlidingBufEntry[], lo: number, hi: number): SqlValue {
+	let best: SqlValue = null;
+	for (let k = lo; k <= hi; k++) {
+		const v = buf[k].argVal;
+		if (v === null) continue;
+		if (best === null || v > best) best = v;
+	}
+	return best;
+}
+
+function slidingScanCountNonNull(buf: SlidingBufEntry[], lo: number, hi: number): number {
+	let n = 0;
+	for (let k = lo; k <= hi; k++) {
+		if (buf[k].argVal !== null) n++;
+	}
+	return n;
+}
+
+function slidingScanSum(buf: SlidingBufEntry[], lo: number, hi: number): { sum: number; count: number } {
+	let sum = 0, count = 0;
+	for (let k = lo; k <= hi; k++) {
+		const v = buf[k].argVal;
+		if (v === null) continue;
+		sum += Number(v);
+		count += 1;
+	}
+	return { sum, count };
+}
+
+/** Per-row dispatch for slidingAgg functions. */
+function handleSlidingArrival(
+	entry: StreamingRowEntry,
+	fi: number,
+	fs: StreamingFuncState,
+	argVal: SqlValue,
+	orderByVal0Num: number,
+): void {
+	const m = fs.mode as Extract<StreamingFuncState['mode'], { kind: 'slidingAgg' }>;
+	fs.slidingBuffer!.push({ argVal, orderByVal0: orderByVal0Num });
+	if (m.frameMode === 'rows') {
+		handleSlidingRowsArrival(entry, fi, fs, m, argVal);
+	} else {
+		handleSlidingRangeArrival(entry, fi, fs, m, orderByVal0Num);
+	}
+}
+
+// ----- ROWS sliding -----
+
+function handleSlidingRowsArrival(
+	entry: StreamingRowEntry,
+	fi: number,
+	fs: StreamingFuncState,
+	m: Extract<StreamingFuncState['mode'], { kind: 'slidingAgg' }>,
+	argVal: SqlValue,
+): void {
+	if (m.name === 'sum' || m.name === 'count' || m.name === 'avg') {
+		slidingStepNum(fs.slidingAcc!, argVal);
+	}
+	fs.slidingPending!.push(entry);
+	while (fs.slidingPending!.length > m.following) {
+		finalizeSlidingRowsEntry(fi, fs, m);
+	}
+}
+
+function finalizeSlidingRowsEntry(
+	fi: number,
+	fs: StreamingFuncState,
+	m: Extract<StreamingFuncState['mode'], { kind: 'slidingAgg' }>,
+): void {
+	const j = fs.slidingNextFinalizeIdx!;
+	const targetLeft = Math.max(0, j - m.preceding);
+	// Trim left: rows that have aged out of the next-pending entry's frame.
+	while (fs.slidingHead! < targetLeft) {
+		if (m.name === 'sum' || m.name === 'count' || m.name === 'avg') {
+			slidingUnstepNum(fs.slidingAcc!, fs.slidingBuffer![0].argVal);
+		}
+		fs.slidingBuffer!.shift();
+		fs.slidingHead!++;
+	}
+	const buf = fs.slidingBuffer!;
+	const lo = 0;
+	const hi = buf.length - 1;
+	let value: SqlValue;
+	switch (m.name) {
+		case 'sum':
+		case 'count':
+		case 'avg':
+			value = slidingFinalAcc(m.name, fs.slidingAcc!);
+			break;
+		case 'min':
+			value = slidingScanMin(buf, lo, hi);
+			break;
+		case 'max':
+			value = slidingScanMax(buf, lo, hi);
+			break;
+		case 'first_value':
+			value = lo > hi ? null : buf[lo].argVal;
+			break;
+		case 'last_value':
+			value = lo > hi ? null : buf[hi].argVal;
+			break;
+		default:
+			value = null;
+	}
+	const targetEntry = fs.slidingPending!.shift()!;
+	fillSlot(targetEntry, fi, value);
+	fs.slidingNextFinalizeIdx!++;
+}
+
+// ----- RANGE sliding -----
+
+function handleSlidingRangeArrival(
+	entry: StreamingRowEntry,
+	fi: number,
+	fs: StreamingFuncState,
+	m: Extract<StreamingFuncState['mode'], { kind: 'slidingAgg' }>,
+	orderByVal0Num: number,
+): void {
+	const isFinite = Number.isFinite(orderByVal0Num);
+	const pending = fs.slidingRangePending!;
+	pending.push({ entry, v_j: orderByVal0Num, isFinite, rightClosed: false });
+
+	// Mark right-closed for any pending entry whose right edge has now been
+	// strictly exceeded by this arrival. Walking front-to-back: once an
+	// existing entry is right-closed, we can stop (since pending is in
+	// arrival order and v's are sorted).
+	for (const p of pending) {
+		if (p.rightClosed) continue;
+		if (!p.isFinite) {
+			// Non-finite entry: closes once a finite-v row arrives (the
+			// non-finite peer span ends).
+			if (isFinite) p.rightClosed = true;
+		} else {
+			if (isFinite && orderByVal0Num > p.v_j + m.following) p.rightClosed = true;
+			// Finite entry followed by a non-finite arrival doesn't close it
+			// (might still see more finite rows in the same partition — but
+			// since the source is monotonic, finite never follows non-finite
+			// in practice).
+		}
+	}
+
+	while (pending.length > 0 && pending[0].rightClosed) {
+		finalizeSlidingRangeEntry(fi, fs, m);
+	}
+}
+
+/**
+ * Find the buffer index range that constitutes the finite-v window
+ * [v_j - preceding, v_j + following]. Returns lo > hi for an empty range
+ * (shouldn't happen for finite v_j because v_j itself is in scope).
+ */
+function findRangeWindow(
+	buf: SlidingBufEntry[],
+	v_j: number,
+	preceding: number,
+	following: number,
+): { lo: number; hi: number } {
+	const left = v_j - preceding;
+	const right = v_j + following;
+	let lo = -1, hi = -1;
+	for (let k = 0; k < buf.length; k++) {
+		const v = buf[k].orderByVal0;
+		if (!Number.isFinite(v)) continue;
+		if (v < left) continue;
+		if (v > right) break; // buffer is in v-sorted order for finite v
+		if (lo < 0) lo = k;
+		hi = k;
+	}
+	return { lo, hi };
+}
+
+/**
+ * Find the contiguous non-finite peer span around the given pending entry's
+ * row in the buffer. The span is the maximal run of consecutive non-finite-v
+ * rows in `buf` that includes `entryIdx` (or the latest non-finite row, if
+ * the entry has already been shifted out).
+ */
+function findNonFinitePeerSpan(buf: SlidingBufEntry[]): { lo: number; hi: number } {
+	// Find the run that contains the entry. For monotonic input, non-finite
+	// rows cluster at edges. We look for any non-finite run.
+	let lo = -1, hi = -1;
+	for (let k = 0; k < buf.length; k++) {
+		if (!Number.isFinite(buf[k].orderByVal0)) {
+			if (lo < 0) lo = k;
+			hi = k;
+		}
+	}
+	return { lo, hi };
+}
+
+function finalizeSlidingRangeEntry(
+	fi: number,
+	fs: StreamingFuncState,
+	m: Extract<StreamingFuncState['mode'], { kind: 'slidingAgg' }>,
+): void {
+	const pending = fs.slidingRangePending!;
+	const head = pending[0];
+	const buf = fs.slidingBuffer!;
+	let lo: number, hi: number;
+	if (head.isFinite) {
+		({ lo, hi } = findRangeWindow(buf, head.v_j, m.preceding, m.following));
+	} else {
+		({ lo, hi } = findNonFinitePeerSpan(buf));
+	}
+
+	let value: SqlValue;
+	if (lo < 0 || hi < 0 || lo > hi) {
+		// Empty frame: SUM/MIN/MAX/FIRST/LAST return NULL, COUNT returns 0.
+		value = m.name === 'count' ? 0 : null;
+	} else {
+		switch (m.name) {
+			case 'sum': {
+				const r = slidingScanSum(buf, lo, hi);
+				value = r.count === 0 ? null : r.sum;
+				break;
+			}
+			case 'count':
+				value = slidingScanCountNonNull(buf, lo, hi);
+				break;
+			case 'avg': {
+				const r = slidingScanSum(buf, lo, hi);
+				value = r.count === 0 ? null : r.sum / r.count;
+				break;
+			}
+			case 'min':
+				value = slidingScanMin(buf, lo, hi);
+				break;
+			case 'max':
+				value = slidingScanMax(buf, lo, hi);
+				break;
+			case 'first_value':
+				value = buf[lo].argVal;
+				break;
+			case 'last_value':
+				value = buf[hi].argVal;
+				break;
+			default:
+				value = null;
+		}
+	}
+	fillSlot(head.entry, fi, value);
+	pending.shift();
+
+	// Trim buffer rows that no remaining pending entry needs.
+	trimSlidingRangeBuffer(fs, m);
+}
+
+function trimSlidingRangeBuffer(
+	fs: StreamingFuncState,
+	m: Extract<StreamingFuncState['mode'], { kind: 'slidingAgg' }>,
+): void {
+	const pending = fs.slidingRangePending!;
+	const buf = fs.slidingBuffer!;
+	if (pending.length === 0) {
+		buf.length = 0;
+		return;
+	}
+	// Find the smallest left edge across remaining pending entries. For
+	// finite pending entries, left = v_p - preceding. Pending is in arrival
+	// (v-sorted) order, so the front entry has the smallest left.
+	let minFiniteLeft: number | null = null;
+	let anyNonFinitePending = false;
+	for (const p of pending) {
+		if (p.isFinite) {
+			const left = p.v_j - m.preceding;
+			if (minFiniteLeft === null || left < minFiniteLeft) minFiniteLeft = left;
+		} else {
+			anyNonFinitePending = true;
+		}
+	}
+	// Trim front rows that are outside any pending entry's frame.
+	while (buf.length > 0) {
+		const v0 = buf[0].orderByVal0;
+		if (!Number.isFinite(v0)) {
+			// Drop leading non-finite rows only if no non-finite pending entry
+			// would still need them.
+			if (anyNonFinitePending) break;
+			buf.shift();
+			continue;
+		}
+		// Finite row: drop if smaller than every pending finite entry's left.
+		if (minFiniteLeft === null) {
+			// Only non-finite pending entries remain; finite rows aren't in
+			// any of their frames.
+			buf.shift();
+			continue;
+		}
+		if (v0 < minFiniteLeft) {
+			buf.shift();
+			continue;
+		}
+		break;
+	}
+}
+
+function finalizeSlidingTrailing(fi: number, fs: StreamingFuncState): void {
+	const m = fs.mode as Extract<StreamingFuncState['mode'], { kind: 'slidingAgg' }>;
+	if (m.frameMode === 'rows') {
+		while (fs.slidingPending!.length > 0) {
+			finalizeSlidingRowsEntry(fi, fs, m);
+		}
+	} else {
+		while (fs.slidingRangePending!.length > 0) {
+			finalizeSlidingRangeEntry(fi, fs, m);
+		}
+	}
 }
 
