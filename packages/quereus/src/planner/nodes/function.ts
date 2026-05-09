@@ -7,6 +7,7 @@ import { formatExpressionList, formatScalarType } from '../../util/plan-formatte
 import type { FunctionSchema } from '../../schema/function.js';
 import { FunctionFlags } from '../../common/constants.js';
 import type { SqlValue } from '../../common/types.js';
+import { ColumnReferenceNode } from './reference.js';
 
 export class ScalarFunctionCallNode extends PlanNode implements NaryScalarNode {
 	override readonly nodeType = PlanNodeType.ScalarFunctionCall;
@@ -160,13 +161,17 @@ export class ScalarFunctionCallNode extends PlanNode implements NaryScalarNode {
 		if (idx === undefined) return undefined;
 		const trait = traits[idx];
 		if (!trait) return undefined;
-		// The operand at idx must be an identity-like reference to attrId for the
-		// range to apply directly to the input attribute. (We can only rewrite
-		// `f(x) op c`, not `f(g(x)) op c`, without further analysis.)
-		const childMon = this.operands[idx].monotonicityIn(inputAttrId).monotonicity;
-		if (childMon !== 'increasing') return undefined;
+		// The operand at idx must be an identity reference to attrId (a bare
+		// ColumnReferenceNode) for the range to apply directly to the input
+		// attribute. We can only rewrite `f(x) op c`, not `f(g(x)) op c` —
+		// bucketBounds returns bounds in the operand's value space, which
+		// only equals attrId's value space when the operand IS the column.
+		const operand = this.operands[idx];
+		if (!(operand instanceof ColumnReferenceNode) || operand.attributeId !== inputAttrId) {
+			return undefined;
+		}
 		// Defer boundary computation to the operand's logical type.
-		const argType = this.operands[idx].getType();
+		const argType = operand.getType();
 		const bucketBounds = argType.logicalType.bucketBounds;
 		if (!bucketBounds) return undefined;
 		const bounds = bucketBounds(trait.kind, constant);

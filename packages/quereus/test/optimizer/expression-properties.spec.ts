@@ -410,4 +410,39 @@ describe('rangeRewriteIn surface', () => {
 		const call = fnCall(f, [c]);
 		expect(call.rangeRewriteIn(1, 0)).to.equal(undefined);
 	});
+
+	it('returns undefined when the operand is not a bare column reference (identity-only)', () => {
+		// Even when the operand is monotone-increasing in attrId, we only rewrite
+		// f(x) op c — never f(g(x)) op c — because bucketBounds answers in the
+		// operand's space, not attrId's. Build a logical type with bucketBounds
+		// and feed it through a non-identity operand to ensure we still fail safe.
+		const TYPED: typeof INTEGER_TYPE = {
+			...INTEGER_TYPE,
+			bucketBounds: () => ({ lowerInclusive: 0, upperExclusive: 1 }),
+		};
+		const TYPED_SCALAR = {
+			typeClass: 'scalar' as const,
+			logicalType: TYPED,
+			nullable: false,
+			isReadOnly: false,
+		};
+		// Inner function: monotone-increasing on its sole arg, returning the typed scalar.
+		const inner = makeFnSchema({
+			name: 'inner_fn', numArgs: 1,
+			monotoneOnArgs: { 0: 'increasing' },
+			returnType: TYPED_SCALAR,
+		});
+		// Outer function: declares range-rewrite on its sole arg.
+		const outer = makeFnSchema({
+			name: 'outer_fn', numArgs: 1,
+			rangeRewriteOnArg: { 0: { kind: 'bucket' } },
+			returnType: TYPED_SCALAR,
+		});
+		const c = colRef(1);
+		const composed = fnCall(outer, [fnCall(inner, [c])]);
+		// Inner is increasing in attr 1 and its return type has bucketBounds, but
+		// the operand is fnCall(inner) — not a bare ColumnReferenceNode — so we must
+		// refuse the rewrite.
+		expect(composed.rangeRewriteIn(1, 0)).to.equal(undefined);
+	});
 });

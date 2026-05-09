@@ -282,6 +282,27 @@ computePhysical(): Partial<PhysicalProperties> {
 }
 ```
 
+### Scalar Expression Properties (per-attribute)
+
+Distinct from `physical` (relational, cached on the node), `ScalarPlanNode` exposes three **per-attribute** property methods on `PlanNode`:
+
+```typescript
+isInjectiveIn(inputAttrId: number): InjectivityResult;
+monotonicityIn(inputAttrId: number): MonotonicityResult;  // Monotonicity = 'increasing' | 'decreasing' | 'constant' | 'non_monotone' | 'unknown'
+rangeRewriteIn(inputAttrId: number, constant: SqlValue): RangeRewrite | undefined;
+```
+
+The base class returns conservative defaults (`{ injective: false }` / `{ monotonicity: 'unknown' }` / `undefined`); concrete scalar nodes override only what they can prove. Composite nodes (`UnaryOpNode`, `BinaryOpNode`, `ScalarFunctionCallNode`) recurse into children — they don't switch on `nodeType`. Helper lattices `addMonotonicity` and `negateMonotonicity` (in `nodes/plan-node.ts`) compose the operator rules.
+
+`ScalarFunctionCallNode` consults per-function traits on `FunctionSchema`:
+- `injectiveOnArgs?: readonly number[]` — arg indices on which the function is injective when other args are constants.
+- `monotoneOnArgs?: { [argIndex]: 'increasing' | 'decreasing' }` — direction-of-monotonicity per arg.
+- `rangeRewriteOnArg?: { [argIndex]: { kind: string } }` — names a bucketing kind; the actual boundary computation lives on the operand's `LogicalType.bucketBounds(kind, value)`.
+
+The function-call traits compose with the operand's own `monotonicityIn` / `isInjectiveIn`, so `f(g(x))` is treated correctly when both layers are annotated. `rangeRewriteIn` is intentionally tighter: it only rewrites the `f(x) op c` case, requiring the operand to be a bare `ColumnReferenceNode` for the queried attribute (anything else would conflate value spaces).
+
+Consumers (key propagation through non-trivial projections, sargable predicate rewrites for `date(ts) = D`, etc.) will arrive in separate tickets.
+
 ### Constant Folding Subsystem
 
 Constant folding is an elaborate optimization that evaluates constant expressions at plan time rather than runtime. The system uses a three-phase algorithm with sophisticated dependency tracking.
