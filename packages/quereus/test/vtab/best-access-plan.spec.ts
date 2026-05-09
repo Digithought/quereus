@@ -184,6 +184,7 @@ describe('AccessPlanBuilder', () => {
 				cost: 10,
 				rows: 5,
 				providesOrdering: [{ columnIndex: 99, desc: false }],
+				orderingIndexName: 'ix_test',
 			};
 			expect(() => validateAccessPlan(request, result)).to.throw(/ordering column index/i);
 		});
@@ -195,6 +196,7 @@ describe('AccessPlanBuilder', () => {
 				cost: 10,
 				rows: 5,
 				providesOrdering: [{ columnIndex: -1, desc: false }],
+				orderingIndexName: 'ix_test',
 			};
 			expect(() => validateAccessPlan(request, result)).to.throw(/ordering column index/i);
 		});
@@ -206,6 +208,44 @@ describe('AccessPlanBuilder', () => {
 				cost: 10,
 				rows: 5,
 				providesOrdering: [{ columnIndex: 0, desc: false }, { columnIndex: 2, desc: true }],
+				orderingIndexName: 'ix_test',
+			};
+			expect(() => validateAccessPlan(request, result)).not.to.throw();
+		});
+
+		it('should throw when providesOrdering is set without orderingIndexName', () => {
+			const request = makeRequest(0);
+			const result: BestAccessPlanResult = {
+				handledFilters: [],
+				cost: 10,
+				rows: 5,
+				providesOrdering: [{ columnIndex: 0, desc: false }],
+			};
+			expect(() => validateAccessPlan(request, result)).to.throw(/providesOrdering requires orderingIndexName/i);
+		});
+
+		it('should throw when indexName mismatches orderingIndexName', () => {
+			const request = makeRequest(0);
+			const result: BestAccessPlanResult = {
+				handledFilters: [],
+				cost: 10,
+				rows: 5,
+				providesOrdering: [{ columnIndex: 0, desc: false }],
+				orderingIndexName: 'ix_alpha',
+				indexName: 'ix_beta',
+			};
+			expect(() => validateAccessPlan(request, result)).to.throw(/ordering can only be claimed from the same index/i);
+		});
+
+		it('should pass when indexName matches orderingIndexName', () => {
+			const request = makeRequest(0);
+			const result: BestAccessPlanResult = {
+				handledFilters: [],
+				cost: 10,
+				rows: 5,
+				providesOrdering: [{ columnIndex: 0, desc: false }],
+				orderingIndexName: 'ix_test',
+				indexName: 'ix_test',
 			};
 			expect(() => validateAccessPlan(request, result)).not.to.throw();
 		});

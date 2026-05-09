@@ -17,6 +17,32 @@ const logger = createMemoryTableLoggers('module');
 const EMPTY_COLUMN_SET: ReadonlySet<number> = new Set<number>();
 
 /**
+ * Cost per pairwise comparison used to estimate an external sort. Tuned to be
+ * commensurate with the access-plan cost units emitted by `AccessPlanBuilder`
+ * (e.g. fullscan = rows * 1.0, range scan ≈ rows * 0.5 + 0.3). For 1000 rows
+ * a sort costs ≈ 1000 * log2(1000) * 0.1 ≈ 1000 — i.e. comparable to a full
+ * scan, which matches the rough heuristic that sorting N rows is on the same
+ * order as scanning them once when N is moderate.
+ */
+const SORT_COST_PER_COMPARISON = 0.1;
+
+/**
+ * Per-row cost charged for each unhandled filter when an ordering-only access
+ * pattern leaves filters as residual predicates. Mirrors the global
+ * FILTER_PER_ROW constant used elsewhere in the cost model.
+ */
+const RESIDUAL_FILTER_COST_PER_ROW = 0.2;
+
+/**
+ * Estimate the cost of an external O(n log n) sort over `rows` rows. Returns
+ * 0 for ≤1 rows where no sort is required.
+ */
+function estimateSortCost(rows: number): number {
+	if (rows <= 1) return 0;
+	return rows * Math.log2(rows) * SORT_COST_PER_COMPARISON;
+}
+
+/**
  * Collect column indexes bound by an equality predicate (`=` or single-value `IN`).
  * These columns are constants for the access plan and don't contribute ordering.
  */
@@ -197,7 +223,7 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 
 		// Check if we can satisfy ordering requirements
 		if (request.requiredOrdering && request.requiredOrdering.length > 0) {
-			bestPlan = this.adjustPlanForOrdering(bestPlan, request, availableIndexes);
+			bestPlan = this.adjustPlanForOrdering(bestPlan, request, availableIndexes, estimatedTableSize);
 		}
 
 		// B-tree scans inherently produce rows in PK order.  Advertise this
@@ -494,30 +520,54 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 	}
 
 	/**
-	 * Adjust plan to account for ordering requirements
+	 * Adjust plan to account for ordering requirements.
+	 *
+	 * Compares two competing strategies and returns the cheaper:
+	 *
+	 *   Plan A: keep the chosen filtering plan. If its index also satisfies the
+	 *           required ordering (and the access pattern walks it monotonically),
+	 *           claim ordering directly. Otherwise charge an estimated external
+	 *           sort cost — the plan is returned unchanged and a `SortNode` will
+	 *           be inserted above it by the planner.
+	 *
+	 *   Plan B: scan an alternative index in its natural order, applying any
+	 *           filters that don't seek into it as residuals. Useful when the
+	 *           filter index doesn't cover ordering and the table is small or
+	 *           the filter is unselective enough that scan-and-filter beats
+	 *           seek-and-sort.
+	 *
+	 * `validateAccessPlan` enforces that whenever a plan claims `providesOrdering`,
+	 * its `indexName` (if any) matches `orderingIndexName` — the cross-index
+	 * correctness bug is caught at the boundary regardless of which module
+	 * emits the plan.
 	 */
 	private adjustPlanForOrdering(
 		plan: BestAccessPlanResult,
 		request: BestAccessPlanRequest,
-		availableIndexes: IndexSchema[]
+		availableIndexes: IndexSchema[],
+		estimatedTableSize: number
 	): BestAccessPlanResult {
-		// A multi-range (OR_RANGE) access scans each range independently and
-		// concatenates the results — total ordering across ranges is not
-		// preserved, so the plan cannot claim to satisfy ORDER BY even if the
-		// underlying index is monotonic.
+		// Columns bound by an equality predicate are constants for this scan and
+		// therefore contribute no ordering information — they can be skipped when
+		// aligning an index against the required ordering.
+		const equalityCols = collectEqualityBoundColumns(request.filters);
+
+		// Determine whether plan A's existing access pattern can claim the
+		// required ordering. It can iff the chosen filter index satisfies the
+		// ordering AND the access pattern walks the index monotonically — i.e.,
+		// not OR_RANGE (concatenated ranges) and not multi-value IN on an
+		// ordering column (visits values in IN-list order).
+		const filterIndex = plan.indexName
+			? availableIndexes.find(idx => idx.name === plan.indexName)
+			: undefined;
+		const filterSatisfies = filterIndex
+			? this.indexSatisfiesOrdering(filterIndex, request.requiredOrdering!, equalityCols)
+			: false;
+
+		const orderingColumns = new Set(request.requiredOrdering!.map(o => o.columnIndex));
 		const usesOrRange = request.filters.some(
 			(f, i) => plan.handledFilters[i] && f.op === 'OR_RANGE'
 		);
-		if (usesOrRange) {
-			return plan;
-		}
-
-		// A multi-value IN multi-seek visits IN values in IN-list order, not
-		// sorted order. If the IN'd column appears in the required ordering, the
-		// concatenated output is not monotonic on it (or on any later ordering
-		// column) — so the index cannot satisfy ORDER BY. Fall through to the
-		// no-claim path so the planner inserts an explicit SORT.
-		const orderingColumns = new Set(request.requiredOrdering!.map(o => o.columnIndex));
 		const usesMultiInOnOrderedCol = request.filters.some(
 			(f, i) => plan.handledFilters[i]
 				&& f.op === 'IN'
@@ -525,41 +575,113 @@ export class MemoryTableModule implements VirtualTableModule<MemoryTable, Memory
 				&& (f.value as unknown[]).length > 1
 				&& orderingColumns.has(f.columnIndex)
 		);
-		if (usesMultiInOnOrderedCol) {
-			return plan;
+		const planACanClaimOrdering = filterSatisfies && !usesOrRange && !usesMultiInOnOrderedCol;
+
+		let planA: BestAccessPlanResult;
+		let planACost: number;
+		if (planACanClaimOrdering) {
+			planA = {
+				...plan,
+				providesOrdering: request.requiredOrdering,
+				orderingIndexName: filterIndex!.name,
+				explains: `${plan.explains} with ordering from ${filterIndex!.name}`,
+			};
+			planACost = plan.cost;
+		} else {
+			planA = plan;
+			planACost = plan.cost + estimateSortCost(plan.rows ?? estimatedTableSize);
 		}
 
-		// Columns bound by an equality predicate are constants for this scan and
-		// therefore contribute no ordering information — they can be skipped when
-		// aligning an index against the required ordering.
-		const equalityCols = collectEqualityBoundColumns(request.filters);
+		// Plan B: cheapest competing plan that walks an ordering-providing
+		// index in its natural order (with any unpushable filters becoming
+		// residuals). Returns undefined when no such index exists.
+		const planB = this.evaluateOrderingOnlyPlans(
+			request, availableIndexes, equalityCols, estimatedTableSize
+		);
 
-		// When the plan already binds a specific index for filtering/seeking, the
-		// scan iteration order is dictated by that index — only it can claim to
-		// satisfy the required ordering. A full-scan plan (no indexName) is free
-		// to be converted into an ordering-providing IndexScan over any index.
-		const candidates = plan.indexName
-			? availableIndexes.filter(idx => idx.name === plan.indexName)
-			: availableIndexes;
+		if (planB && planB.cost < planACost) {
+			return planB;
+		}
+		return planA;
+	}
 
-		// Check if any candidate index can provide the required ordering
-		for (const index of candidates) {
-			if (this.indexSatisfiesOrdering(index, request.requiredOrdering!, equalityCols)) {
-				// This index can provide ordering - prefer it even if slightly more expensive
-				const adjustedCost = plan.cost * 0.9; // 10% discount for avoiding sort
+	/**
+	 * Evaluate alternative access paths that walk an ordering-providing index
+	 * directly. Returns the cheapest such plan, or undefined when no index
+	 * satisfies the required ordering.
+	 *
+	 * For each candidate index whose key suffix satisfies `requiredOrdering`,
+	 * we first ask `evaluateIndexAccess` whether the index can also push any
+	 * filters as a seek/range. If yes (and the resulting access pattern still
+	 * walks monotonically), use that plan; otherwise fall back to a pure
+	 * ordering scan over the index. Either way we add residual-filter cost
+	 * for filters left unhandled.
+	 */
+	private evaluateOrderingOnlyPlans(
+		request: BestAccessPlanRequest,
+		availableIndexes: IndexSchema[],
+		equalityCols: ReadonlySet<number>,
+		estimatedTableSize: number
+	): BestAccessPlanResult | undefined {
+		let best: BestAccessPlanResult | undefined;
+		const orderingColumns = new Set(request.requiredOrdering!.map(o => o.columnIndex));
 
-				return {
-					...plan,
-					cost: adjustedCost,
-					providesOrdering: request.requiredOrdering,
-					orderingIndexName: index.name,
-					explains: `${plan.explains} with ordering from ${index.name}`
-				};
+		for (const index of availableIndexes) {
+			if (!this.indexSatisfiesOrdering(index, request.requiredOrdering!, equalityCols)) {
+				continue;
+			}
+
+			// See whether this index can also serve as a filter seek/range.
+			const candidate = this.evaluateIndexAccess(index, request, estimatedTableSize);
+
+			// A useful filter pattern that breaks ordering (multi-IN multi-seek
+			// on an ordering column or OR_RANGE) cannot claim ordering — fall
+			// back to a pure scan that doesn't push those filters.
+			const breaksOrdering = request.filters.some(
+				(f, i) => candidate.handledFilters[i]
+					&& (
+						f.op === 'OR_RANGE'
+						|| (f.op === 'IN'
+							&& Array.isArray(f.value)
+							&& (f.value as unknown[]).length > 1
+							&& orderingColumns.has(f.columnIndex))
+					)
+			);
+
+			let basePlan: BestAccessPlanResult;
+			if (candidate.indexName === index.name && !breaksOrdering) {
+				basePlan = candidate;
+			} else {
+				// Pure ordering scan over the index — no filters pushed.
+				basePlan = AccessPlanBuilder
+					.rangeScan(estimatedTableSize)
+					.setHandledFilters(new Array(request.filters.length).fill(false))
+					.setIndexName(index.name)
+					.setExplanation(`Index ordering scan on ${index.name}`)
+					.build();
+			}
+
+			// Charge per-row residual-filter cost for filters not handled by
+			// the chosen access pattern; these remain as a Filter above the leaf.
+			const rows = basePlan.rows ?? estimatedTableSize;
+			const unhandledCount = basePlan.handledFilters.reduce((n, h) => n + (h ? 0 : 1), 0);
+			const residualCost = rows * unhandledCount * RESIDUAL_FILTER_COST_PER_ROW;
+
+			const ordered: BestAccessPlanResult = {
+				...basePlan,
+				cost: basePlan.cost + residualCost,
+				providesOrdering: request.requiredOrdering,
+				orderingIndexName: index.name,
+				indexName: index.name,
+				explains: `${basePlan.explains} with ordering from ${index.name}`,
+			};
+
+			if (!best || ordered.cost < best.cost) {
+				best = ordered;
 			}
 		}
 
-		// No index can provide ordering - plan will need external sort
-		return plan;
+		return best;
 	}
 
 	/**

@@ -321,6 +321,27 @@ export function validateAccessPlan(
 		}
 	}
 
+	// Whenever a plan claims `providesOrdering`, it must identify the index that
+	// produces that order via `orderingIndexName`. When the same plan also drives
+	// iteration via `indexName` (i.e., a seek/range plan), the two MUST refer to
+	// the same index — claiming ordering from one index while iterating via
+	// another silently emits rows in the wrong order. This invariant catches
+	// the bug at the boundary regardless of which module emits the plan.
+	if (result.providesOrdering && result.providesOrdering.length > 0) {
+		if (!result.orderingIndexName) {
+			quereusError(
+				'providesOrdering requires orderingIndexName to identify the source index',
+				StatusCode.FORMAT
+			);
+		}
+		if (result.indexName && result.indexName !== result.orderingIndexName) {
+			quereusError(
+				`providesOrdering claims ordering from '${result.orderingIndexName}' but plan iterates via '${result.indexName}'; ordering can only be claimed from the same index that drives iteration`,
+				StatusCode.FORMAT
+			);
+		}
+	}
+
 	// Validate seek column indexes
 	if (result.seekColumnIndexes) {
 		for (const colIdx of result.seekColumnIndexes) {
