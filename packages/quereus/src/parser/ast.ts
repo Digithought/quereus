@@ -230,7 +230,6 @@ export interface UpdateStmt extends AstNode {
 	table: IdentifierExpr;
 	assignments: { column: string; value: Expression }[];
 	where?: Expression;
-	onConflict?: ConflictResolution;
 	returning?: ResultColumn[];
 	contextValues?: ContextAssignment[]; // Optional mutation context assignments
 	schemaPath?: string[]; // Optional schema search path from WITH SCHEMA clause
