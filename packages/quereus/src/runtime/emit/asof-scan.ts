@@ -8,28 +8,10 @@ import { buildRowDescriptor } from '../../util/row-descriptor.js';
 import { createRowSlot } from '../context-helpers.js';
 import { compareSqlValuesFast, BINARY_COLLATION } from '../../util/comparison.js';
 import type { CollationFunction } from '../../util/comparison.js';
+import { resolveKeyNormalizer, serializeRowKey } from '../../util/key-serializer.js';
 import { joinOutputRow } from './join-output.js';
 
 const log = createLogger('runtime:emit:asof-scan');
-
-/**
- * Build a string-encoded composite partition key from a row.
- * Returns null when any partition value is NULL — NULL partitions never match.
- *
- * Uses BINARY-equivalent encoding (typed string repr): two values match iff
- * their types and string representations match. Collation-aware partition
- * equality (NOCASE etc.) is not supported and is a known limitation.
- */
-function buildPartitionKey(row: Row, indices: number[]): string | null {
-	if (indices.length === 0) return '';
-	const parts: string[] = [];
-	for (const idx of indices) {
-		const v = row[idx];
-		if (v === null || v === undefined) return null;
-		parts.push(`${typeof v}:${String(v)}`);
-	}
-	return parts.join(' ');
-}
 
 /**
  * Emits an asof scan instruction.
@@ -70,6 +52,7 @@ export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruct
 
 	const leftPartitionIndices: number[] = [];
 	const rightPartitionIndices: number[] = [];
+	const keyNormalizers: ((s: string) => string)[] = [];
 	for (const p of plan.partitionAttrs) {
 		const leftIdx = leftAttrs.findIndex(a => a.id === p.leftAttrId);
 		const rightIdx = rightAttrs.findIndex(a => a.id === p.rightAttrId);
@@ -78,6 +61,8 @@ export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruct
 		}
 		leftPartitionIndices.push(leftIdx);
 		rightPartitionIndices.push(rightIdx);
+		const collationName = leftAttrs[leftIdx].type.collationName ?? rightAttrs[rightIdx].type.collationName;
+		keyNormalizers.push(resolveKeyNormalizer(collationName));
 	}
 
 	const rightOutputColumnIndices = plan.getRightOutputColumnIndices();
@@ -112,7 +97,7 @@ export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruct
 			let rightCount = 0;
 			for await (const row of rightSource) {
 				if (row[rightMatchIdx] === null) continue;
-				const pk = buildPartitionKey(row, rightPartitionIndices);
+				const pk = serializeRowKey(row, rightPartitionIndices, keyNormalizers);
 				if (pk === null) continue; // NULL partition value — never matches
 				let bucket = buckets.get(pk);
 				if (!bucket) {
@@ -139,7 +124,7 @@ export function emitAsofScan(plan: AsofScanNode, ctx: EmissionContext): Instruct
 					continue;
 				}
 
-				const pk = buildPartitionKey(leftRow, leftPartitionIndices);
+				const pk = serializeRowKey(leftRow, leftPartitionIndices, keyNormalizers);
 				if (pk === null) {
 					// NULL partition value — bucket can't be matched.
 					const padding = joinOutputRow(outerJoinType, false, false, leftRow, projectedRightColCount, rightSlot);

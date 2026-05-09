@@ -153,6 +153,52 @@ SELECT t.id, q.bid FROM (SELECT id, ts FROM asof_trades ORDER BY ts) t LEFT JOIN
 ) q ON true ORDER BY t.id;
 → [{"id":1,"bid":1.5},{"id":2,"bid":1.5},{"id":3,"bid":2.5},{"id":4,"bid":1.5},{"id":5,"bid":null}]
 
+-- NOCASE partition: 'A' on the left must match the 'a' bucket on the right.
+CREATE TABLE asof_trades_ci (id INTEGER PRIMARY KEY, symbol TEXT COLLATE NOCASE, ts INTEGER);
+CREATE TABLE asof_quotes_ci (ts INTEGER PRIMARY KEY, symbol TEXT COLLATE NOCASE, bid REAL);
+
+INSERT INTO asof_trades_ci VALUES
+  (1, 'A', 100),
+  (2, 'a', 200),
+  (3, 'B', 150);
+
+-- Right side uses lowercase; under NOCASE these must still bucket together.
+INSERT INTO asof_quotes_ci VALUES
+  (50,  'a', 1.0),
+  (180, 'b', 2.0);
+
+-- Partitioned non-strict desc: each left row finds the right bucket regardless of case.
+-- t.id=1 (A,100): A/a quotes ≤ 100 → 50  → 1.0
+-- t.id=2 (a,200): A/a quotes ≤ 200 → 50  → 1.0
+-- t.id=3 (B,150): B/b quotes ≤ 150 → none (only ts=180) → null
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades_ci ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes_ci q WHERE q.symbol = t.symbol AND q.ts <= t.ts ORDER BY q.ts DESC LIMIT 1
+) q ON true ORDER BY t.id;
+→ [{"id":1,"bid":1},{"id":2,"bid":1},{"id":3,"bid":null}]
+
+DROP TABLE asof_trades_ci;
+DROP TABLE asof_quotes_ci;
+
+-- RTRIM partition: trailing-space differences must collapse into the same bucket.
+CREATE TABLE asof_trades_rt (id INTEGER PRIMARY KEY, symbol TEXT COLLATE RTRIM, ts INTEGER);
+CREATE TABLE asof_quotes_rt (ts INTEGER PRIMARY KEY, symbol TEXT COLLATE RTRIM, bid REAL);
+
+INSERT INTO asof_trades_rt VALUES
+  (1, 'B ',  100),
+  (2, 'B  ', 200);
+
+INSERT INTO asof_quotes_rt VALUES
+  (50, 'B', 3.0);
+
+-- Both left rows ('B ', 'B  ') match right bucket 'B' under COLLATE RTRIM.
+SELECT t.id, q.bid FROM (SELECT id, symbol, ts FROM asof_trades_rt ORDER BY ts) t LEFT JOIN LATERAL (
+  SELECT bid FROM asof_quotes_rt q WHERE q.symbol = t.symbol AND q.ts <= t.ts ORDER BY q.ts DESC LIMIT 1
+) q ON true ORDER BY t.id;
+→ [{"id":1,"bid":3},{"id":2,"bid":3}]
+
+DROP TABLE asof_trades_rt;
+DROP TABLE asof_quotes_rt;
+
 -- Cleanup
 DROP TABLE asof_trades;
 DROP TABLE asof_quotes;
