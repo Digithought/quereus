@@ -1,5 +1,5 @@
 import type { BaseType, ScalarType, RelationType } from '../../common/datatype.js';
-import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute } from './plan-node.js';
+import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute, type InjectivityResult, type MonotonicityResult } from './plan-node.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { Scope } from '../scopes/scope.js';
@@ -243,6 +243,19 @@ export class ColumnReferenceNode extends PlanNode implements ZeroAryScalarNode {
 			resultType: formatScalarType(this.columnType)
 		};
 	}
+
+	override isInjectiveIn(inputAttrId: number): InjectivityResult {
+		// f(x) = x is injective; references to other attributes are not (they don't depend on x).
+		return inputAttrId === this.attributeId
+			? { injective: true }
+			: { injective: false };
+	}
+
+	override monotonicityIn(inputAttrId: number): MonotonicityResult {
+		return inputAttrId === this.attributeId
+			? { monotonicity: 'increasing' }
+			: { monotonicity: 'constant' };
+	}
 }
 
 /**
@@ -289,6 +302,12 @@ export class ParameterReferenceNode extends PlanNode implements ZeroAryScalarNod
 			parameter: this.nameOrIndex,
 			resultType: formatScalarType(this.targetType)
 		};
+	}
+
+	override monotonicityIn(_inputAttrId: number): MonotonicityResult {
+		// A parameter does not depend on any input attribute; its value is fixed
+		// for the duration of one execution.
+		return { monotonicity: 'constant' };
 	}
 }
 

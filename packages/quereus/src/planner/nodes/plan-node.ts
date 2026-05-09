@@ -123,6 +123,67 @@ export const DEFAULT_PHYSICAL: PhysicalProperties = {
 } as const;
 
 /**
+ * Monotonicity of a scalar expression with respect to a given input attribute.
+ * Direction is "as the attribute's value increases, what happens to the expression":
+ *   - 'increasing'    — strictly non-decreasing (compatible with `asc` ordering)
+ *   - 'decreasing'    — strictly non-increasing
+ *   - 'constant'      — does not depend on the attribute (flat in attrId)
+ *   - 'non_monotone'  — depends on the attribute but provably not monotone
+ *   - 'unknown'       — cannot prove a property; safe default
+ *
+ * Other inputs are held constant when reasoning about monotonicity in attrId.
+ */
+export type Monotonicity = 'increasing' | 'decreasing' | 'constant' | 'non_monotone' | 'unknown';
+
+export interface InjectivityResult {
+  /** True iff distinct values of the input attribute always produce distinct expression values
+   *  (with all other inputs held constant). */
+  readonly injective: boolean;
+  /** Optional explanation for diagnostics. */
+  readonly reason?: string;
+}
+
+export interface MonotonicityResult {
+  readonly monotonicity: Monotonicity;
+  readonly reason?: string;
+}
+
+/**
+ * Equivalent half-open range on input x for a predicate `f(x) op c` where f is
+ * monotone but lossy (e.g. `f(x) = date(x); f(x) = D` corresponds to a
+ * one-day half-open range on x). `lowerInclusive ≤ x < upperExclusive`.
+ *
+ * The boundary computation is type-driven; see LogicalType.bucketBounds.
+ */
+export interface RangeRewrite {
+  readonly lowerInclusive: SqlValue;
+  readonly upperExclusive: SqlValue;
+}
+
+/** Conservative defaults for the scalar property surface. Exposed for tests / consumers. */
+export const DEFAULT_INJECTIVITY: InjectivityResult = { injective: false } as const;
+export const DEFAULT_MONOTONICITY: MonotonicityResult = { monotonicity: 'unknown' } as const;
+
+/** Negate (flip) a monotonicity direction; constant/non_monotone/unknown pass through unchanged. */
+export function negateMonotonicity(m: Monotonicity): Monotonicity {
+	switch (m) {
+		case 'increasing': return 'decreasing';
+		case 'decreasing': return 'increasing';
+		default: return m;
+	}
+}
+
+/** Combine monotonicities for `a + b` (addition rules). */
+export function addMonotonicity(a: Monotonicity, b: Monotonicity): Monotonicity {
+	if (a === 'unknown' || b === 'unknown') return 'unknown';
+	if (a === 'non_monotone' || b === 'non_monotone') return 'non_monotone';
+	if (a === 'constant') return b;
+	if (b === 'constant') return a;
+	if (a === b) return a; // both increasing or both decreasing
+	return 'unknown'; // mixed directions
+}
+
+/**
  * Represents a column with a unique identifier that persists across plan transformations
  */
 export interface Attribute {
@@ -241,6 +302,33 @@ export abstract class PlanNode {
     return {};
   }
 
+  /**
+   * Is this scalar expression injective in the given input attribute?
+   * Default is the conservative "no" — only meaningful for ScalarPlanNode subclasses
+   * that override. Other inputs are assumed held constant when reasoning.
+   */
+  isInjectiveIn(_inputAttrId: number): InjectivityResult {
+    return DEFAULT_INJECTIVITY;
+  }
+
+  /**
+   * Monotonicity of this scalar expression in the given input attribute, with
+   * other inputs held constant. Default is the conservative 'unknown'.
+   */
+  monotonicityIn(_inputAttrId: number): MonotonicityResult {
+    return DEFAULT_MONOTONICITY;
+  }
+
+  /**
+   * For monotone-but-lossy scalar transforms only: given a constant `c` from a
+   * predicate `f(x) op c`, return the equivalent half-open range on x. Return
+   * undefined when not applicable / unsafe. Implementations must be consistent
+   * with `monotonicityIn`.
+   */
+  rangeRewriteIn(_inputAttrId: number, _constant: SqlValue): RangeRewrite | undefined {
+    return undefined;
+  }
+
 	/** Infer and cache the physical properties of this node */
 	get physical(): PhysicalProperties {
 		if (!this._physical) {
@@ -339,10 +427,18 @@ export function isRelationalNode(node: PlanNode): node is RelationalPlanNode {
 /**
  * Base interface for PlanNodes that produce a scalar value (Expression Nodes).
  * Note: this is an interface that concrete ScalarNode classes will implement.
+ *
+ * The injectivity / monotonicity / rangeRewrite methods all have safe defaults
+ * on `PlanNode`, so concrete classes opt in by overriding only the cases they
+ * can prove. Conservatively defaulting to "unknown / not injective" is critical:
+ * downstream optimizer rules treat these as load-bearing correctness claims.
  */
 export interface ScalarPlanNode extends PlanNode {
 	readonly expression: Expression;
   getType(): ScalarType;
+  isInjectiveIn(inputAttrId: number): InjectivityResult;
+  monotonicityIn(inputAttrId: number): MonotonicityResult;
+  rangeRewriteIn(inputAttrId: number, constant: SqlValue): RangeRewrite | undefined;
 }
 
 /**

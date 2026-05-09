@@ -72,6 +72,24 @@ interface BaseFunctionSchema {
 	 * emission context, and a reference to the default emitter.
 	 */
 	customEmitter?: CustomEmitterHook;
+	/**
+	 * Argument indices on which this function is injective when all other
+	 * arguments are held constant. Combines with operand-level recursion in
+	 * `ScalarFunctionCallNode.isInjectiveIn`.
+	 */
+	injectiveOnArgs?: readonly number[];
+	/**
+	 * Per-argument monotonicity when all other arguments are held constant.
+	 * Keys are zero-based argument indices.
+	 */
+	monotoneOnArgs?: { readonly [argIndex: number]: 'increasing' | 'decreasing' };
+	/**
+	 * Per-argument range-rewrite kind for monotone-but-lossy functions.
+	 * The actual boundary computation lives on the argument's logical type
+	 * (`LogicalType.bucketBounds(kind, value)`), so the function schema only
+	 * names the bucketing kind here.
+	 */
+	rangeRewriteOnArg?: { readonly [argIndex: number]: { readonly kind: string } };
 }
 
 /**
