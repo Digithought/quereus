@@ -94,12 +94,13 @@ async function executeSingleFKAction(
 	const whereClause = childColNames
 		.map(name => `"${name}" = ?`)
 		.join(' AND ');
+	const qualifiedChildTable = `"${childTable.schemaName}"."${childTable.name}"`;
 
 	switch (action) {
 		case 'cascade': {
 			if (newRow === undefined) {
 				// CASCADE DELETE: delete matching child rows
-				const sql = `DELETE FROM "${childTable.name}" WHERE ${whereClause}`;
+				const sql = `DELETE FROM ${qualifiedChildTable} WHERE ${whereClause}`;
 				log('CASCADE DELETE: %s with params %o', sql, oldParentValues);
 				await db._execWithinTransaction(sql, oldParentValues);
 			} else {
@@ -111,7 +112,7 @@ async function executeSingleFKAction(
 				const whereParamsClause = childColNames
 					.map(name => `"${name}" = ?`)
 					.join(' AND ');
-				const sql = `UPDATE "${childTable.name}" SET ${setClauses} WHERE ${whereParamsClause}`;
+				const sql = `UPDATE ${qualifiedChildTable} SET ${setClauses} WHERE ${whereParamsClause}`;
 				const params = [...newParentValues, ...oldParentValues];
 				log('CASCADE UPDATE: %s with params %o', sql, params);
 				await db._execWithinTransaction(sql, params);
@@ -120,7 +121,7 @@ async function executeSingleFKAction(
 		}
 		case 'setNull': {
 			const setClauses = childColNames.map(name => `"${name}" = NULL`).join(', ');
-			const sql = `UPDATE "${childTable.name}" SET ${setClauses} WHERE ${whereClause}`;
+			const sql = `UPDATE ${qualifiedChildTable} SET ${setClauses} WHERE ${whereClause}`;
 			log('SET NULL: %s with params %o', sql, oldParentValues);
 			await db._execWithinTransaction(sql, oldParentValues);
 			break;
@@ -135,7 +136,7 @@ async function executeSingleFKAction(
 				// defaultValue is always an AST Expression — stringify it
 				return `"${name}" = (${expressionToString(defaultVal)})`;
 			}).join(', ');
-			const sql = `UPDATE "${childTable.name}" SET ${setClauses} WHERE ${whereClause}`;
+			const sql = `UPDATE ${qualifiedChildTable} SET ${setClauses} WHERE ${whereClause}`;
 			log('SET DEFAULT: %s with params %o', sql, oldParentValues);
 			await db._execWithinTransaction(sql, oldParentValues);
 			break;
