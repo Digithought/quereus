@@ -626,10 +626,6 @@ export function updateToString(stmt: AST.UpdateStmt): string {
 		parts.push('where', expressionToString(stmt.where));
 	}
 
-	if (stmt.onConflict && stmt.onConflict !== ConflictResolution.ABORT) {
-		parts.push(`on conflict ${ConflictResolution[stmt.onConflict].toLowerCase()}`);
-	}
-
 	if (stmt.returning && stmt.returning.length > 0) {
 		const returning = stmt.returning.map(col => {
 			if (col.type === 'all') {

@@ -299,7 +299,6 @@ export function buildUpdateStmt(
       tableReference,
       assignments,
       sourceNode,
-      stmt.onConflict,
       oldRowDescriptor,
       newRowDescriptor,
       flatRowDescriptor,
@@ -322,7 +321,7 @@ export function buildUpdateStmt(
       mutationContextValues.size > 0 ? mutationContextValues : undefined,
       contextAttributes.length > 0 ? contextAttributes : undefined,
       contextDescriptor,
-      stmt.onConflict,
+      undefined, // onConflict — UPDATE has no statement-level OR clause; per-constraint defaults apply
       notNullDefaults.length > 0 ? notNullDefaults : undefined
     );
 
@@ -331,7 +330,7 @@ export function buildUpdateStmt(
       constraintCheckNode,
       tableReference,
       'update',
-      stmt.onConflict,
+      undefined, // onConflict — UPDATE has no statement-level OR clause
       mutationContextValues.size > 0 ? mutationContextValues : undefined,
       contextAttributes.length > 0 ? contextAttributes : undefined,
       contextDescriptor
@@ -348,7 +347,6 @@ export function buildUpdateStmt(
     tableReference,
     assignments,
     sourceNode,
-    stmt.onConflict,
     oldRowDescriptor,
     newRowDescriptor,
     flatRowDescriptor,
@@ -370,7 +368,7 @@ export function buildUpdateStmt(
     mutationContextValues.size > 0 ? mutationContextValues : undefined,
     contextAttributes.length > 0 ? contextAttributes : undefined,
     contextDescriptor,
-    stmt.onConflict,
+    undefined, // onConflict — UPDATE has no statement-level OR clause; per-constraint defaults apply
     notNullDefaults.length > 0 ? notNullDefaults : undefined
   );
 
@@ -379,7 +377,7 @@ export function buildUpdateStmt(
     constraintCheckNode,
     tableReference,
     'update',
-    stmt.onConflict,
+    undefined, // onConflict — UPDATE has no statement-level OR clause
     mutationContextValues.size > 0 ? mutationContextValues : undefined,
     contextAttributes.length > 0 ? contextAttributes : undefined,
     contextDescriptor

@@ -420,6 +420,8 @@ The action precedence is: **statement-level OR clause > per-constraint default >
 
 **Note:** The `OR` clause and `ON CONFLICT DO ...` clause are mutually exclusive. Use `OR REPLACE` for simple full-row replacement, and `ON CONFLICT DO UPDATE` for surgical column-level updates.
 
+**INSERT only.** The `OR <action>` clause is **only accepted on `INSERT`**. Quereus does not support SQLite's `UPDATE OR <action>` (or `DELETE OR <action>`) per-statement override — that syntax has no precedent outside SQLite (Postgres, SQL Server, MySQL, Oracle, and ANSI SQL all lack it). For UPDATE conflict handling, use the schema-level `ON CONFLICT <action>` declared on the constraint, or rewrite the UPDATE with `WHERE NOT EXISTS (...)` / explicit `DELETE` + `UPDATE` inside a transaction.
+
 #### UPSERT (ON CONFLICT clause)
 
 The `ON CONFLICT` clause provides fine-grained control over conflict handling, allowing you to update specific columns rather than replacing the entire row.
@@ -3181,11 +3183,11 @@ While Quereus supports similar SQL syntax, it has evolved into a distinct system
 **Quereus:**
 - All tables are virtual tables
 - No built-in file storage
-- In-memory focused with `memory` module as primary storage
+- In-memory default with `memory` module
 - Async/await API design for JavaScript
 
 **SQLite:**
-- Physical disk-based tables with optional virtual tables
+- Physical disk-based tables by default with optional virtual tables
 - Built around persistent file storage
 - Synchronous C API
 
@@ -3194,7 +3196,7 @@ While Quereus supports similar SQL syntax, it has evolved into a distinct system
 | Feature | Quereus | SQLite |
 |---------|---------|--------|
 | **Type System** | Logical/physical separation, temporal types, JSON | Type affinity model |
-| **File Storage** | No built-in support; VTab modules could implement | Primary feature |
+| **File Storage** | Supported via modules | Built-in |
 | **Virtual Tables** | Central to design; all tables are virtual | Additional feature |
 | **Triggers** | Not supported | Supported |
 | **Views** | Basic support | Full support |
@@ -3202,8 +3204,9 @@ While Quereus supports similar SQL syntax, it has evolved into a distinct system
 | **Window Functions** | Phase 1 Complete (ranking, aggregates, partitioning) | Full support |
 | **Recursive CTEs** | Basic support | Full support |
 | **JSON Functions** | Extensive support with native JSON type | Available as extension |
-| **Indexes** | Supported by some VTab modules | Full support |
+| **Indexes** | Depends on VTab module | Full support |
 | **BLOB I/O** | Basic support | Advanced support |
+| **`OR <action>` modifier** | `INSERT OR <action>` only; UPDATE/DELETE deliberately omitted (use schema-level `ON CONFLICT` or rewrite) | `INSERT/UPDATE/DELETE OR <action>` (SQLite-specific extension) |
 
 #### 11.2.4 Syntax Extensions
 
@@ -3219,7 +3222,7 @@ create table events (
   event_date date,
   event_time time,
   created_at datetime,
-  metadata json
+  metadata json,  -- Extra commas are OK
 );
 
 -- Quereus: Conversion functions instead of CAST
@@ -3233,7 +3236,23 @@ create table products (
   price real check on insert (price >= 0),
   stock integer check on update (stock >= 0)
 );
+
+-- Quereus: Empty keys = singleton table (0-1 rows)
+create table settings (
+  knob integer,
+  primary key ()
+);
+
+-- Quereus: Declarative DDL
+declare schema Movies {
+  table movie (id integer primary key,
+    -- ...
+  )
+}
+apply schema Movies;
 ```
+
+Quereus also has row contraints with old/new context, mutation contexts, `with tags` metadata, and many more features.
 
 #### 11.2.5 Performance Characteristics
 
@@ -3245,7 +3264,7 @@ create table products (
 When migrating from SQLite to Quereus:
 
 1. **Type System**: Update date/time columns to use DATE, TIME, DATETIME types. Consider using JSON type for structured data. Replace CAST with conversion functions.
-2. **Storage Strategy**: Determine how to handle persistence (custom VTab, export/import, etc.)
+2. **Storage Strategy**: Determine how to handle persistence (quereus-plugin-indexeddb, quereus-plugin-leveldb, etc.)
 3. **Async Handling**: Convert synchronous SQLite code to async/await with Quereus
 4. **Feature Check**: Review use of triggers, advanced views, enforced foreign keys
 5. **Transaction Model**: Similar, but understand Quereus's virtual table transaction model
@@ -3257,9 +3276,6 @@ Quereus is actively developed with plans to add:
 - Advanced window function features (navigation functions, window frames)
 - Enhanced recursive CTE capabilities  
 - More query planning enhancements
-- Additional virtual table modules
-
-See [todo.md] for the current development plans.
 
 ## 12. EBNF Grammar
 
