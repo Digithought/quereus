@@ -1042,7 +1042,10 @@ async function* runStreaming(
 		}
 
 		// Numeric form of the leading ORDER BY value, used by RANGE-sliding.
-		const orderByVal0Num = orderByValues.length > 0 ? Number(orderByValues[0]) : NaN;
+		// SQL NULL must coerce to NaN (not `Number(null) === 0`) so the
+		// non-finite-peer-span branch handles it correctly.
+		const orderByLead = orderByValues.length > 0 ? orderByValues[0] : null;
+		const orderByVal0Num = orderByLead === null ? NaN : Number(orderByLead);
 
 		// Allocate a new queue entry for this row.
 		const sourceColCount = (row as SqlValue[]).length;

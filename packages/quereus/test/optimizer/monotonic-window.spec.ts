@@ -311,6 +311,39 @@ describe('Monotonic streaming-window rule', () => {
 			}
 		});
 
+		it('streaming and buffered paths agree on sliding RANGE BETWEEN n PRECEDING AND n FOLLOWING', async () => {
+			// Make val the PK so monotonicOn is on val — this triggers the
+			// streaming RANGE path (single numeric ORDER BY key).
+			await db.exec('CREATE TABLE rng (val INTEGER PRIMARY KEY) USING memory');
+			await db.exec('INSERT INTO rng VALUES (10),(20),(30),(40),(50)');
+			const sql = 'SELECT val, SUM(val) OVER (ORDER BY val RANGE BETWEEN 10 PRECEDING AND 10 FOLLOWING) AS s, COUNT(*) OVER (ORDER BY val RANGE BETWEEN 10 PRECEDING AND 10 FOLLOWING) AS c, MIN(val) OVER (ORDER BY val RANGE BETWEEN 10 PRECEDING AND 10 FOLLOWING) AS mn, MAX(val) OVER (ORDER BY val RANGE BETWEEN 10 PRECEDING AND 10 FOLLOWING) AS mx FROM rng ORDER BY val';
+
+			const withRule = await evalRows(db, sql);
+
+			const baseTuning = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...baseTuning,
+				disabledRules: new Set([
+					...(baseTuning.disabledRules ?? []),
+					'monotonic-window',
+				]),
+			});
+			try {
+				const withoutRule = await evalRows(db, sql);
+				expect(withRule).to.deep.equal(withoutRule);
+				// Verify the expected values explicitly to lock in the contract.
+				expect(withRule).to.deep.equal([
+					{ val: 10, s: 30, c: 2, mn: 10, mx: 20 },
+					{ val: 20, s: 60, c: 3, mn: 10, mx: 30 },
+					{ val: 30, s: 90, c: 3, mn: 20, mx: 40 },
+					{ val: 40, s: 120, c: 3, mn: 30, mx: 50 },
+					{ val: 50, s: 90, c: 2, mn: 40, mx: 50 },
+				]);
+			} finally {
+				db.optimizer.updateTuning(baseTuning);
+			}
+		});
+
 		it('streaming and buffered paths agree on multiple ranking functions over the same window', async () => {
 			await db.exec('CREATE TABLE m (id INTEGER PRIMARY KEY, val INTEGER) USING memory');
 			await db.exec('INSERT INTO m VALUES (1,10),(2,20),(3,20),(4,30),(5,40)');
