@@ -165,3 +165,99 @@ select * from t2;
 
 drop table t2;
 drop table t1;
+
+-- ===================================
+-- 8. Self-referential ON DELETE CASCADE — multi-level subtree
+-- ===================================
+
+create table sr_tree (
+	id integer primary key,
+	pid integer null,
+	foreign key (pid) references sr_tree(id) on delete cascade
+);
+
+-- Build:
+--   1 (root, pid=NULL)
+--   ├─ 2 (pid=1)
+--   │  ├─ 4 (pid=2)
+--   │  └─ 5 (pid=2)
+--   └─ 3 (pid=1)
+--      └─ 6 (pid=3)
+insert into sr_tree values (1, null);
+insert into sr_tree values (2, 1), (3, 1);
+insert into sr_tree values (4, 2), (5, 2), (6, 3);
+
+select id from sr_tree order by id;
+→ [{"id":1},{"id":2},{"id":3},{"id":4},{"id":5},{"id":6}]
+
+-- delete subtree rooted at 2 → cascades to 4 and 5
+delete from sr_tree where id = 2;
+
+select id from sr_tree order by id;
+→ [{"id":1},{"id":3},{"id":6}]
+
+-- delete root → cascades the entire remaining tree
+delete from sr_tree where id = 1;
+
+select count(*) as cnt from sr_tree;
+→ [{"cnt":0}]
+
+drop table sr_tree;
+
+-- ===================================
+-- 9. Self-referential ON UPDATE CASCADE — child's pid follows parent's id rename
+-- ===================================
+
+create table sru_tree (
+	id integer primary key,
+	pid integer null,
+	foreign key (pid) references sru_tree(id) on update cascade
+);
+
+insert into sru_tree values (1, null);
+insert into sru_tree values (2, 1), (3, 1);
+insert into sru_tree values (4, 2);
+
+-- rename leaf parent: child 4 follows
+update sru_tree set id = 200 where id = 2;
+
+select id, pid from sru_tree order by id;
+→ [{"id":1,"pid":null},{"id":3,"pid":1},{"id":4,"pid":200},{"id":200,"pid":1}]
+
+-- rename root: rows 3 and 200 follow (4's pid stays at 200 since 200 didn't move)
+update sru_tree set id = 100 where id = 1;
+
+select id, pid from sru_tree order by id;
+→ [{"id":3,"pid":100},{"id":4,"pid":200},{"id":100,"pid":null},{"id":200,"pid":100}]
+
+drop table sru_tree;
+
+-- ===================================
+-- 10. Deferred self-referential FK — forward reference within a transaction
+-- ===================================
+
+create table sd_tree (
+	id integer primary key,
+	pid integer null references sd_tree(id) deferrable initially deferred
+);
+
+-- forward reference: insert child before parent in the same tx; commit must succeed
+begin;
+insert into sd_tree values (2, 1);
+insert into sd_tree values (1, null);
+commit;
+
+select id, pid from sd_tree order by id;
+→ [{"id":1,"pid":null},{"id":2,"pid":1}]
+
+-- if the parent never appears, commit must fail
+begin;
+insert into sd_tree values (3, 99);
+commit;
+-- error:
+
+-- failed commit must leave no trace of row 3
+select id from sd_tree order by id;
+→ [{"id":1},{"id":2}]
+
+drop table sd_tree;
