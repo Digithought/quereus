@@ -216,6 +216,18 @@ async function runAddColumn(
 		);
 	}
 
+	// NOT NULL without a usable DEFAULT cannot backfill existing rows. A DEFAULT whose
+	// folded value is NULL is equivalent to "no DEFAULT" for this purpose. If the table
+	// is non-empty, reject before mutating any schema or data.
+	const hasNotNull = columnDef.constraints?.some(c => c.type === 'notNull') ?? false;
+	if (hasNotNull) {
+		const folded = defaultConstraint?.expr ? tryFoldLiteral(defaultConstraint.expr) : undefined;
+		const defaultIsNullish = !defaultConstraint || folded === undefined || folded === null;
+		if (defaultIsNullish) {
+			await validateNotNullBackfill(rctx, tableSchema, columnDef.name);
+		}
+	}
+
 	// Extract column-level CHECK / FK constraints. Column-level UNIQUE is not enforced via
 	// table-level constraints; the existing rejection path in the manager handles it.
 	const newCheckConstraints = extractColumnLevelCheckConstraints(columnDef);
@@ -369,6 +381,33 @@ async function validateBackfillAgainstChecks(
 		} finally {
 			await stmt.finalize();
 		}
+	}
+}
+
+/**
+ * Rejects ADD COLUMN ... NOT NULL when no usable DEFAULT is supplied and the
+ * table already has rows. The pre-mutation form means no rollback is needed —
+ * the schema and module state are still untouched at this point.
+ */
+async function validateNotNullBackfill(
+	rctx: RuntimeContext,
+	tableSchema: TableSchema,
+	newColumnName: string,
+): Promise<void> {
+	const schemaPrefix = (tableSchema.schemaName && tableSchema.schemaName.toLowerCase() !== 'main')
+		? `${quoteIdentifier(tableSchema.schemaName)}.`
+		: '';
+	const qualifiedTable = `${schemaPrefix}${quoteIdentifier(tableSchema.name)}`;
+	const stmt = rctx.db.prepare(`select 1 from ${qualifiedTable} limit 1`);
+	try {
+		for await (const _row of stmt._iterateRowsRaw()) {
+			throw new QuereusError(
+				`NOT NULL constraint failed for column '${newColumnName}' added to ${tableSchema.schemaName}.${tableSchema.name} — column has no DEFAULT and existing rows cannot be backfilled`,
+				StatusCode.CONSTRAINT,
+			);
+		}
+	} finally {
+		await stmt.finalize();
 	}
 }
 
