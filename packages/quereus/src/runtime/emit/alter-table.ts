@@ -15,6 +15,13 @@ import { tryFoldLiteral } from '../../parser/utils.js';
 
 const log = createLogger('runtime:emit:alter-table');
 
+function qualifyTableName(schemaName: string | undefined, tableName: string): string {
+	const prefix = (schemaName && schemaName.toLowerCase() !== 'main')
+		? `${quoteIdentifier(schemaName)}.`
+		: '';
+	return `${prefix}${quoteIdentifier(tableName)}`;
+}
+
 export function emitAlterTable(plan: AlterTableNode, _ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
 	const action = plan.action;
@@ -357,10 +364,7 @@ async function validateBackfillAgainstChecks(
 	enhancedTableSchema: TableSchema,
 	newCheckConstraints: RowConstraintSchema[],
 ): Promise<void> {
-	const schemaPrefix = (enhancedTableSchema.schemaName && enhancedTableSchema.schemaName.toLowerCase() !== 'main')
-		? `${quoteIdentifier(enhancedTableSchema.schemaName)}.`
-		: '';
-	const qualifiedTable = `${schemaPrefix}${quoteIdentifier(enhancedTableSchema.name)}`;
+	const qualifiedTable = qualifyTableName(enhancedTableSchema.schemaName, enhancedTableSchema.name);
 
 	for (const cc of newCheckConstraints) {
 		const checkSql = expressionToString(cc.expr);
@@ -394,10 +398,7 @@ async function validateNotNullBackfill(
 	tableSchema: TableSchema,
 	newColumnName: string,
 ): Promise<void> {
-	const schemaPrefix = (tableSchema.schemaName && tableSchema.schemaName.toLowerCase() !== 'main')
-		? `${quoteIdentifier(tableSchema.schemaName)}.`
-		: '';
-	const qualifiedTable = `${schemaPrefix}${quoteIdentifier(tableSchema.name)}`;
+	const qualifiedTable = qualifyTableName(tableSchema.schemaName, tableSchema.name);
 	const stmt = rctx.db.prepare(`select 1 from ${qualifiedTable} limit 1`);
 	try {
 		for await (const _row of stmt._iterateRowsRaw()) {
@@ -743,11 +744,6 @@ export function buildShadowTableDdl(
 	survivingColumns: string[],
 	newPkDef: PrimaryKeyColumnDefinition[],
 ): string {
-	const schemaName = tableSchema.schemaName;
-	const schemaPrefix = (schemaName && schemaName.toLowerCase() !== 'main')
-		? `${quoteIdentifier(schemaName)}.`
-		: '';
-
 	const colDefs: string[] = [];
 	for (const colName of survivingColumns) {
 		const idx = tableSchema.columnIndexMap.get(colName.toLowerCase());
@@ -770,7 +766,7 @@ export function buildShadowTableDdl(
 		pkColNames.push(entry);
 	}
 
-	let createDdl = `create table ${schemaPrefix}${quoteIdentifier(shadowName)} (${colDefs.join(', ')}`;
+	let createDdl = `create table ${qualifyTableName(tableSchema.schemaName, shadowName)} (${colDefs.join(', ')}`;
 	createDdl += pkColNames.length > 0
 		? `, primary key (${pkColNames.join(', ')}))`
 		: `)`;
@@ -800,10 +796,9 @@ async function rebuildViaShadowTable(
 ): Promise<void> {
 	const tableName = tableSchema.name;
 	const schemaName = tableSchema.schemaName;
-	const schemaPrefix = (schemaName && schemaName.toLowerCase() !== 'main')
-		? `${quoteIdentifier(schemaName)}.`
-		: '';
 	const shadowName = `${tableName}__rekey_${Date.now()}`;
+	const qualifiedShadow = qualifyTableName(schemaName, shadowName);
+	const qualifiedTable = qualifyTableName(schemaName, tableName);
 
 	const createDdl = buildShadowTableDdl(tableSchema, shadowName, survivingColumns, newPkDef);
 	const projection = survivingColumns.map(c => quoteIdentifier(c)).join(', ');
@@ -811,18 +806,18 @@ async function rebuildViaShadowTable(
 	try {
 		await rctx.db._execWithinTransaction(createDdl);
 		await rctx.db._execWithinTransaction(
-			`insert into ${schemaPrefix}${quoteIdentifier(shadowName)} (${projection}) select ${projection} from ${schemaPrefix}${quoteIdentifier(tableName)}`
+			`insert into ${qualifiedShadow} (${projection}) select ${projection} from ${qualifiedTable}`
 		);
 		await rctx.db._execWithinTransaction(
-			`drop table ${schemaPrefix}${quoteIdentifier(tableName)}`
+			`drop table ${qualifiedTable}`
 		);
 		await rctx.db._execWithinTransaction(
-			`alter table ${schemaPrefix}${quoteIdentifier(shadowName)} rename to ${quoteIdentifier(tableName)}`
+			`alter table ${qualifiedShadow} rename to ${quoteIdentifier(tableName)}`
 		);
 	} catch (e) {
 		try {
 			await rctx.db._execWithinTransaction(
-				`drop table if exists ${schemaPrefix}${quoteIdentifier(shadowName)}`
+				`drop table if exists ${qualifiedShadow}`
 			);
 		} catch { /* ignore */ }
 		throw e;
