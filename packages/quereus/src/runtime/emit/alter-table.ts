@@ -11,6 +11,7 @@ import { MemoryTableModule } from '../../vtab/memory/module.js';
 import { quoteIdentifier, expressionToString, selectToString } from '../../emit/ast-stringify.js';
 import { renameTableInAst, renameColumnInAst } from '../../schema/rename-rewriter.js';
 import type { Schema } from '../../schema/schema.js';
+import { tryFoldLiteral } from '../../parser/utils.js';
 
 const log = createLogger('runtime:emit:alter-table');
 
@@ -191,6 +192,19 @@ async function runAddColumn(
 	// Validate no PK column addition
 	if (columnDef.constraints?.some(c => c.type === 'primaryKey')) {
 		throw new QuereusError(`Cannot add a PRIMARY KEY column via ALTER TABLE`, StatusCode.ERROR);
+	}
+
+	// Reject non-foldable DEFAULT expressions at DDL time. ADD COLUMN backfills
+	// existing rows with the DEFAULT value, so the expression must evaluate to a
+	// concrete literal at ALTER time. Column references, bind parameters, and
+	// non-deterministic function calls don't fold and are rejected per the
+	// determinism rule (consistent with CREATE TABLE's DEFAULT validation).
+	const defaultConstraint = columnDef.constraints?.find(c => c.type === 'default');
+	if (defaultConstraint && defaultConstraint.expr && tryFoldLiteral(defaultConstraint.expr) === undefined) {
+		throw new QuereusError(
+			`ALTER TABLE ADD COLUMN DEFAULT for '${columnDef.name}' must fold to a literal — column references, bind parameters, and non-deterministic expressions are not allowed`,
+			StatusCode.ERROR,
+		);
 	}
 
 	// Call module.alterTable for data + schema update
