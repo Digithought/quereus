@@ -14,7 +14,7 @@ import { hasNativeEventSupport } from '../../util/event-support.js';
 import { sqlValuesEqual } from '../../util/comparison.js';
 import { withAsyncRowContext } from '../context-helpers.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
-import { executeForeignKeyActions } from '../foreign-key-actions.js';
+import { executeForeignKeyActions, assertNoRestrictedChildrenForParentMutation } from '../foreign-key-actions.js';
 
 /**
  * Runtime UPSERT clause with pre-resolved evaluator callbacks.
@@ -486,6 +486,13 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					mutationStatement = buildUpdateStatement(tableSchema, newRow, keyValues, contextRow);
 				}
 
+				// Defense-in-depth RESTRICT enforcement: the plan-time `NOT EXISTS`
+				// check is the primary path, but some vtab modules evaluate the
+				// embedded subquery differently from a plain row scan. Re-run the
+				// check via a direct `select` so any backend sees a consistent
+				// enforcement path.
+				await assertNoRestrictedChildrenForParentMutation(ctx.db, tableSchema, 'update', oldRow, newRow);
+
 				const args: UpdateArgs = {
 					operation: 'update',
 					values: newRow,
@@ -569,6 +576,10 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 				if (vtab.wantStatements) {
 					mutationStatement = buildDeleteStatement(tableSchema, keyValues, contextRow);
 				}
+
+				// Defense-in-depth RESTRICT enforcement — see comment on the UPDATE
+				// path above.
+				await assertNoRestrictedChildrenForParentMutation(ctx.db, tableSchema, 'delete', oldRow);
 
 				const args: UpdateArgs = {
 					operation: 'delete',

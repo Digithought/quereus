@@ -5,7 +5,8 @@ import type { Row, SqlValue } from '../common/types.js';
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
-import { expressionToString } from '../emit/ast-stringify.js';
+import { expressionToString, quoteIdentifier } from '../emit/ast-stringify.js';
+import { sqlValuesEqual } from '../util/comparison.js';
 
 const log = createLogger('runtime:fk-actions');
 
@@ -76,6 +77,96 @@ export async function executeForeignKeyActions(
 		}
 	} finally {
 		visited.delete(parentKey);
+	}
+}
+
+/**
+ * Backend-agnostic RESTRICT pre-check fired by the runtime DML executor BEFORE
+ * a parent DELETE or UPDATE hits the vtab. Mirrors the plan-time `NOT EXISTS`
+ * synthesized by `buildParentSideFKChecks`, but uses a direct `select 1 ... limit 1`
+ * against the child table so any vtab module sees a consistent enforcement path.
+ *
+ * The plan-time check remains in force; this runtime pass is defense-in-depth
+ * for vtab modules where the embedded subquery's evaluation diverges from a
+ * plain row scan (correlation handling, isolation snapshots, predicate
+ * pushdown quirks, etc.).
+ *
+ * No-op when `foreign_keys` is off, when no FK references this parent table
+ * with action `'restrict'`, when any old referenced value is NULL (MATCH SIMPLE),
+ * or — for UPDATE — when no referenced parent column changed.
+ */
+export async function assertNoRestrictedChildrenForParentMutation(
+	db: Database,
+	parentTable: TableSchema,
+	operation: 'delete' | 'update',
+	oldRow: Row,
+	newRow?: Row,
+): Promise<void> {
+	if (!db.options.getBooleanOption('foreign_keys')) return;
+
+	const parentSchemaLower = parentTable.schemaName.toLowerCase();
+	const parentTableLower = parentTable.name.toLowerCase();
+
+	for (const schema of db.schemaManager._getAllSchemas()) {
+		for (const childTable of schema.getAllTables()) {
+			if (!childTable.foreignKeys) continue;
+
+			for (const fk of childTable.foreignKeys) {
+				if (fk.referencedTable.toLowerCase() !== parentTableLower) continue;
+				const targetSchema = fk.referencedSchema ?? childTable.schemaName;
+				if (targetSchema.toLowerCase() !== parentSchemaLower) continue;
+
+				const action = operation === 'delete' ? fk.onDelete : fk.onUpdate;
+				if (action !== 'restrict') continue;
+
+				const parentColIndices = resolveReferencedColumns(fk, parentTable);
+				if (parentColIndices.length !== fk.columns.length) continue;
+
+				// UPDATE: only enforce when at least one referenced parent column changed.
+				if (operation === 'update' && newRow !== undefined) {
+					let anyChanged = false;
+					for (const idx of parentColIndices) {
+						if (!sqlValuesEqual(oldRow[idx] as SqlValue, newRow[idx] as SqlValue)) {
+							anyChanged = true;
+							break;
+						}
+					}
+					if (!anyChanged) continue;
+				}
+
+				// MATCH SIMPLE: NULL parent values cannot be referenced.
+				const oldParentValues = parentColIndices.map(idx => oldRow[idx]) as SqlValue[];
+				if (oldParentValues.some(v => v === null || v === undefined)) continue;
+
+				const childColNames = fk.columns.map(idx => quoteIdentifier(childTable.columns[idx].name));
+				const whereClause = childColNames.map(c => `${c} = ?`).join(' AND ');
+				const schemaPrefix = childTable.schemaName.toLowerCase() !== 'main'
+					? `${quoteIdentifier(childTable.schemaName)}.`
+					: '';
+				const sql = `select 1 from ${schemaPrefix}${quoteIdentifier(childTable.name)} where ${whereClause} limit 1`;
+
+				log('RESTRICT check (%s): %s with params %o', operation, sql, oldParentValues);
+
+				const stmt = db.prepare(sql);
+				try {
+					stmt.bindAll(oldParentValues);
+					let referenced = false;
+					for await (const _row of stmt._iterateRowsRaw()) {
+						referenced = true;
+						break;
+					}
+					if (referenced) {
+						const opName = operation === 'delete' ? 'DELETE' : 'UPDATE';
+						throw new QuereusError(
+							`FOREIGN KEY constraint failed: ${opName} on '${parentTable.name}' violates RESTRICT from '${childTable.name}'`,
+							StatusCode.CONSTRAINT,
+						);
+					}
+				} finally {
+					await stmt.finalize();
+				}
+			}
+		}
 	}
 }
 
