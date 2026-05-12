@@ -77,7 +77,15 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 		return physicalLeaf;
 	}
 
-	// Check if module supports query-based execution via supports() method
+	// Check if module supports query-based execution via supports() method.
+	// `supports()` is consulted FIRST because it can collapse multi-operator
+	// pipelines (e.g. Aggregate-over-scan) into a single `RemoteQueryNode`.
+	// When `supports()` declines, fall through to `getBestAccessPlan()` so a
+	// module that exposes BOTH methods (the lamina-quereus adapter) can still
+	// have its index-based access plan honoured — without this fall-through
+	// the rule would `createSeqScan` immediately and silently drop every
+	// WHERE constraint, since `supports()` only handles whole-subtree shapes.
+	// See `tickets/complete/quereus-vtab-equality-filter-ignored`.
 	if (vtabModule.supports && typeof vtabModule.supports === 'function') {
 		log('Module has supports() method - checking support for current pipeline');
 
@@ -92,10 +100,8 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 				retrieveNode.tableRef,
 				assessment.ctx
 			);
-		} else {
-			log('Pipeline not supported by module - falling back to sequential scan');
-			return createSeqScan(retrieveNode.tableRef);
 		}
+		log('Pipeline not supported by module - falling through to index-based access path');
 	}
 
 	// Check if module supports index-based execution via getBestAccessPlan() method
@@ -105,9 +111,19 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 		return createIndexBasedAccess(retrieveNode, context);
 	}
 
-	// Fall back to sequential scan if module has no access planning support
+	// Fall back to sequential scan if module has no access planning support.
+	// When the Retrieve's `source` carries additional operators (Filter, Sort,
+	// LimitOffset) — typically produced when `rule-grow-retrieve` previously
+	// slid them in — we MUST re-apply them above the `SeqScan`. Without this
+	// the operators would be silently dropped and downstream callers would
+	// see unfiltered rows. See
+	// `tickets/complete/quereus-vtab-equality-filter-ignored`.
 	log('No access planning support, using sequential scan for %s', tableSchema.name);
-	return createSeqScan(retrieveNode.tableRef);
+	const seqScan = createSeqScan(retrieveNode.tableRef);
+	if (retrieveNode.source === retrieveNode.tableRef) {
+		return seqScan;
+	}
+	return rebuildPipelineWithNewLeaf(retrieveNode.source, retrieveNode.tableRef, seqScan as unknown as RelationalPlanNode);
 }
 
 /**
