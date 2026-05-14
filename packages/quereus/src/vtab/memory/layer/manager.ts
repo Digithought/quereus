@@ -652,6 +652,13 @@ export class MemoryTableManager {
 			if (pkAction === ConflictResolution.IGNORE) {
 				return { status: 'ok', row: undefined };
 			}
+			if (pkAction === ConflictResolution.REPLACE) {
+				// Evict the row currently at the new PK, then move the updated row.
+				targetLayer.recordDelete(newPrimaryKey, existingRowAtNewKey);
+				targetLayer.recordDelete(oldPrimaryKey, oldRowData);
+				targetLayer.recordUpsert(newPrimaryKey, newRowData, null);
+				return { status: 'ok', row: newRowData, replacedRow: existingRowAtNewKey };
+			}
 			// Return constraint violation with existing row
 			return {
 				status: 'constraint',

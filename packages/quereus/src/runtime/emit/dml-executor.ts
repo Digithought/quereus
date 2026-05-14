@@ -496,7 +496,10 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					operation: 'update',
 					values: newRow,
 					oldKeyValues: keyValues,
-					onConflict: plan.onConflict ?? ConflictResolution.ABORT,
+					// Pass undefined when there's no statement-level OR clause so the vtab
+					// can fall back to per-constraint defaultConflict directives. The memory
+					// module treats undefined as ABORT when no constraint default is set.
+					onConflict: plan.onConflict,
 					mutationStatement
 				};
 

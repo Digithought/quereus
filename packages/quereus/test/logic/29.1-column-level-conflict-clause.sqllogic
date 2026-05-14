@@ -91,3 +91,32 @@ select a, b from override_t;
 → [{"a":1,"b":"first"}]
 
 drop table override_t;
+
+-- ===================================
+-- 7. UPDATE path honors PRIMARY KEY ON CONFLICT REPLACE
+-- ===================================
+
+create table pk_upd_replace (id integer primary key on conflict replace, v text);
+insert into pk_upd_replace values (1, 'a'), (2, 'b');
+
+-- No OR clause on UPDATE — column-level REPLACE should apply.
+update pk_upd_replace set id = 2 where id = 1;
+
+select id, v from pk_upd_replace order by id;
+→ [{"id":2,"v":"a"}]
+
+drop table pk_upd_replace;
+
+-- ===================================
+-- 8. UPDATE path honors PRIMARY KEY ON CONFLICT IGNORE
+-- ===================================
+
+create table pk_upd_ignore (id integer primary key on conflict ignore, v text);
+insert into pk_upd_ignore values (1, 'a'), (2, 'b');
+
+update pk_upd_ignore set id = 2 where id = 1;
+
+select id, v from pk_upd_ignore order by id;
+→ [{"id":1,"v":"a"},{"id":2,"v":"b"}]
+
+drop table pk_upd_ignore;

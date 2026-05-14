@@ -510,13 +510,33 @@ describe('Isolated Store Module', () => {
 			expect(row?.v).to.equal('b');
 		});
 
-		// UPDATE-path column-level defaultConflict is NOT honored end-to-end because
-		// quereus/.../dml-executor.ts coerces `plan.onConflict ?? ABORT` before calling
-		// vtab.update() on the UPDATE path (the INSERT path keeps `undefined`).
-		// Until that gap is fixed in dml-executor, the overlay's PK-change UPDATE
-		// pre-check sees ABORT and a same-txn collision throws. The overlay code
-		// itself does honor column-level defaultConflict (covered by the live-row
-		// and underlying-collision INSERT cases above); the limitation is upstream.
+		it('PK column-level REPLACE: plain UPDATE that hits a PK collision replaces the row', async () => {
+			await db.exec(`CREATE TABLE t_dc_upd_r (id INTEGER PRIMARY KEY ON CONFLICT REPLACE, v TEXT) USING store`);
+			await db.exec(`INSERT INTO t_dc_upd_r VALUES (1, 'a'), (2, 'b')`);
+
+			// No OR clause — column-level REPLACE should apply on the UPDATE path.
+			await db.exec(`UPDATE t_dc_upd_r SET id = 2 WHERE id = 1`);
+
+			const cnt = await db.get(`SELECT count(*) as cnt FROM t_dc_upd_r`);
+			expect(cnt?.cnt).to.equal(1);
+			const surviving = await db.get(`SELECT id, v FROM t_dc_upd_r WHERE id = 2`);
+			expect(surviving?.v).to.equal('a');
+		});
+
+		it('PK column-level IGNORE: plain UPDATE that hits a PK collision is a silent no-op', async () => {
+			await db.exec(`CREATE TABLE t_dc_upd_i (id INTEGER PRIMARY KEY ON CONFLICT IGNORE, v TEXT) USING store`);
+			await db.exec(`INSERT INTO t_dc_upd_i VALUES (1, 'a'), (2, 'b')`);
+
+			await db.exec(`UPDATE t_dc_upd_i SET id = 2 WHERE id = 1`);
+
+			const cnt = await db.get(`SELECT count(*) as cnt FROM t_dc_upd_i`);
+			expect(cnt?.cnt).to.equal(2);
+			const r1 = await db.get(`SELECT v FROM t_dc_upd_i WHERE id = 1`);
+			expect(r1?.v).to.equal('a');
+			const r2 = await db.get(`SELECT v FROM t_dc_upd_i WHERE id = 2`);
+			expect(r2?.v).to.equal('b');
+		});
+
 	});
 
 	describe('UPDATE that changes the primary key', () => {
