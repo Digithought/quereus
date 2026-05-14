@@ -15,6 +15,7 @@ import {
 	InMemoryKVStore,
 	type KVStoreProvider,
 } from '../src/index.js';
+import { buildFullScanBounds } from '../src/common/key-builder.js';
 
 async function collect(db: Database, sql: string): Promise<Record<string, SqlValue>[]> {
 	const out: Record<string, SqlValue>[] = [];
@@ -168,6 +169,38 @@ describe('StoreTable column-level ON CONFLICT defaults', () => {
 
 			const rows = await collect(db, `SELECT a, b FROM override_t`);
 			expect(rows).to.deep.equal([{ a: 1, b: 'first' }]);
+		});
+	});
+
+	describe('CREATE INDEX refreshes cached tableSchema', () => {
+		it('maintains the new index on inserts and updates issued after CREATE INDEX', async () => {
+			await db.exec(`CREATE TABLE t (id INTEGER PRIMARY KEY, b INTEGER) USING store`);
+			await db.exec(`INSERT INTO t VALUES (1, 100)`);
+			await db.exec(`CREATE INDEX t_b ON t (b)`);
+
+			const idxStore = await provider.getIndexStore('main', 't', 't_b');
+			const countEntries = async (): Promise<number> => {
+				let n = 0;
+				for await (const _entry of idxStore.iterate(buildFullScanBounds())) n++;
+				return n;
+			};
+
+			// Sanity: CREATE INDEX backfilled the existing row.
+			expect(await countEntries()).to.equal(1);
+
+			// New rows inserted after CREATE INDEX must be indexed too.
+			await db.exec(`INSERT INTO t VALUES (2, 200)`);
+			await db.exec(`INSERT INTO t VALUES (3, 300)`);
+			expect(await countEntries()).to.equal(3);
+
+			// Updates to indexed columns move the entry (delete-old + put-new),
+			// so the total count stays the same.
+			await db.exec(`UPDATE t SET b = 999 WHERE id = 1`);
+			expect(await countEntries()).to.equal(3);
+
+			// Deletes remove the entry.
+			await db.exec(`DELETE FROM t WHERE id = 2`);
+			expect(await countEntries()).to.equal(2);
 		});
 	});
 

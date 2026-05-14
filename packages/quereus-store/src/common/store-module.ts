@@ -329,6 +329,17 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		const tableSchema = table.getSchema();
 		await this.buildIndexEntries(dataStore, indexStore, tableSchema, indexSchema);
 
+		// Refresh the connected table's cached schema so subsequent DML
+		// maintains the new index (the engine's schema registry is updated
+		// separately by SchemaManager.createIndex, but the StoreTable instance
+		// holds its own reference captured at connect time).
+		const updatedIndexes = Object.freeze([
+			...(tableSchema.indexes ?? []),
+			indexSchema,
+		]);
+		const updatedSchema: TableSchema = { ...tableSchema, indexes: updatedIndexes };
+		table.updateSchema(updatedSchema);
+
 		// Emit schema change event
 		this.eventEmitter?.emitSchemaChange({
 			type: 'create',
