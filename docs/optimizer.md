@@ -1281,9 +1281,10 @@ Global transaction‑deferred integrity assertions are expressed as violation qu
 
 - relationKey: Unique identifier for a table reference instance within a plan. Format: `schema.table#<nodeId>` or `schema.table@alias#<nodeId>`.
 - uniqueKeys: Physical property carried by nodes, each key is an array of column indices relative to the node’s output that uniquely identify a row. `[[]]` denotes ≤1 row (singleton) regardless of columns.
-- coveredKey: A unique key that is fully constrained by equality predicates at a node boundary. Presence of a covered key implies `estimatedRows ≤ 1`.
-- Row‑specific: A table reference instance classified as producing at most one row for any given unique key binding at COMMIT time.
-- Global: Any instance not provably row‑specific.
+- coveredKey: A unique key that is fully constrained by equality predicates at a node boundary, **or whose columns lie in the FD-closure of the equality-covered column set**. Presence of a covered key implies `estimatedRows ≤ 1`. Closure expansion uses the table reference's physical FDs/ECs — so equality on a UNIQUE column closes to the PK via the table's `unique → other-columns` FD, and equality on column `a` plus an EC `{a, b}` closes to include `b`.
+- Row‑specific: A table reference instance classified as producing at most one row for any given unique key binding at COMMIT time (covered-key holds and no identity-breaking node above demotes it).
+- Group-specific: A table reference instance beneath an aggregate whose `GROUP BY` columns (under FD closure at the aggregate's source) cover a unique key of the reference. The aggregate output is row-unique per group key, so the runtime can parameterize on changed group keys.
+- Global: Any instance not provably row- or group-specific.
 
 ### Logical Analysis Pipeline
 
@@ -1307,17 +1308,30 @@ Global transaction‑deferred integrity assertions are expressed as violation qu
 
 ```ts
 // Pre‑physical plan only
-function analyzeRowSpecific(plan: RelationalPlanNode): Map<string /* relationKey */, 'row' | 'global'>
+type RowClassification = 'row' | 'group' | 'global';
+
+interface RowSpecificResult {
+  classifications: Map<string /* relationKey */, RowClassification>;
+  /** For 'group'-classified relations, the minimal group-key columns expressed as
+   *  output column indices on the underlying table reference. */
+  groupKeys: Map<string /* relationKey */, number[]>;
+}
+
+function analyzeRowSpecific(plan: RelationalPlanNode | PlanNode): RowSpecificResult;
 ```
 
 Algorithm (concise):
-- Traverse plan; collect `TableInfo` for each table reference instance with `relationKey` and `uniqueKeys` inferred at that point.
-- Compute `coveredKeysByTable` from normalized predicates along the path to the instance.
-- Classify a relationKey as 'row' if: `uniqueKeys` contains `[[]]` at or above its earliest reference OR any `coveredKey` fully matches a declared/inferred unique key. Else 'global'.
+1. **Initial pass.** Traverse plan; collect `TableInfo` for each table reference instance, including its `uniqueKeys`, physical `fds`, and `equivClasses`.
+2. **Covered-key under FD closure.** Walk predicates along the path to each instance and gather equality-covered columns `E`. Compute `closure(E)` under the table reference's local FDs + EC-derived FDs. A unique key is covered if every column lies in the closure. Classify as `'row'` if any key is covered, else `'global'`.
+3. **Identity-breaking adjustment pass.** Walk the tree top-down:
+   - **Aggregate** (`AggregateNode`, `StreamAggregateNode`, `HashAggregateNode`): for each table reference beneath, compute `closure(group-by-bare-cols)` at the aggregate's source physical context (FDs + ECs). If the closure covers a unique key (mapped through the source-to-table column correspondence), classify the reference as `'group'` and store the minimal subset of GROUP BY columns whose closure still covers a key (greedy minimization). If the reference already holds `'row'` (equality cover at a Filter beneath the aggregate), keep `'row'` — it is strictly stronger than `'group'`. Otherwise demote to `'global'`. Aggregate without GROUP BY is single-group: existing classifications survive.
+   - **SetOperation**: conservatively demote all references beneath to `'global'`.
+   - **Window**: pass-through. Windowing preserves input row count, so the classification at the Filter level survives upward.
 
 Notes:
 - Multi‑reference handling: Classify per‑instance via `relationKey`. The same base table may have both row‑specific and global instances in one assertion.
 - Joins with equality on a unique key reduce the joined side to row‑specific; push this information upward to avoid false global classifications.
+- Runtime wiring for `'group'` is **deferred** (see `tickets/...fd-view-maintenance-binding-keys`). Until then, consumers treat `'group'` as `'global'` (run the full violation query). The classification + `groupKeys` is exposed through `explain_assertion` for diagnostics.
 
 ### Transaction Change Tracking
 
@@ -1366,7 +1380,7 @@ During assertion creation/update:
 
 ### Diagnostics & Tooling
 
-- `explain_assertion(name)` TVF: returns normalized SQL plus concise logical plan (pre‑physical) and the classification map `{ relationKey → 'row' | 'global' }`.
+- `explain_assertion(name)` TVF: returns normalized SQL plus concise logical plan (pre‑physical) and the classification map `{ relationKey → 'row' | 'group' | 'global' }`. The `prepared_pk_params` column lists the parameter names a parameterized variant would bind: for `'row'`, PK column names (`pk0`, `pk1`, ...); for `'group'`, the minimal group-key column names from `RowSpecificResult.groupKeys`. The runtime wiring for `'group'` is deferred — these are surfaced for diagnostics today.
 - Error formatting on violation: include assertion name and up to N sample violating key tuples when available from parameterized runs.
 
 ### Guarantees and Safety
@@ -1377,12 +1391,12 @@ During assertion creation/update:
 
 ## Binding-aware Delta Planning (Reusable)
 
-The same analysis used for assertions generalizes to incremental view maintenance and other delta-driven features.
+The same analysis used for assertions generalizes to incremental view maintenance and other delta-driven features. `analyzeRowSpecific` returns a `RowSpecificResult { classifications, groupKeys }` capturing the three modes below.
 
 ### Modes of Specificity
-- Row-specific: unique key fully covered (or `[[]]`); bind PK/unique key
-- Group-specific: GROUP BY or window PARTITION BY on columns K; bind K
-- Global: no safe binding → evaluate full query
+- Row-specific (`'row'`): unique key fully covered (under FD closure including FK→PK and EC-derived FDs); bind PK/unique key
+- Group-specific (`'group'`): aggregate `GROUP BY` columns (under FD closure at the aggregate's source) cover a unique key of the underlying table reference; bind the minimal group-key column subset (`groupKeys[relKey]`). Runtime not yet wired — current consumers fall back to global until the runtime ticket lands.
+- Global (`'global'`): no safe binding → evaluate full query
 
 ### Binding Extraction
 - From predicates: equality that covers a declared/inferred unique key

@@ -27,7 +27,7 @@ import { BinaryOpNode } from '../planner/nodes/scalar.js';
 import { ParameterReferenceNode, ColumnReferenceNode, TableReferenceNode } from '../planner/nodes/reference.js';
 import { EmissionContext } from '../runtime/emission-context.js';
 import { isAsyncIterable } from '../runtime/utils.js';
-import { analyzeRowSpecific } from '../planner/analysis/constraint-extractor.js';
+import { analyzeRowSpecific, type RowClassification } from '../planner/analysis/constraint-extractor.js';
 import type { Database } from './database.js';
 import type { SchemaChangeEvent } from '../schema/change-events.js';
 
@@ -62,8 +62,8 @@ export interface AssertionEvaluatorContext {
 interface CachedAssertionPlan {
 	/** Optimized-for-analysis plan (pre-physical, used for classification and PK filter injection) */
 	analyzedPlan: BlockNode;
-	/** Per-relationKey classification: 'row' | 'global' */
-	classifications: Map<string, 'row' | 'global'>;
+	/** Per-relationKey classification: 'row' | 'group' | 'global' (see analyzeRowSpecific) */
+	classifications: Map<string, RowClassification>;
 	/** relationKey → base table mapping */
 	relationKeyToBase: Map<string, string>;
 	/** Set of base table names in the plan */
@@ -169,7 +169,7 @@ export class AssertionEvaluator {
 		const baseTablesInPlan = new Set<string>();
 		this.collectTables(analyzed, relationKeyToBase, baseTablesInPlan);
 
-		const classifications = analyzeRowSpecific(analyzed as unknown as RelationalPlanNode);
+		const { classifications } = analyzeRowSpecific(analyzed as unknown as RelationalPlanNode);
 
 		// Pre-compile row-specific artifacts
 		const rowSpecificArtifacts = new Map<string, { instruction: Instruction; scheduler: Scheduler; pkIndices: number[] }>();
@@ -222,10 +222,12 @@ export class AssertionEvaluator {
 		}
 		if (!impacted) return;
 
-		// If any changed base appears as a global instance, run full violation query once
+		// If any changed base appears as a 'global' or 'group' instance, run full violation
+		// query once. TODO(fd-view-maintenance-binding-keys): 'group' should drive a
+		// parameterized per-group delta query instead of falling back to global.
 		let requiresGlobal = false;
 		for (const [relKey, klass] of cached.classifications) {
-			if (klass === 'global') {
+			if (klass === 'global' || klass === 'group') {
 				const base = cached.relationKeyToBase.get(relKey);
 				if (base && changedBases.has(base)) {
 					requiresGlobal = true;
