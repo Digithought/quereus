@@ -655,7 +655,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 						// Live row already in overlay for this PK. Resolve against any column-level
 						// PK defaultConflict; ABORT/FAIL/ROLLBACK short-circuit with a table-named
 						// constraint error, IGNORE/REPLACE fall through to overlay.update().
-						const effective = resolveEffective(args.onConflict, resolvePkDefaultConflict(this.tableSchema!));
+						const effective = effectiveOR ?? ConflictResolution.ABORT;
 						if (effective === ConflictResolution.ABORT
 							|| effective === ConflictResolution.FAIL
 							|| effective === ConflictResolution.ROLLBACK) {
