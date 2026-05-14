@@ -67,6 +67,25 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
+ * Resolves the per-constraint default conflict action for PK conflicts.
+ * Prefers the table-level `PRIMARY KEY (...) ON CONFLICT <action>` clause
+ * over any column-level `defaultConflict` declared on a PK column.
+ *
+ * Mirrors the helpers in `quereus/.../layer/manager.ts` and
+ * `quereus-isolation/.../isolated-table.ts` — the three-tier precedence
+ * `statement OR > per-constraint default > ABORT` must agree across all
+ * three implementations.
+ */
+function resolvePkDefaultConflict(schema: TableSchema): ConflictResolution | undefined {
+	if (schema.primaryKeyDefaultConflict !== undefined) return schema.primaryKeyDefaultConflict;
+	for (const def of schema.primaryKeyDefinition) {
+		const col = schema.columns[def.index];
+		if (col?.defaultConflict !== undefined) return col.defaultConflict;
+	}
+	return undefined;
+}
+
+/**
  * Configuration for a store table.
  */
 export interface StoreTableConfig {
@@ -592,13 +611,15 @@ export class StoreTable extends VirtualTable {
 				const pk = this.extractPK(coerced);
 				const key = buildDataKey(pk, this.encodeOptions, this.pkDirections);
 
-				// Check for existing row (for conflict handling)
+				// Check for existing row (for conflict handling).
+				// Resolve PK-conflict action: statement OR > per-constraint default > ABORT.
+				const pkEffective = args.onConflict ?? resolvePkDefaultConflict(schema) ?? ConflictResolution.ABORT;
 				const existing = await store.get(key);
 				if (existing) {
-					if (args.onConflict === ConflictResolution.IGNORE) {
+					if (pkEffective === ConflictResolution.IGNORE) {
 						return { status: 'ok', row: undefined };
 					}
-					if (args.onConflict !== ConflictResolution.REPLACE) {
+					if (pkEffective !== ConflictResolution.REPLACE) {
 						const existingRow = deserializeRow(existing);
 						return {
 							status: 'constraint',
@@ -609,7 +630,9 @@ export class StoreTable extends VirtualTable {
 					}
 				}
 
-				// Enforce non-PK UNIQUE constraints
+				// Enforce non-PK UNIQUE constraints. Pass the original statement-level
+				// onConflict so checkUniqueConstraints can resolve each UC's own
+				// defaultConflict independently of the PK's default.
 				const ucResult = await this.checkUniqueConstraints(
 					inTransaction,
 					coerced,
@@ -682,14 +705,21 @@ export class StoreTable extends VirtualTable {
 
 				const pkChanged = !this.keysEqual(oldPk, newPk);
 
-				// PK-change UPDATE collides like an INSERT at the new key
+				// Resolve PK-conflict action: statement OR > per-constraint default > ABORT.
+				const pkEffective = args.onConflict ?? resolvePkDefaultConflict(schema) ?? ConflictResolution.ABORT;
+
+				// PK-change UPDATE collides like an INSERT at the new key.
+				// Capture the evicted row so it can be reported via `replacedRow`
+				// (consumed by the executor for ON DELETE cascade/SET NULL of the
+				// row at the new PK).
+				let replacedAtNewPk: Row | null = null;
 				if (pkChanged) {
 					const existingAtNew = await store.get(newKey);
 					if (existingAtNew) {
-						if (args.onConflict === ConflictResolution.IGNORE) {
+						if (pkEffective === ConflictResolution.IGNORE) {
 							return { status: 'ok', row: undefined };
 						}
-						if (args.onConflict !== ConflictResolution.REPLACE) {
+						if (pkEffective !== ConflictResolution.REPLACE) {
 							return {
 								status: 'constraint',
 								constraint: 'unique',
@@ -697,6 +727,7 @@ export class StoreTable extends VirtualTable {
 								existingRow: deserializeRow(existingAtNew),
 							};
 						}
+						replacedAtNewPk = deserializeRow(existingAtNew);
 					}
 				}
 
@@ -704,7 +735,8 @@ export class StoreTable extends VirtualTable {
 				// constraints whose covered columns actually changed; pass [oldPk]
 				// (= newPk) to skip self. For PK-change UPDATE, treat as relocation:
 				// skip both old and new PK so we don't false-conflict against the
-				// row we're moving.
+				// row we're moving. Pass the original statement-level onConflict so
+				// each UC's own defaultConflict can be resolved independently.
 				const selfPks: SqlValue[][] = pkChanged ? [oldPk, newPk] : [oldPk];
 				const shouldCheckUniques = pkChanged
 					|| (oldRow ? this.uniqueColumnsChanged(oldRow, coerced) : true);
@@ -737,6 +769,25 @@ export class StoreTable extends VirtualTable {
 				// Update secondary indexes
 				await this.updateSecondaryIndexes(inTransaction, oldRow, coerced, newPk);
 
+				// When REPLACE evicted a row at the new PK, emit a delete event for
+				// it so store-level listeners observe the eviction (mirrors the
+				// recordDelete(newPK, existingRowAtNewKey) in MemoryTable's
+				// PK-change-REPLACE path).
+				if (replacedAtNewPk) {
+					const evictEvent = {
+						type: 'delete' as const,
+						schemaName: schema.schemaName,
+						tableName: schema.name,
+						key: newPk,
+						oldRow: replacedAtNewPk,
+					};
+					if (inTransaction) {
+						coordinator.queueEvent(evictEvent);
+					} else {
+						this.eventEmitter?.emitDataChange(evictEvent);
+					}
+				}
+
 				// Queue or emit event
 				const updateEvent = {
 					type: 'update' as const,
@@ -752,7 +803,7 @@ export class StoreTable extends VirtualTable {
 					this.eventEmitter?.emitDataChange(updateEvent);
 				}
 
-				return { status: 'ok', row: coerced };
+				return { status: 'ok', row: coerced, replacedRow: replacedAtNewPk ?? undefined };
 			}
 
 			case 'delete': {
@@ -903,10 +954,12 @@ export class StoreTable extends VirtualTable {
 			const conflict = await this.findUniqueConflict(uc.columns, newRow, selfPks);
 			if (!conflict) continue;
 
-			if (onConflict === ConflictResolution.IGNORE) {
+			// Resolve action per-constraint: statement OR > per-UC default > ABORT.
+			const effective = onConflict ?? uc.defaultConflict ?? ConflictResolution.ABORT;
+			if (effective === ConflictResolution.IGNORE) {
 				return { status: 'ok', row: undefined };
 			}
-			if (onConflict === ConflictResolution.REPLACE) {
+			if (effective === ConflictResolution.REPLACE) {
 				await this.deleteRowAt(inTransaction, conflict.pk, conflict.row);
 				continue;
 			}
