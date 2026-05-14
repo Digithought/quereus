@@ -477,10 +477,20 @@ describe('Planner Framework', () => {
 			expect(PlanNodeCharacteristics.isVoid(node)).to.equal(false);
 		});
 
-		it('hasUniqueKeys and getUniqueKeys', () => {
-			const node = relNode({ physical: { uniqueKeys: [[0, 1]] } });
+		it('hasUniqueKeys via key-encoding FD', () => {
+			// FD encoding: `{0, 1} → {2}` claims that columns 0+1 are a superkey of
+			// a 3-col relation. PlanNodeCharacteristics.hasUniqueKeys should detect
+			// the non-trivial key.
+			const attrs: Attribute[] = [
+				{ id: 1, name: 'a', type: { typeClass: 'scalar' } as any },
+				{ id: 2, name: 'b', type: { typeClass: 'scalar' } as any },
+				{ id: 3, name: 'c', type: { typeClass: 'scalar' } as any },
+			];
+			const node = relNode({
+				attributes: attrs,
+				physical: { fds: [{ determinants: [0, 1], dependents: [2] }] },
+			});
 			expect(PlanNodeCharacteristics.hasUniqueKeys(node)).to.equal(true);
-			expect(PlanNodeCharacteristics.getUniqueKeys(node)).to.deep.equal([[0, 1]]);
 		});
 
 		it('hasOrderedOutput when ordering present', () => {

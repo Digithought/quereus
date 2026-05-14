@@ -12,6 +12,7 @@ import { Cached } from '../../util/cached.js';
 import type { FilterInfo } from '../../vtab/filter-info.js';
 import type { ScalarPlanNode } from './plan-node.js';
 import { TableAccessCapable } from '../framework/characteristics.js';
+import { addFd, singletonFd } from '../util/fd-utils.js';
 
 /**
  * Advertisement lifted from a `BestAccessPlanResult` onto a physical leaf node:
@@ -162,9 +163,9 @@ export class SeqScanNode extends TableAccessNode {
 
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const sourcePhysical = childrenPhysical[0];
+		// Keys come through from the TableReferenceNode as FDs (`{key} → other-cols`).
 		const out: Partial<PhysicalProperties> = {
 			estimatedRows: this.source.estimatedRows,
-			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			// Sequential scans don't provide any specific ordering
 			ordering: undefined,
 			fds: sourcePhysical?.fds,
@@ -244,7 +245,6 @@ export class IndexScanNode extends TableAccessNode {
 		}
 		const out: Partial<PhysicalProperties> = {
 			estimatedRows: this.source.estimatedRows,
-			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			// Index scans can provide ordering
 			ordering: this.providesOrdering,
 			fds: sourcePhysical?.fds,
@@ -317,7 +317,6 @@ export class EmptyResultNode extends TableAccessNode {
 	computePhysical(): Partial<PhysicalProperties> {
 		return {
 			estimatedRows: 0,
-			uniqueKeys: [],
 			ordering: undefined
 		};
 	}
@@ -376,7 +375,6 @@ export class IndexSeekNode extends TableAccessNode {
 			delete lifted.accessCapabilities;
 		}
 		const base = {
-			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			ordering: this.providesOrdering,
 			estimatedRows: Math.min(this.source.estimatedRows || 1000, 100),
 			fds: sourcePhysical?.fds,
@@ -388,7 +386,12 @@ export class IndexSeekNode extends TableAccessNode {
 		if (!this.isRange && this.indexName === 'primary') {
 			const pk = this.source.tableSchema.primaryKeyDefinition ?? [];
 			if (pk.length > 0 && this.seekKeys.length >= pk.length) {
-				return { ...base, estimatedRows: 1, uniqueKeys: [[]] } as Partial<PhysicalProperties>;
+				// Full PK equality seek — at most one row. Encode via the singleton
+				// FD `∅ → all_cols`.
+				const colCount = this.source.getType().columns.length;
+				const singleton = singletonFd(colCount);
+				const fds = singleton ? addFd(base.fds ?? [], singleton) : base.fds;
+				return { ...base, estimatedRows: 1, fds } as Partial<PhysicalProperties>;
 			}
 		}
 		return base;

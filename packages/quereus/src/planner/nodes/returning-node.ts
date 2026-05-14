@@ -8,7 +8,7 @@ import { expressionToString } from '../../emit/ast-stringify.js';
 import { Cached } from '../../util/cached.js';
 import { deriveProjectionColumnMap, projectKeys } from '../util/key-utils.js';
 import { projectOrdering } from '../framework/physical-utils.js';
-import { addFd, projectConstantBindings, projectFds } from '../util/fd-utils.js';
+import { addFd, projectConstantBindings, projectFds, superkeyToFd } from '../util/fd-utils.js';
 
 export interface ReturningProjection {
   node: ScalarPlanNode;
@@ -214,22 +214,26 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
 
   computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
     const sourcePhysical = childrenPhysical[0];
+    const outputColCount = this.projections.length;
     const { map, injectivePairs } = deriveProjectionColumnMap(
       this.executor.getAttributes(),
       this.projections.map((p, outIndex) => ({ expr: p.node, outIndex })),
     );
 
-    const uniqueKeys = (sourcePhysical?.uniqueKeys || [])
-      .map(key => {
-        const projected: number[] = [];
-        for (const col of key) {
-          const outIdx = map.get(col);
-          if (outIdx === undefined) return null;
-          projected.push(outIdx);
-        }
-        return projected;
-      })
-      .filter((k): k is number[] => k !== null);
+    // Project the executor's logical unique keys through the column map; each
+    // surviving key K' becomes the FD `K' → (all_other_out_cols)` on the output.
+    const executorLogicalKeys = this.executor.getType().keys.map(k => k.map(ref => ref.index));
+    const projectedKeys: number[][] = [];
+    for (const key of executorLogicalKeys) {
+      const projected: number[] = [];
+      let miss = false;
+      for (const col of key) {
+        const outIdx = map.get(col);
+        if (outIdx === undefined) { miss = true; break; }
+        projected.push(outIdx);
+      }
+      if (!miss) projectedKeys.push(projected);
+    }
 
     // Substitute injectively-derived columns into existing keys (`SELECT id, id+1`
     // contributes both [col0] and [col1] as unique keys).
@@ -237,20 +241,24 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
       const bareOut = map.get(srcIdx);
       if (bareOut === undefined || bareOut === outIdx) continue;
       const variants: number[][] = [];
-      for (const key of uniqueKeys) {
+      for (const key of projectedKeys) {
         if (key.includes(bareOut) && !key.includes(outIdx)) {
           variants.push(key.map(c => (c === bareOut ? outIdx : c)));
         }
       }
-      uniqueKeys.push(...variants);
+      projectedKeys.push(...variants);
     }
 
     let fds = projectFds(sourcePhysical?.fds ?? [], map);
+    for (const key of projectedKeys) {
+      const keyFd = superkeyToFd(key, outputColCount);
+      if (keyFd) fds = addFd(fds, keyFd, { keyHints: projectedKeys });
+    }
     for (const [srcIdx, outIdx] of injectivePairs) {
       const bareOut = map.get(srcIdx);
       if (bareOut === undefined || bareOut === outIdx) continue;
-      fds = addFd(fds, { determinants: [bareOut], dependents: [outIdx] }, { uniqueKeys });
-      fds = addFd(fds, { determinants: [outIdx], dependents: [bareOut] }, { uniqueKeys });
+      fds = addFd(fds, { determinants: [bareOut], dependents: [outIdx] }, { keyHints: projectedKeys });
+      fds = addFd(fds, { determinants: [outIdx], dependents: [bareOut] }, { keyHints: projectedKeys });
     }
     const projectedEquiv: number[][] = [];
     for (const cls of sourcePhysical?.equivClasses ?? []) {
@@ -266,7 +274,6 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
     return {
       estimatedRows: this.estimatedRows,
       ordering: projectOrdering(sourcePhysical?.ordering, map),
-      uniqueKeys,
       fds: fds.length > 0 ? fds : undefined,
       equivClasses: projectedEquiv.length > 0 ? projectedEquiv : undefined,
       constantBindings: projectedBindings.length > 0 ? projectedBindings : undefined,

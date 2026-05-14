@@ -23,7 +23,6 @@ async function planRows(db: Database, sql: string): Promise<PlanRow[]> {
 interface AggLogicalProps {
 	groupBy?: string[];
 	aggregates?: Array<{ expression: string; alias: string }>;
-	uniqueKeys?: number[][];
 }
 
 function aggregateRow(rows: readonly PlanRow[]): PlanRow | undefined {

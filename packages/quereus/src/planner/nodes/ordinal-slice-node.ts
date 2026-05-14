@@ -68,13 +68,15 @@ export class OrdinalSliceNode extends PlanNode implements UnaryRelationalNode {
 
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const sourcePhysical = childrenPhysical[0];
-		// Slicing a sorted prefix preserves ordering, uniqueKeys, and monotonicOn.
+		// Slicing a sorted prefix preserves ordering, FDs/ECs, and monotonicOn.
 		// accessCapabilities are NOT propagated past the slice — the slice consumed
 		// the ordinal-seek capability.
 		return {
 			estimatedRows: this.estimatedRows,
 			ordering: sourcePhysical?.ordering,
-			uniqueKeys: sourcePhysical?.uniqueKeys,
+			fds: sourcePhysical?.fds,
+			equivClasses: sourcePhysical?.equivClasses,
+			constantBindings: sourcePhysical?.constantBindings,
 			monotonicOn: sourcePhysical?.monotonicOn,
 		};
 	}

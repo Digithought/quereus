@@ -305,14 +305,14 @@ Consumers (key propagation through non-trivial projections, sargable predicate r
 
 ### TVF Property Declarations
 
-Table-valued functions can advertise relational and physical characteristics through an optional `relationalAdvertisement` field on `TableValuedFunctionSchema`. Without it, a TVF's logical `returnType.keys` / `returnType.isSet` are exposed but `physical` defaults are conservative (no `uniqueKeys`, no `ordering`, no `monotonicOn`, default `estimatedRows`). With an advertisement, `TableFunctionCallNode.computePhysical` consumes it on the standard physical-property path so downstream rules (FD propagation, DISTINCT elimination, sort/monotonic-window rules, cardinality estimation) see the same information they get from a real vtab.
+Table-valued functions can advertise relational and physical characteristics through an optional `relationalAdvertisement` field on `TableValuedFunctionSchema`. Without it, a TVF's logical `returnType.keys` / `returnType.isSet` are exposed but `physical` defaults are conservative (no key FDs, no `ordering`, no `monotonicOn`, default `estimatedRows`). With an advertisement, `TableFunctionCallNode.computePhysical` consumes it on the standard physical-property path so downstream rules (FD propagation, DISTINCT elimination, sort/monotonic-window rules, cardinality estimation) see the same information they get from a real vtab.
 
 **Advertisement surface** — each field is either a static value or a `TVFAdvertiseFn<T>` that receives the call's operands and the schema and may return `undefined` to decline:
 
 | Field | Type | Notes |
 |---|---|---|
 | `isSet` | `boolean` | Overrides `returnType.isSet` when present. |
-| `keys` | `ReadonlyArray<ReadonlyArray<ColRef>>` | Output-column unique keys; populates `physical.uniqueKeys` and `getType().keys`. |
+| `keys` | `ReadonlyArray<ReadonlyArray<ColRef>>` | Output-column unique keys; lifted into `physical.fds` as `key → other-cols` FDs and into `getType().keys`. |
 | `fds` | `ReadonlyArray<FunctionalDependency>` | Additional (non-key) FDs over output columns. |
 | `equivClasses` | `ReadonlyArray<ReadonlyArray<number>>` | Equivalence classes; each class must have ≥ 2 members. |
 | `ordering` | `ReadonlyArray<{column, desc}>` | Output ordering. |
@@ -641,11 +641,13 @@ if (tableConstraints) {
 
 ### Property Propagation
 ```typescript
-computePhysical(): Partial<PhysicalProperties> {
+computePhysical(_children: PhysicalProperties[]): Partial<PhysicalProperties> {
   return {
     estimatedRows: this.source.estimatedRows,
-    uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
-    ordering: this.providesOrdering
+    // Keys propagate as FDs in `fds`. TableReferenceNode emits `{pk} → other-cols`
+    // FDs; physical access nodes pass them through unchanged.
+    fds: childrenPhysical[0]?.fds,
+    ordering: this.providesOrdering,
   };
 }
 ```
@@ -1149,7 +1151,7 @@ The context-scoped design enables sophisticated optimization strategies:
 
 ### Functional Dependency Tracking
 
-Every relational physical node carries three optional fields on `PhysicalProperties` in addition to `uniqueKeys`:
+Functional dependencies (FDs) are the canonical surface for "what determines what" on a relational physical node's output. There is no separate `uniqueKeys` field — a unique key `K` is encoded as the FD `K → (all_cols \ K)`, and `∅ → all_cols` encodes the "at-most-one-row" claim that used to be `uniqueKeys: [[]]`.
 
 ```typescript
 export interface FunctionalDependency {
@@ -1167,14 +1169,16 @@ export interface ConstantBinding {
 }
 
 interface PhysicalProperties {
-  // ... ordering, estimatedRows, uniqueKeys, monotonicOn ...
+  // ... ordering, estimatedRows, monotonicOn ...
   fds?: ReadonlyArray<FunctionalDependency>;
   equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
   constantBindings?: ReadonlyArray<ConstantBinding>;
 }
 ```
 
-Column indices are output-column indices, consistent with `uniqueKeys`. Superkeys (entries in `uniqueKeys`) imply the FD `key → all-columns`; `fds` carries the additional, non-key dependencies. The list is **non-canonical** — each operator stores only what it can prove locally. Use `computeClosure(attrs, fds)` from `planner/util/fd-utils.ts` to derive what a set of attributes implies.
+Column indices are output-column indices. The FD list is **non-canonical** — each operator stores only what it can prove locally. Use `computeClosure(attrs, fds)` from `planner/util/fd-utils.ts` to derive what a set of attributes implies.
+
+The "all-columns is a key" claim (DISTINCT, schema-set tables with no smaller key) has no non-trivial FD encoding — it is communicated via `RelationType.isSet`. Consumers asking "does this relation have set semantics?" should check both `getType().isSet` and `getType().keys.length > 0` *and* the FD set (via `hasAnyKey` / `hasSingletonFd`).
 
 #### Equivalence classes
 
@@ -1194,11 +1198,12 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TableReferenceNode`                      | Seed `key → others` for each declared key (PK + UNIQUE).                                                                                    |
 | `SeqScanNode` / `IndexScanNode` / `IndexSeekNode` | Pass child FDs/ECs through unchanged.                                                                                                |
-| `RetrieveNode`                            | Pass source pipeline's FDs / ECs / constant bindings / `uniqueKeys` / ordering through unchanged. Retrieve is a marker for the module/Quereus execution boundary; its output is the source pipeline's output. |
+| `RetrieveNode`                            | Pass source pipeline's FDs / ECs / constant bindings / ordering through unchanged. Retrieve is a marker for the module/Quereus execution boundary; its output is the source pipeline's output. |
 | `FilterNode`                              | Inherit child. For each equality conjunct: `col = literal` or `col = ?` ⇒ `∅ → col` FD plus a `ConstantBinding`; `col1 = col2` ⇒ bi-directional FDs and EC merge. Bindings are then closed over the resulting EC list. |
 | `ProjectNode` / `ReturningNode`           | Project FDs/ECs through the source→output mapping built from (a) bare column-reference projections **and** (b) *injectively-derived* projections — scalar expressions that reference exactly one source attribute `a` (with all other leaves being `LiteralNode` / `ParameterReferenceNode`) and satisfy `ScalarPlanNode.isInjectiveIn(a).injective`. The derived column is treated as a synonym of `src(a)`: source keys/FDs/ECs flow through to its output index. Non-injective expressions still drop out. When both `a` and an injective derivation of `a` are projected (`SELECT id, id+1`), the helper additionally emits bi-directional FDs between the bare and derived columns and copies the unique key onto the derived column too. Built-in injectivity covers unary `±x`, `x ± const`, `const ± x`, and same-logical-type `CAST`; scalar functions opt in via the `injectiveOnArgs` trait on the `FunctionSchema`. |
-| `AliasNode` / `DistinctNode`              | Pass through unchanged (Distinct still adds the all-columns superkey via `uniqueKeys`).                                                     |
-| `StreamAggregateNode` / `HashAggregateNode` / `AggregateNode` | A source FD `X → Y` survives only if `X` and `Y` are all column-reference GROUP BY columns; project to output indices. ECs project the same way. |
+| `AliasNode`                               | Pass through unchanged.                                                                                                                     |
+| `DistinctNode`                            | Pass source FDs / ECs / constant bindings through unchanged. The "all-columns is a key" claim lives on `RelationType.isSet = true` set in `getType()`. |
+| `StreamAggregateNode` / `HashAggregateNode` / `AggregateNode` | A source FD `X → Y` survives only if `X` and `Y` are all column-reference GROUP BY columns; project to output indices. ECs project the same way. Additionally emit the group-key FD `{0..groupCount-1} → (all_other_out_cols)`; with no GROUP BY, emit the singleton `∅ → all_out_cols` instead. |
 | `JoinNode` / `BloomJoinNode` / `MergeJoinNode` (inner / cross) | `union(leftFds, shift(rightFds, leftCols))`; for each equi-pair `(L, R')`: add bi-directional FDs and EC merge `L ≡ R'`. Constant bindings union both sides (right shifted), then close over the merged EC list — so a one-sided `t.k = 5` plus an equi-pair `t.k = u.k` lands as a single binding covering both columns. |
 | Join (left outer)                         | Keep left's FDs/ECs/bindings only; drop right's and equi-pair contributions (NULL-padded rows can violate them).                            |
 | Join (right outer)                        | Mirror of left outer.                                                                                                                       |
@@ -1213,19 +1218,22 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 - `computeClosure(attrs, fds)` — iterative fixed-point.
 - `determines(attrs, target, fds)` — closure-based check.
 - `minimalCover(attrs, fds)` — greedy minimization.
-- `mergeFds(a, b)`, `addFd(fds, next, opts?)` — subsumption-aware merge. `addFd`'s options carry `uniqueKeys` for cap enforcement and `cap` for an explicit override (default `MAX_FDS_PER_NODE = 64`).
-- `projectFds(fds, mapping)` — drop FDs that lose any determinant or dependent column.
+- `mergeFds(a, b)`, `addFd(fds, next, opts?)` — subsumption-aware merge. `addFd`'s options carry `keyHints` (column-index sets known to be keys) for cap enforcement and `cap` for an explicit override (default `MAX_FDS_PER_NODE = 64`).
+- `projectFds(fds, mapping)` — drop FDs that lose any determinant column. Dependents that don't map are filtered out (preserving the FD if at least one dependent survives); this is the rule that lets `∅ → all_cols` singleton claims survive projection.
+- `superkeyToFd(key, columnCount)` — build `key → (all_cols \ key)` from a superkey, or `undefined` when `key` covers every column.
+- `singletonFd(columnCount)` — build the `∅ → all_cols` "at-most-one-row" FD.
+- `isSuperkey(attrs, fds, columnCount)` / `isAssertedKey(attrs, fds, columnCount)` — closure-based superkey check. `isSuperkey` returns true on the trivial all-cols tautology; `isAssertedKey` is stricter — it requires some FD in the set whose determinants ⊆ attrs and whose closure covers all columns. Use the latter when you need a positive uniqueness claim (e.g. strict-monotonicOn detection).
+- `hasAnyKey(fds, columnCount)` — true iff the FD set encodes any non-trivial key (replaces the legacy `uniqueKeys.length > 0` check).
+- `hasSingletonFd(fds, columnCount)` — true iff `∅ → all_cols` is present (replaces the `[[]]` marker).
+- `deriveKeysFromFds(fds, columnCount)` — enumerate the minimal full-cover key sets from the FD set.
 - `shiftFds(fds, offset)` / `shiftEquivClasses(classes, offset)` — column index translation for joins.
 - `mergeEquivClasses(a, b)` / `addEquivalence(classes, a, b)` — transitive-closure union of overlapping classes.
 - `mergeConstantBindings(a, b)` — coalesce bindings sharing a `ConstantValue` by unioning `attrs`.
 - `closeConstantBindingsOverEcs(bindings, ecs)` — extend each binding's `attrs` over every overlapping EC member (the predicate-inference surface).
 - `projectConstantBindings(bindings, mapping)` / `shiftConstantBindings(bindings, offset)` — projection/translation mirrors of the FD/EC variants.
-- `superkeyToFd(key, columnCount)` — build `key → others` from a superkey.
 - `extractEqualityFds(predicate, attrIdToIndex)` — predicate walker used by `FilterNode`; returns FDs, EC pairs, and constant bindings (literals and parameters both contribute bindings).
 
-**De-dup / cap behavior:** `addFd` performs subsumption (drop existing FDs with the same determinants whose dependent set is a subset of the new one, and skip adding a new FD already subsumed). When the resulting list exceeds the cap, FDs whose determinants are not a subset of any `uniqueKeys` entry on the same node are dropped first; truncations are logged at debug under `quereus:planner:fd`. `mergeConstantBindings` enforces the same cap and logs the same way.
-
-**Consumers are forthcoming.** This pass lands the foundation only; existing `uniqueKeys` consumers (`rule-distinct-elimination`, `analyzeJoinKeyCoverage`, `CatalogStatsProvider.joinSelectivity`, change-detection classification) are untouched. Follow-up tickets will migrate consumers to read `fds`/`equivClasses` and add new optimizations (GROUP BY simplification, ORDER BY pruning, join elimination, predicate inference through ECs, etc.).
+**De-dup / cap behavior:** `addFd` performs subsumption (drop existing FDs with the same determinants whose dependent set is a subset of the new one, and skip adding a new FD already subsumed). When the resulting list exceeds the cap, FDs whose determinants are not a subset of any `keyHints` entry passed by the caller are dropped first; truncations are logged at debug under `quereus:planner:fd`. `mergeConstantBindings` enforces the same cap and logs the same way.
 
 `ruleAggregatePredicatePushdown` (Predicate rules above) is the first consumer of `physical.fds`: it uses `computeClosure` over the aggregate's output FDs to widen the set of pushable conjuncts on composite GROUP BYs.
 
@@ -1234,12 +1242,12 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 ### Key-driven row-count reduction
 
 * If a predicate contains **equality** on all columns of a unique key the result cardinality ≤ 1.
-* See the FD framework above; `uniqueKeys` is the superkey form of an FD `key → all-columns`, and the broader `fds`/`equivClasses` fields capture additional non-key dependencies.
+* See the FD framework above; a unique key is encoded as the FD `key → all_other_cols`, and the broader `fds`/`equivClasses` fields capture additional non-key dependencies.
 
 **Shared join key-coverage analysis** (`analyzeJoinKeyCoverage` in `key-utils.ts`):
 - Extracts equi-join column index pairs from join conditions
-- Checks if equi-pairs cover a logical key (`RelationType.keys`) or physical key (`PhysicalProperties.uniqueKeys`) on either side
-- INNER / CROSS: when side B's key is covered, preserves side A's unique keys (both directions can apply) and caps `estimatedRows` at side A's row count
+- Checks if equi-pairs cover a logical key (`RelationType.keys`) or an FD-implied key (`isSuperkey(eqSet, phys.fds, colCount)`) on either side
+- INNER / CROSS: when side B's key is covered, preserves side A's unique keys (both directions can apply) — `propagateJoinFds` materializes each preserved key as a `key → all_other_join_cols` FD on the join output — and caps `estimatedRows` at side A's row count
 - LEFT outer: when the **right** side's key is covered, preserves the **left** side's unique keys and caps `estimatedRows` at left's row count. The right-side keys are NOT propagated — unmatched left rows produce NULL-padded right columns, breaking right uniqueness. If the right key is not covered, no keys propagate (left rows can fan out)
 - RIGHT outer: symmetric to LEFT
 - FULL outer: no keys propagate (both sides can be NULL-padded)
@@ -1253,7 +1261,7 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 - Unique constraints stored in `TableSchema.uniqueConstraints`, surfaced as additional `RelationType.keys`
 
 **DISTINCT elimination** (`rule-distinct-elimination.ts`):
-- When a `DistinctNode`'s source already has `uniqueKeys` (from PK, UNIQUE constraint, GROUP BY, etc.), the DISTINCT is redundant and removed
+- When a `DistinctNode`'s source already has a key (from logical `RelationType.keys`, or an FD-encoded key in `physical.fds` via `hasAnyKey` / `hasSingletonFd`), the DISTINCT is redundant and removed
 - Registered in the structural pass at priority 18 (after key inference, before predicate pushdown)
 
 ### Key inference after projections / joins
@@ -1280,7 +1288,7 @@ Global transaction‑deferred integrity assertions are expressed as violation qu
 ### Core Definitions
 
 - relationKey: Unique identifier for a table reference instance within a plan. Format: `schema.table#<nodeId>` or `schema.table@alias#<nodeId>`.
-- uniqueKeys: Physical property carried by nodes, each key is an array of column indices relative to the node’s output that uniquely identify a row. `[[]]` denotes ≤1 row (singleton) regardless of columns.
+- unique key: A set of column indices on a node's output that uniquely identifies each row. Encoded as the FD `key → (all_cols \ key)` in `PhysicalProperties.fds`. The empty set (`∅ → all_cols`) is the singleton/"at-most-one-row" form.
 - coveredKey: A unique key that is fully constrained by equality predicates at a node boundary, **or whose columns lie in the FD-closure of the equality-covered column set**. Presence of a covered key implies `estimatedRows ≤ 1`. Closure expansion uses the table reference's physical FDs/ECs — so equality on a UNIQUE column closes to the PK via the table's `unique → other-columns` FD, and equality on column `a` plus an EC `{a, b}` closes to include `b`.
 - Row‑specific: A table reference instance classified as producing at most one row for any given unique key binding at COMMIT time (covered-key holds and no identity-breaking node above demotes it).
 - Group-specific: A table reference instance beneath an aggregate whose `GROUP BY` columns (under FD closure at the aggregate's source) cover a unique key of the reference. The aggregate output is row-unique per group key, so the runtime can parameterize on changed group keys.
@@ -1293,16 +1301,16 @@ Global transaction‑deferred integrity assertions are expressed as violation qu
 - This stabilizes logical shape and enables reliable key propagation without physical access assumptions.
 
 2) Unique key propagation rules
-- Filter: If predicate covers a full unique key on the source, set `uniqueKeys = [[]]` and cap `estimatedRows = 1`; otherwise propagate source `uniqueKeys` unchanged.
-- Project/Returning: Map source `uniqueKeys` through projection mapping; drop keys that aren’t fully preserved. If `ordering` is present and all ordering columns survive the projection, remap ordering indices through the same mapping; otherwise clear ordering.
-- Join (INNER/CROSS): Preserve side keys when equi‑join predicates cover the other side’s key; compute composite keys when applicable. For OUTER joins, only preserve non‑null‑safe keys on the preserved side.
-- Aggregate: `GROUP BY` columns define `uniqueKeys` over their indices; global aggregates without grouping produce `[[]]`.
-- Distinct: All columns form a `uniqueKey`.
-- Set operations/window functions: Conservatively clear `uniqueKeys` unless proven otherwise.
+- Filter: If predicate covers a full unique key on the source, emit the singleton FD `∅ → all_cols` and cap `estimatedRows = 1`; otherwise propagate source FDs (which carry the source's key encodings) unchanged.
+- Project/Returning: Project source logical keys (`RelationType.keys`) through the column mapping; for each surviving key emit the FD `key → all_other_out_cols`. Source FDs project through the same column map (FDs that lose a determinant column are dropped; surviving dependents stay).
+- Join (INNER/CROSS): Preserve side keys when equi‑join predicates cover the other side's key; emit each preserved key as a `key → all_other_join_cols` FD. For OUTER joins, only preserve non‑null‑safe keys on the preserved side.
+- Aggregate: `GROUP BY` columns are a unique key on the output; emit `{0..groupCount-1} → all_other_out_cols`. Global aggregates without grouping emit the singleton `∅ → all_out_cols`.
+- Distinct: Set semantics is encoded via `RelationType.isSet = true` (the all-columns "key" has no non-trivial FD encoding). Source FDs pass through unchanged.
+- Set operations/window functions: Conservatively drop key-encoding FDs unless proven otherwise.
 
 3) Covered key detection
-- Constraint extractor emits `coveredKeysByTable: Map<relationKey, number[][]>` by matching normalized equality predicates to unique key columns.
-- A table reference instance is row‑specific at a node if any covered key is present or `uniqueKeys` contains `[[]]`.
+- Constraint extractor emits `coveredKeysByTable: Map<relationKey, number[][]>` by matching normalized equality predicates to the table's logical `RelationType.keys`. Closure expansion uses the table reference's physical FDs/ECs.
+- A table reference instance is row‑specific at a node if any covered key is present or the FD set carries the singleton `∅ → all_cols`.
 
 ### Classification API
 

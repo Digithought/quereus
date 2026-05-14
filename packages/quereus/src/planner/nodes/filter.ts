@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, isScalarNode, type PhysicalProperties } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, isScalarNode, type PhysicalProperties, type FunctionalDependency } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { formatExpression } from '../../util/plan-formatter.js';
@@ -8,7 +8,7 @@ import { StatusCode } from '../../common/types.js';
 import { PredicateCapable, type PredicateSourceCapable } from '../framework/characteristics.js';
 import { createTableInfoFromNode, extractConstraints } from '../analysis/constraint-extractor.js';
 import { normalizePredicate } from '../analysis/predicate-normalizer.js';
-import { addFd, closeConstantBindingsOverEcs, extractEqualityFds, mergeConstantBindings, mergeEquivClasses } from '../util/fd-utils.js';
+import { addFd, closeConstantBindingsOverEcs, extractEqualityFds, mergeConstantBindings, mergeEquivClasses, singletonFd } from '../util/fd-utils.js';
 
 /**
  * Represents a filter operation (WHERE clause).
@@ -63,28 +63,30 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 			? Math.min(srcRows, est)
 			: (srcRows ?? est);
 
-		// Attempt logical covered-key detection to infer at-most-one row
-		let uniqueKeys = sourcePhysical?.uniqueKeys;
+		// FD/EC propagation: inherit source contributions, then add any FDs/ECs
+		// implied by equality conjuncts in the predicate.
+		const sourceAttrs = this.source.getAttributes();
+		const attrIdToIndex = new Map<number, number>();
+		sourceAttrs.forEach((a, i) => attrIdToIndex.set(a.id, i));
+		const { fds: predFds, equivPairs, constantBindings: predBindings } = extractEqualityFds(this.predicate, attrIdToIndex);
+
+		let fds: ReadonlyArray<FunctionalDependency> = sourcePhysical?.fds ?? [];
+		for (const fd of predFds) {
+			fds = addFd(fds, fd);
+		}
+
+		// Attempt logical covered-key detection: if equality conjuncts cover a
+		// unique key on the source table, the Filter emits at-most-one row. Encode
+		// that as the singleton FD `∅ → all_cols`.
 		const tableInfo = createTableInfoFromNode(this.source);
 		if (tableInfo.uniqueKeys && tableInfo.uniqueKeys.length > 0) {
 			const result = extractConstraints(this.predicate, [tableInfo]);
 			const covered = result.coveredKeysByTable?.get(tableInfo.relationKey) || [];
 			if (covered.length > 0) {
-				// Equality covers a unique key → at most one row
-				uniqueKeys = [[]];
+				const singleton = singletonFd(sourceAttrs.length);
+				if (singleton) fds = addFd(fds, singleton);
 				rows = 1;
 			}
-		}
-
-		// FD/EC propagation: inherit source contributions, then add any FDs/ECs
-		// implied by equality conjuncts in the predicate.
-		const attrIdToIndex = new Map<number, number>();
-		this.source.getAttributes().forEach((a, i) => attrIdToIndex.set(a.id, i));
-		const { fds: predFds, equivPairs, constantBindings: predBindings } = extractEqualityFds(this.predicate, attrIdToIndex);
-
-		let fds = sourcePhysical?.fds ?? [];
-		for (const fd of predFds) {
-			fds = addFd(fds, fd, { uniqueKeys });
 		}
 
 		let equivClasses = sourcePhysical?.equivClasses ?? [];
@@ -102,7 +104,6 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 		return {
 			estimatedRows: rows,
 			ordering: sourcePhysical?.ordering,
-			uniqueKeys,
 			// Filter preserves monotonicOn — a predicate doesn't reorder rows.
 			monotonicOn: sourcePhysical?.monotonicOn,
 			fds: fds.length > 0 ? fds : undefined,

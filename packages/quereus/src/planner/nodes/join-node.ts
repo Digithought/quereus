@@ -118,12 +118,13 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 		})).filter(p => p.leftAttrId !== undefined && p.rightAttrId !== undefined) as
 			Array<{ leftAttrId: number; rightAttrId: number }>;
 
+		const totalCols = this.getAttributes().length;
 		const fdResult = propagateJoinFds(
-			this.joinType, leftPhys, rightPhys, pairs, leftType.columns.length, result.uniqueKeys,
+			this.joinType, leftPhys, rightPhys, pairs,
+			leftType.columns.length, totalCols, result.preservedKeys,
 		);
 
 		return {
-			uniqueKeys: result.uniqueKeys,
 			estimatedRows: result.estimatedRows,
 			monotonicOn: propagateJoinMonotonicOn(this.joinType, leftPhys, rightPhys, attrIdPairs),
 			fds: fdResult.fds,
@@ -215,18 +216,13 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
-		const attrs: Record<string, unknown> = {
+		return {
 			joinType: this.joinType,
 			hasCondition: !!this.condition,
 			usingColumns: this.usingColumns,
 			leftRows: this.left.estimatedRows,
 			rightRows: this.right.estimatedRows
 		};
-		// Expose unique keys computed by physical properties
-		if (this.physical?.uniqueKeys) {
-			attrs.uniqueKeys = this.physical.uniqueKeys;
-		}
-		return attrs;
 	}
 
 	public getJoinType(): JoinType {

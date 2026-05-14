@@ -20,6 +20,7 @@ import { FunctionFlags } from '../../common/constants.js';
 import { Cached } from '../../util/cached.js';
 import { formatExpressionList } from '../../util/plan-formatter.js';
 import { createLogger } from '../../common/logger.js';
+import { addFd, superkeyToFd } from '../util/fd-utils.js';
 
 const log = createLogger('planner:tvf');
 
@@ -164,15 +165,25 @@ export class TableFunctionCallNode extends PlanNode implements RelationalPlanNod
     const attrs = this.getAttributes();
     const attrIds = new Set(attrs.map((a) => a.id));
 
+    // Lift declared unique keys into the FD set as `key → all_other_cols`.
     const resolvedKeys = resolveAdvertisement(adv.keys, ops, schema);
+    let resolvedKeyIndices: number[][] | undefined;
     if (resolvedKeys && validateKeys(resolvedKeys, colCount, this.functionName)) {
-      out.uniqueKeys = resolvedKeys.map((k) => k.map((c) => c.index));
+      resolvedKeyIndices = resolvedKeys.map((k) => k.map((c) => c.index));
     }
 
+    let fdsAcc: ReadonlyArray<FunctionalDependency> = [];
     const fds = resolveAdvertisement(adv.fds, ops, schema);
     if (fds && validateFds(fds, colCount, this.functionName)) {
-      out.fds = fds;
+      fdsAcc = fds;
     }
+    if (resolvedKeyIndices) {
+      for (const key of resolvedKeyIndices) {
+        const keyFd = superkeyToFd(key, colCount);
+        if (keyFd) fdsAcc = addFd(fdsAcc, keyFd, { keyHints: resolvedKeyIndices });
+      }
+    }
+    if (fdsAcc.length > 0) out.fds = fdsAcc;
 
     const equivClasses = resolveAdvertisement(adv.equivClasses, ops, schema);
     if (equivClasses && validateEcs(equivClasses, colCount, this.functionName)) {

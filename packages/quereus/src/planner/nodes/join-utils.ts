@@ -8,6 +8,7 @@ import {
 	mergeEquivClasses, mergeFds,
 	shiftConstantBindings,
 	shiftEquivClasses, shiftFds,
+	superkeyToFd,
 } from '../util/fd-utils.js';
 
 /**
@@ -165,7 +166,8 @@ export function propagateJoinFds(
 	rightPhys: PhysicalProperties | undefined,
 	equiPairs: ReadonlyArray<{ left: number; right: number }>,
 	leftColumnCount: number,
-	uniqueKeys: ReadonlyArray<ReadonlyArray<number>> | undefined,
+	totalColumnCount: number,
+	preservedKeys: ReadonlyArray<ReadonlyArray<number>>,
 ): {
 	fds?: ReadonlyArray<FunctionalDependency>;
 	equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
@@ -178,7 +180,17 @@ export function propagateJoinFds(
 	const leftBindings = leftPhys?.constantBindings ?? [];
 	const rightBindings = rightPhys?.constantBindings ?? [];
 
-	const opts = { uniqueKeys };
+	const opts = { keyHints: preservedKeys };
+
+	/** Layer `preservedKeys` onto `fds` as `key → all_other_join_cols` FDs. */
+	const withKeyFds = (fds: ReadonlyArray<FunctionalDependency>): ReadonlyArray<FunctionalDependency> => {
+		let out = fds;
+		for (const key of preservedKeys) {
+			const keyFd = superkeyToFd(key, totalColumnCount);
+			if (keyFd) out = addFd(out, keyFd, opts);
+		}
+		return out;
+	};
 
 	const wrap = (
 		fds: ReadonlyArray<FunctionalDependency>,
@@ -201,6 +213,7 @@ export function propagateJoinFds(
 				fds = addFd(fds, { determinants: [rShifted], dependents: [p.left] }, opts);
 				equiv = addEquivalence(equiv, p.left, rShifted);
 			}
+			fds = withKeyFds(fds);
 			// Bindings: union of both sides, then close over the merged EC list so
 			// a one-sided constant `t.k = 5` plus an equi-pair `t.k = u.k` lands as
 			// a binding covering both `t.k` and `u.k`.
@@ -214,10 +227,12 @@ export function propagateJoinFds(
 		case 'left': {
 			// Left's bindings survive on left's columns; right's are dropped (the
 			// NULL-padding from unmatched left rows breaks any right-side pin).
-			return wrap(leftFds.slice(), leftEC.map(c => c.slice()), leftBindings.map(b => ({ ...b })));
+			const fds = withKeyFds(leftFds.slice());
+			return wrap(fds, leftEC.map(c => c.slice()), leftBindings.map(b => ({ ...b })));
 		}
 		case 'right': {
-			const fds = shiftFds(rightFds, leftColumnCount);
+			let fds: ReadonlyArray<FunctionalDependency> = shiftFds(rightFds, leftColumnCount);
+			fds = withKeyFds(fds);
 			const equiv = shiftEquivClasses(rightEC, leftColumnCount);
 			const bindings = shiftConstantBindings(rightBindings, leftColumnCount);
 			return wrap(fds, equiv, bindings);
@@ -225,8 +240,10 @@ export function propagateJoinFds(
 		case 'full':
 			return {};
 		case 'semi':
-		case 'anti':
-			return wrap(leftFds.slice(), leftEC.map(c => c.slice()), leftBindings.map(b => ({ ...b })));
+		case 'anti': {
+			const fds = withKeyFds(leftFds.slice());
+			return wrap(fds, leftEC.map(c => c.slice()), leftBindings.map(b => ({ ...b })));
+		}
 		default:
 			return {};
 	}

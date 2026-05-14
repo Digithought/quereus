@@ -22,7 +22,6 @@ import { INTEGER_TYPE, TEXT_TYPE } from '../../src/types/builtin-types.js';
 interface PhysicalProps {
 	fds?: { determinants: number[]; dependents: number[] }[];
 	equivClasses?: number[][];
-	uniqueKeys?: number[][];
 	constantBindings?: ConstantBinding[];
 }
 

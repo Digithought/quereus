@@ -70,7 +70,6 @@ export class RetrieveNode extends PlanNode implements UnaryRelationalNode {
 		return {
 			estimatedRows: this.source.estimatedRows,
 			ordering: src.ordering,
-			uniqueKeys: src.uniqueKeys,
 			monotonicOn: src.monotonicOn,
 			fds: src.fds,
 			equivClasses: src.equivClasses,

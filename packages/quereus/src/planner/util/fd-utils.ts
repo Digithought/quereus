@@ -133,7 +133,12 @@ function dependentsSubset(sub: readonly number[], sup: readonly number[]): boole
 }
 
 export interface AddFdOptions {
-	uniqueKeys?: ReadonlyArray<ReadonlyArray<number>>;
+	/**
+	 * Hint: column subsets that are known full-cover keys on the relation.
+	 * Used by `enforceCap` to prefer FDs whose determinants are subsets of
+	 * any such key when truncating; otherwise unused. Optional.
+	 */
+	keyHints?: ReadonlyArray<ReadonlyArray<number>>;
 	cap?: number;
 }
 
@@ -141,7 +146,7 @@ export interface AddFdOptions {
  * Add a single FD, dropping any existing entry with the same determinants
  * whose dependents are a subset of the new one (subsumption). When the
  * resulting list exceeds the cap, drop FDs whose determinants are not a
- * subset of any `uniqueKeys` entry on the same node.
+ * subset of any `keyHints` entry on the same node.
  */
 export function addFd(
 	fds: ReadonlyArray<FunctionalDependency>,
@@ -182,8 +187,8 @@ function enforceCap(
 	const cap = opts.cap ?? MAX_FDS_PER_NODE;
 	if (fds.length <= cap) return fds;
 
-	const uniqueKeys = opts.uniqueKeys ?? [];
-	const keySet = uniqueKeys.map(k => new Set(k));
+	const keyHints = opts.keyHints ?? [];
+	const keySet = keyHints.map(k => new Set(k));
 
 	const isSubsetOfAnyKey = (det: readonly number[]): boolean => {
 		if (keySet.length === 0) return false;
@@ -219,7 +224,14 @@ export function mergeFds(
 
 /**
  * Project FDs through a column mapping (oldCol → newCol). FDs whose
- * determinants OR dependents lose any column are dropped.
+ * determinants lose any column are dropped entirely (the projection breaks
+ * the determinant set). Dependents that don't survive are filtered out;
+ * an FD whose dependents are completely filtered is dropped.
+ *
+ * Exception: an FD with empty determinants (the singleton "at-most-one-row"
+ * marker) survives as long as at least one dependent does — losing some
+ * dependent columns to projection doesn't invalidate the at-most-one-row
+ * claim on the surviving columns.
  */
 export function projectFds(
 	fds: ReadonlyArray<FunctionalDependency>,
@@ -239,11 +251,8 @@ export function projectFds(
 		const newDep: number[] = [];
 		for (const d of fd.dependents) {
 			const m = mapping.get(d);
-			if (m === undefined) { miss = true; break; }
-			newDep.push(m);
+			if (m !== undefined) newDep.push(m);
 		}
-		if (miss) continue;
-
 		if (newDep.length === 0) continue;
 		result.push({ determinants: newDet, dependents: newDep });
 	}
@@ -324,20 +333,151 @@ export function addEquivalence(
 }
 
 /**
- * Build an FD `key → {0..columnCount-1} \ key` from a superkey. Useful
- * when consumers want a unified FD view that also includes the all-columns
- * implication of `uniqueKeys`.
+ * Build an FD `key → {0..columnCount-1} \ key` from a superkey. The canonical
+ * way to encode "K is a unique key on a relation": K determines every other
+ * output column. K = ∅ produces the "at-most-one-row" singleton FD.
+ *
+ * Returns undefined when K covers every column (the all-columns case has no
+ * non-trivial encoding — that case is communicated via `RelationType.isSet`
+ * instead).
  */
 export function superkeyToFd(
 	key: readonly number[],
 	columnCount: number,
-): FunctionalDependency {
+): FunctionalDependency | undefined {
 	const keySet = new Set(key);
 	const dependents: number[] = [];
 	for (let i = 0; i < columnCount; i++) {
 		if (!keySet.has(i)) dependents.push(i);
 	}
+	if (dependents.length === 0) return undefined;
 	return { determinants: key.slice(), dependents };
+}
+
+/**
+ * True iff the closure of `attrs` under `fds` covers `{0..columnCount-1}` —
+ * i.e., `attrs` is a superkey of the relation. Replaces the legacy "covers a
+ * `uniqueKeys` entry" check; FDs are the canonical surface now.
+ */
+export function isSuperkey(
+	attrs: ReadonlySet<number>,
+	fds: ReadonlyArray<FunctionalDependency> | undefined,
+	columnCount: number,
+): boolean {
+	if (columnCount <= 0) return true;
+	const closure = computeClosure(attrs, fds ?? []);
+	for (let i = 0; i < columnCount; i++) {
+		if (!closure.has(i)) return false;
+	}
+	return true;
+}
+
+/**
+ * Enumerate the minimal full-cover key sets discoverable from `fds`: for each
+ * FD `K → Y` whose closure covers all columns, return `K` (greedily minimized
+ * within `K`). Deduplicated by set equality.
+ *
+ * Excludes the trivial "all-columns is a superkey" tautology — only FDs with
+ * `K ⊊ all_cols` are considered, since the all-cols case is encoded via
+ * `RelationType.isSet`.
+ */
+export function deriveKeysFromFds(
+	fds: ReadonlyArray<FunctionalDependency> | undefined,
+	columnCount: number,
+): number[][] {
+	if (!fds || fds.length === 0) return [];
+	const results: number[][] = [];
+	const seen = new Set<string>();
+	for (const fd of fds) {
+		if (fd.determinants.length >= columnCount) continue;
+		const det = new Set(fd.determinants);
+		if (!isSuperkey(det, fds, columnCount)) continue;
+		const minimal = minimalCover(det, fds);
+		// Ensure the minimal cover still covers all columns (it should — minimalCover
+		// only drops attrs whose removal doesn't change closure).
+		const sorted = Array.from(minimal).sort((a, b) => a - b);
+		const key = sorted.join(',');
+		if (seen.has(key)) continue;
+		seen.add(key);
+		results.push(sorted);
+	}
+	return results;
+}
+
+/**
+ * True iff the FD set encodes any non-trivial key — i.e., there exists some
+ * FD whose determinants form a superkey of `columnCount` columns with the
+ * determinant set strictly smaller than all columns. This is the FD-surface
+ * replacement for "the relation has a known unique key smaller than its full
+ * column list" (the old `uniqueKeys.length > 0` check), excluding the
+ * tautological all-columns case which carries no information.
+ */
+export function hasAnyKey(
+	fds: ReadonlyArray<FunctionalDependency> | undefined,
+	columnCount: number,
+): boolean {
+	if (!fds || fds.length === 0) return false;
+	return fds.some(fd =>
+		fd.determinants.length < columnCount &&
+		isSuperkey(new Set(fd.determinants), fds, columnCount),
+	);
+}
+
+/**
+ * True iff the relation has at-most-one-row — i.e., some FD `∅ → Y` exists
+ * whose closure covers every column. Replaces the legacy `[[]]` singleton
+ * marker on `uniqueKeys`.
+ */
+export function hasSingletonFd(
+	fds: ReadonlyArray<FunctionalDependency> | undefined,
+	columnCount: number,
+): boolean {
+	if (!fds) return false;
+	return fds.some(fd =>
+		fd.determinants.length === 0 &&
+		isSuperkey(new Set<number>(), fds, columnCount),
+	);
+}
+
+/**
+ * Build the singleton FD `∅ → {0..columnCount-1}` that encodes
+ * "at-most-one-row". Returns undefined when `columnCount === 0` (no
+ * dependents).
+ */
+export function singletonFd(columnCount: number): FunctionalDependency | undefined {
+	if (columnCount <= 0) return undefined;
+	const dependents: number[] = [];
+	for (let i = 0; i < columnCount; i++) dependents.push(i);
+	return { determinants: [], dependents };
+}
+
+/**
+ * True iff `attrs` is asserted to be a unique key by the FD set — i.e., there
+ * exists some FD whose determinants are a subset of `attrs` and whose closure
+ * covers all columns. Stricter than `isSuperkey`: the trivial "all-cols is a
+ * superkey of itself" tautology does NOT count, because no FD makes that claim.
+ *
+ * Use this when you need a positive uniqueness claim (e.g., the
+ * sort/window strict-monotonicOn check). For "would attrs functionally
+ * determine the rest of the relation under closure?" use `isSuperkey` directly.
+ */
+export function isAssertedKey(
+	attrs: ReadonlySet<number>,
+	fds: ReadonlyArray<FunctionalDependency> | undefined,
+	columnCount: number,
+): boolean {
+	if (!fds || fds.length === 0) return false;
+	for (const fd of fds) {
+		// Determinants must be a subset of attrs.
+		let subset = true;
+		for (const d of fd.determinants) {
+			if (!attrs.has(d)) { subset = false; break; }
+		}
+		if (!subset) continue;
+		// Determinants closure must cover all columns.
+		if (isSuperkey(new Set(fd.determinants), fds, columnCount)) return true;
+	}
+	return false;
 }
 
 /**

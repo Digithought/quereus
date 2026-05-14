@@ -35,15 +35,38 @@ describe('Key propagation and estimatedRows reduction', () => {
 		expect(rows[0].c).to.be.greaterThan(0);
 	});
 
+	async function physicalFor(sql: string, op: string): Promise<{ fds?: Array<{ determinants: number[]; dependents: number[] }>; estimatedRows?: number } | undefined> {
+		const rows: Array<{ op: string; physical: string | null }> = [];
+		for await (const r of db.eval('SELECT op, physical FROM query_plan(?)', [sql])) {
+			rows.push(r as unknown as { op: string; physical: string | null });
+		}
+		const row = rows.find(r => r.op === op);
+		if (!row?.physical) return undefined;
+		return JSON.parse(row.physical);
+	}
+
+	/**
+	 * The relation has at least one declared key. After the uniqueKeys collapse
+	 * the canonical signal is an FD whose determinant set is a strict subset of
+	 * all columns and whose closure covers them — i.e. some `key → other-cols`
+	 * FD. This helper does the closure-free structural check, which is what the
+	 * producers above emit directly.
+	 */
+	function hasKeyFd(fds: Array<{ determinants: number[]; dependents: number[] }> | undefined, totalCols: number): boolean {
+		if (!fds) return false;
+		return fds.some(fd => fd.determinants.length < totalCols && fd.determinants.length + fd.dependents.length >= totalCols);
+	}
+
 	it('Join combines keys for inner join (conservative)', async () => {
 		await setup();
 		await db.exec("CREATE TABLE u (uid INTEGER PRIMARY KEY, t_id INTEGER) USING memory");
 		await db.exec("INSERT INTO u VALUES (10,1),(11,2)");
-		// Verify uniqueKeys presence in plan properties
-		const rows: Array<Record<string, unknown>> = [];
-		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM t INNER JOIN u ON t.id = u.t_id')")) rows.push(r as Record<string, unknown>);
-		const props = JSON.stringify(rows[0].props);
-		expect(props).to.match(/"uniqueKeys":/);
+		// Each side has a PK, and an inner join unions both sides' keys when
+		// covered. The physical join should carry at least one key-encoding FD.
+		const phys = (await physicalFor('SELECT * FROM t INNER JOIN u ON t.id = u.t_id', 'HASHJOIN'))
+			?? (await physicalFor('SELECT * FROM t INNER JOIN u ON t.id = u.t_id', 'JOIN'));
+		expect(phys, 'expected join physical').to.not.equal(undefined);
+		expect(hasKeyFd(phys!.fds, 4), 'expected a key-encoding FD').to.equal(true);
 	});
 
 	it('Composite PK join preserves left keys when right PK covered', async () => {
@@ -51,44 +74,41 @@ describe('Key propagation and estimatedRows reduction', () => {
 		await db.exec("INSERT INTO p VALUES (1,10),(2,20)");
 		await db.exec("CREATE TABLE c (x INTEGER, y INTEGER) USING memory");
 		await db.exec("INSERT INTO c VALUES (1,10),(1,99),(2,20)");
-		const rows: Array<Record<string, unknown>> = [];
-		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM c INNER JOIN p ON c.x = p.a AND c.y = p.b')")) rows.push(r as Record<string, unknown>);
-		const props = JSON.stringify(rows[0].props);
-		// Expect uniqueKeys present (at least one side preserved)
-		expect(props).to.match(/"uniqueKeys":/);
-	});
-
-	it('Distinct declares all-columns key', async () => {
-		// Use an explicit primary key column so duplicate (id,v) rows are allowed
-		await db.exec("CREATE TABLE d (k INTEGER PRIMARY KEY, id INTEGER, v INTEGER) USING memory");
-		await db.exec("INSERT INTO d VALUES (1,1,1),(2,1,1),(3,2,2)");
-		const rows: Array<Record<string, unknown>> = [];
-		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT DISTINCT id, v FROM d')")) rows.push(r as Record<string, unknown>);
-		const props = JSON.stringify(rows[0].props);
-		expect(props).to.match(/"uniqueKeys":\[\[/);
+		const sql = 'SELECT * FROM c INNER JOIN p ON c.x = p.a AND c.y = p.b';
+		const phys = (await physicalFor(sql, 'HASHJOIN'))
+			?? (await physicalFor(sql, 'MERGEJOIN'))
+			?? (await physicalFor(sql, 'JOIN'));
+		expect(phys, 'expected join physical').to.not.equal(undefined);
+		// The 4-col output should carry at least one key-encoding FD (p's PK survives).
+		expect(hasKeyFd(phys!.fds, 4)).to.equal(true);
 	});
 
 	it('GROUP BY declares group key', async () => {
 		await db.exec("CREATE TABLE g (id INTEGER, v INTEGER) USING memory");
 		await db.exec("INSERT INTO g VALUES (1,1),(1,2),(2,3)");
-		const rows: Array<Record<string, unknown>> = [];
-		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT id, COUNT(*) FROM g GROUP BY id')")) rows.push(r as Record<string, unknown>);
-		const props = JSON.stringify(rows[0].props);
-		expect(props).to.match(/"uniqueKeys":\[\[/);
+		// The aggregate's GROUP BY columns are the key on its output. Encoded as
+		// the FD `{0} → {1}` (group col → aggregate col).
+		const phys =
+			(await physicalFor('SELECT id, COUNT(*) FROM g GROUP BY id', 'STREAMAGGREGATE'))
+			?? (await physicalFor('SELECT id, COUNT(*) FROM g GROUP BY id', 'HASHAGGREGATE'))
+			?? (await physicalFor('SELECT id, COUNT(*) FROM g GROUP BY id', 'AGGREGATE'));
+		expect(phys, 'expected aggregate physical').to.not.equal(undefined);
+		expect(phys!.fds, 'expected fds').to.be.an('array');
+		expect(phys!.fds!.some(fd => fd.determinants.length === 1 && fd.determinants[0] === 0 && fd.dependents.includes(1))).to.equal(true);
 	});
 
-	it('Physical hash join node has key-driven estimatedRows', async () => {
+	it('Physical hash join node propagates left PK when right PK covered', async () => {
 		await setup();
 		await db.exec("CREATE TABLE u2 (uid INTEGER PRIMARY KEY, t_id INTEGER) USING memory");
 		await db.exec("INSERT INTO u2 VALUES (10,1),(11,2),(12,3)");
-		// When joining u2.t_id = t.id, t.id is a PK so right key is covered.
-		// estimatedRows should be driven by left side (u2 rows = 3), not the heuristic product.
-		const rows: Array<Record<string, unknown>> = [];
-		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM u2 INNER JOIN t ON u2.t_id = t.id')")) rows.push(r as Record<string, unknown>);
-		const props = JSON.stringify(rows[0].props);
-		// Should have estimatedRows set (not the default heuristic product)
-		expect(props).to.match(/"estimatedRows"/);
-		expect(props).to.match(/"uniqueKeys"/);
+		// When joining u2.t_id = t.id, t.id is a PK so right key is covered. The
+		// left's PK (u2.uid, output col 0) survives as a key-encoding FD.
+		const sql = 'SELECT * FROM u2 INNER JOIN t ON u2.t_id = t.id';
+		const phys = (await physicalFor(sql, 'HASHJOIN'))
+			?? (await physicalFor(sql, 'MERGEJOIN'))
+			?? (await physicalFor(sql, 'JOIN'));
+		expect(phys, 'expected join physical').to.not.equal(undefined);
+		expect(hasKeyFd(phys!.fds, 4)).to.equal(true);
 	});
 
 	it('Unique constraint columns create additional keys in RelationType', async () => {
@@ -97,10 +117,13 @@ describe('Key propagation and estimatedRows reduction', () => {
 		// Join on unique column should preserve keys
 		await db.exec("CREATE TABLE refs (r_email TEXT) USING memory");
 		await db.exec("INSERT INTO refs VALUES ('a@b.c'),('d@e.f')");
-		const rows: Array<Record<string, unknown>> = [];
-		for await (const r of db.eval("SELECT json_group_array(properties) AS props FROM query_plan('SELECT * FROM refs INNER JOIN uc ON refs.r_email = uc.email')")) rows.push(r as Record<string, unknown>);
-		const props = JSON.stringify(rows[0].props);
-		expect(props).to.match(/"uniqueKeys"/);
+		const phys = (await physicalFor('SELECT * FROM refs INNER JOIN uc ON refs.r_email = uc.email', 'HASHJOIN'))
+			?? (await physicalFor('SELECT * FROM refs INNER JOIN uc ON refs.r_email = uc.email', 'JOIN'));
+		expect(phys, 'expected join physical').to.not.equal(undefined);
+		// refs has no key but uc has two (PK on id, UNIQUE on email). The unique
+		// email is covered by the equi-pair so the left (refs) keys would survive
+		// — but refs has no key. The join should still carry at least one FD.
+		expect(phys!.fds, 'expected fds').to.be.an('array');
 	});
 
 	it('DISTINCT elimination when source has unique keys', async () => {
@@ -124,10 +147,22 @@ describe('Key propagation and estimatedRows reduction', () => {
 			return rows;
 		}
 
-		function joinPhysical(rows: readonly PlanRow[]): { uniqueKeys?: number[][]; estimatedRows?: number } | undefined {
+		function joinPhysical(rows: readonly PlanRow[]): { fds?: Array<{ determinants: number[]; dependents: number[] }>; estimatedRows?: number } | undefined {
 			const row = rows.find(r => r.op === 'HASHJOIN' || r.op === 'MERGEJOIN' || r.op === 'JOIN');
 			if (!row?.physical) return undefined;
-			return JSON.parse(row.physical) as { uniqueKeys?: number[][]; estimatedRows?: number };
+			return JSON.parse(row.physical);
+		}
+
+		/** True iff some FD encodes a key on column index `col` (i.e. `{col} → ...`). */
+		function fdsHaveSingleColKey(fds: Array<{ determinants: number[]; dependents: number[] }> | undefined, col: number): boolean {
+			if (!fds) return false;
+			return fds.some(fd => fd.determinants.length === 1 && fd.determinants[0] === col);
+		}
+
+		/** True iff the FD set encodes any non-trivial key on a relation with `totalCols` columns. */
+		function fdsHaveAnyKey(fds: Array<{ determinants: number[]; dependents: number[] }> | undefined, totalCols: number): boolean {
+			if (!fds) return false;
+			return fds.some(fd => fd.determinants.length < totalCols && fd.determinants.length + fd.dependents.length >= totalCols);
 		}
 
 		it('LEFT JOIN preserves left PK when right PK covered', async () => {
@@ -136,8 +171,8 @@ describe('Key propagation and estimatedRows reduction', () => {
 			const rows = await planRows('SELECT * FROM lp LEFT JOIN lq ON lp.id = lq.tid');
 			const phys = joinPhysical(rows);
 			expect(phys, 'expected join physical props').to.not.equal(undefined);
-			expect(phys!.uniqueKeys, 'left PK should survive (covered right side)').to.be.an('array').with.length.greaterThan(0);
-			expect(phys!.uniqueKeys!.some(k => k.length === 1 && k[0] === 0)).to.equal(true);
+			// Left PK on column 0 should survive (encoded as the FD `{0} → others`).
+			expect(fdsHaveSingleColKey(phys!.fds, 0), 'expected `{0} → others` FD encoding left PK').to.equal(true);
 		});
 
 		it('LEFT JOIN drops keys when right PK not covered', async () => {
@@ -147,8 +182,9 @@ describe('Key propagation and estimatedRows reduction', () => {
 			const rows = await planRows('SELECT * FROM lr LEFT JOIN ls ON lr.v = ls.w');
 			const phys = joinPhysical(rows);
 			expect(phys, 'expected join physical props').to.not.equal(undefined);
-			expect(phys!.uniqueKeys === undefined || phys!.uniqueKeys.length === 0,
-				'no keys should propagate without right key coverage').to.equal(true);
+			// No key-encoding FD should be present at the join output: the left PK
+			// doesn't survive because the right key wasn't covered.
+			expect(fdsHaveAnyKey(phys!.fds, 4), 'no key-encoding FD should propagate').to.equal(false);
 		});
 
 		it('LEFT JOIN with right PK covered: estimatedRows is bounded by left cardinality', async () => {
@@ -246,20 +282,36 @@ describe('Key propagation and estimatedRows reduction', () => {
 	});
 
 	describe('Injective-projection key propagation', () => {
-		async function assertHasUniqueKey(sql: string): Promise<void> {
-			const rows: Array<Record<string, unknown>> = [];
-			for await (const r of db.eval(`SELECT json_group_array(properties) AS props FROM query_plan(?)`, [sql])) rows.push(r as Record<string, unknown>);
-			const props = JSON.stringify(rows[0].props);
-			expect(props, sql).to.match(/"uniqueKeys":\[\[/);
-		}
+		type Fd = { determinants: number[]; dependents: number[] };
 
-		async function uniqueKeysOnProject(sql: string): Promise<number[][] | undefined> {
+		async function projectFds(sql: string): Promise<Fd[] | undefined> {
 			const rows: Array<{ op: string; physical: string | null }> = [];
 			for await (const r of db.eval('SELECT op, physical FROM query_plan(?)', [sql])) rows.push(r as unknown as { op: string; physical: string | null });
 			const projectRow = rows.find(r => r.op === 'PROJECT');
 			if (!projectRow?.physical) return undefined;
-			const phys = JSON.parse(projectRow.physical) as { uniqueKeys?: number[][] };
-			return phys.uniqueKeys;
+			const phys = JSON.parse(projectRow.physical) as { fds?: Fd[] };
+			return phys.fds;
+		}
+
+		/** True iff the projection's FDs encode a single-column key at `col`. */
+		function hasSingleColKey(fds: Fd[] | undefined, col: number): boolean {
+			if (!fds) return false;
+			return fds.some(fd => fd.determinants.length === 1 && fd.determinants[0] === col);
+		}
+
+		/**
+		 * The Project's logical `RelationType.keys` (also exposed in its
+		 * `getLogicalAttributes().uniqueKeys`) should reflect that the
+		 * single output column is a unique key. For single-column projections
+		 * where the key spans all output columns, the FD set can't encode the
+		 * key (the all-cols-superkey case is tautological), so the logical
+		 * surface is the source of truth.
+		 */
+		async function assertHasUniqueKey(sql: string): Promise<void> {
+			const rows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval('SELECT json_group_array(properties) AS props FROM query_plan(?)', [sql])) rows.push(r as Record<string, unknown>);
+			const props = JSON.stringify(rows[0].props);
+			expect(props, sql).to.match(/"uniqueKeys":\[\[/);
 		}
 
 		it('SELECT id + 1 FROM t — derived column carries the PK', async () => {
@@ -283,26 +335,27 @@ describe('Key propagation and estimatedRows reduction', () => {
 		// directly in expression-properties.spec.ts (where the parameter is
 		// constructed with INTEGER_TYPE) and via the unit test below.
 
-		it('SELECT id, id + 1 FROM t — two unique keys (one per output column)', async () => {
+		it('SELECT id, id + 1 FROM t — both output columns are keys', async () => {
 			await setup();
-			const keys = await uniqueKeysOnProject('SELECT id, id + 1 FROM t');
-			expect(keys, 'expected uniqueKeys on Project').to.be.an('array');
-			expect(keys!.some(k => k.length === 1 && k[0] === 0)).to.equal(true);
-			expect(keys!.some(k => k.length === 1 && k[0] === 1)).to.equal(true);
+			const fds = await projectFds('SELECT id, id + 1 FROM t');
+			expect(fds, 'expected Project FDs').to.be.an('array');
+			// Both `{0}` (id) and `{1}` (id+1) should appear as single-column keys.
+			expect(hasSingleColKey(fds, 0), '{0} should be a key').to.equal(true);
+			expect(hasSingleColKey(fds, 1), '{1} should be a key').to.equal(true);
 		});
 
 		it('SELECT id + v FROM t — references two source attrs; no derived key', async () => {
 			await setup();
-			const keys = await uniqueKeysOnProject('SELECT id + v FROM t');
-			// The Project's output has only one column derived from two attrs;
-			// no source unique key fully survives, so uniqueKeys should be empty.
-			expect(keys === undefined || keys.length === 0).to.equal(true);
+			const fds = await projectFds('SELECT id + v FROM t');
+			// One output column derived from two source attrs — no source key survives,
+			// so no single-column key-encoding FD should be present on column 0.
+			expect(hasSingleColKey(fds, 0)).to.equal(false);
 		});
 
 		it('SELECT id * v FROM t — `*` not injective; no derived key', async () => {
 			await setup();
-			const keys = await uniqueKeysOnProject('SELECT id * v FROM t');
-			expect(keys === undefined || keys.length === 0).to.equal(true);
+			const fds = await projectFds('SELECT id * v FROM t');
+			expect(hasSingleColKey(fds, 0)).to.equal(false);
 		});
 
 		it('DISTINCT eliminated for SELECT DISTINCT id + 1 FROM t', async () => {

@@ -21,11 +21,20 @@ interface MonotonicOnEntry {
 }
 
 interface PhysicalProps {
-	uniqueKeys?: number[][];
 	fds?: { determinants: number[]; dependents: number[] }[];
 	ordering?: { column: number; desc: boolean }[];
 	estimatedRows?: number;
 	monotonicOn?: MonotonicOnEntry[];
+}
+
+/** True iff the FD set contains some FD whose determinants are exactly `key`. */
+function hasKeyFd(fds: PhysicalProps['fds'], key: readonly number[]): boolean {
+	if (!fds) return false;
+	const keySet = new Set(key);
+	return fds.some(fd =>
+		fd.determinants.length === key.length &&
+		fd.determinants.every(d => keySet.has(d)),
+	);
 }
 
 async function planRows(db: Database, sql: string, params?: SqlValue[]): Promise<PlanRow[]> {
@@ -74,11 +83,14 @@ describe('TVF physical property advertisements', () => {
 			expect(propertiesOf(rows, (r) => r.op === 'TABLELITERAL')!.numRows).to.equal(100);
 		});
 
-		it('with a parameter bound, the TableFunctionCall stays in the plan and advertises uniqueKeys/ordering/monotonicOn', async () => {
+		it('with a parameter bound, the TableFunctionCall stays in the plan and advertises ordering/monotonicOn', async () => {
 			const rows = await planRows(db, 'SELECT * FROM generate_series(1, ?)');
 			const tfc = physicalOf(rows, (r) => r.op === 'TABLEFUNCTIONCALL');
 			expect(tfc, 'TableFunctionCall present').to.not.equal(undefined);
-			expect(tfc!.uniqueKeys).to.deep.equal([[0]]);
+			// generate_series advertises `value` (col 0) as a key, but it's the
+			// only column — the "K = all_cols" case has no non-trivial FD encoding
+			// (the all-cols-superkey-of-all-cols tautology). The uniqueness claim
+			// is communicated via the function's `RelationType.isSet`.
 			expect(tfc!.ordering).to.deep.equal([{ column: 0, desc: false }]);
 			expect(tfc!.monotonicOn).to.be.an('array').with.lengthOf(1);
 			expect(tfc!.monotonicOn![0].direction).to.equal('asc');
@@ -107,11 +119,13 @@ describe('TVF physical property advertisements', () => {
 			expect(distinct, 'DISTINCT should be elidable when source is set on key').to.equal(undefined);
 		});
 
-		it('json_tree(?) advertises uniqueKeys on id (column 4)', async () => {
+		it('json_tree(?) advertises a key on id (column 4)', async () => {
 			const rows = await planRows(db, 'SELECT * FROM json_tree(?)');
 			const tfc = physicalOf(rows, (r) => r.op === 'TABLEFUNCTIONCALL');
 			expect(tfc, 'TableFunctionCall present').to.not.equal(undefined);
-			expect(tfc!.uniqueKeys).to.deep.equal([[4]]);
+			// json_tree has multiple columns — the key on col 4 encodes as
+			// `{4} → all_other_cols`.
+			expect(hasKeyFd(tfc!.fds, [4]), 'expected `{4} → other-cols` FD').to.equal(true);
 		});
 	});
 
@@ -120,14 +134,17 @@ describe('TVF physical property advertisements', () => {
 			const rows = await planRows(db, 'SELECT value + 1 AS v FROM generate_series(1, ?)');
 			const project = physicalOf(rows, (r) => r.op === 'PROJECT');
 			expect(project, 'Project node present').to.not.equal(undefined);
-			// `+ 1` is injective in `value`, so the projected `v` is also a key.
-			expect(project!.uniqueKeys, 'projected uniqueKeys').to.not.equal(undefined);
-			expect(project!.uniqueKeys!.some((k) => k.length === 1 && k[0] === 0)).to.equal(true);
+			// `+ 1` is injective in `value`. The project has a single output column
+			// which is itself the key, so the all-cols tautology applies: no
+			// non-trivial FD encodes the key. Verify the logical surface instead.
+			const props = propertiesOf(rows, (r) => r.op === 'PROJECT');
+			expect(props, 'Project properties').to.not.equal(undefined);
+			expect(props!.uniqueKeys).to.deep.equal([[0]]);
 		});
 	});
 
 	describe('Validation drops bad advertisements safely', () => {
-		it('TVF with out-of-range key advertisement runs but does not expose uniqueKeys', async () => {
+		it('TVF with out-of-range key advertisement runs but does not expose a key FD', async () => {
 			const badTvf = createTableValuedFunction(
 				{
 					name: 'bad_keys_tvf',
@@ -162,7 +179,8 @@ describe('TVF physical property advertisements', () => {
 			const rows = await planRows(db, 'SELECT * FROM bad_keys_tvf(?)');
 			const tfc = physicalOf(rows, (r) => r.op === 'TABLEFUNCTIONCALL');
 			expect(tfc, 'TableFunctionCall present').to.not.equal(undefined);
-			expect(tfc!.uniqueKeys ?? []).to.deep.equal([]);
+			// Out-of-range key is dropped by validation; no key FD should appear.
+			expect(tfc!.fds ?? []).to.deep.equal([]);
 
 			// Query still executes correctly.
 			const results: number[] = [];

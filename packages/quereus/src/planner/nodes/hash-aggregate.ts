@@ -182,15 +182,13 @@ export class HashAggregateNode extends PlanNode implements UnaryRelationalNode {
 			this.source.getAttributes(),
 			this.groupBy,
 			sourcePhysical,
+			this.getAttributes().length,
 		);
 
 		return {
 			estimatedRows: this.estimatedRows,
 			// Hash aggregate does NOT preserve input ordering
 			ordering: undefined,
-			uniqueKeys: this.groupBy.length > 0 ?
-				[this.groupBy.map((_, idx) => idx)] :
-				[[]],
 			// Aggregation boundary: drop monotonicOn (the grouped relation is a set).
 			monotonicOn: undefined,
 			fds,
@@ -233,8 +231,6 @@ export class HashAggregateNode extends PlanNode implements UnaryRelationalNode {
 			}));
 		}
 
-		const groupCount = this.groupBy.length;
-		props.uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
 		return props;
 	}
 

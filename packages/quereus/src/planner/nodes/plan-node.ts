@@ -25,17 +25,18 @@ export interface MonotonicOnInfo {
  * values of `determinants` are fixed, the values of `dependents` are also
  * fixed for every row.
  *
- * Column indices are output-column indices (consistent with `uniqueKeys`).
+ * Column indices are output-column indices.
  *
  * - `determinants` empty means "constant": the dependents take a single value
- *   for every row in the relation.
+ *   for every row in the relation. An FD `∅ → all_cols` is the canonical
+ *   marker for an "at-most-one-row" relation.
+ * - A unique key `K` is encoded as the FD `K → (all_cols \ K)`. Consumers ask
+ *   "is K a superkey?" via `isSuperkey(K, fds, columnCount)` from
+ *   `planner/util/fd-utils.ts`.
  * - The set is non-canonical — only the FDs each operator can prove are
- *   stored. Use `computeClosure` from `planner/util/fd-utils.ts` to derive
- *   what a set of attributes implies.
- * - Superkeys (entries in `uniqueKeys`) implicitly imply the FD
- *   `key → all-columns`; the `fds` field carries the additional, non-key
- *   dependencies. Use `superkeyToFd(key, columnCount)` if a consumer wants
- *   a unified view; this is not materialized eagerly.
+ *   stored. Use `computeClosure` to derive what a set of attributes implies.
+ * - The full-relation case (`K = all_cols`, i.e. set semantics with no smaller
+ *   discoverable key) is communicated via `RelationType.isSet`, not an FD.
  */
 export interface FunctionalDependency {
   /** Determinant column indices in the node's output. Empty array means "constant" (no row variation). */
@@ -77,17 +78,11 @@ export interface PhysicalProperties {
   estimatedRows?: number;
 
   /**
-   * Column sets that are guaranteed unique in the output.
-   * Unlike logical keys which are schema-defined, these are derived from
-   * the operation (e.g., DISTINCT creates a unique key on all columns)
-   */
-  uniqueKeys?: number[][];
-
-  /**
-   * Functional dependencies that hold over the output stream. Superkeys
-   * (entries in `uniqueKeys`) imply the FD `key → all-columns`; `fds`
-   * carries the additional, non-key dependencies. Use `computeClosure` from
-   * `planner/util/fd-utils.ts` to derive what a set of attributes implies.
+   * Functional dependencies that hold over the output stream. The canonical
+   * representation of "what determines what" — unique keys are encoded as
+   * FDs `K → (all_cols \ K)`, and `∅ → all_cols` encodes "at-most-one-row".
+   * Use `computeClosure` / `isSuperkey` / `hasAnyKey` / `hasSingletonFd`
+   * from `planner/util/fd-utils.ts` to query them.
    */
   fds?: ReadonlyArray<FunctionalDependency>;
 

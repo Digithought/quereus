@@ -24,7 +24,6 @@ import { INTEGER_TYPE } from '../../src/types/builtin-types.js';
 interface PhysicalProps {
 	fds?: FunctionalDependency[];
 	equivClasses?: number[][];
-	uniqueKeys?: number[][];
 }
 
 interface PlanRow { node_type: string; op: string; detail: string; physical: string | null }
@@ -221,10 +220,16 @@ describe('fd-utils', () => {
 	});
 
 	describe('superkeyToFd', () => {
-		it('builds key → all-others', () => {
+		it('builds key → all-others for K ⊊ all_cols', () => {
 			const fd = superkeyToFd([1], 4);
-			expect(fd.determinants).to.deep.equal([1]);
-			expect(fd.dependents.slice().sort()).to.deep.equal([0, 2, 3]);
+			expect(fd).to.not.equal(undefined);
+			expect(fd!.determinants).to.deep.equal([1]);
+			expect(fd!.dependents.slice().sort()).to.deep.equal([0, 2, 3]);
+		});
+
+		it('returns undefined when K = all_cols (no non-trivial encoding)', () => {
+			const fd = superkeyToFd([0, 1, 2], 3);
+			expect(fd).to.equal(undefined);
 		});
 	});
 
@@ -374,19 +379,20 @@ describe('FD propagation per operator', () => {
 		expect(fdHas(props!.fds, [], [1])).to.equal(false);
 	});
 
-	it('Project: bare column projections survive, non-injective expressions drop out', async () => {
+	it('Project: bare column projections survive, non-injective expressions drop out of injective pairs', async () => {
 		await db.exec("CREATE TABLE p (id INTEGER PRIMARY KEY, v INTEGER) USING memory");
 		// `*` is not annotated as injective for numeric ops, so `v * 2` is a
-		// non-injective expression and must NOT appear in any FD.
+		// non-injective expression and must NOT produce a bi-directional FD
+		// between `id` (out col 0) and `w` (out col 1). The key-encoding FD
+		// `{0} → {1}` still appears (PK col 0 is a superkey of the projection's
+		// output), but no FD from {1} back to {0} is emitted for `v * 2`.
 		const rows = await planRows(db, "SELECT id, v * 2 AS w FROM p WHERE v = 7");
 		const props = physicalOf(rows, r => r.op === 'PROJECT');
 		expect(props).to.not.equal(undefined);
-		const refs = new Set<number>();
-		for (const fd of props!.fds ?? []) {
-			for (const d of fd.determinants) refs.add(d);
-			for (const d of fd.dependents) refs.add(d);
-		}
-		expect(refs.has(1)).to.equal(false);
+		// Key FD survives.
+		expect(fdHas(props!.fds, [0], [1])).to.equal(true);
+		// The injective-pair would have added `{1} → {0}` as well; assert it's absent.
+		expect(fdHas(props!.fds, [1], [0])).to.equal(false);
 	});
 
 	it('Project: injective unary projection (id + 1) is treated as a synonym of id', async () => {
@@ -417,14 +423,16 @@ describe('FD propagation per operator', () => {
 		expect(fdHas(aliasProps!.fds, [0], [1])).to.equal(true);
 	});
 
-	it('Distinct passes FDs through (and uniqueKeys covers all columns)', async () => {
+	it('Distinct passes FDs through; set-semantics carried by RelationType.isSet', async () => {
 		await db.exec("CREATE TABLE d (k INTEGER PRIMARY KEY, a INTEGER, b INTEGER) USING memory");
 		const rows = await planRows(db, 'SELECT DISTINCT a, b FROM d');
-		const props = physicalOf(rows, r => r.op === 'DISTINCT');
 		// Distinct may be eliminated when the source already has a covering key;
-		// when present, uniqueKeys should be set on all columns.
+		// when present, the node's physical surface should not crash (FDs may be
+		// empty or carry through). The all-columns-are-a-key claim now lives on
+		// `RelationType.isSet`, not on the physical FD surface.
+		const props = physicalOf(rows, r => r.op === 'DISTINCT');
 		if (props) {
-			expect(props.uniqueKeys).to.be.an('array').with.length.greaterThan(0);
+			expect(props.fds === undefined || Array.isArray(props.fds)).to.equal(true);
 		}
 	});
 

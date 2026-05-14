@@ -1,7 +1,7 @@
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, type PhysicalProperties } from './plan-node.js';
 import { ColumnReferenceNode } from './reference.js';
-import { projectConstantBindings, projectFds } from '../util/fd-utils.js';
+import { addFd, projectConstantBindings, projectFds, singletonFd, superkeyToFd } from '../util/fd-utils.js';
 import type { ConstantBinding, FunctionalDependency } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
@@ -25,17 +25,36 @@ export interface AggregateExpression {
  *
  * A source FD `X → Y` survives only if every column in `X ∪ Y` maps to a
  * group-by output column. Equivalence classes project the same way.
+ *
+ * In addition, the aggregate emits the key-encoding FD:
+ *   - GROUP BY non-empty: `{0..groupCount-1} → (all_other_output_cols)`.
+ *   - GROUP BY empty:     `∅ → all_output_cols` (singleton: one row total).
+ *
+ * `outputColumnCount` is the aggregate node's total output-column count, which
+ * may exceed `groupCount + aggregateCount` when source columns pass through
+ * (e.g. for HAVING-clause access on the streaming variant).
  */
 export function propagateAggregateFds(
   sourceAttrs: readonly Attribute[],
   groupBy: readonly ScalarPlanNode[],
   sourcePhysical: PhysicalProperties | undefined,
+  outputColumnCount: number,
 ): {
   fds?: ReadonlyArray<FunctionalDependency>;
   equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
   constantBindings?: ReadonlyArray<ConstantBinding>;
 } {
-  if (groupBy.length === 0) return {};
+  const groupCount = groupBy.length;
+
+  if (groupCount === 0) {
+    // Single-group aggregate: emit the singleton FD if there is at least one
+    // output column. Source-side FDs do not survive — every source row collapses
+    // into one output row, so per-row source determinations no longer apply.
+    const singleton = singletonFd(outputColumnCount);
+    return {
+      fds: singleton ? [singleton] : undefined,
+    };
+  }
 
   const map = new Map<number, number>();
   groupBy.forEach((expr, outIdx) => {
@@ -45,7 +64,16 @@ export function propagateAggregateFds(
     }
   });
 
-  const fds = projectFds(sourcePhysical?.fds ?? [], map);
+  let fds = projectFds(sourcePhysical?.fds ?? [], map);
+
+  // Emit the group-key FD `{0..groupCount-1} → (all_other_output_cols)`. The
+  // group-by columns are a unique key on the aggregate output (one row per
+  // distinct group), so they functionally determine every other output column.
+  const groupKey = Array.from({ length: groupCount }, (_, i) => i);
+  const keyFd = superkeyToFd(groupKey, outputColumnCount);
+  if (keyFd) {
+    fds = addFd(fds, keyFd, { keyHints: [groupKey] });
+  }
 
   const projectedEquiv: number[][] = [];
   for (const cls of sourcePhysical?.equivClasses ?? []) {
@@ -243,19 +271,14 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
 
   computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
     const sourcePhysical = childrenPhysical[0];
-    const groupCount = this.groupBy.length;
-    // If there is a GROUP BY, the group-by columns form a unique key on the output
-    // Output attribute indices for group-by are 0..groupCount-1 per buildAttributes
-    const uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
-
     const { fds, equivClasses, constantBindings } = propagateAggregateFds(
       this.source.getAttributes(),
       this.groupBy,
       sourcePhysical,
+      this.getAttributes().length,
     );
 
     return {
-      uniqueKeys,
       estimatedRows: this.estimatedRows,
       ordering: sourcePhysical?.ordering,
       fds,
@@ -295,9 +318,6 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
       }));
     }
 
-    // Expose logical unique keys: group-by columns (0..groupCount-1) or [[]] for global aggregate
-    const groupCount = this.groupBy.length;
-    props.uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
     return props;
   }
 

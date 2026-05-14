@@ -8,6 +8,7 @@ import { StatusCode } from '../../common/types.js';
 import { extractOrderingFromSortKeys } from '../framework/physical-utils.js';
 import { SortCapable } from '../framework/characteristics.js';
 import { ColumnReferenceNode } from './reference.js';
+import { isAssertedKey } from '../util/fd-utils.js';
 
 /**
  * Represents a sort key for ordering results
@@ -77,7 +78,8 @@ export class SortNode extends PlanNode implements UnaryRelationalNode, SortCapab
 		const ordering = extractOrderingFromSortKeys(this.sortKeys, sourceAttributes);
 
 		// Establish monotonicOn from the leading sort key when it is a trivial
-		// column reference. Strict iff the input was unique on that single column.
+		// column reference. Strict iff the input was unique on that single column —
+		// equivalent to `{leadIdx}` being a superkey of the source's columns.
 		let monotonicOn: readonly MonotonicOnInfo[] | undefined;
 		if (this.sortKeys.length > 0) {
 			const leadingKey = this.sortKeys[0];
@@ -85,9 +87,7 @@ export class SortNode extends PlanNode implements UnaryRelationalNode, SortCapab
 				const leadAttrId = leadingKey.expression.attributeId;
 				const leadIdx = sourceAttributes.findIndex(a => a.id === leadAttrId);
 				if (leadIdx >= 0) {
-					const strict = (sourcePhysical?.uniqueKeys ?? []).some(
-						key => key.length === 1 && key[0] === leadIdx,
-					);
+					const strict = isAssertedKey(new Set([leadIdx]), sourcePhysical?.fds, sourceAttributes.length);
 					monotonicOn = [{
 						attrId: leadAttrId,
 						direction: leadingKey.direction,
@@ -100,7 +100,11 @@ export class SortNode extends PlanNode implements UnaryRelationalNode, SortCapab
 		return {
 			estimatedRows: this.estimatedRows,
 			ordering,
-			uniqueKeys: sourcePhysical?.uniqueKeys,
+			// Sort doesn't change which rows are in the relation — FDs/ECs/bindings
+			// propagate unchanged.
+			fds: sourcePhysical?.fds,
+			equivClasses: sourcePhysical?.equivClasses,
+			constantBindings: sourcePhysical?.constantBindings,
 			monotonicOn,
 		};
 	}

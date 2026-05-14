@@ -2,8 +2,16 @@ import { createLogger } from '../../../common/logger.js';
 import type { PlanNode, RelationalPlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { JoinNode } from '../../nodes/join-node.js';
+import { hasSingletonFd } from '../../util/fd-utils.js';
 
 const log = createLogger('optimizer:rule:join-greedy-commute');
+
+/** True when the relation provably emits at most one row. */
+function isSingleton(node: RelationalPlanNode): boolean {
+	const colCount = node.getAttributes().length;
+	if (colCount === 0) return node.physical?.estimatedRows === 1;
+	return hasSingletonFd(node.physical?.fds, colCount);
+}
 
 /**
  * Rule: Join Greedy Commute
@@ -23,8 +31,8 @@ export function ruleJoinGreedyCommute(node: PlanNode, _context: OptContext): Pla
   const rightRows = node.getRightSource().estimatedRows ?? Number.POSITIVE_INFINITY;
 
   // Prefer known finite estimatedRows; also detect <=1 row driver on either side
-  const leftIsSingleton = node.getLeftSource().physical.uniqueKeys?.some(k => k.length === 0) === true;
-  const rightIsSingleton = node.getRightSource().physical.uniqueKeys?.some(k => k.length === 0) === true;
+  const leftIsSingleton = isSingleton(node.getLeftSource());
+  const rightIsSingleton = isSingleton(node.getRightSource());
 
   // If right is strictly better driver (smaller or singleton), swap
   const shouldSwap = (rightIsSingleton && !leftIsSingleton) || (!rightIsSingleton && !leftIsSingleton && rightRows < leftRows);

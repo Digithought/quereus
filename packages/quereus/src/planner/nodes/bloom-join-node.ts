@@ -91,12 +91,13 @@ export class BloomJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			leftAttrs.length,
 		);
 
+		const totalCols = this.getAttributes().length;
 		const fdResult = propagateJoinFds(
-			this.joinType, leftPhys, rightPhys, indexPairs, leftAttrs.length, result.uniqueKeys,
+			this.joinType, leftPhys, rightPhys, indexPairs,
+			leftAttrs.length, totalCols, result.preservedKeys,
 		);
 
 		return {
-			uniqueKeys: result.uniqueKeys,
 			estimatedRows: result.estimatedRows,
 			fds: fdResult.fds,
 			equivClasses: fdResult.equivClasses,
@@ -167,7 +168,7 @@ export class BloomJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
-		const attrs: Record<string, unknown> = {
+		return {
 			joinType: this.joinType,
 			algorithm: 'bloom',
 			equiPairs: this.equiPairs.map(p => ({ left: p.leftAttrId, right: p.rightAttrId })),
@@ -175,9 +176,5 @@ export class BloomJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			leftRows: this.left.estimatedRows,
 			rightRows: this.right.estimatedRows,
 		};
-		if (this.physical?.uniqueKeys) {
-			attrs.uniqueKeys = this.physical.uniqueKeys;
-		}
-		return attrs;
 	}
 }

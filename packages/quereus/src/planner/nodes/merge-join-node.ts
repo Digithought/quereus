@@ -96,13 +96,14 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			? leftPhys.ordering
 			: undefined;
 
+		const totalCols = this.getAttributes().length;
 		const fdResult = propagateJoinFds(
-			this.joinType, leftPhys, rightPhys, indexPairs, leftAttrs.length, result.uniqueKeys,
+			this.joinType, leftPhys, rightPhys, indexPairs,
+			leftAttrs.length, totalCols, result.preservedKeys,
 		);
 
 		return {
 			ordering,
-			uniqueKeys: result.uniqueKeys,
 			estimatedRows: result.estimatedRows,
 			// MergeJoin physically guarantees monotonicOn on equi-pair attrIds when both
 			// inputs were monotonic on their respective X (the merge join's whole point).
@@ -176,7 +177,7 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
-		const attrs: Record<string, unknown> = {
+		return {
 			joinType: this.joinType,
 			algorithm: 'merge',
 			equiPairs: this.equiPairs.map(p => ({ left: p.leftAttrId, right: p.rightAttrId })),
@@ -184,9 +185,5 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			leftRows: this.left.estimatedRows,
 			rightRows: this.right.estimatedRows,
 		};
-		if (this.physical?.uniqueKeys) {
-			attrs.uniqueKeys = this.physical.uniqueKeys;
-		}
-		return attrs;
 	}
 }

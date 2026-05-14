@@ -4,7 +4,7 @@ import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import { deriveProjectionColumnMap, projectKeys } from '../util/key-utils.js';
-import { addFd, projectConstantBindings, projectFds } from '../util/fd-utils.js';
+import { addFd, projectConstantBindings, projectFds, superkeyToFd } from '../util/fd-utils.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { formatProjection } from '../../util/plan-formatter.js';
 import { ColumnReferenceNode } from './reference.js';
@@ -161,6 +161,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const sourcePhysical = childrenPhysical[0];
 		const sourceAttrs = this.source.getAttributes();
+		const outputColCount = this.projections.length;
 
 		// monotonicOn only propagates through bare-column-reference projections —
 		// attribute identity must survive, which injectively-derived columns don't
@@ -177,17 +178,22 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 			this.projections.map((p, outIndex) => ({ expr: p.node, outIndex })),
 		);
 
-		const uniqueKeys = (sourcePhysical?.uniqueKeys || [])
-			.map(key => {
-				const projected: number[] = [];
-				for (const col of key) {
-					const outIdx = map.get(col);
-					if (outIdx === undefined) return null;
-					projected.push(outIdx);
-				}
-				return projected;
-			})
-			.filter((k): k is number[] => k !== null);
+		// Project the source's logical unique keys (from RelationType) through the
+		// column map: each surviving key K' becomes the FD `K' → (all_other_out_cols)`
+		// on the projection's output. This carries forward the "key-ness" claim that
+		// was previously emitted via `uniqueKeys`.
+		const sourceLogicalKeys = this.source.getType().keys.map(k => k.map(ref => ref.index));
+		const projectedKeys: number[][] = [];
+		for (const key of sourceLogicalKeys) {
+			const projected: number[] = [];
+			let miss = false;
+			for (const col of key) {
+				const outIdx = map.get(col);
+				if (outIdx === undefined) { miss = true; break; }
+				projected.push(outIdx);
+			}
+			if (!miss) projectedKeys.push(projected);
+		}
 
 		// When both a bare-column projection and an injective derivation of the
 		// same source column appear (`SELECT id, id+1 FROM t`), the derived column
@@ -196,12 +202,12 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 			const bareOut = map.get(srcIdx);
 			if (bareOut === undefined || bareOut === outIdx) continue;
 			const variants: number[][] = [];
-			for (const key of uniqueKeys) {
+			for (const key of projectedKeys) {
 				if (key.includes(bareOut) && !key.includes(outIdx)) {
 					variants.push(key.map(c => (c === bareOut ? outIdx : c)));
 				}
 			}
-			uniqueKeys.push(...variants);
+			projectedKeys.push(...variants);
 		}
 
 		// FDs/ECs project through the same column mapping. Non-trivial expressions
@@ -210,11 +216,15 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 		// augmented map carries through and which additionally emit a
 		// bi-directional FD when both the bare and derived columns are projected.
 		let fds = projectFds(sourcePhysical?.fds ?? [], map);
+		for (const key of projectedKeys) {
+			const keyFd = superkeyToFd(key, outputColCount);
+			if (keyFd) fds = addFd(fds, keyFd, { keyHints: projectedKeys });
+		}
 		for (const [srcIdx, outIdx] of injectivePairs) {
 			const bareOut = map.get(srcIdx);
 			if (bareOut === undefined || bareOut === outIdx) continue;
-			fds = addFd(fds, { determinants: [bareOut], dependents: [outIdx] }, { uniqueKeys });
-			fds = addFd(fds, { determinants: [outIdx], dependents: [bareOut] }, { uniqueKeys });
+			fds = addFd(fds, { determinants: [bareOut], dependents: [outIdx] }, { keyHints: projectedKeys });
+			fds = addFd(fds, { determinants: [outIdx], dependents: [bareOut] }, { keyHints: projectedKeys });
 		}
 		const projectedEquiv: number[][] = [];
 		for (const cls of sourcePhysical?.equivClasses ?? []) {
@@ -230,7 +240,6 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 		return {
 			estimatedRows: this.source.estimatedRows,
 			ordering: projectOrdering(sourcePhysical?.ordering, map),
-			uniqueKeys,
 			monotonicOn: projectMonotonicOnByAttrId(sourcePhysical?.monotonicOn, preservedAttrIds),
 			fds: fds.length > 0 ? fds : undefined,
 			equivClasses: projectedEquiv.length > 0 ? projectedEquiv : undefined,

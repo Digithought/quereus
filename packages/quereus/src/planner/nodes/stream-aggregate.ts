@@ -201,6 +201,7 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
       this.source.getAttributes(),
       this.groupBy,
       sourcePhysical,
+      this.getAttributes().length,
     );
 
     return {
@@ -209,10 +210,6 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
       ordering: this.groupBy.length > 0 ?
         this.groupBy.map((_, idx) => ({ column: idx, desc: false })) :
         undefined,
-      // Aggregation creates unique keys on GROUP BY columns
-      uniqueKeys: this.groupBy.length > 0 ?
-        [this.groupBy.map((_, idx) => idx)] :
-        [[]], // Single row if no GROUP BY
       // Aggregation boundary: drop monotonicOn (the grouped relation is a set).
       monotonicOn: undefined,
       fds,
@@ -255,9 +252,6 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
       }));
     }
 
-    // Expose logical unique keys: group-by columns (0..groupCount-1) or [[]] for global aggregate
-    const groupCount = this.groupBy.length;
-    props.uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
     return props;
   }
 
