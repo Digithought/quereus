@@ -571,6 +571,56 @@ Resets the statement to its initial state, ready to be re-executed with new para
 
 Releases all resources associated with the statement. The statement cannot be used after finalizing.
 
+## Change-scope introspection
+
+`Statement.getChangeScope(params?)` returns a JSON-serializable `ChangeScope`
+describing what base-table state and external inputs the statement reads
+from. The result is a static analysis — sound but conservative — and is
+the public projection of the binding analysis used by assertions and
+incremental view maintenance. See [Change-scope Documentation](change-scope.md)
+for the full data contract.
+
+### Analyzer-only
+
+```typescript
+import {
+    analyzeChangeScope,
+    serializeChangeScope,
+    unionScopes,
+    bindParameters,
+} from '@quereus/quereus';
+
+// Per-prepared-statement.
+await db.exec('create table orders (id integer primary key, total integer)');
+const stmt = db.prepare('select total from orders where id = ?');
+const scope = stmt.getChangeScope();
+// scope.watches[0] === { table: { schema: 'main', table: 'orders' },
+//                        columns: Set{'total'},
+//                        scope: { kind: 'rows', key: ['id'],
+//                                 values: [[{ kind: 'param', index: 1, type: {...} }]] } }
+// scope.unboundParameters === [1]
+
+// Substitute the parameter and clear the placeholder.
+const bound = stmt.getChangeScope([42]);
+// bound.watches[0].scope.values === [[42]]
+// bound.unboundParameters === []
+```
+
+### Composition
+
+```typescript
+const sA = db.prepare('select * from t where id = 1').getChangeScope();
+const sB = db.prepare('select * from t where id = 2').getChangeScope();
+const merged = unionScopes(sA, sB);
+// merged.watches[0].scope.values === [[1], [2]]
+
+const wire = JSON.stringify(serializeChangeScope(merged));
+// ...ship `wire` somewhere...
+```
+
+The end-to-end watcher case (`Database.watch(scope, handler)`) ships in a
+follow-up ticket.
+
 ## Virtual Tables
 
 One of Quereus's key features is its support for virtual tables, which allow you to expose any data source as a SQL table.

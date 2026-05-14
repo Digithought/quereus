@@ -1401,6 +1401,8 @@ During assertion creation/update:
 
 The same analysis used for assertions generalizes to incremental view maintenance and other delta-driven features. `analyzeRowSpecific` returns a `RowSpecificResult { classifications, groupKeys }`; `extractBindings` packages that into a `PlanBindings { perRelation, relationToBase }` map of `BindingMode` per `TableReferenceNode` instance. The full runtime surface is documented in [`docs/incremental-maintenance.md`](incremental-maintenance.md).
 
+The **public** projection of this analysis is the `ChangeScope` data contract — a JSON-serializable description of "what state does this prepared statement depend on?". `Statement.getChangeScope()` returns one for any prepared statement; see [`docs/change-scope.md`](change-scope.md).
+
 ### Modes of Specificity
 - Row-specific (`'row'`): unique key fully covered (under FD closure including FK→PK and EC-derived FDs); bind PK/unique key columns.
 - Group-specific (`'group'`): aggregate `GROUP BY` columns (under FD closure at the aggregate's source) cover a unique key of the underlying table reference; bind the minimal group-key column subset (`groupKeys[relKey]`). Group-membership transitions (when an UPDATE changes a captured column) drive OLD/NEW projection emission so both old and new group keys are re-evaluated.

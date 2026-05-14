@@ -112,6 +112,7 @@ All paths above are relative to `src/`.
 *   **Bags vs Sets Distinction** — explicit type-level distinction between relations that guarantee unique rows (sets) and those that allow duplicates (bags), enabling sophisticated optimizations and maintaining algebraic correctness in line with Third Manifesto principles.
 *   **Attribute-Based Context System** — robust column reference resolution using stable attribute IDs eliminates architectural fragilities and provides deterministic context lookup across plan transformations.
 *   **Functional-Dependency Tracking** — every relational physical node carries optional `fds` and `equivClasses` fields. Unique keys are encoded as `K → (all_cols \ K)` FDs (with `∅ → all_cols` for at-most-one-row claims), so a single surface answers both "what determines what" and "is this column set unique?". Operators propagate per-column FDs (e.g., `col1 = const` ⇒ `∅ → col1`, equi-joins ⇒ bi-directional FDs) and equivalence classes through the plan, giving optimizer rules a first-class signal beyond just superkeys. See [Optimizer Documentation §Functional Dependency Tracking](optimizer.md#functional-dependency-tracking).
+*   **Per-Statement Change-Scope Introspection** — `Statement.getChangeScope()` returns a JSON-serializable `ChangeScope` describing what base-table state and external inputs the statement reads from, backed by the FD-aware binding analysis used by assertions and incremental view maintenance. See [Change-scope Documentation](change-scope.md).
 
 ## Design Differences from SQLite
 

@@ -190,6 +190,30 @@ export type {
 	PluginRegistrations
 } from './vtab/manifest.js';
 
+// Change-scope introspection
+export type {
+	ChangeScope,
+	TableWatch,
+	WatchScope,
+	ScopeValue,
+	ParamScopeValue,
+	PortableScalarType,
+	NonDetSource,
+	QualifiedName,
+	SerializedChangeScope,
+} from './planner/analysis/change-scope.js';
+export {
+	analyzeChangeScope,
+	unionScopes,
+	intersectScopes,
+	bindParameters,
+	isEmpty,
+	describesEverything,
+	serializeChangeScope,
+	deserializeChangeScope,
+	scalarTypeFromPortable,
+} from './planner/analysis/change-scope.js';
+
 // Debug and development utilities
 export { serializePlanTree, formatPlanTree, formatPlanSummary, serializePlanTreeWithOptions } from './planner/debug.js';
 export type { PlanDisplayOptions } from './planner/debug.js';

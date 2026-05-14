@@ -174,6 +174,7 @@ See [Store Documentation](../../docs/store.md) for the storage architecture and 
 * [Error Handling](../../docs/errors.md) — error types and status codes
 * [Plugin System](../../docs/plugins.md) — virtual tables, functions, and collations
 * [Optimizer](../../docs/optimizer.md) / [Optimizer Conventions](../../docs/optimizer-conventions.md)
+* [Change-scope Introspection](../../docs/change-scope.md) — what a prepared statement reads from
 * [TODO List](../../docs/todo.md) — planned features
 
 ### Plugin Development
@@ -205,6 +206,7 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 *   **Robust transaction support** — multi-level savepoints and rollback. See [Usage Guide](../../docs/usage.md#transactions) for details
 *   **Rich built-in function library** — scalar, aggregate, window, JSON, and date/time functions
 *   **Rule-based optimizer** — constant folding, caching, streaming aggregation, bloom-join selection, and correlated subquery decorrelation. See [Architecture — Optimizer](../../docs/architecture.md#optimizer).
+*   **Change-scope introspection** — `Statement.getChangeScope()` returns a JSON-serializable description of what base-table state and external inputs a prepared statement reads from, suitable for plumbing into watchers and incremental view maintenance. See [Change-scope Documentation](../../docs/change-scope.md).
 
 [TODO List](../../docs/todo.md) has remaining priorities.
 
