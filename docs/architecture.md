@@ -100,7 +100,7 @@ All paths above are relative to `src/`.
 
 ## Key Design Decisions
 
-*   **Federated / VTab-Centric** — all tables are virtual tables.
+*   **Federated / VTab-Centric** — all tables are virtual tables. Because remote virtual tables make join cost dominate, the optimizer aggressively eliminates joins whose non-preserved side is unused above the join when FK→PK alignment proves at-most-one-matching, often dropping a remote round-trip entirely. See [Optimizer Documentation §Join](optimizer.md#optimization-rules).
 *   **Async Core** — core operations are asynchronous. Cursors are `AsyncIterable<Row>`.
 *   **Key-Based Addressing** — rows are identified by their defined Primary Key. No separate implicit `rowid`.
 *   **Relational Orthogonality** — any statement that results in a relation can be used anywhere that expects a relation value, including mutating statements with RETURNING clauses.

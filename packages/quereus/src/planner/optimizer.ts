@@ -26,6 +26,7 @@ import { ruleAggregatePredicatePushdown } from './rules/predicate/rule-aggregate
 import { ruleFilterMerge } from './rules/predicate/rule-filter-merge.js';
 import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
+import { ruleJoinElimination } from './rules/join/rule-join-elimination.js';
 // Predicate pushdown rules
 // Core optimization rules
 import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
@@ -196,6 +197,19 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleGroupByFdSimplification,
 			priority: 23
+		});
+
+		// Join elimination (FK→PK): drop LEFT/INNER joins whose non-preserved side
+		// is never referenced above the join and is at-most-one-matching per a
+		// declared FK→PK relationship. Runs after predicate-pushdown (priority 20)
+		// so any pushed-up filter that *uses* the eliminable side has had a chance
+		// to land below the join (and thereby protect itself from elimination).
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'join-elimination',
+			nodeType: PlanNodeType.Project,
+			phase: 'rewrite',
+			fn: ruleJoinElimination,
+			priority: 24
 		});
 
 		// Subquery decorrelation: transform correlated EXISTS/IN into semi/anti joins
