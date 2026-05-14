@@ -482,10 +482,10 @@ function normalizeBinding(b: ConstantBinding): ConstantBinding {
 
 /**
  * Merge two binding lists, coalescing bindings that share a `ConstantValue`
- * by unioning their `attrs`. Caps the result at `MAX_FDS_PER_NODE`; oldest
- * entries are dropped when the cap is exceeded (matches the FD cap rule —
- * bindings sourced from earlier nodes are preferred since they typically
- * sit closer to keyed columns).
+ * by unioning their `attrs`. Caps the result at `MAX_FDS_PER_NODE`; later
+ * additions are dropped when the cap is exceeded — bindings sourced from
+ * earlier nodes are preferred since they typically sit closer to keyed
+ * columns. Truncations are logged under `quereus:planner:fd`.
  */
 export function mergeConstantBindings(
 	a: ReadonlyArray<ConstantBinding>,
