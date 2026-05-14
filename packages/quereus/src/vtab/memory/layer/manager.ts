@@ -558,7 +558,7 @@ export class MemoryTableManager {
 		const existingRow = this.lookupEffectiveRow(primaryKey, targetLayer);
 
 		if (existingRow !== null) {
-			// Resolve PK-conflict action: statement OR > column-level default > ABORT.
+			// Resolve PK-conflict action: statement OR > per-constraint default > ABORT.
 			const pkAction = onConflict ?? resolvePkDefaultConflict(schema) ?? ConflictResolution.ABORT;
 			if (pkAction === ConflictResolution.IGNORE) {
 				return { status: 'ok', row: undefined };

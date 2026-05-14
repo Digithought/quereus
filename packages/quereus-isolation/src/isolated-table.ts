@@ -957,7 +957,7 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 		const underlyingRow = await this.getUnderlyingRow(newPK);
 		if (!underlyingRow) return null;
 
-		// Statement OR > PK column-level default > ABORT.
+		// Statement OR > per-constraint default > ABORT.
 		const effective = resolveEffective(onConflict, resolvePkDefaultConflict(this.tableSchema!));
 		if (effective === ConflictResolution.IGNORE) return { status: 'ok', row: undefined };
 		if (effective === ConflictResolution.REPLACE) return null; // same-PK replace: flush will UPDATE underlying
