@@ -219,4 +219,42 @@ describe('Database.watch (integration)', () => {
 		expect(events).to.have.length(0);
 		sub.unsubscribe();
 	});
+
+	it('disposes subscription when its table is dropped (no fire on a re-created table)', async () => {
+		await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY) USING memory');
+		const events: WatchEvent[] = [];
+		const scope: ChangeScope = {
+			watches: [{ table: { schema: 'main', table: 't' }, columns: 'all', scope: { kind: 'full' } }],
+			nonDeterministicSources: [],
+			unboundParameters: [],
+		};
+		const sub = db.watch(scope, e => { events.push(e); });
+		await db.exec('INSERT INTO t VALUES (1)');
+		expect(events).to.have.length(1);
+
+		await db.exec('DROP TABLE t');
+		await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY) USING memory');
+		await db.exec('INSERT INTO t VALUES (2)');
+		// Subscription was invalidated by the table_removed event; no further fire.
+		expect(events).to.have.length(1);
+
+		// unsubscribe is still safe (idempotent) after auto-invalidation.
+		sub.unsubscribe();
+	});
+
+	it('accepts hand-built scope with non-lowercased schema/table names', async () => {
+		// Hand-built scopes from external sources may not honor the lowercased
+		// contract — the watcher must still resolve and fire.
+		await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY) USING memory');
+		const events: WatchEvent[] = [];
+		const scope: ChangeScope = {
+			watches: [{ table: { schema: 'Main', table: 'T' }, columns: 'all', scope: { kind: 'full' } }],
+			nonDeterministicSources: [],
+			unboundParameters: [],
+		};
+		const sub = db.watch(scope, e => { events.push(e); });
+		await db.exec('INSERT INTO t VALUES (1)');
+		expect(events).to.have.length(1);
+		sub.unsubscribe();
+	});
 });

@@ -122,7 +122,12 @@ export class DeltaExecutor {
 		const changedBases = this.ctx.getChangedBaseTables();
 		if (changedBases.size === 0) return;
 
-		for (const sub of this.subscriptions) {
+		// Snapshot subscriptions before iterating: a handler that registers a
+		// new subscription mid-fire must not see the current commit, and one
+		// that unsubscribes a peer must still see in-flight apply complete.
+		const snapshot = [...this.subscriptions];
+		for (const sub of snapshot) {
+			if (!this.subscriptions.has(sub)) continue;
 			await this.runOne(sub, changedBases);
 		}
 	}
@@ -236,11 +241,14 @@ export interface SubscriptionFromChangeScopeResult {
 
 /** Synthetic relation key for the i-th watch in a scope. */
 function relKeyForWatch(table: QualifiedName, watchIndex: number): string {
-	return `${table.schema}.${table.table}#watch_${watchIndex}`;
+	return `${baseKeyFor(table)}#watch_${watchIndex}`;
 }
 
 function baseKeyFor(table: QualifiedName): string {
-	return `${table.schema}.${table.table}`;
+	// Defensive: the contract on `QualifiedName` says lowercased, but
+	// hand-built `ChangeScope` values may not honor it. The change log is
+	// keyed lowercased, so non-lowercased deps would never match.
+	return `${table.schema}.${table.table}`.toLowerCase();
 }
 
 /**
@@ -303,8 +311,9 @@ export function subscriptionFromChangeScope(
 		readonly watch: TableWatch;
 		readonly relKey: string;
 		readonly base: string;
-		/** Literal-only key/group values, pre-filtered. */
-		readonly literalValues: ReadonlyArray<ReadonlyArray<SqlValue>> | null;
+		/** Literal-only key/group values, pre-filtered. Empty array for
+		 *  watches that don't carry literal values (`full`, `groups`). */
+		readonly literalValues: ReadonlyArray<ReadonlyArray<SqlValue>>;
 	}
 	const plans: WatchPlan[] = [];
 
@@ -333,7 +342,7 @@ export function subscriptionFromChangeScope(
 		};
 
 		let mode: BindingMode;
-		let literalValues: ReadonlyArray<ReadonlyArray<SqlValue>> | null = null;
+		let literalValues: ReadonlyArray<ReadonlyArray<SqlValue>> = [];
 
 		switch (watch.scope.kind) {
 			case 'full': {
@@ -405,7 +414,7 @@ export function subscriptionFromChangeScope(
 						// Kernel fell back to global; we can't narrow precisely.
 						// Surface every literal value the watch was registered
 						// for so the handler treats them all as possibly-changed.
-						hits = literalValues ?? [];
+						hits = literalValues;
 						observable = hits.length > 0;
 					} else {
 						hits = intersectTuples(kernelTuples ?? [], literalValues);
@@ -420,7 +429,7 @@ export function subscriptionFromChangeScope(
 				}
 				case 'rowsByGroup': {
 					if (isGlobal) {
-						hits = literalValues ?? [];
+						hits = literalValues;
 					} else {
 						hits = intersectTuples(kernelTuples ?? [], literalValues);
 					}
@@ -458,9 +467,7 @@ export function subscriptionFromChangeScope(
 }
 
 /**
- * Filter a ScopeValue-tuple list to literal-only tuples. Returns `null`
- * if the list is empty after filtering (i.e. the watch had no literal
- * values at all, or none survived).
+ * Filter a ScopeValue-tuple list to literal-only tuples.
  *
  * `Database.watch` rejects scopes with `unboundParameters.length > 0` up
  * front, so by the time we reach here, any surviving `ParamScopeValue`
@@ -488,9 +495,9 @@ function literalValuesOnly(
 
 function intersectTuples(
 	kernel: readonly SqlValue[][],
-	watch: ReadonlyArray<ReadonlyArray<SqlValue>> | null,
+	watch: ReadonlyArray<ReadonlyArray<SqlValue>>,
 ): ReadonlyArray<ReadonlyArray<SqlValue>> {
-	if (!watch || watch.length === 0) return [];
+	if (watch.length === 0) return [];
 	const watchKeys = new Set<string>();
 	for (const t of watch) watchKeys.add(tupleKey(t));
 	const out: SqlValue[][] = [];
