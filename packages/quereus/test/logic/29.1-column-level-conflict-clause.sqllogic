@@ -120,3 +120,52 @@ select id, v from pk_upd_ignore order by id;
 → [{"id":1,"v":"a"},{"id":2,"v":"b"}]
 
 drop table pk_upd_ignore;
+
+-- ===================================
+-- 9. UPDATE-with-PK-change under REPLACE cascades FK ON DELETE for evicted row
+-- ===================================
+-- Quereus's default `on update` is `restrict`, so any child of the moved row
+-- would block the update before the eviction can happen. To isolate the
+-- evicted row's cascade, only the row that gets evicted has a child here.
+
+create table parent_evict (id integer primary key on conflict replace, v text);
+create table child_evict (
+	id integer primary key,
+	parent_id integer references parent_evict(id) on delete cascade
+);
+insert into parent_evict values (1, 'one'), (2, 'two');
+insert into child_evict values (20, 2);
+
+-- Move parent id=1 onto id=2; column-level REPLACE evicts the row at id=2.
+update parent_evict set id = 2 where id = 1;
+
+-- The row formerly at id=2 was evicted, so its child (id=20) must be cascaded.
+select id, parent_id from child_evict;
+→ []
+
+select id, v from parent_evict order by id;
+→ [{"id":2,"v":"one"}]
+
+drop table child_evict;
+drop table parent_evict;
+
+-- ===================================
+-- 10. UPDATE-with-PK-change under REPLACE applies ON DELETE SET NULL for evicted row
+-- ===================================
+
+create table p_set_null (id integer primary key on conflict replace, v text);
+create table c_set_null (
+	id integer primary key,
+	parent_id integer null references p_set_null(id) on delete set null
+);
+insert into p_set_null values (1, 'a'), (2, 'b');
+insert into c_set_null values (200, 2);
+
+update p_set_null set id = 2 where id = 1;
+
+-- Evicted parent (2, 'b') triggers SET NULL on its child (200).
+select id, parent_id from c_set_null;
+→ [{"id":200,"parent_id":null}]
+
+drop table c_set_null;
+drop table p_set_null;

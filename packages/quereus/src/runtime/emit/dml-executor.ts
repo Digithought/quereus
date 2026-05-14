@@ -516,6 +516,27 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					continue;
 				}
 
+				// If the UPDATE moved this row onto an occupied PK under REPLACE,
+				// the vtab returns the displaced row. Surface its deletion BEFORE
+				// the move bookkeeping so change tracking, FK cascade, and auto-events
+				// see the same evict-then-move sequence the vtab journals (manager.ts
+				// records delete(newPk, evicted) before the move). Running the
+				// eviction's FK cascade first also avoids ON UPDATE CASCADE pulling
+				// children onto PK_new and then having an unrelated ON DELETE CASCADE
+				// for the evicted row wipe them out.
+				if (result.replacedRow) {
+					const evictedKeyValues = pkColumnIndicesInSchema.map(idx => result.replacedRow![idx]);
+					ctx.db._recordDelete(
+						`${tableSchema.schemaName}.${tableSchema.name}`,
+						result.replacedRow,
+						pkColumnIndicesInSchema,
+					);
+					await executeForeignKeyActions(ctx.db, tableSchema, 'delete', result.replacedRow);
+					if (needsAutoEvents) {
+						emitAutoDataEvent(ctx, tableSchema, 'delete', evictedKeyValues, [...result.replacedRow]);
+					}
+				}
+
 				// Track change (UPDATE): pass full rows so the change capture can
 				// project the columns any active subscription cares about.
 				ctx.db._recordUpdate(
