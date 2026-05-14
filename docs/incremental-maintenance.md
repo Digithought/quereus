@@ -118,6 +118,11 @@ On first reference to an assertion at COMMIT time:
 4. For each `'row'`/`'group'` binding, inject a key-equality filter on the
    `TableReferenceNode` (`injectKeyFilter`) and pre-compile the residual
    scheduler. Parameter prefix is `pk` for row bindings, `gk` for group.
+   `'group'` residuals use NULL-safe equality per column
+   (`(col IS NULL AND :gk_i IS NULL) OR col = :gk_i`) so a changed NULL
+   group is re-evaluated as a distinct group, matching SQL `GROUP BY`
+   semantics. `'row'` bindings keep plain `col = :pk_i` because PK
+   columns are NOT NULL by definition.
 5. Register a `DeltaSubscription` whose `apply`:
    - For each per-relation tuple batch, runs the cached residual scheduler
      once per tuple (early-exiting on the first violating row).

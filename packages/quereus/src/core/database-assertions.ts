@@ -26,7 +26,7 @@ import { RowContextMap } from '../runtime/context-helpers.js';
 import { BlockNode } from '../planner/nodes/block.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode } from '../planner/nodes/plan-node.js';
 import { FilterNode } from '../planner/nodes/filter.js';
-import { BinaryOpNode } from '../planner/nodes/scalar.js';
+import { BinaryOpNode, UnaryOpNode } from '../planner/nodes/scalar.js';
 import { ParameterReferenceNode, ColumnReferenceNode, TableReferenceNode } from '../planner/nodes/reference.js';
 import { EmissionContext } from '../runtime/emission-context.js';
 import { isAsyncIterable } from '../runtime/utils.js';
@@ -496,21 +496,42 @@ export class AssertionEvaluator {
 			return new ParameterReferenceNode(scope, pexpr, name, type);
 		};
 
+		// For 'group' bindings, group-key columns can be NULL and `col = NULL` is
+		// UNKNOWN, so the residual would silently skip the NULL group and miss a
+		// real violation. Emit a NULL-safe per-column equality:
+		//   (col IS NULL AND :gk_i IS NULL) OR col = :gk_i
+		// PK columns ('row' bindings) are NOT NULL by definition, so we keep the
+		// simpler `col = :pk_i` form there to avoid optimizer regressions on the
+		// far-more-common row path.
+		const nullSafe = paramPrefix === 'gk';
 		let predicate: ScalarPlanNode | null = null;
 		for (let i = 0; i < keyColumns.length; i++) {
 			const colIdx = keyColumns[i];
 			const left = makeColumnRef(colIdx);
 			const right = makeParamRef(i, attributes[colIdx].type);
-			const bexpr: AST.BinaryExpr = { type: 'binary', operator: '=', left: left.expression, right: right.expression };
-			const eqNode = new BinaryOpNode(scope, bexpr, left, right);
+			const eqAst: AST.BinaryExpr = { type: 'binary', operator: '=', left: left.expression, right: right.expression };
+			const eqNode = new BinaryOpNode(scope, eqAst, left, right);
+			let conjunct: ScalarPlanNode = eqNode;
+			if (nullSafe) {
+				const leftForNullCheck = makeColumnRef(colIdx);
+				const rightForNullCheck = makeParamRef(i, attributes[colIdx].type);
+				const leftIsNullAst: AST.UnaryExpr = { type: 'unary', operator: 'IS NULL', expr: leftForNullCheck.expression };
+				const rightIsNullAst: AST.UnaryExpr = { type: 'unary', operator: 'IS NULL', expr: rightForNullCheck.expression };
+				const leftIsNull = new UnaryOpNode(scope, leftIsNullAst, leftForNullCheck);
+				const rightIsNull = new UnaryOpNode(scope, rightIsNullAst, rightForNullCheck);
+				const bothNullAst: AST.BinaryExpr = { type: 'binary', operator: 'AND', left: leftIsNull.expression, right: rightIsNull.expression };
+				const bothNull = new BinaryOpNode(scope, bothNullAst, leftIsNull, rightIsNull);
+				const orAst: AST.BinaryExpr = { type: 'binary', operator: 'OR', left: bothNull.expression, right: eqNode.expression };
+				conjunct = new BinaryOpNode(scope, orAst, bothNull, eqNode);
+			}
 			predicate = predicate
 				? new BinaryOpNode(
 					scope,
-					{ type: 'binary', operator: 'AND', left: predicate.expression, right: eqNode.expression },
+					{ type: 'binary', operator: 'AND', left: predicate.expression, right: conjunct.expression },
 					predicate,
-					eqNode
+					conjunct
 				)
-				: eqNode;
+				: conjunct;
 		}
 
 		if (!predicate) return null;
