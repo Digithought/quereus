@@ -546,3 +546,50 @@ SELECT COUNT(*) FROM orders_mc;
 DROP ASSERTION omc_nonneg;
 DROP TABLE orders_mc;
 -- run
+
+-- ===================================
+-- Row Assertion: Nullable UNIQUE Column Present (repro for delta-null-row-key)
+-- ===================================
+-- A row-classified assertion's residual is `col = :pk_i` per chosen key column.
+-- When `chooseRowKey` lands on a nullable UNIQUE column instead of the PK, a
+-- change tuple with NULL in that column would silently bypass the residual
+-- under naive equality. In practice the optimizer's FD/EC closure propagates
+-- the UNIQUE equality to PK so the binding is PK; this block guards against
+-- regressions in (a) the binding picker preferring PK and (b) the residual
+-- builder handling nullable key columns NULL-safely if the picker ever lands
+-- on one. Pattern after `onn_nonneg`.
+
+CREATE TABLE accounts (id INTEGER PRIMARY KEY, ext_id TEXT NULL UNIQUE, balance INTEGER);
+CREATE ASSERTION rnn_balance CHECK (NOT EXISTS (
+  SELECT 1 FROM accounts WHERE id = 1 AND balance < 0
+));
+-- run
+
+-- Verify the binding lands on PK via FD closure (regression guard for
+-- chooseRowKey's PK-preferred behaviour).
+SELECT COALESCE(prepared_pk_params, '[]') AS prepared_pk_params
+  FROM explain_assertion('rnn_balance') WHERE classification = 'row' LIMIT 1;
+→ [{ "prepared_pk_params": "[\"pk0\"]" }]
+
+-- Seed a row whose nullable UNIQUE column is NULL. Per SQL standard NULLs are
+-- distinct, so this commits cleanly.
+INSERT INTO accounts VALUES (1, NULL, 100);
+COMMIT;
+SELECT COUNT(*) FROM accounts;
+→ [{ "count(*)": 1 }]
+
+-- Update the NULL-keyed row to violate the assertion: the row residual must
+-- re-evaluate this tuple even though its UNIQUE column is NULL. The PK
+-- binding makes this trivial today, but the per-column-nullable residual
+-- shape keeps it correct if `chooseRowKey` ever lands on `ext_id`.
+BEGIN;
+UPDATE accounts SET balance = -50 WHERE id = 1;
+COMMIT;
+-- error: Integrity assertion failed: rnn_balance
+
+SELECT balance FROM accounts WHERE id = 1;
+→ [{ "balance": 100 }]
+
+DROP ASSERTION rnn_balance;
+DROP TABLE accounts;
+-- run

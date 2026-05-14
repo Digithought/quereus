@@ -496,23 +496,24 @@ export class AssertionEvaluator {
 			return new ParameterReferenceNode(scope, pexpr, name, type);
 		};
 
-		// For 'group' bindings, group-key columns can be NULL and `col = NULL` is
-		// UNKNOWN, so the residual would silently skip the NULL group and miss a
-		// real violation. Emit a NULL-safe per-column equality:
-		//   (col IS NULL AND :gk_i IS NULL) OR col = :gk_i
-		// PK columns ('row' bindings) are NOT NULL by definition, so we keep the
-		// simpler `col = :pk_i` form there to avoid optimizer regressions on the
-		// far-more-common row path.
-		const nullSafe = paramPrefix === 'gk';
+		// Per-column NULL safety: `col = :param` evaluates UNKNOWN when either
+		// side is NULL, so a residual built from plain equalities would silently
+		// skip change tuples whose key columns are NULL and miss real violations.
+		// For each nullable key column emit the NULL-safe form:
+		//   (col IS NULL AND :prefix_i IS NULL) OR col = :prefix_i
+		// For NOT NULL columns (typically PK columns on the 'row' path) keep
+		// the simpler `col = :prefix_i` form to avoid disjunctive predicates
+		// that could regress index-driven access.
 		let predicate: ScalarPlanNode | null = null;
 		for (let i = 0; i < keyColumns.length; i++) {
 			const colIdx = keyColumns[i];
+			const colNullable = attributes[colIdx].type.nullable === true;
 			const left = makeColumnRef(colIdx);
 			const right = makeParamRef(i, attributes[colIdx].type);
 			const eqAst: AST.BinaryExpr = { type: 'binary', operator: '=', left: left.expression, right: right.expression };
 			const eqNode = new BinaryOpNode(scope, eqAst, left, right);
 			let conjunct: ScalarPlanNode = eqNode;
-			if (nullSafe) {
+			if (colNullable) {
 				const leftForNullCheck = makeColumnRef(colIdx);
 				const rightForNullCheck = makeParamRef(i, attributes[colIdx].type);
 				const leftIsNullAst: AST.UnaryExpr = { type: 'unary', operator: 'IS NULL', expr: leftForNullCheck.expression };
