@@ -46,6 +46,29 @@ export function computeClosure(
 	return closure;
 }
 
+/**
+ * Expand a list of equivalence classes into bi-directional FDs over the same
+ * column indices, then concatenate with the existing FDs. For a class
+ * `{c0, c1, ..., ck}` this emits `{ci} → {cj}` for every distinct ordered pair
+ * — enough for `computeClosure` to derive every member from any one of them.
+ */
+export function expandEcsToFds(
+	ecs: ReadonlyArray<ReadonlyArray<number>>,
+	fds: ReadonlyArray<FunctionalDependency>,
+): FunctionalDependency[] {
+	const out: FunctionalDependency[] = fds.slice();
+	for (const cls of ecs) {
+		if (cls.length < 2) continue;
+		for (let i = 0; i < cls.length; i++) {
+			for (let j = 0; j < cls.length; j++) {
+				if (i === j) continue;
+				out.push({ determinants: [cls[i]], dependents: [cls[j]] });
+			}
+		}
+	}
+	return out;
+}
+
 /** True iff `attrs` determines every attribute in `target` under `fds`. */
 export function determines(
 	attrs: ReadonlySet<number>,

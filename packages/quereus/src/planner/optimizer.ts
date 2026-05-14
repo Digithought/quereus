@@ -31,6 +31,7 @@ import { ruleJoinElimination } from './rules/join/rule-join-elimination.js';
 // Core optimization rules
 import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
 import { ruleGroupByFdSimplification } from './rules/aggregate/rule-groupby-fd-simplification.js';
+import { ruleOrderByFdPruning } from './rules/sort/rule-orderby-fd-pruning.js';
 import { ruleQuickPickJoinEnumeration } from './rules/join/rule-quickpick-enumeration.js';
 import { ruleJoinPhysicalSelection } from './rules/join/rule-join-physical-selection.js';
 import { ruleMonotonicMergeJoin } from './rules/join/rule-monotonic-merge-join.js';
@@ -220,6 +221,22 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleSubqueryDecorrelation,
 			priority: 25
+		});
+
+		// ORDER BY FD pruning: drop trailing ORDER BY keys functionally determined
+		// by the leading bare-column keys (under the source's FDs + ECs). Reduces
+		// multi-key sorts to single-key sorts when a leading key (e.g. a primary
+		// key) determines the rest, which in turn lets `monotonic-limit-pushdown`
+		// (PostOptimization priority 8) fire. Structural runs before
+		// PostOptimization, so the ordering is automatic. Priority 26 — independent
+		// of `subquery-decorrelation` (25); the relative ordering across these
+		// Structural priorities is not load-bearing for this rule.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'orderby-fd-pruning',
+			nodeType: PlanNodeType.Sort,
+			phase: 'rewrite',
+			fn: ruleOrderByFdPruning,
+			priority: 26
 		});
 
 		// Physical pass rules (bottom-up) - for logical to physical transformations

@@ -26,12 +26,12 @@
  */
 
 import { createLogger } from '../../../common/logger.js';
-import type { PlanNode, ScalarPlanNode, Attribute, FunctionalDependency } from '../../nodes/plan-node.js';
+import type { PlanNode, ScalarPlanNode, Attribute } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { AggregateNode, type AggregateExpression } from '../../nodes/aggregate-node.js';
 import { AggregateFunctionCallNode } from '../../nodes/aggregate-function.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
-import { minimalCover } from '../../util/fd-utils.js';
+import { expandEcsToFds, minimalCover } from '../../util/fd-utils.js';
 import { isAggregateFunctionSchema } from '../../../schema/function.js';
 import type * as AST from '../../../parser/ast.js';
 
@@ -146,25 +146,3 @@ export function ruleGroupByFdSimplification(node: PlanNode, context: OptContext)
 	);
 }
 
-/**
- * Expand a list of equivalence classes into bi-directional FDs over the same
- * column indices, then concatenate with the existing FDs. For a class
- * `{c0, c1, ..., ck}` this emits `{ci} → {cj}` for every distinct ordered pair
- * — enough for `computeClosure` to derive every member from any one of them.
- */
-function expandEcsToFds(
-	ecs: ReadonlyArray<ReadonlyArray<number>>,
-	fds: ReadonlyArray<FunctionalDependency>,
-): FunctionalDependency[] {
-	const out: FunctionalDependency[] = fds.slice();
-	for (const cls of ecs) {
-		if (cls.length < 2) continue;
-		for (let i = 0; i < cls.length; i++) {
-			for (let j = 0; j < cls.length; j++) {
-				if (i === j) continue;
-				out.push({ determinants: [cls[i]], dependents: [cls[j]] });
-			}
-		}
-	}
-	return out;
-}
