@@ -1172,7 +1172,11 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 **Shared join key-coverage analysis** (`analyzeJoinKeyCoverage` in `key-utils.ts`):
 - Extracts equi-join column index pairs from join conditions
 - Checks if equi-pairs cover a logical key (`RelationType.keys`) or physical key (`PhysicalProperties.uniqueKeys`) on either side
-- When a key on side B is covered, preserves side A's unique keys and caps `estimatedRows` at side A's row count
+- INNER / CROSS: when side B's key is covered, preserves side A's unique keys (both directions can apply) and caps `estimatedRows` at side A's row count
+- LEFT outer: when the **right** side's key is covered, preserves the **left** side's unique keys and caps `estimatedRows` at left's row count. The right-side keys are NOT propagated — unmatched left rows produce NULL-padded right columns, breaking right uniqueness. If the right key is not covered, no keys propagate (left rows can fan out)
+- RIGHT outer: symmetric to LEFT
+- FULL outer: no keys propagate (both sides can be NULL-padded)
+- SEMI / ANTI: left's keys pass through unchanged (left-only output, no null-padding)
 - Used by all three join node types: `JoinNode`, `BloomJoinNode`, `MergeJoinNode`
 
 **FK→PK inference** (`rule-join-key-inference.ts` + `CatalogStatsProvider`):
@@ -1188,7 +1192,14 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 ### Key inference after projections / joins
 
 * `projectKeys(keys, columnMapping)` pushes keys through `ProjectNode` / `ReturningNode`.
-* `combineJoinKeys(leftKeys, rightKeys, joinType)` combines keys across joins (inner/cross only; outer joins conservatively clear keys).
+* `combineJoinKeys(leftKeys, rightKeys, joinType, leftColumnCount, equiPairs?)` combines logical `RelationType.keys` across joins:
+  * **INNER / CROSS**: union of both sides (right indices shifted).
+  * **LEFT**: when `equiPairs` cover any right-side key, left's keys survive (each left row matches ≤ 1 right row); otherwise empty. Right's keys never survive (NULL-padded right columns break uniqueness).
+  * **RIGHT**: symmetric — when `equiPairs` cover any left-side key, right's keys (shifted) survive.
+  * **FULL**: empty (both sides can be NULL-padded).
+  * **SEMI / ANTI**: left's keys pass through unchanged.
+  * If `equiPairs` is omitted, LEFT/RIGHT conservatively return empty.
+  * Equi-pair coverage at the logical-type layer mirrors the physical-side check in `analyzeJoinKeyCoverage`: callers (`JoinNode.getType`, `BloomJoinNode.getType`, `MergeJoinNode.getType`) extract column-index pairs from their condition/`equiPairs` field and pass them through.
 
 ## Row‑specific vs Global Classification for Assertions
 

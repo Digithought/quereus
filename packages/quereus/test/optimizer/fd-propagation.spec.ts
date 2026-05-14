@@ -472,6 +472,8 @@ describe('FD propagation per operator', () => {
 		expect(fdHas(joinProps!.fds, [0], [3])).to.equal(false);
 		// No equivalence class merging left and right
 		expect(classContains(joinProps!.equivClasses, [0, 3])).to.equal(false);
+		// Left's PK FD `id (0) → v (1)` survives — null-padding only affects right columns
+		expect(fdHas(joinProps!.fds, [0], [1])).to.equal(true);
 	});
 
 	it('UNION ALL: no FDs', async () => {

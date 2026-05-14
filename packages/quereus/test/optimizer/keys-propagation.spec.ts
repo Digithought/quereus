@@ -3,7 +3,8 @@ import { Database } from '../../src/core/database.js';
 import { EmptyScope } from '../../src/planner/scopes/empty.js';
 import { BinaryOpNode, LiteralNode, UnaryOpNode } from '../../src/planner/nodes/scalar.js';
 import { ColumnReferenceNode } from '../../src/planner/nodes/reference.js';
-import { deriveProjectionColumnMap } from '../../src/planner/util/key-utils.js';
+import { combineJoinKeys, deriveProjectionColumnMap } from '../../src/planner/util/key-utils.js';
+import type { ColRef } from '../../src/common/datatype.js';
 import type { Attribute, ScalarPlanNode } from '../../src/planner/nodes/plan-node.js';
 import type * as AST from '../../src/parser/ast.js';
 import { INTEGER_TYPE, TEXT_TYPE } from '../../src/types/builtin-types.js';
@@ -110,6 +111,138 @@ describe('Key propagation and estimatedRows reduction', () => {
 		const types = String(rows[0].types as unknown as string);
 		// Distinct node should be eliminated — should NOT appear in plan
 		expect(types).to.not.include('Distinct');
+	});
+
+	describe('Outer-join key propagation', () => {
+		interface PlanRow { op: string; node_type: string; properties: string | null; physical: string | null; est_rows: number | null }
+
+		async function planRows(sql: string): Promise<PlanRow[]> {
+			const rows: PlanRow[] = [];
+			for await (const r of db.eval('SELECT node_type, op, properties, physical, est_rows FROM query_plan(?)', [sql])) {
+				rows.push(r as unknown as PlanRow);
+			}
+			return rows;
+		}
+
+		function joinPhysical(rows: readonly PlanRow[]): { uniqueKeys?: number[][]; estimatedRows?: number } | undefined {
+			const row = rows.find(r => r.op === 'HASHJOIN' || r.op === 'MERGEJOIN' || r.op === 'JOIN');
+			if (!row?.physical) return undefined;
+			return JSON.parse(row.physical) as { uniqueKeys?: number[][]; estimatedRows?: number };
+		}
+
+		it('LEFT JOIN preserves left PK when right PK covered', async () => {
+			await db.exec('CREATE TABLE lp (id INTEGER PRIMARY KEY, v INTEGER) USING memory');
+			await db.exec('CREATE TABLE lq (tid INTEGER PRIMARY KEY, w INTEGER) USING memory');
+			const rows = await planRows('SELECT * FROM lp LEFT JOIN lq ON lp.id = lq.tid');
+			const phys = joinPhysical(rows);
+			expect(phys, 'expected join physical props').to.not.equal(undefined);
+			expect(phys!.uniqueKeys, 'left PK should survive (covered right side)').to.be.an('array').with.length.greaterThan(0);
+			expect(phys!.uniqueKeys!.some(k => k.length === 1 && k[0] === 0)).to.equal(true);
+		});
+
+		it('LEFT JOIN drops keys when right PK not covered', async () => {
+			await db.exec('CREATE TABLE lr (id INTEGER PRIMARY KEY, v INTEGER) USING memory');
+			await db.exec('CREATE TABLE ls (sid INTEGER PRIMARY KEY, w INTEGER) USING memory');
+			// Join on lr.v = ls.w: ls.w is not unique, so right key is NOT covered
+			const rows = await planRows('SELECT * FROM lr LEFT JOIN ls ON lr.v = ls.w');
+			const phys = joinPhysical(rows);
+			expect(phys, 'expected join physical props').to.not.equal(undefined);
+			expect(phys!.uniqueKeys === undefined || phys!.uniqueKeys.length === 0,
+				'no keys should propagate without right key coverage').to.equal(true);
+		});
+
+		it('LEFT JOIN with right PK covered: estimatedRows is bounded by left cardinality', async () => {
+			// When right key is covered, each left row matches ≤ 1 right row, so
+			// the join's estimated rows must not exceed left's estimated rows.
+			await db.exec('CREATE TABLE lc (id INTEGER PRIMARY KEY, v INTEGER) USING memory');
+			await db.exec("INSERT INTO lc VALUES (1, 10), (2, 20), (3, 30), (4, 40)");
+			await db.exec('CREATE TABLE ld (did INTEGER PRIMARY KEY, w INTEGER) USING memory');
+			await db.exec("INSERT INTO ld VALUES (1, 100), (2, 200)");
+			const rows = await planRows('SELECT * FROM lc LEFT JOIN ld ON lc.id = ld.did');
+			const joinRow = rows.find(r => r.op === 'HASHJOIN' || r.op === 'MERGEJOIN' || r.op === 'JOIN');
+			expect(joinRow, 'expected join row').to.not.equal(undefined);
+			const phys = joinRow!.physical ? JSON.parse(joinRow!.physical) as { estimatedRows?: number } : {};
+			// If estimatedRows is set, it must not exceed lc's est_rows in the plan.
+			if (phys.estimatedRows !== undefined) {
+				const leftScanRow = rows.find(r =>
+					r.op === 'TABLEREFERENCE' && (r.properties?.includes('"table":"lc"') ?? false),
+				) ?? rows.find(r => r.op === 'TABLEREFERENCE');
+				const leftRows = leftScanRow?.est_rows ?? undefined;
+				if (typeof leftRows === 'number') {
+					expect(phys.estimatedRows).to.be.at.most(leftRows);
+				}
+			}
+		});
+
+		it('DISTINCT eliminated above LEFT JOIN when right PK is covered', async () => {
+			await db.exec('CREATE TABLE dl (id INTEGER PRIMARY KEY, v INTEGER) USING memory');
+			await db.exec('CREATE TABLE dr (rid INTEGER PRIMARY KEY, w INTEGER) USING memory');
+			const rows = await planRows('SELECT DISTINCT dl.id FROM dl LEFT JOIN dr ON dl.id = dr.rid');
+			// DISTINCT should be eliminated because the LEFT JOIN preserves dl's PK
+			expect(rows.some(r => r.op === 'DISTINCT')).to.equal(false);
+		});
+
+		it('FULL OUTER JOIN drops both sides keys (combineJoinKeys)', () => {
+			const leftKeys: ColRef[][] = [[{ index: 0 }]];
+			const rightKeys: ColRef[][] = [[{ index: 0 }]];
+			const out = combineJoinKeys(leftKeys, rightKeys, 'full', 2, [{ left: 0, right: 0 }]);
+			expect(out).to.deep.equal([]);
+		});
+
+		describe('combineJoinKeys unit tests', () => {
+			function indices(out: ColRef[][]): number[][] {
+				return out.map(k => k.map(c => c.index));
+			}
+
+			it('LEFT + equiPairs covering right key → returns left keys', () => {
+				const leftKeys: ColRef[][] = [[{ index: 0 }]];
+				const rightKeys: ColRef[][] = [[{ index: 0 }]];
+				const out = combineJoinKeys(leftKeys, rightKeys, 'left', 2, [{ left: 0, right: 0 }]);
+				expect(indices(out)).to.deep.equal([[0]]);
+			});
+
+			it('LEFT + equiPairs NOT covering right key → returns []', () => {
+				const leftKeys: ColRef[][] = [[{ index: 0 }]];
+				// right's key is on column 0, but the pair binds right column 1
+				const rightKeys: ColRef[][] = [[{ index: 0 }]];
+				const out = combineJoinKeys(leftKeys, rightKeys, 'left', 2, [{ left: 0, right: 1 }]);
+				expect(out).to.deep.equal([]);
+			});
+
+			it('LEFT without equiPairs → returns [] (back-compat)', () => {
+				const leftKeys: ColRef[][] = [[{ index: 0 }]];
+				const rightKeys: ColRef[][] = [[{ index: 0 }]];
+				const out = combineJoinKeys(leftKeys, rightKeys, 'left', 2);
+				expect(out).to.deep.equal([]);
+			});
+
+			it('RIGHT + equiPairs covering left key → returns right keys shifted', () => {
+				const leftKeys: ColRef[][] = [[{ index: 0 }]];
+				const rightKeys: ColRef[][] = [[{ index: 0 }]];
+				const out = combineJoinKeys(leftKeys, rightKeys, 'right', 2, [{ left: 0, right: 0 }]);
+				expect(indices(out)).to.deep.equal([[2]]);
+			});
+
+			it('INNER union of both sides (equiPairs ignored for the union)', () => {
+				const leftKeys: ColRef[][] = [[{ index: 0 }]];
+				const rightKeys: ColRef[][] = [[{ index: 0 }]];
+				const out = combineJoinKeys(leftKeys, rightKeys, 'inner', 2, [{ left: 0, right: 0 }]);
+				expect(indices(out)).to.deep.equal([[0], [2]]);
+			});
+
+			it('SEMI returns left keys unchanged', () => {
+				const leftKeys: ColRef[][] = [[{ index: 0 }]];
+				const out = combineJoinKeys(leftKeys, [], 'semi', 2, [{ left: 0, right: 0 }]);
+				expect(indices(out)).to.deep.equal([[0]]);
+			});
+
+			it('FULL always returns []', () => {
+				const leftKeys: ColRef[][] = [[{ index: 0 }]];
+				const rightKeys: ColRef[][] = [[{ index: 0 }]];
+				const out = combineJoinKeys(leftKeys, rightKeys, 'full', 2, [{ left: 0, right: 0 }]);
+				expect(out).to.deep.equal([]);
+			});
+		});
 	});
 
 	describe('Injective-projection key propagation', () => {

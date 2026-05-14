@@ -9,7 +9,7 @@ import type { JoinCapable, PredicateSourceCapable } from '../framework/character
 import { mergeJoinCost } from '../cost/index.js';
 import type { JoinType } from './join-node.js';
 import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, propagateJoinMonotonicOn, propagateJoinFds, type EquiJoinPair } from './join-utils.js';
-import { analyzeJoinKeyCoverage } from '../util/key-utils.js';
+import { analyzeJoinKeyCoverage, combineJoinKeys } from '../util/key-utils.js';
 
 /**
  * Physical plan node implementing a merge join.
@@ -60,7 +60,16 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	}
 
 	getType(): RelationType {
-		return buildJoinRelationType(this.left.getType(), this.right.getType(), this.joinType, []);
+		const leftType = this.left.getType();
+		const rightType = this.right.getType();
+		const leftAttrs = this.left.getAttributes();
+		const rightAttrs = this.right.getAttributes();
+		const indexPairs = this.equiPairs.map(p => ({
+			left: leftAttrs.findIndex(a => a.id === p.leftAttrId),
+			right: rightAttrs.findIndex(a => a.id === p.rightAttrId),
+		})).filter(p => p.left >= 0 && p.right >= 0);
+		const keys = combineJoinKeys(leftType.keys, rightType.keys, this.joinType, leftType.columns.length, indexPairs);
+		return buildJoinRelationType(leftType, rightType, this.joinType, keys);
 	}
 
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {

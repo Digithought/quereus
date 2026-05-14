@@ -151,20 +151,69 @@ export function deriveProjectionColumnMap(
 }
 
 /**
- * Combine unique keys across a join.
- * - For inner/cross joins: keys from left and right are preserved; right indices are shifted by left column count.
- * - For outer joins: return [] conservatively (null padding may break uniqueness).
+ * Test whether any key in `keys` has all of its columns covered by `eqIndices`.
+ * A covered key means each row in the source side maps to ≤ 1 row in the join's
+ * equi-pair partner, so the partner side's keys survive null-padding (LEFT/RIGHT).
  */
-export function combineJoinKeys(leftKeys: ReadonlyArray<ReadonlyArray<ColRef>>, rightKeys: ReadonlyArray<ReadonlyArray<ColRef>>, joinType: string, leftColumnCount: number): ColRef[][] {
-	if (joinType !== 'inner' && joinType !== 'cross') return [];
-	const result: ColRef[][] = [];
-	for (const key of leftKeys) {
-		result.push(key.map(c => ({ index: c.index, desc: c.desc })));
+function joinPairsCoverKey(
+	keys: ReadonlyArray<ReadonlyArray<{ index: number }>>,
+	eqIndices: Set<number>,
+): boolean {
+	return keys.some(k => k.length > 0 && k.every(c => eqIndices.has(c.index)));
+}
+
+/**
+ * Combine unique keys across a join (logical `RelationType.keys` form).
+ *
+ * - `inner` / `cross`: union of left and right keys (right indices shifted by `leftColumnCount`).
+ * - `left`: if `equiPairs` cover any right-side key, return left keys unchanged
+ *   (each left row matches ≤ 1 right row, so left's keys survive). Otherwise `[]`.
+ * - `right`: symmetric — if `equiPairs` cover any left-side key, return right's
+ *   keys shifted by `leftColumnCount`. Otherwise `[]`.
+ * - `full`: `[]` (both sides may be null-padded).
+ * - `semi` / `anti`: return left keys (left-only output, no null-padding).
+ *
+ * `equiPairs` is optional; when omitted, the LEFT/RIGHT branches conservatively
+ * return `[]` (the previous behaviour).
+ */
+export function combineJoinKeys(
+	leftKeys: ReadonlyArray<ReadonlyArray<ColRef>>,
+	rightKeys: ReadonlyArray<ReadonlyArray<ColRef>>,
+	joinType: JoinType,
+	leftColumnCount: number,
+	equiPairs?: ReadonlyArray<{ left: number; right: number }>,
+): ColRef[][] {
+	switch (joinType) {
+		case 'inner':
+		case 'cross': {
+			const result: ColRef[][] = [];
+			for (const key of leftKeys) {
+				result.push(key.map(c => ({ index: c.index, desc: c.desc })));
+			}
+			for (const key of rightKeys) {
+				result.push(key.map(c => ({ index: c.index + leftColumnCount, desc: c.desc })));
+			}
+			return result;
+		}
+		case 'left': {
+			if (!equiPairs || equiPairs.length === 0) return [];
+			const rightEqSet = new Set<number>(equiPairs.map(p => p.right));
+			if (!joinPairsCoverKey(rightKeys, rightEqSet)) return [];
+			return leftKeys.map(key => key.map(c => ({ index: c.index, desc: c.desc })));
+		}
+		case 'right': {
+			if (!equiPairs || equiPairs.length === 0) return [];
+			const leftEqSet = new Set<number>(equiPairs.map(p => p.left));
+			if (!joinPairsCoverKey(leftKeys, leftEqSet)) return [];
+			return rightKeys.map(key => key.map(c => ({ index: c.index + leftColumnCount, desc: c.desc })));
+		}
+		case 'semi':
+		case 'anti':
+			return leftKeys.map(key => key.map(c => ({ index: c.index, desc: c.desc })));
+		case 'full':
+		default:
+			return [];
 	}
-	for (const key of rightKeys) {
-		result.push(key.map(c => ({ index: c.index + leftColumnCount, desc: c.desc })));
-	}
-	return result;
 }
 
 /**
@@ -217,7 +266,7 @@ export function analyzeJoinKeyCoverage(
 		};
 	}
 
-	if (joinType !== 'inner' && joinType !== 'cross') {
+	if (joinType === 'full') {
 		return { leftKeyCovered: false, rightKeyCovered: false, uniqueKeys: undefined, estimatedRows: undefined };
 	}
 
@@ -240,13 +289,32 @@ export function analyzeJoinKeyCoverage(
 	const leftKeys = leftPhys?.uniqueKeys || [];
 	const rightKeys = (rightPhys?.uniqueKeys || []).map(k => k.map(i => i + leftColumnCount));
 	const preserved: number[][] = [];
-	if (rightKeyCovered) preserved.push(...leftKeys);
-	if (leftKeyCovered) preserved.push(...rightKeys);
-	if (preserved.length > 0) uniqueKeys = preserved;
 
-	// Cardinality reduction: when a key is covered, result rows ≤ the other side's rows
-	if (rightKeyCovered && typeof leftRows === 'number') estimatedRows = leftRows;
-	if (leftKeyCovered && typeof rightRows === 'number') estimatedRows = (estimatedRows === undefined) ? rightRows : Math.min(estimatedRows, rightRows);
+	if (joinType === 'inner' || joinType === 'cross') {
+		if (rightKeyCovered) preserved.push(...leftKeys);
+		if (leftKeyCovered) preserved.push(...rightKeys);
+
+		// Cardinality reduction: when a key is covered, result rows ≤ the other side's rows
+		if (rightKeyCovered && typeof leftRows === 'number') estimatedRows = leftRows;
+		if (leftKeyCovered && typeof rightRows === 'number') estimatedRows = (estimatedRows === undefined) ? rightRows : Math.min(estimatedRows, rightRows);
+	} else if (joinType === 'left') {
+		// LEFT outer: left's keys survive (and left's rowcount caps the output) iff
+		// the equi-pairs cover a right-side unique key — each left row then matches
+		// ≤ 1 right row, so no row duplication. The right-side keys do NOT survive:
+		// unmatched left rows produce NULL-padded right columns, breaking right keys.
+		if (rightKeyCovered) {
+			preserved.push(...leftKeys);
+			if (typeof leftRows === 'number') estimatedRows = leftRows;
+		}
+	} else if (joinType === 'right') {
+		// Symmetric to LEFT.
+		if (leftKeyCovered) {
+			preserved.push(...rightKeys);
+			if (typeof rightRows === 'number') estimatedRows = rightRows;
+		}
+	}
+
+	if (preserved.length > 0) uniqueKeys = preserved;
 
 	return { leftKeyCovered, rightKeyCovered, uniqueKeys, estimatedRows };
 }

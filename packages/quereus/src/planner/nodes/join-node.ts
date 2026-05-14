@@ -143,7 +143,12 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 	getType(): RelationType {
 		const leftType = this.left.getType();
 		const rightType = this.right.getType();
-		const keys = combineJoinKeys(leftType.keys, rightType.keys, this.joinType, leftType.columns.length);
+		// Equi-pairs are needed for LEFT/RIGHT outer key propagation (preserved-side
+		// keys only survive when the other side's key is covered by the pairs).
+		const pairs = extractEquiPairsFromCondition(
+			this.condition, this.left.getAttributes(), this.right.getAttributes(),
+		);
+		const keys = combineJoinKeys(leftType.keys, rightType.keys, this.joinType, leftType.columns.length, pairs);
 		return buildJoinRelationType(leftType, rightType, this.joinType, keys);
 	}
 
