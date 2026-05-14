@@ -111,6 +111,7 @@ All paths above are relative to `src/`.
 *   **Multi-Schema Support** — organize tables across multiple schemas with flexible search paths for modular designs.
 *   **Bags vs Sets Distinction** — explicit type-level distinction between relations that guarantee unique rows (sets) and those that allow duplicates (bags), enabling sophisticated optimizations and maintaining algebraic correctness in line with Third Manifesto principles.
 *   **Attribute-Based Context System** — robust column reference resolution using stable attribute IDs eliminates architectural fragilities and provides deterministic context lookup across plan transformations.
+*   **Functional-Dependency Tracking** — every relational physical node carries optional `fds` and `equivClasses` fields alongside `uniqueKeys`. Operators propagate per-column FDs (e.g., `col1 = const` ⇒ `∅ → col1`, equi-joins ⇒ bi-directional FDs) and equivalence classes through the plan, giving optimizer rules a first-class signal beyond just superkeys. See [Optimizer Documentation §Functional Dependency Tracking](optimizer.md#functional-dependency-tracking).
 
 ## Design Differences from SQLite
 

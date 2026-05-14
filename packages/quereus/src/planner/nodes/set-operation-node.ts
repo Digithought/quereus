@@ -57,8 +57,16 @@ export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
     // TODO: UNION ALL with disjoint X-ranges on both sides could preserve
     // MonotonicOn(X); see ticket 1-monotonic-on-characteristic for the deferred
     // range-bound reasoning.
+    //
+    // FDs / ECs are dropped conservatively here:
+    //   - UNION ALL / EXCEPT ALL: no row-level FDs can be assumed.
+    //   - UNION / INTERSECT: the all-columns FD is already captured by the
+    //     `isSet` flag and downstream Distinct-style uniqueness; we do not
+    //     materialize per-column FDs.
     return {
       monotonicOn: undefined,
+      fds: undefined,
+      equivClasses: undefined,
     };
   }
 

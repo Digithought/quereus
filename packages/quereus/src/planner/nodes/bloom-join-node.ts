@@ -9,7 +9,7 @@ import type { JoinCapable, PredicateSourceCapable } from '../framework/character
 import { hashJoinCost } from '../cost/index.js';
 import type { JoinType } from './join-node.js';
 import { analyzeJoinKeyCoverage } from '../util/key-utils.js';
-import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, type EquiJoinPair } from './join-utils.js';
+import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, propagateJoinFds, type EquiJoinPair } from './join-utils.js';
 
 export type { EquiJoinPair } from './join-utils.js';
 
@@ -82,9 +82,15 @@ export class BloomJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			leftAttrs.length,
 		);
 
+		const fdResult = propagateJoinFds(
+			this.joinType, leftPhys, rightPhys, indexPairs, leftAttrs.length, result.uniqueKeys,
+		);
+
 		return {
 			uniqueKeys: result.uniqueKeys,
 			estimatedRows: result.estimatedRows,
+			fds: fdResult.fds,
+			equivClasses: fdResult.equivClasses,
 		};
 	}
 

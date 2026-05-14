@@ -1,6 +1,7 @@
-import type { Attribute, MonotonicOnInfo, PhysicalProperties } from './plan-node.js';
+import type { Attribute, FunctionalDependency, MonotonicOnInfo, PhysicalProperties } from './plan-node.js';
 import type { JoinType } from './join-node.js';
 import type { RelationType, ColRef } from '../../common/datatype.js';
+import { addEquivalence, addFd, mergeEquivClasses, mergeFds, shiftEquivClasses, shiftFds } from '../util/fd-utils.js';
 
 /**
  * An equi-join pair: left attribute = right attribute.
@@ -135,6 +136,78 @@ export function propagateJoinMonotonicOn(
 		}
 	}
 	return result.length > 0 ? result : undefined;
+}
+
+/**
+ * Propagate functional dependencies and equivalence classes through a join.
+ *
+ * Rules:
+ * - inner / cross: union of left and right FDs (right's column indices shifted
+ *   by leftColumnCount). For each equi-pair (L, R'), add bi-directional FDs
+ *   `{L} → {R'}` and `{R'} → {L}` and merge `L ≡ R'` into the EC list.
+ * - left outer: keep left's FDs/ECs on left's columns only. Right's FDs/ECs and
+ *   equi-pair FDs/ECs are dropped — NULL-padded rows can violate them.
+ * - right outer: mirror of left outer.
+ * - full outer: drop both sides' FDs/ECs (conservative).
+ * - semi / anti: left's FDs/ECs survive; no right contribution and no equi-pair
+ *   FDs (right columns are not in the output).
+ */
+export function propagateJoinFds(
+	joinType: JoinType,
+	leftPhys: PhysicalProperties | undefined,
+	rightPhys: PhysicalProperties | undefined,
+	equiPairs: ReadonlyArray<{ left: number; right: number }>,
+	leftColumnCount: number,
+	uniqueKeys: ReadonlyArray<ReadonlyArray<number>> | undefined,
+): { fds?: ReadonlyArray<FunctionalDependency>; equivClasses?: ReadonlyArray<ReadonlyArray<number>> } {
+	const leftFds = leftPhys?.fds ?? [];
+	const rightFds = rightPhys?.fds ?? [];
+	const leftEC = leftPhys?.equivClasses ?? [];
+	const rightEC = rightPhys?.equivClasses ?? [];
+
+	const opts = { uniqueKeys };
+
+	switch (joinType) {
+		case 'inner':
+		case 'cross': {
+			let fds: ReadonlyArray<FunctionalDependency> = mergeFds(leftFds, shiftFds(rightFds, leftColumnCount), opts);
+			let equiv: ReadonlyArray<ReadonlyArray<number>> = mergeEquivClasses(leftEC, shiftEquivClasses(rightEC, leftColumnCount));
+			for (const p of equiPairs) {
+				const rShifted = p.right + leftColumnCount;
+				fds = addFd(fds, { determinants: [p.left], dependents: [rShifted] }, opts);
+				fds = addFd(fds, { determinants: [rShifted], dependents: [p.left] }, opts);
+				equiv = addEquivalence(equiv, p.left, rShifted);
+			}
+			return {
+				fds: fds.length > 0 ? fds : undefined,
+				equivClasses: equiv.length > 0 ? equiv : undefined,
+			};
+		}
+		case 'left': {
+			return {
+				fds: leftFds.length > 0 ? leftFds.slice() : undefined,
+				equivClasses: leftEC.length > 0 ? leftEC.map(c => c.slice()) : undefined,
+			};
+		}
+		case 'right': {
+			const fds = shiftFds(rightFds, leftColumnCount);
+			const equiv = shiftEquivClasses(rightEC, leftColumnCount);
+			return {
+				fds: fds.length > 0 ? fds : undefined,
+				equivClasses: equiv.length > 0 ? equiv : undefined,
+			};
+		}
+		case 'full':
+			return {};
+		case 'semi':
+		case 'anti':
+			return {
+				fds: leftFds.length > 0 ? leftFds.slice() : undefined,
+				equivClasses: leftEC.length > 0 ? leftEC.map(c => c.slice()) : undefined,
+			};
+		default:
+			return {};
+	}
 }
 
 /**

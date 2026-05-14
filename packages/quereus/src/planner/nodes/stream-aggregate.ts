@@ -7,6 +7,7 @@ import { formatExpressionList } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { ColumnReferenceNode } from './reference.js';
+import { propagateAggregateFds } from './aggregate-node.js';
 
 /**
  * Physical node representing a streaming aggregate operation.
@@ -194,7 +195,14 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
     }
   }
 
-  computePhysical(_childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+  computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+    const sourcePhysical = childrenPhysical[0];
+    const { fds, equivClasses } = propagateAggregateFds(
+      this.source.getAttributes(),
+      this.groupBy,
+      sourcePhysical,
+    );
+
     return {
       estimatedRows: this.estimatedRows,
       // Stream aggregate preserves ordering on GROUP BY columns
@@ -207,6 +215,8 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
         [[]], // Single row if no GROUP BY
       // Aggregation boundary: drop monotonicOn (the grouped relation is a set).
       monotonicOn: undefined,
+      fds,
+      equivClasses,
     };
   }
 

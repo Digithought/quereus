@@ -68,6 +68,9 @@ export class AliasNode extends PlanNode implements UnaryRelationalNode {
 			uniqueKeys: sourcePhysical?.uniqueKeys,
 			// Alias preserves attribute IDs unchanged — pass monotonicOn through.
 			monotonicOn: sourcePhysical?.monotonicOn,
+			// Alias is purely a rename — FDs and equivalence classes carry through.
+			fds: sourcePhysical?.fds,
+			equivClasses: sourcePhysical?.equivClasses,
 		};
 	}
 

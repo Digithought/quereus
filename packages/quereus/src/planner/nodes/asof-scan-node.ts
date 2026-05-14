@@ -156,6 +156,13 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 		const monotonicOn: readonly MonotonicOnInfo[] | undefined = leftPhys?.monotonicOn;
 		const ordering = leftPhys?.ordering;
 
+		// FDs/ECs: inherit left's contributions on left's columns. The right side's
+		// FDs are dropped — asof matches at most one right row and may NULL-pad in
+		// outer mode, neither of which preserves right-side FDs. The asof condition
+		// is an inequality, not an equality, so no equi-pair FDs are added.
+		const fds = leftPhys?.fds;
+		const equivClasses = leftPhys?.equivClasses;
+
 		return {
 			ordering,
 			monotonicOn,
@@ -163,6 +170,8 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 			// Drop unique keys: appending right values per left row doesn't preserve
 			// uniqueness on left's keys (and the right side has no key contribution).
 			uniqueKeys: undefined,
+			fds,
+			equivClasses,
 		};
 	}
 

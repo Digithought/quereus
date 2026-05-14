@@ -4,6 +4,7 @@ import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import { projectKeys } from '../util/key-utils.js';
+import { projectFds } from '../util/fd-utils.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { formatProjection } from '../../util/plan-formatter.js';
 import { ColumnReferenceNode } from './reference.js';
@@ -189,11 +190,29 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 				return projected;
 			})
 			.filter((k): k is number[] => k !== null);
+
+		// FDs/ECs project through the same column mapping. Non-trivial expressions
+		// drop out of the mapping, so any FD/EC that references them is dropped.
+		// TODO: injective-expression FDs (output col determined by input col) —
+		// out of scope for this ticket; see follow-up plan ticket.
+		const fds = projectFds(sourcePhysical?.fds ?? [], map);
+		const projectedEquiv: number[][] = [];
+		for (const cls of sourcePhysical?.equivClasses ?? []) {
+			const mapped: number[] = [];
+			for (const c of cls) {
+				const out = map.get(c);
+				if (out !== undefined && !mapped.includes(out)) mapped.push(out);
+			}
+			if (mapped.length >= 2) projectedEquiv.push(mapped.sort((a, b) => a - b));
+		}
+
 		return {
 			estimatedRows: this.source.estimatedRows,
 			ordering: projectOrdering(sourcePhysical?.ordering, map),
 			uniqueKeys,
 			monotonicOn: projectMonotonicOnByAttrId(sourcePhysical?.monotonicOn, preservedAttrIds),
+			fds: fds.length > 0 ? fds : undefined,
+			equivClasses: projectedEquiv.length > 0 ? projectedEquiv : undefined,
 		};
 	}
 

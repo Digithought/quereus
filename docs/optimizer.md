@@ -1085,9 +1085,64 @@ The context-scoped design enables sophisticated optimization strategies:
 - Tier 2 re-optimization re-runs physical selection with runtime stats overlay
 - Runtime cardinality feedback updates stats between executions
 
+### Functional Dependency Tracking
+
+Every relational physical node carries two optional fields on `PhysicalProperties` in addition to `uniqueKeys`:
+
+```typescript
+export interface FunctionalDependency {
+  readonly determinants: readonly number[]; // empty = "constant"
+  readonly dependents: readonly number[];
+}
+
+interface PhysicalProperties {
+  // ... ordering, estimatedRows, uniqueKeys, monotonicOn ...
+  fds?: ReadonlyArray<FunctionalDependency>;
+  equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
+}
+```
+
+Column indices are output-column indices, consistent with `uniqueKeys`. Superkeys (entries in `uniqueKeys`) imply the FD `key → all-columns`; `fds` carries the additional, non-key dependencies. The list is **non-canonical** — each operator stores only what it can prove locally. Use `computeClosure(attrs, fds)` from `planner/util/fd-utils.ts` to derive what a set of attributes implies.
+
+**Per-operator propagation:**
+
+| Operator                                  | FDs / ECs added or transformed                                                                                                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TableReferenceNode`                      | Seed `key → others` for each declared key (PK + UNIQUE).                                                                                    |
+| `SeqScanNode` / `IndexScanNode` / `IndexSeekNode` | Pass child FDs/ECs through unchanged.                                                                                                |
+| `FilterNode`                              | Inherit child. For each equality conjunct in the predicate: `col = literal` ⇒ `∅ → col`; `col1 = col2` ⇒ bi-directional FDs and EC merge.   |
+| `ProjectNode` / `ReturningNode`           | Project FDs/ECs through the source→output mapping built from bare column-reference projections. Non-trivial expressions drop the column out. |
+| `AliasNode` / `DistinctNode`              | Pass through unchanged (Distinct still adds the all-columns superkey via `uniqueKeys`).                                                     |
+| `StreamAggregateNode` / `HashAggregateNode` / `AggregateNode` | A source FD `X → Y` survives only if `X` and `Y` are all column-reference GROUP BY columns; project to output indices. ECs project the same way. |
+| `JoinNode` / `BloomJoinNode` / `MergeJoinNode` (inner / cross) | `union(leftFds, shift(rightFds, leftCols))`; for each equi-pair `(L, R')`: add bi-directional FDs and EC merge `L ≡ R'`. |
+| Join (left outer)                         | Keep left's FDs/ECs only; drop right's and equi-pair FDs (NULL-padded rows can violate them).                                               |
+| Join (right outer)                        | Mirror of left outer.                                                                                                                       |
+| Join (full outer)                         | Drop both sides' FDs/ECs (conservative).                                                                                                    |
+| Join (semi / anti)                        | Left's FDs/ECs survive; no right contribution.                                                                                              |
+| `AsofScanNode`                            | Inherit left's FDs/ECs. Right's FDs are dropped (asof = at-most-one match, NULL-padded in outer mode). The asof condition is not an equality, so no equi-pair FDs. |
+| `SetOperationNode`                        | Conservative: drop all FDs/ECs.                                                                                                             |
+| `WindowNode`                              | Pass source FDs/ECs through unchanged (window output columns are not in any new FDs — deferred).                                            |
+
+**Helper surface** (`planner/util/fd-utils.ts`):
+
+- `computeClosure(attrs, fds)` — iterative fixed-point.
+- `determines(attrs, target, fds)` — closure-based check.
+- `minimalCover(attrs, fds)` — greedy minimization.
+- `mergeFds(a, b)`, `addFd(fds, next, opts?)` — subsumption-aware merge. `addFd`'s options carry `uniqueKeys` for cap enforcement and `cap` for an explicit override (default `MAX_FDS_PER_NODE = 64`).
+- `projectFds(fds, mapping)` — drop FDs that lose any determinant or dependent column.
+- `shiftFds(fds, offset)` / `shiftEquivClasses(classes, offset)` — column index translation for joins.
+- `mergeEquivClasses(a, b)` / `addEquivalence(classes, a, b)` — transitive-closure union of overlapping classes.
+- `superkeyToFd(key, columnCount)` — build `key → others` from a superkey.
+- `extractEqualityFds(predicate, attrIdToIndex)` — predicate walker used by `FilterNode`.
+
+**De-dup / cap behavior:** `addFd` performs subsumption (drop existing FDs with the same determinants whose dependent set is a subset of the new one, and skip adding a new FD already subsumed). When the resulting list exceeds the cap, FDs whose determinants are not a subset of any `uniqueKeys` entry on the same node are dropped first; truncations are logged at debug under `quereus:planner:fd`.
+
+**Consumers are forthcoming.** This pass lands the foundation only; existing `uniqueKeys` consumers (`rule-distinct-elimination`, `analyzeJoinKeyCoverage`, `CatalogStatsProvider.joinSelectivity`, change-detection classification) are untouched. Follow-up tickets will migrate consumers to read `fds`/`equivClasses` and add new optimizations (GROUP BY simplification, ORDER BY pruning, join elimination, predicate inference through ECs, etc.).
+
 ### Key-driven row-count reduction
 
 * If a predicate contains **equality** on all columns of a unique key the result cardinality ≤ 1.
+* See the FD framework above; `uniqueKeys` is the superkey form of an FD `key → all-columns`, and the broader `fds`/`equivClasses` fields capture additional non-key dependencies.
 
 **Shared join key-coverage analysis** (`analyzeJoinKeyCoverage` in `key-utils.ts`):
 - Extracts equi-join column index pairs from join conditions

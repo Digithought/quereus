@@ -1,5 +1,6 @@
 import type { BaseType, ScalarType, RelationType } from '../../common/datatype.js';
-import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute, type InjectivityResult, type MonotonicityResult } from './plan-node.js';
+import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute, type InjectivityResult, type MonotonicityResult, type PhysicalProperties, type FunctionalDependency } from './plan-node.js';
+import { addFd } from '../util/fd-utils.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { Scope } from '../scopes/scope.js';
@@ -75,6 +76,29 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 
 	get estimatedRows(): number | undefined {
 		return this.tableSchema.estimatedRows;
+	}
+
+	computePhysical(_childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		// Seed FDs from declared keys: each declared key (PK + UNIQUE) implies
+		// `key → other-columns`. This duplicates the all-columns implication
+		// already carried by `uniqueKeys` (consumers can also derive it via
+		// `superkeyToFd`); the explicit form is intentional so future FD
+		// consumers can read `fds` uniformly without special-casing keys.
+		const relType = this.getType();
+		const colCount = relType.columns.length;
+		let fds: ReadonlyArray<FunctionalDependency> = [];
+		for (const key of relType.keys) {
+			if (key.length === 0) continue;
+			const det = key.map(k => k.index);
+			const detSet = new Set(det);
+			const dep: number[] = [];
+			for (let i = 0; i < colCount; i++) {
+				if (!detSet.has(i)) dep.push(i);
+			}
+			if (dep.length === 0) continue;
+			fds = addFd(fds, { determinants: det, dependents: dep });
+		}
+		return fds.length > 0 ? { fds } : {};
 	}
 
 	override toString(): string {

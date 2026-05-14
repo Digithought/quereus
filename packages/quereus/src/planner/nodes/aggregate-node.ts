@@ -1,6 +1,7 @@
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, type PhysicalProperties } from './plan-node.js';
 import { ColumnReferenceNode } from './reference.js';
+import { projectFds } from '../util/fd-utils.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -12,6 +13,49 @@ import type { AggregationCapable } from '../framework/characteristics.js';
 export interface AggregateExpression {
   expression: ScalarPlanNode;
   alias: string;
+}
+
+/**
+ * Shared FD/EC propagation for aggregate nodes.
+ *
+ * Output columns 0..groupCount-1 correspond to the GROUP BY expressions.
+ * Only bare column references map back to a source column index; other
+ * expressions drop out of the mapping (and any FD/EC referencing them).
+ *
+ * A source FD `X → Y` survives only if every column in `X ∪ Y` maps to a
+ * group-by output column. Equivalence classes project the same way.
+ */
+export function propagateAggregateFds(
+  sourceAttrs: readonly Attribute[],
+  groupBy: readonly ScalarPlanNode[],
+  sourcePhysical: PhysicalProperties | undefined,
+): { fds?: ReadonlyArray<import('./plan-node.js').FunctionalDependency>; equivClasses?: ReadonlyArray<ReadonlyArray<number>> } {
+  if (groupBy.length === 0) return {};
+
+  const map = new Map<number, number>();
+  groupBy.forEach((expr, outIdx) => {
+    if (expr instanceof ColumnReferenceNode) {
+      const srcIdx = sourceAttrs.findIndex(a => a.id === expr.attributeId);
+      if (srcIdx >= 0 && !map.has(srcIdx)) map.set(srcIdx, outIdx);
+    }
+  });
+
+  const fds = projectFds(sourcePhysical?.fds ?? [], map);
+
+  const projectedEquiv: number[][] = [];
+  for (const cls of sourcePhysical?.equivClasses ?? []) {
+    const mapped: number[] = [];
+    for (const c of cls) {
+      const out = map.get(c);
+      if (out !== undefined && !mapped.includes(out)) mapped.push(out);
+    }
+    if (mapped.length >= 2) projectedEquiv.push(mapped.sort((a, b) => a - b));
+  }
+
+  return {
+    fds: fds.length > 0 ? fds : undefined,
+    equivClasses: projectedEquiv.length > 0 ? projectedEquiv : undefined,
+  };
 }
 
 /**
@@ -193,10 +237,19 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
     // If there is a GROUP BY, the group-by columns form a unique key on the output
     // Output attribute indices for group-by are 0..groupCount-1 per buildAttributes
     const uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
+
+    const { fds, equivClasses } = propagateAggregateFds(
+      this.source.getAttributes(),
+      this.groupBy,
+      sourcePhysical,
+    );
+
     return {
       uniqueKeys,
       estimatedRows: this.estimatedRows,
       ordering: sourcePhysical?.ordering,
+      fds,
+      equivClasses,
     };
   }
 

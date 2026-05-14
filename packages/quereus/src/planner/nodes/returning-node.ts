@@ -8,6 +8,7 @@ import { expressionToString } from '../../emit/ast-stringify.js';
 import { Cached } from '../../util/cached.js';
 import { projectKeys } from '../util/key-utils.js';
 import { projectOrdering } from '../framework/physical-utils.js';
+import { projectFds } from '../util/fd-utils.js';
 
 export interface ReturningProjection {
   node: ScalarPlanNode;
@@ -237,10 +238,23 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
       })
       .filter((k): k is number[] => k !== null);
 
+    const fds = projectFds(sourcePhysical?.fds ?? [], map);
+    const projectedEquiv: number[][] = [];
+    for (const cls of sourcePhysical?.equivClasses ?? []) {
+      const mapped: number[] = [];
+      for (const c of cls) {
+        const out = map.get(c);
+        if (out !== undefined && !mapped.includes(out)) mapped.push(out);
+      }
+      if (mapped.length >= 2) projectedEquiv.push(mapped.sort((a, b) => a - b));
+    }
+
     return {
       estimatedRows: this.estimatedRows,
       ordering: projectOrdering(sourcePhysical?.ordering, map),
       uniqueKeys,
+      fds: fds.length > 0 ? fds : undefined,
+      equivClasses: projectedEquiv.length > 0 ? projectedEquiv : undefined,
     };
   }
 

@@ -87,6 +87,10 @@ export class DistinctNode extends PlanNode implements UnaryRelationalNode {
       estimatedRows: this.estimatedRows,
       ordering: sourcePhysical?.ordering,
       monotonicOn,
+      // Distinct does not add new FDs/ECs beyond the all-columns key already
+      // emitted via uniqueKeys; pass through whatever the source proved.
+      fds: sourcePhysical?.fds,
+      equivClasses: sourcePhysical?.equivClasses,
     };
   }
 

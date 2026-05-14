@@ -21,6 +21,30 @@ export interface MonotonicOnInfo {
 }
 
 /**
+ * A functional dependency on a relational node's output columns: when the
+ * values of `determinants` are fixed, the values of `dependents` are also
+ * fixed for every row.
+ *
+ * Column indices are output-column indices (consistent with `uniqueKeys`).
+ *
+ * - `determinants` empty means "constant": the dependents take a single value
+ *   for every row in the relation.
+ * - The set is non-canonical — only the FDs each operator can prove are
+ *   stored. Use `computeClosure` from `planner/util/fd-utils.ts` to derive
+ *   what a set of attributes implies.
+ * - Superkeys (entries in `uniqueKeys`) implicitly imply the FD
+ *   `key → all-columns`; the `fds` field carries the additional, non-key
+ *   dependencies. Use `superkeyToFd(key, columnCount)` if a consumer wants
+ *   a unified view; this is not materialized eagerly.
+ */
+export interface FunctionalDependency {
+  /** Determinant column indices in the node's output. Empty array means "constant" (no row variation). */
+  readonly determinants: readonly number[];
+  /** Dependent column indices in the node's output. Non-empty. */
+  readonly dependents: readonly number[];
+}
+
+/**
  * Physical properties that execution nodes can provide or require
  */
 export interface PhysicalProperties {
@@ -36,6 +60,21 @@ export interface PhysicalProperties {
    * the operation (e.g., DISTINCT creates a unique key on all columns)
    */
   uniqueKeys?: number[][];
+
+  /**
+   * Functional dependencies that hold over the output stream. Superkeys
+   * (entries in `uniqueKeys`) imply the FD `key → all-columns`; `fds`
+   * carries the additional, non-key dependencies. Use `computeClosure` from
+   * `planner/util/fd-utils.ts` to derive what a set of attributes implies.
+   */
+  fds?: ReadonlyArray<FunctionalDependency>;
+
+  /**
+   * Equivalence classes over the node's output columns. Each class is a set
+   * of column indices known to hold equal values for every row. Derived from
+   * equality predicates and equi-join conditions.
+   */
+  equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
 
   /**
    * Attributes the relation is monotonically ordered on. Stronger than `ordering`:

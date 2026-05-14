@@ -8,6 +8,7 @@ import { StatusCode } from '../../common/types.js';
 import { PredicateCapable, type PredicateSourceCapable } from '../framework/characteristics.js';
 import { createTableInfoFromNode, extractConstraints } from '../analysis/constraint-extractor.js';
 import { normalizePredicate } from '../analysis/predicate-normalizer.js';
+import { addFd, extractEqualityFds, mergeEquivClasses } from '../util/fd-utils.js';
 
 /**
  * Represents a filter operation (WHERE clause).
@@ -75,12 +76,30 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 			}
 		}
 
+		// FD/EC propagation: inherit source contributions, then add any FDs/ECs
+		// implied by equality conjuncts in the predicate.
+		const attrIdToIndex = new Map<number, number>();
+		this.source.getAttributes().forEach((a, i) => attrIdToIndex.set(a.id, i));
+		const { fds: predFds, equivPairs } = extractEqualityFds(this.predicate, attrIdToIndex);
+
+		let fds = sourcePhysical?.fds ?? [];
+		for (const fd of predFds) {
+			fds = addFd(fds, fd, { uniqueKeys });
+		}
+
+		let equivClasses = sourcePhysical?.equivClasses ?? [];
+		if (equivPairs.length > 0) {
+			equivClasses = mergeEquivClasses(equivClasses, equivPairs.map(p => [p[0], p[1]]));
+		}
+
 		return {
 			estimatedRows: rows,
 			ordering: sourcePhysical?.ordering,
 			uniqueKeys,
 			// Filter preserves monotonicOn — a predicate doesn't reorder rows.
 			monotonicOn: sourcePhysical?.monotonicOn,
+			fds: fds.length > 0 ? fds : undefined,
+			equivClasses: equivClasses.length > 0 ? equivClasses : undefined,
 		};
 	}
 

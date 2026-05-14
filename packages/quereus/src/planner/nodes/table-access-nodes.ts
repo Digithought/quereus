@@ -160,12 +160,15 @@ export class SeqScanNode extends TableAccessNode {
 		return 'sequential';
 	}
 
-	computePhysical(): Partial<PhysicalProperties> {
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		const sourcePhysical = childrenPhysical[0];
 		const out: Partial<PhysicalProperties> = {
 			estimatedRows: this.source.estimatedRows,
 			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			// Sequential scans don't provide any specific ordering
 			ordering: undefined,
+			fds: sourcePhysical?.fds,
+			equivClasses: sourcePhysical?.equivClasses,
 		};
 		if (this.rangeBoundedOn) out.rangeBoundedOn = this.rangeBoundedOn;
 		return out;
@@ -230,7 +233,8 @@ export class IndexScanNode extends TableAccessNode {
 		return 'index-scan';
 	}
 
-	computePhysical(): Partial<PhysicalProperties> {
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		const sourcePhysical = childrenPhysical[0];
 		const lifted = liftAdvertisement(this.source, this.advertisement);
 		if (this.suppressMonotonic) {
 			delete lifted.monotonicOn;
@@ -242,6 +246,8 @@ export class IndexScanNode extends TableAccessNode {
 			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			// Index scans can provide ordering
 			ordering: this.providesOrdering,
+			fds: sourcePhysical?.fds,
+			equivClasses: sourcePhysical?.equivClasses,
 			...lifted,
 		};
 		if (this.rangeBoundedOn) out.rangeBoundedOn = this.rangeBoundedOn;
@@ -359,7 +365,8 @@ export class IndexSeekNode extends TableAccessNode {
 		return 'index-seek';
 	}
 
-	computePhysical(): Partial<PhysicalProperties> {
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		const sourcePhysical = childrenPhysical[0];
 		const lifted = liftAdvertisement(this.source, this.advertisement);
 		if (this.suppressMonotonic) {
 			delete lifted.monotonicOn;
@@ -370,6 +377,8 @@ export class IndexSeekNode extends TableAccessNode {
 			uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
 			ordering: this.providesOrdering,
 			estimatedRows: Math.min(this.source.estimatedRows || 1000, 100),
+			fds: sourcePhysical?.fds,
+			equivClasses: sourcePhysical?.equivClasses,
 			...lifted,
 		} as Partial<PhysicalProperties>;
 		if (this.rangeBoundedOn) base.rangeBoundedOn = this.rangeBoundedOn;

@@ -8,7 +8,7 @@ import { quereusError } from '../../common/errors.js';
 import type { JoinCapable, PredicateSourceCapable } from '../framework/characteristics.js';
 import { mergeJoinCost } from '../cost/index.js';
 import type { JoinType } from './join-node.js';
-import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, propagateJoinMonotonicOn, type EquiJoinPair } from './join-utils.js';
+import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, propagateJoinMonotonicOn, propagateJoinFds, type EquiJoinPair } from './join-utils.js';
 import { analyzeJoinKeyCoverage } from '../util/key-utils.js';
 
 /**
@@ -87,6 +87,10 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			? leftPhys.ordering
 			: undefined;
 
+		const fdResult = propagateJoinFds(
+			this.joinType, leftPhys, rightPhys, indexPairs, leftAttrs.length, result.uniqueKeys,
+		);
+
 		return {
 			ordering,
 			uniqueKeys: result.uniqueKeys,
@@ -94,6 +98,8 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			// MergeJoin physically guarantees monotonicOn on equi-pair attrIds when both
 			// inputs were monotonic on their respective X (the merge join's whole point).
 			monotonicOn: propagateJoinMonotonicOn(this.joinType, leftPhys, rightPhys, this.equiPairs),
+			fds: fdResult.fds,
+			equivClasses: fdResult.equivClasses,
 		};
 	}
 
