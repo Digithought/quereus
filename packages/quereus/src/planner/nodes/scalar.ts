@@ -727,6 +727,19 @@ export class CastNode extends PlanNode implements UnaryScalarNode {
 			resultType: formatScalarType(this.getType())
 		};
 	}
+
+	override isInjectiveIn(inputAttrId: number): InjectivityResult {
+		// Conservative starter rule: only treat the cast as a no-op when the
+		// target logical type exactly matches the operand's. Wider-integer casts
+		// would also be safe but require a "wider with no value collisions"
+		// check from the type system — deferred.
+		const operandType = this.operand.getType().logicalType;
+		const targetType = this.getType().logicalType;
+		if (operandType === targetType) {
+			return this.operand.isInjectiveIn(inputAttrId);
+		}
+		return { injective: false };
+	}
 }
 
 export class CollateNode extends PlanNode implements UnaryScalarNode {

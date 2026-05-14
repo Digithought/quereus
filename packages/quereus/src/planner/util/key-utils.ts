@@ -1,7 +1,9 @@
 import type { ColRef, RelationType } from '../../common/datatype.js';
-import type { PhysicalProperties, RelationalPlanNode } from '../nodes/plan-node.js';
+import type { Attribute, PhysicalProperties, RelationalPlanNode, ScalarPlanNode } from '../nodes/plan-node.js';
 import type { JoinType } from '../nodes/join-node.js';
 import type { TableSchema } from '../../schema/table.js';
+import { ColumnReferenceNode, ParameterReferenceNode } from '../nodes/reference.js';
+import { LiteralNode } from '../nodes/scalar.js';
 
 /**
  * Project unique keys through a projection mapping.
@@ -27,6 +29,125 @@ export function projectKeys(sourceKeys: ReadonlyArray<ReadonlyArray<ColRef>>, pr
 		}
 	}
 	return result;
+}
+
+/**
+ * One projected scalar expression annotated with its zero-based output column index.
+ */
+export interface InjectiveProjectionEntry {
+	expr: ScalarPlanNode;
+	outIndex: number;
+}
+
+/**
+ * Result of `deriveProjectionColumnMap`. `map` carries the source→output column
+ * mapping that key/FD/EC propagation should walk; `injectivePairs` lists the
+ * extra `[sourceIdx, outIdx]` entries that originate from an *injective unary*
+ * projection over a single source attribute (e.g. `id + 1` over PK `id`).
+ *
+ * `injectivePairs` is reported separately so callers can emit a bi-directional
+ * FD between the bare-source output column and the injectively-derived output
+ * column (when both ends are present in the projection list). Bare-column
+ * projections are NOT listed in `injectivePairs` — they are trivially identity
+ * and would only produce useless `{i} → {i}` FDs.
+ */
+export interface ProjectionMappingResult {
+	map: Map<number, number>;
+	injectivePairs: Array<[number, number]>;
+}
+
+/**
+ * Walk the scalar `expr` collecting:
+ *   - `attrIds`: the set of unique `ColumnReferenceNode` attribute IDs it depends on,
+ *   - `allOtherLeavesConstant`: true iff every non-column leaf is a `LiteralNode`
+ *     or `ParameterReferenceNode`.
+ *
+ * Early-exits when a non-constant non-column leaf is found.
+ */
+function analyzeProjectionLeaves(expr: ScalarPlanNode): { attrIds: Set<number>; allOtherLeavesConstant: boolean } {
+	const attrIds = new Set<number>();
+	let allOtherLeavesConstant = true;
+
+	const stack: ScalarPlanNode[] = [expr];
+	while (stack.length > 0) {
+		const n = stack.pop()!;
+		if (n instanceof ColumnReferenceNode) {
+			attrIds.add(n.attributeId);
+			continue;
+		}
+		const children = n.getChildren();
+		if (children.length === 0) {
+			// Leaf that is not a column reference: must be a compile-time constant.
+			if (!(n instanceof LiteralNode || n instanceof ParameterReferenceNode)) {
+				allOtherLeavesConstant = false;
+				break;
+			}
+			continue;
+		}
+		for (const c of children) {
+			// Only descend through scalar children; scalar expressions only have scalar children.
+			stack.push(c as ScalarPlanNode);
+		}
+	}
+
+	return { attrIds, allOtherLeavesConstant };
+}
+
+/**
+ * Build a source→output column mapping that includes BOTH:
+ *   - direct `ColumnReferenceNode` projections (bare passthrough), and
+ *   - injective unary projections: the expression references exactly one source
+ *     attribute `a`, `expr.isInjectiveIn(a).injective === true`, and every other
+ *     leaf is a compile-time constant (`LiteralNode` / `ParameterReferenceNode`).
+ *     For those, the output column is treated as a synonym of source column
+ *     `src(a)`.
+ *
+ * The bare-column rule wins on collisions: if the same source column is also
+ * projected directly, that mapping is preserved (first-occurrence wins, matching
+ * the historical behaviour) and the injective entry is recorded in
+ * `injectivePairs` instead.
+ */
+export function deriveProjectionColumnMap(
+	sourceAttrs: readonly Attribute[],
+	projections: readonly InjectiveProjectionEntry[],
+): ProjectionMappingResult {
+	const map = new Map<number, number>();
+	const injectivePairs: Array<[number, number]> = [];
+
+	// Pass 1: bare column references (highest priority for `map`).
+	for (const { expr, outIndex } of projections) {
+		if (expr instanceof ColumnReferenceNode) {
+			const srcIndex = sourceAttrs.findIndex(a => a.id === expr.attributeId);
+			if (srcIndex >= 0 && !map.has(srcIndex)) {
+				map.set(srcIndex, outIndex);
+			}
+		}
+	}
+
+	// Pass 2: injectively-derived columns.
+	for (const { expr, outIndex } of projections) {
+		if (expr instanceof ColumnReferenceNode) continue;
+
+		const { attrIds, allOtherLeavesConstant } = analyzeProjectionLeaves(expr);
+		if (!allOtherLeavesConstant) continue;
+		if (attrIds.size !== 1) continue;
+
+		const attrId = attrIds.values().next().value as number;
+		if (!expr.isInjectiveIn(attrId).injective) continue;
+
+		const srcIndex = sourceAttrs.findIndex(a => a.id === attrId);
+		if (srcIndex < 0) continue;
+
+		// Map first-occurrence wins; injective entries fill in slots not already
+		// claimed by a bare-column projection. The pair is *always* recorded so
+		// callers can decide whether to emit the bi-directional FD.
+		if (!map.has(srcIndex)) {
+			map.set(srcIndex, outIndex);
+		}
+		injectivePairs.push([srcIndex, outIndex]);
+	}
+
+	return { map, injectivePairs };
 }
 
 /**

@@ -374,18 +374,38 @@ describe('FD propagation per operator', () => {
 		expect(fdHas(props!.fds, [], [1])).to.equal(false);
 	});
 
-	it('Project: bare column projections survive, expressions drop out', async () => {
+	it('Project: bare column projections survive, non-injective expressions drop out', async () => {
 		await db.exec("CREATE TABLE p (id INTEGER PRIMARY KEY, v INTEGER) USING memory");
-		const rows = await planRows(db, "SELECT id, v + 1 AS w FROM p WHERE v = 7");
+		// `*` is not annotated as injective for numeric ops, so `v * 2` is a
+		// non-injective expression and must NOT appear in any FD.
+		const rows = await planRows(db, "SELECT id, v * 2 AS w FROM p WHERE v = 7");
 		const props = physicalOf(rows, r => r.op === 'PROJECT');
 		expect(props).to.not.equal(undefined);
-		// `w` is the projection of `v + 1` — it should NOT appear in any FD.
 		const refs = new Set<number>();
 		for (const fd of props!.fds ?? []) {
 			for (const d of fd.determinants) refs.add(d);
 			for (const d of fd.dependents) refs.add(d);
 		}
 		expect(refs.has(1)).to.equal(false);
+	});
+
+	it('Project: injective unary projection (id + 1) is treated as a synonym of id', async () => {
+		await db.exec("CREATE TABLE pi (id INTEGER PRIMARY KEY, v INTEGER) USING memory");
+		// Source FD `idx(id) → idx(v)` should survive as `{0} → {1}` because
+		// `id + 1` is injectively derived from `id` and shares its mapping.
+		const rows = await planRows(db, "SELECT id + 1 AS k, v FROM pi");
+		const props = physicalOf(rows, r => r.op === 'PROJECT');
+		expect(props).to.not.equal(undefined);
+		expect(fdHas(props!.fds, [0], [1])).to.equal(true);
+	});
+
+	it('Project: SELECT id, id + 1 emits bi-directional FDs between the two output columns', async () => {
+		await db.exec("CREATE TABLE pi2 (id INTEGER PRIMARY KEY, v INTEGER) USING memory");
+		const rows = await planRows(db, "SELECT id, id + 1 AS k FROM pi2");
+		const props = physicalOf(rows, r => r.op === 'PROJECT');
+		expect(props).to.not.equal(undefined);
+		expect(fdHas(props!.fds, [0], [1])).to.equal(true);
+		expect(fdHas(props!.fds, [1], [0])).to.equal(true);
 	});
 
 	it('Alias passes FDs and ECs through unchanged', async () => {

@@ -3,8 +3,8 @@ import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Scala
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
-import { projectKeys } from '../util/key-utils.js';
-import { projectConstantBindings, projectFds } from '../util/fd-utils.js';
+import { deriveProjectionColumnMap, projectKeys } from '../util/key-utils.js';
+import { addFd, projectConstantBindings, projectFds } from '../util/fd-utils.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { formatProjection } from '../../util/plan-formatter.js';
 import { ColumnReferenceNode } from './reference.js';
@@ -89,15 +89,10 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 				isSet: sourceType.isSet,
 				columns,
 				keys: (() => {
-					// Build source->output index map for simple column references
-					const map = new Map<number, number>();
-					this.projections.forEach((proj, outIdx) => {
-						if (proj.node instanceof ColumnReferenceNode) {
-							const colRef = proj.node as ColumnReferenceNode;
-							const srcIndex = this.source.getAttributes().findIndex(a => a.id === colRef.attributeId);
-							if (srcIndex >= 0) map.set(srcIndex, outIdx);
-						}
-					});
+					const { map } = deriveProjectionColumnMap(
+						this.source.getAttributes(),
+						this.projections.map((p, outIndex) => ({ expr: p.node, outIndex })),
+					);
 					return projectKeys(sourceType.keys, map);
 				})(),
 				// TODO: propagate row constraints that don't have projected off columns
@@ -165,20 +160,23 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const sourcePhysical = childrenPhysical[0];
-		// Build mapping from source index -> projected index for ColumnReferences
-		const map = new Map<number, number>();
 		const sourceAttrs = this.source.getAttributes();
+
+		// monotonicOn only propagates through bare-column-reference projections —
+		// attribute identity must survive, which injectively-derived columns don't
+		// preserve (the column changes value space).
 		const preservedAttrIds = new Set<number>();
-		this.projections.forEach((proj, outIdx) => {
+		for (const proj of this.projections) {
 			if (proj.node instanceof ColumnReferenceNode) {
-				const colRef = proj.node as ColumnReferenceNode;
-				const srcIndex = sourceAttrs.findIndex(a => a.id === colRef.attributeId);
-				if (srcIndex >= 0 && !map.has(srcIndex)) map.set(srcIndex, outIdx);
-				// Track attrIds preserved by trivial column-reference projections.
-				// Until expression-properties land, only these survive monotonicOn.
-				preservedAttrIds.add(colRef.attributeId);
+				preservedAttrIds.add(proj.node.attributeId);
 			}
-		});
+		}
+
+		const { map, injectivePairs } = deriveProjectionColumnMap(
+			sourceAttrs,
+			this.projections.map((p, outIndex) => ({ expr: p.node, outIndex })),
+		);
+
 		const uniqueKeys = (sourcePhysical?.uniqueKeys || [])
 			.map(key => {
 				const projected: number[] = [];
@@ -191,11 +189,33 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 			})
 			.filter((k): k is number[] => k !== null);
 
+		// When both a bare-column projection and an injective derivation of the
+		// same source column appear (`SELECT id, id+1 FROM t`), the derived column
+		// is *also* a unique key — substitute it into each surviving key.
+		for (const [srcIdx, outIdx] of injectivePairs) {
+			const bareOut = map.get(srcIdx);
+			if (bareOut === undefined || bareOut === outIdx) continue;
+			const variants: number[][] = [];
+			for (const key of uniqueKeys) {
+				if (key.includes(bareOut) && !key.includes(outIdx)) {
+					variants.push(key.map(c => (c === bareOut ? outIdx : c)));
+				}
+			}
+			uniqueKeys.push(...variants);
+		}
+
 		// FDs/ECs project through the same column mapping. Non-trivial expressions
-		// drop out of the mapping, so any FD/EC that references them is dropped.
-		// TODO: injective-expression FDs (output col determined by input col) —
-		// out of scope for this ticket; see follow-up plan ticket.
-		const fds = projectFds(sourcePhysical?.fds ?? [], map);
+		// drop out of the mapping, so any FD/EC that references them is dropped —
+		// except for injective unary projections (`id + 1`, `-id`, ...) which the
+		// augmented map carries through and which additionally emit a
+		// bi-directional FD when both the bare and derived columns are projected.
+		let fds = projectFds(sourcePhysical?.fds ?? [], map);
+		for (const [srcIdx, outIdx] of injectivePairs) {
+			const bareOut = map.get(srcIdx);
+			if (bareOut === undefined || bareOut === outIdx) continue;
+			fds = addFd(fds, { determinants: [bareOut], dependents: [outIdx] }, { uniqueKeys });
+			fds = addFd(fds, { determinants: [outIdx], dependents: [bareOut] }, { uniqueKeys });
+		}
 		const projectedEquiv: number[][] = [];
 		for (const cls of sourcePhysical?.equivClasses ?? []) {
 			const mapped: number[] = [];
