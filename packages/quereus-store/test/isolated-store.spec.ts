@@ -425,6 +425,100 @@ describe('Isolated Store Module', () => {
 		});
 	});
 
+	describe('column-level ON CONFLICT default (defaultConflict)', () => {
+		let isolatedModule: ReturnType<typeof createIsolatedStoreModule>;
+
+		beforeEach(() => {
+			isolatedModule = createIsolatedStoreModule({ provider });
+			db.registerModule('store', isolatedModule);
+		});
+
+		afterEach(async () => {
+			try { await isolatedModule.closeAll(); } catch { /* ignore */ }
+		});
+
+		it('PK column-level REPLACE: plain INSERT on underlying conflict replaces the row', async () => {
+			await db.exec(`CREATE TABLE t_dc_pkr (id INTEGER PRIMARY KEY ON CONFLICT REPLACE, v TEXT) USING store`);
+			await db.exec(`INSERT INTO t_dc_pkr VALUES (1, 'a')`);
+
+			// No OR clause — column-level REPLACE should apply.
+			await db.exec(`INSERT INTO t_dc_pkr VALUES (1, 'b')`);
+
+			const row = await db.get(`SELECT v FROM t_dc_pkr WHERE id = 1`);
+			expect(row?.v).to.equal('b');
+		});
+
+		it('PK column-level IGNORE: plain INSERT on underlying conflict is a silent no-op', async () => {
+			await db.exec(`CREATE TABLE t_dc_pki (id INTEGER PRIMARY KEY ON CONFLICT IGNORE, v TEXT) USING store`);
+			await db.exec(`INSERT INTO t_dc_pki VALUES (1, 'a')`);
+
+			await db.exec(`INSERT INTO t_dc_pki VALUES (1, 'b')`);
+
+			const row = await db.get(`SELECT v FROM t_dc_pki WHERE id = 1`);
+			expect(row?.v).to.equal('a');
+		});
+
+		it('Statement OR ABORT overrides column-level REPLACE', async () => {
+			await db.exec(`CREATE TABLE t_dc_or (id INTEGER PRIMARY KEY ON CONFLICT REPLACE, v TEXT) USING store`);
+			await db.exec(`INSERT INTO t_dc_or VALUES (1, 'a')`);
+
+			let err: Error | null = null;
+			try {
+				await db.exec(`INSERT OR ABORT INTO t_dc_or VALUES (1, 'b')`);
+			} catch (e) { err = e as Error; }
+			expect(err?.message.toLowerCase()).to.include('unique constraint');
+
+			const row = await db.get(`SELECT v FROM t_dc_or WHERE id = 1`);
+			expect(row?.v).to.equal('a');
+		});
+
+		it('UNIQUE column-level REPLACE: plain INSERT on underlying conflict evicts the prior row', async () => {
+			await db.exec(`CREATE TABLE t_dc_ur (id INTEGER PRIMARY KEY, email TEXT UNIQUE ON CONFLICT REPLACE, name TEXT) USING store`);
+			await db.exec(`INSERT INTO t_dc_ur VALUES (1, 'a@x', 'Alice')`);
+
+			await db.exec(`INSERT INTO t_dc_ur VALUES (2, 'a@x', 'Replaced')`);
+
+			const rows = await db.get(`SELECT id, name FROM t_dc_ur WHERE email = 'a@x'`);
+			expect(rows?.id).to.equal(2);
+			expect(rows?.name).to.equal('Replaced');
+
+			const old = await db.get(`SELECT id FROM t_dc_ur WHERE id = 1`);
+			expect(old).to.be.undefined;
+		});
+
+		it('UNIQUE column-level IGNORE: plain INSERT on underlying conflict is a silent no-op', async () => {
+			await db.exec(`CREATE TABLE t_dc_ui (id INTEGER PRIMARY KEY, email TEXT UNIQUE ON CONFLICT IGNORE) USING store`);
+			await db.exec(`INSERT INTO t_dc_ui VALUES (1, 'a@x')`);
+
+			await db.exec(`INSERT INTO t_dc_ui VALUES (2, 'a@x')`);
+
+			const cnt = await db.get(`SELECT count(*) as cnt FROM t_dc_ui`);
+			expect(cnt?.cnt).to.equal(1);
+			const row = await db.get(`SELECT id FROM t_dc_ui WHERE email = 'a@x'`);
+			expect(row?.id).to.equal(1);
+		});
+
+		it('PK column-level REPLACE: live overlay row in same txn is replaced by second insert', async () => {
+			await db.exec(`CREATE TABLE t_dc_live (id INTEGER PRIMARY KEY ON CONFLICT REPLACE, v TEXT) USING store`);
+
+			await db.exec('BEGIN');
+			await db.exec(`INSERT INTO t_dc_live VALUES (1, 'a')`);
+			await db.exec(`INSERT INTO t_dc_live VALUES (1, 'b')`);
+			await db.exec('COMMIT');
+
+			const row = await db.get(`SELECT v FROM t_dc_live WHERE id = 1`);
+			expect(row?.v).to.equal('b');
+		});
+
+		// UPDATE-path column-level defaultConflict is NOT honored end-to-end because
+		// quereus/.../dml-executor.ts coerces `plan.onConflict ?? ABORT` before calling
+		// vtab.update() on the UPDATE path (the INSERT path keeps `undefined`).
+		// Until that gap is fixed in dml-executor, the overlay's PK-change UPDATE
+		// pre-check sees ABORT and a same-txn collision throws. The overlay code
+		// itself does honor column-level defaultConflict (covered by the live-row
+		// and underlying-collision INSERT cases above); the limitation is upstream.
+	});
+
 	describe('UPDATE that changes the primary key', () => {
 		let isolatedModule: ReturnType<typeof createIsolatedStoreModule>;
 
