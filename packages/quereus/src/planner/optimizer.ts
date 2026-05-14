@@ -22,6 +22,7 @@ import { ruleMonotonicRangeAccess } from './rules/access/rule-monotonic-range-ac
 import { ruleAsofStrategySelect } from './rules/access/rule-asof-strategy-select.js';
 import { ruleGrowRetrieve } from './rules/retrieve/rule-grow-retrieve.js';
 import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown.js';
+import { ruleAggregatePredicatePushdown } from './rules/predicate/rule-aggregate-predicate-pushdown.js';
 import { ruleFilterMerge } from './rules/predicate/rule-filter-merge.js';
 import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
@@ -140,6 +141,18 @@ export class Optimizer {
 			nodeType: PlanNodeType.Project,
 			phase: 'rewrite',
 			fn: ruleProjectionPruning,
+			priority: 19
+		});
+
+		// Aggregate-aware predicate pushdown: splits a Filter above an aggregate so
+		// conjuncts on GROUP-BY-determined columns land below the aggregate. Runs
+		// before the cross-node predicate pushdown (priority 20) so anything we
+		// push below the aggregate can propagate further via that rule.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'aggregate-predicate-pushdown',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleAggregatePredicatePushdown,
 			priority: 19
 		});
 

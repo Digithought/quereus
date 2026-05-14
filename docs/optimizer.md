@@ -468,6 +468,7 @@ Rules are organized by optimization family in `src/planner/rules/`:
 - `ruleLateralTop1Asof`: Recognizes the lateral-top-1 idiom and rewrites it to a streaming `AsofScanNode` (see "Streaming asof scan" below).
 
 **Predicate** (`predicate/`)
+- `ruleAggregatePredicatePushdown`: Splits `Filter(predicate, Aggregate|StreamAggregate|HashAggregate)` so that conjuncts referencing only GROUP-BY-determined columns are rewritten onto the aggregate's source attribute IDs and moved below the aggregate; conjuncts referencing aggregate outputs (sum/count/etc.) or non-column GROUP-BY expressions stay above. Subsumes the WHERE-on-group-by-column and HAVING-on-group-by-column cases. Uses `computeClosure` over the aggregate's `physical.fds` so composite GROUP BYs whose members FD-determine each other widen the pushable set (see the FD framework section). Runs in the Structural pass at priority 19, ahead of `rulePredicatePushdown` so anything it places below an aggregate can propagate further.
 - `rulePredicatePushdown`: Pushes filter predicates down across safe commuting nodes (Sort, Distinct, Alias, eligible Project) and into RetrieveNode boundaries where the virtual table module supports them, reducing rows processed upstream.
 - `ruleFilterMerge`: Merges adjacent Filter nodes into a single Filter with an AND-combined predicate. Iteratively absorbs entire chains of adjacent filters in one visit. Runs in the Structural pass at priority 21 (after predicate pushdown at 20).
 
@@ -1216,6 +1217,8 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 **De-dup / cap behavior:** `addFd` performs subsumption (drop existing FDs with the same determinants whose dependent set is a subset of the new one, and skip adding a new FD already subsumed). When the resulting list exceeds the cap, FDs whose determinants are not a subset of any `uniqueKeys` entry on the same node are dropped first; truncations are logged at debug under `quereus:planner:fd`. `mergeConstantBindings` enforces the same cap and logs the same way.
 
 **Consumers are forthcoming.** This pass lands the foundation only; existing `uniqueKeys` consumers (`rule-distinct-elimination`, `analyzeJoinKeyCoverage`, `CatalogStatsProvider.joinSelectivity`, change-detection classification) are untouched. Follow-up tickets will migrate consumers to read `fds`/`equivClasses` and add new optimizations (GROUP BY simplification, ORDER BY pruning, join elimination, predicate inference through ECs, etc.).
+
+`ruleAggregatePredicatePushdown` (Predicate rules above) is the first consumer of `physical.fds`: it uses `computeClosure` over the aggregate's output FDs to widen the set of pushable conjuncts on composite GROUP BYs.
 
 ### Key-driven row-count reduction
 

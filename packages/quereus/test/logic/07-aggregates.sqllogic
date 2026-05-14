@@ -23,6 +23,15 @@ SELECT grp, sum(val) as total FROM agg_t GROUP BY grp HAVING total > 40 ORDER BY
 SELECT grp, sum(val) as total FROM agg_t GROUP BY grp HAVING total > 40 ORDER BY grp;
 → [{"grp":"b","total":60},{"grp":"c","total":50}]
 
+-- HAVING on a GROUP BY column is pushed below the aggregate (rule-aggregate-predicate-pushdown).
+-- Result rows must be unchanged by the rewrite.
+SELECT grp, sum(val) as total FROM agg_t GROUP BY grp HAVING grp > 'a' ORDER BY grp;
+→ [{"grp":"b","total":60},{"grp":"c","total":50}]
+
+-- Mixed HAVING: GROUP-BY-column conjunct is pushed below, aggregate-output conjunct stays above.
+SELECT grp, sum(val) as total FROM agg_t GROUP BY grp HAVING grp >= 'b' AND sum(val) > 40 ORDER BY grp;
+→ [{"grp":"b","total":60},{"grp":"c","total":50}]
+
 -- HAVING without GROUP BY
 SELECT sum(val) FROM agg_t HAVING sum(val) > 100;
 → [{"sum(val)":150}]
