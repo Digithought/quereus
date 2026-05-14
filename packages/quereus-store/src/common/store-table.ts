@@ -776,8 +776,10 @@ export class StoreTable extends VirtualTable {
 					await store.put(newKey, serializedRow);
 				}
 
-				// Update secondary indexes
-				await this.updateSecondaryIndexes(inTransaction, oldRow, coerced, newPk);
+				// Update secondary indexes. For PK-change UPDATE the old entry lives
+				// at oldPk and the new entry must land at newPk; for same-PK UPDATE
+				// both halves use the same key.
+				await this.updateSecondaryIndexes(inTransaction, oldRow, coerced, oldPk, newPk);
 
 				// Queue or emit event
 				const updateEvent = {
@@ -840,12 +842,19 @@ export class StoreTable extends VirtualTable {
 		}
 	}
 
-	/** Update secondary indexes after a row change. */
+	/**
+	 * Update secondary indexes after a row change.
+	 *
+	 * For PK-change UPDATE, `oldPk` (where the existing entry lives) and `newPk`
+	 * (where the relocated entry will live) differ; using a single pk for both
+	 * sides leaks the old entry. Other paths pass the same pk for both.
+	 */
 	protected async updateSecondaryIndexes(
 		inTransaction: boolean,
 		oldRow: Row | null,
 		newRow: Row | null,
-		pk: SqlValue[]
+		oldPk: SqlValue[],
+		newPk: SqlValue[] = oldPk,
 	): Promise<void> {
 		const schema = this.tableSchema!;
 		const indexes = schema.indexes || [];
@@ -860,7 +869,7 @@ export class StoreTable extends VirtualTable {
 				const oldIndexValues = indexCols.map(i => oldRow[i]);
 				const oldIndexKey = buildIndexKey(
 					oldIndexValues,
-					pk,
+					oldPk,
 					this.encodeOptions,
 					indexDirections,
 					this.pkDirections,
@@ -878,7 +887,7 @@ export class StoreTable extends VirtualTable {
 				const newIndexValues = indexCols.map(i => newRow[i]);
 				const newIndexKey = buildIndexKey(
 					newIndexValues,
-					pk,
+					newPk,
 					this.encodeOptions,
 					indexDirections,
 					this.pkDirections,

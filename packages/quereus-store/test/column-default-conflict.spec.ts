@@ -203,6 +203,27 @@ describe('StoreTable column-level ON CONFLICT defaults', () => {
 			expect(await countEntries()).to.equal(2);
 		});
 
+		it('moves the secondary index entry to the new PK on PK-change UPDATE', async () => {
+			// Regression: updateSecondaryIndexes used a single pk for both the
+			// delete-old and put-new index keys, so PK-change UPDATE left the
+			// old entry behind at (indexvals, oldPk).
+			await db.exec(`CREATE TABLE m (id INTEGER PRIMARY KEY, b INTEGER) USING store`);
+			await db.exec(`CREATE INDEX m_b ON m (b)`);
+			await db.exec(`INSERT INTO m VALUES (1, 100)`);
+
+			await db.exec(`UPDATE m SET id = 5 WHERE id = 1`);
+
+			const idxStore = await provider.getIndexStore('main', 'm', 'm_b');
+			let entries = 0;
+			for await (const _e of idxStore.iterate(buildFullScanBounds())) entries++;
+			expect(entries, 'old (b=100, pk=1) index entry should not leak').to.equal(1);
+
+			// And the surviving entry must point at the new PK — confirm by
+			// matching the index-backed lookup against the relocated row.
+			const rows = await collect(db, `SELECT id, b FROM m WHERE b = 100`);
+			expect(rows).to.deep.equal([{ id: 5, b: 100 }]);
+		});
+
 		it('enforces uniqueness for a UNIQUE index created after CREATE TABLE', async () => {
 			await db.exec(`CREATE TABLE u (id INTEGER PRIMARY KEY, b INTEGER) USING store`);
 			await db.exec(`INSERT INTO u VALUES (1, 100)`);
