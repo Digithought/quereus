@@ -711,7 +711,8 @@ export class StoreTable extends VirtualTable {
 				// PK-change UPDATE collides like an INSERT at the new key.
 				// Capture the evicted row so it can be reported via `replacedRow`
 				// (consumed by the executor for ON DELETE cascade/SET NULL of the
-				// row at the new PK).
+				// row at the new PK). Read through the coordinator so an evictee
+				// written earlier in the same transaction is visible.
 				let replacedAtNewPk: Row | null = null;
 				if (pkChanged) {
 					const existingAtNew = await store.get(newKey);
@@ -750,6 +751,15 @@ export class StoreTable extends VirtualTable {
 					if (ucResult) return ucResult;
 				}
 
+				// When REPLACE evicted a row at the new PK, fully delete it first
+				// (data + secondary indexes + row-count + delete event) so its
+				// state doesn't leak when we then put the moved row at newPk.
+				// Mirrors MemoryTable's `recordDelete(newPK, existingRowAtNewKey)`
+				// step in the PK-change-REPLACE path.
+				if (replacedAtNewPk) {
+					await this.deleteRowAt(inTransaction, newPk, replacedAtNewPk);
+				}
+
 				// Delete old key if PK changed
 				if (pkChanged) {
 					if (inTransaction) {
@@ -768,25 +778,6 @@ export class StoreTable extends VirtualTable {
 
 				// Update secondary indexes
 				await this.updateSecondaryIndexes(inTransaction, oldRow, coerced, newPk);
-
-				// When REPLACE evicted a row at the new PK, emit a delete event for
-				// it so store-level listeners observe the eviction (mirrors the
-				// recordDelete(newPK, existingRowAtNewKey) in MemoryTable's
-				// PK-change-REPLACE path).
-				if (replacedAtNewPk) {
-					const evictEvent = {
-						type: 'delete' as const,
-						schemaName: schema.schemaName,
-						tableName: schema.name,
-						key: newPk,
-						oldRow: replacedAtNewPk,
-					};
-					if (inTransaction) {
-						coordinator.queueEvent(evictEvent);
-					} else {
-						this.eventEmitter?.emitDataChange(evictEvent);
-					}
-				}
 
 				// Queue or emit event
 				const updateEvent = {

@@ -201,4 +201,5 @@ describe('StoreTable column-level ON CONFLICT defaults', () => {
 			expect(parents).to.deep.equal([{ id: 2, v: 'one' }]);
 		});
 	});
+
 });
