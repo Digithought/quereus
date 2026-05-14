@@ -936,18 +936,17 @@ export function computeCoveredKeysForConstraints(
 }
 
 /**
- * Three-way classification used by the deferred-assertion delta executor:
+ * Three-way classification used by the reusable delta executor kernel:
  *
  * - `'row'`   — equality constraints fully cover at least one unique key of the table
- *   reference at that site (possibly via FD closure). The runtime can parameterize on
- *   the changed PK tuples and run ≤1 row through the violation predicate per tuple.
+ *   reference at that site (possibly via FD closure). The runtime parameterizes on
+ *   the changed PK tuples and runs ≤1 row through the violation predicate per tuple.
  * - `'group'` — the table reference sits beneath an aggregate whose GROUP BY columns
  *   (possibly via FD closure under the aggregate's source) cover a unique key of the
- *   reference. The aggregate output is row-unique per group key, so the runtime can
- *   parameterize on changed group keys. Runtime wiring deferred — see
- *   `fd-view-maintenance-binding-keys`. Until that lands, callers should treat
- *   `'group'` as `'global'` (run the full violation query).
- * - `'global'` — neither holds; the violation query must run unparameterized.
+ *   reference. The aggregate output is row-unique per group key; the runtime
+ *   parameterizes on changed group keys (including OLD and NEW projections when a
+ *   row's group-key value changes).
+ * - `'global'` — neither holds; the violation query runs unparameterized.
  */
 export type RowClassification = 'row' | 'group' | 'global';
 

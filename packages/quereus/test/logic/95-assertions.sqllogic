@@ -345,3 +345,42 @@ DROP ASSERTION multi_a_pos;
 DROP ASSERTION multi_b_pos;
 DROP TABLE multi;
 -- run
+
+-- ===================================
+-- Group-Classified Assertion: Parameterized Delta Execution
+-- ===================================
+-- A subquery that aggregates by PK should be classified as 'group' so the
+-- delta executor parameterizes per changed group key instead of running the
+-- full violation query globally.
+
+CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, qty INTEGER);
+-- run
+
+-- The inner aggregate (GROUP BY id) is row-unique per group key. The outer
+-- predicate asserts every per-id total is non-negative.
+CREATE ASSERTION orders_nonneg CHECK (NOT EXISTS (
+  SELECT 1 FROM (SELECT id, SUM(qty) AS s FROM orders GROUP BY id) WHERE s < 0
+));
+-- run
+
+-- Valid inserts: pass the assertion.
+INSERT INTO orders VALUES (1, 10, 5);
+INSERT INTO orders VALUES (2, 11, 7);
+INSERT INTO orders VALUES (3, 10, 3);
+COMMIT;
+SELECT COUNT(*) FROM orders;
+→ [{ "count(*)": 3 }]
+
+-- Invalid insert at commit: qty negative trips the per-group check.
+BEGIN;
+INSERT INTO orders VALUES (4, 10, -100);
+COMMIT;
+-- error: Integrity assertion failed: orders_nonneg
+
+-- Verify rollback.
+SELECT COUNT(*) FROM orders;
+→ [{ "count(*)": 3 }]
+
+DROP ASSERTION orders_nonneg;
+DROP TABLE orders;
+-- run

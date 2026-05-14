@@ -1331,7 +1331,7 @@ Algorithm (concise):
 Notes:
 - Multi‑reference handling: Classify per‑instance via `relationKey`. The same base table may have both row‑specific and global instances in one assertion.
 - Joins with equality on a unique key reduce the joined side to row‑specific; push this information upward to avoid false global classifications.
-- Runtime wiring for `'group'` is **deferred** (see `tickets/...fd-view-maintenance-binding-keys`). Until then, consumers treat `'group'` as `'global'` (run the full violation query). The classification + `groupKeys` is exposed through `explain_assertion` for diagnostics.
+- All three modes (`'row'`, `'group'`, `'global'`) are now driven by the reusable `DeltaExecutor` kernel; `'group'` classifications parameterize per changed group-key tuple. See [`docs/incremental-maintenance.md`](incremental-maintenance.md) for the kernel surface.
 
 ### Transaction Change Tracking
 
@@ -1380,7 +1380,7 @@ During assertion creation/update:
 
 ### Diagnostics & Tooling
 
-- `explain_assertion(name)` TVF: returns normalized SQL plus concise logical plan (pre‑physical) and the classification map `{ relationKey → 'row' | 'group' | 'global' }`. The `prepared_pk_params` column lists the parameter names a parameterized variant would bind: for `'row'`, PK column names (`pk0`, `pk1`, ...); for `'group'`, the minimal group-key column names from `RowSpecificResult.groupKeys`. The runtime wiring for `'group'` is deferred — these are surfaced for diagnostics today.
+- `explain_assertion(name)` TVF: returns normalized SQL plus concise logical plan (pre‑physical) and the classification map `{ relationKey → 'row' | 'group' | 'global' }`. The `prepared_pk_params` column lists the parameter names a parameterized variant would bind: for `'row'`, PK column names (`pk0`, `pk1`, ...); for `'group'`, the minimal group-key column names from `RowSpecificResult.groupKeys`. Both modes are now executed by the `DeltaExecutor` kernel at COMMIT time.
 - Error formatting on violation: include assertion name and up to N sample violating key tuples when available from parameterized runs.
 
 ### Guarantees and Safety
@@ -1391,31 +1391,34 @@ During assertion creation/update:
 
 ## Binding-aware Delta Planning (Reusable)
 
-The same analysis used for assertions generalizes to incremental view maintenance and other delta-driven features. `analyzeRowSpecific` returns a `RowSpecificResult { classifications, groupKeys }` capturing the three modes below.
+The same analysis used for assertions generalizes to incremental view maintenance and other delta-driven features. `analyzeRowSpecific` returns a `RowSpecificResult { classifications, groupKeys }`; `extractBindings` packages that into a `PlanBindings { perRelation, relationToBase }` map of `BindingMode` per `TableReferenceNode` instance. The full runtime surface is documented in [`docs/incremental-maintenance.md`](incremental-maintenance.md).
 
 ### Modes of Specificity
-- Row-specific (`'row'`): unique key fully covered (under FD closure including FK→PK and EC-derived FDs); bind PK/unique key
-- Group-specific (`'group'`): aggregate `GROUP BY` columns (under FD closure at the aggregate's source) cover a unique key of the underlying table reference; bind the minimal group-key column subset (`groupKeys[relKey]`). Runtime not yet wired — current consumers fall back to global until the runtime ticket lands.
-- Global (`'global'`): no safe binding → evaluate full query
+- Row-specific (`'row'`): unique key fully covered (under FD closure including FK→PK and EC-derived FDs); bind PK/unique key columns.
+- Group-specific (`'group'`): aggregate `GROUP BY` columns (under FD closure at the aggregate's source) cover a unique key of the underlying table reference; bind the minimal group-key column subset (`groupKeys[relKey]`). Group-membership transitions (when an UPDATE changes a captured column) drive OLD/NEW projection emission so both old and new group keys are re-evaluated.
+- Global (`'global'`): no safe binding → evaluate full query once.
 
 ### Binding Extraction
-- From predicates: equality that covers a declared/inferred unique key
-- From aggregations/windows: grouping or partition keys
-- From joins: propagate bindings through equi-joins; when `T.k = U.k` and `k` is a binding key on `T`, it binds `U` as well
+`extractBindings(plan)` (see `src/planner/analysis/binding-extractor.ts`) walks the plan once, runs `analyzeRowSpecific`, and emits one `BindingMode` per `TableReferenceNode`:
+- From predicates: equality that covers a declared/inferred unique key.
+- From aggregations: grouping keys whose closure covers a unique key.
+- From joins: propagate bindings through equi-joins; when `T.k = U.k` and `k` is a binding key on `T`, it binds `U` as well.
+
+For `'row'` bindings, the chosen key prefers the table's primary key when it's among the covered keys; otherwise it picks the lex-min covered key for determinism.
 
 ### Residual Construction
-- Do not rewrite joins structurally; inject a Filter on the bound relation’s own attributes with `= ?` parameters
-- Preserve attribute IDs; parameter order follows key column order
-- Cache one residual per `relationKey` and key-shape
+- Do not rewrite joins structurally; inject a Filter on the bound relation’s own attributes with `= ?` parameters (`injectKeyFilter` in `database-assertions.ts`).
+- Preserve attribute IDs; parameter order follows key column order. `'row'` parameters use the prefix `pk0..pkN-1`; `'group'` parameters use `gk0..gkN-1`.
+- Each consumer owns its residual cache, keyed by `(relationKey, BindingMode.kind, columnsJoined)`.
 
 ### Delta Execution Strategy
-- On COMMIT, collect changed keys/groups per base table
-- If any dependent reference is global and that base changed → run full query once
-- Else run residual per affected key/group; batch in future via IN/VALUES
+- On COMMIT, the `DeltaExecutor` walks each `DeltaSubscription`. Per relation, it pulls projected tuples from `TransactionManager.getChangedTuples` and either parameterizes the residual per tuple, or — when changed distinct tuples ≥ `tuning.deltaPerRowFallbackRatio × estimatedRows(base)` — falls back to a single global run.
+- The change-capture layer registers per-base-table column-projection demand via `registerCaptureSpec`. PK is always captured implicitly; non-PK columns are retained only when at least one consumer has registered demand. UPDATEs emit both OLD and NEW projections when any captured column changes value, making per-group dispatch see group-membership transitions.
+- Multiple consumers (assertions, MVs, signals) share the same kernel and the same change capture; only their `apply` callbacks differ.
 
 ### Applicability Beyond Assertions
-- Materialized Views: compute ΔQ and merge into cached relation
-- Triggers/Signals: invoke actions only for affected keys/groups
+- Materialized Views: compute ΔQ and merge into cached relation. The future MV ticket (`tickets/backlog/4-materialized-views.md`) plugs in by registering one `DeltaSubscription` per view with an `apply` that performs delete-then-upsert per binding tuple.
+- Triggers/Signals: invoke actions only for affected keys/groups.
 
 This places “what to bind” in the optimizer and “when/how to execute residuals” in the runtime, enabling reuse across features.
 

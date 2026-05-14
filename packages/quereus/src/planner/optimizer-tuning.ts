@@ -58,6 +58,17 @@ export interface OptimizerTuning {
 		readonly mergeRowThreshold: number;
 	};
 
+	/**
+	 * Delta executor cost fallback ratio.
+	 *
+	 * When a `DeltaSubscription` has accumulated more changed distinct binding
+	 * tuples than `deltaPerRowFallbackRatio × estimatedRows(base)`, the kernel
+	 * demotes the relation to global re-evaluation instead of running N
+	 * per-binding residual executions. A first-cut threshold; a real cost
+	 * comparator is a follow-up.
+	 */
+	readonly deltaPerRowFallbackRatio: number;
+
 	/** Set of rule IDs to skip during optimization (test/debug use) */
 	readonly disabledRules?: ReadonlySet<string>;
 
@@ -109,6 +120,7 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 	asof: {
 		mergeRowThreshold: 10000
 	},
+	deltaPerRowFallbackRatio: 0.5,
 	debug: {
 		validatePlan: false // Default to disabled in production
 	},

@@ -172,6 +172,23 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		return this.transactionManager.getChangedKeyTuples(base);
 	}
 
+	/**
+	 * Get changed value tuples projected onto `columnIndices` for a specific
+	 * base table. The columns must have been registered for capture via
+	 * `registerCaptureSpec` (PK columns are always captured implicitly).
+	 */
+	getChangedTuples(base: string, columnIndices: readonly number[], pkIndices: readonly number[]): SqlValue[][] {
+		return this.transactionManager.getChangedTuples(base, columnIndices, pkIndices);
+	}
+
+	/**
+	 * Register projection capture demand for a base table. Returns a dispose
+	 * handle that removes the spec when called.
+	 */
+	registerCaptureSpec(baseTable: string, spec: { extraColumns: ReadonlySet<number> }): () => void {
+		return this.transactionManager.registerCaptureSpec(baseTable, spec);
+	}
+
 	/** @internal Set up listeners for option changes */
 	private setupOptionListeners(): void {
 		// Register core database options with their change handlers
@@ -1170,17 +1187,20 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		return this.transactionManager.isInCoordinatedCommit();
 	}
 
-	/** Public API used by DML emitters to record changes */
-	public _recordInsert(baseTable: string, newKey: SqlValue[]): void {
-		this.transactionManager.recordInsert(baseTable, newKey);
+	/** Public API used by DML emitters to record changes. The full row plus
+	 *  PK column indices are passed so the change capture can project the
+	 *  columns that any active DeltaExecutor subscription has registered
+	 *  demand for. */
+	public _recordInsert(baseTable: string, newRow: Row, pkIndices: readonly number[]): void {
+		this.transactionManager.recordInsert(baseTable, newRow, pkIndices);
 	}
 
-	public _recordDelete(baseTable: string, oldKey: SqlValue[]): void {
-		this.transactionManager.recordDelete(baseTable, oldKey);
+	public _recordDelete(baseTable: string, oldRow: Row, pkIndices: readonly number[]): void {
+		this.transactionManager.recordDelete(baseTable, oldRow, pkIndices);
 	}
 
-	public _recordUpdate(baseTable: string, oldKey: SqlValue[], newKey: SqlValue[]): void {
-		this.transactionManager.recordUpdate(baseTable, oldKey, newKey);
+	public _recordUpdate(baseTable: string, oldRow: Row, newRow: Row, pkIndices: readonly number[]): void {
+		this.transactionManager.recordUpdate(baseTable, oldRow, newRow, pkIndices);
 	}
 
 	/** Create a named savepoint, returning its depth index */

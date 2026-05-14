@@ -1,13 +1,16 @@
 /**
  * Global assertion evaluation for deferred constraint checking.
  *
- * This module handles the evaluation of CREATE ASSERTION constraints at transaction
- * commit time. It optimizes assertion checking by:
+ * This module handles the evaluation of CREATE ASSERTION constraints at
+ * transaction commit time. It optimizes assertion checking by:
  * - Only evaluating assertions impacted by changed tables
- * - Caching compiled plans and classifications across commits
+ * - Caching compiled plans, classifications, and residual variants across commits
  * - Invalidating cached plans on schema changes
- * - Using row-specific filtering when possible to avoid full table scans
- * - Injecting PK filters for parameterized per-row evaluation
+ * - Driving per-binding execution through the reusable `DeltaExecutor` kernel
+ *
+ * Assertions are the first consumer of `DeltaExecutor`. Materialized views,
+ * reactive signals, and triggers will plug in by registering their own
+ * `DeltaSubscription`s.
  */
 
 import { QuereusError } from '../common/errors.js';
@@ -27,7 +30,8 @@ import { BinaryOpNode } from '../planner/nodes/scalar.js';
 import { ParameterReferenceNode, ColumnReferenceNode, TableReferenceNode } from '../planner/nodes/reference.js';
 import { EmissionContext } from '../runtime/emission-context.js';
 import { isAsyncIterable } from '../runtime/utils.js';
-import { analyzeRowSpecific, type RowClassification } from '../planner/analysis/constraint-extractor.js';
+import { extractBindings, type BindingMode, type PlanBindings } from '../planner/analysis/binding-extractor.js';
+import { DeltaExecutor, type DeltaApplyInput, type DeltaExecutorContext, type DeltaSubscription } from '../runtime/delta-executor.js';
 import type { Database } from './database.js';
 import type { SchemaChangeEvent } from '../schema/change-events.js';
 
@@ -54,39 +58,59 @@ export interface AssertionEvaluatorContext {
 	getChangedBaseTables(): Set<string>;
 	/** Get changed PK tuples for a specific base table */
 	getChangedKeyTuples(base: string): SqlValue[][];
+	/** Get changed projected tuples for a specific base table */
+	getChangedTuples(base: string, columnIndices: readonly number[], pkIndices: readonly number[]): SqlValue[][];
+	/** Register a column-projection capture spec for a base table */
+	registerCaptureSpec(baseTable: string, spec: { extraColumns: ReadonlySet<number> }): () => void;
+}
+
+/**
+ * Per-relation residual artifacts for a single assertion. Each entry
+ * corresponds to a parameterizable binding (`'row'` or `'group'`) on one
+ * `TableReferenceNode` instance.
+ */
+interface ResidualArtifacts {
+	instruction: Instruction;
+	scheduler: Scheduler;
+	/** Column indices in the table's column space; map directly to bind params
+	 *  named `pk0..pkN-1` (for 'row') or `gk0..gkN-1` (for 'group'). */
+	bindColumns: number[];
+	/** Parameter name prefix used when binding tuples: 'pk' or 'gk'. */
+	paramPrefix: 'pk' | 'gk';
 }
 
 /**
  * Cached compilation artifacts for an assertion, avoiding re-parse/re-plan/re-optimize on every commit.
  */
 interface CachedAssertionPlan {
-	/** Optimized-for-analysis plan (pre-physical, used for classification and PK filter injection) */
+	/** Optimized-for-analysis plan (pre-physical, used for classification and key filter injection) */
 	analyzedPlan: BlockNode;
-	/** Per-relationKey classification: 'row' | 'group' | 'global' (see analyzeRowSpecific) */
-	classifications: Map<string, RowClassification>;
-	/** relationKey → base table mapping */
-	relationKeyToBase: Map<string, string>;
-	/** Set of base table names in the plan */
+	/** Binding info extracted from the analyzed plan */
+	bindings: PlanBindings;
+	/** Set of base table names referenced in the plan */
 	baseTablesInPlan: Set<string>;
-	/** For row-specific mode: pre-compiled artifacts per relationKey */
-	rowSpecificArtifacts: Map<string, {
-		instruction: Instruction;
-		scheduler: Scheduler;
-		pkIndices: number[];
-	}>;
+	/** PK indices per base table (derived from schema) */
+	pkIndicesByBase: Map<string, number[]>;
+	/** Per-relationKey residual artifacts for 'row' and 'group' bindings */
+	residualsByRelation: Map<string, ResidualArtifacts>;
+	/** Dispose handles for projection-capture specs registered with the
+	 *  TransactionManager. Released on `invalidateAssertion`/`dispose`. */
+	captureDisposers: Array<() => void>;
 	/** Schema generation counter at cache time */
 	schemaGeneration: number;
+	/** DeltaSubscription dispose handle; released on invalidation/dispose. */
+	subscriptionDisposer: () => void;
 }
 
 /**
  * Evaluates global assertions (CREATE ASSERTION) at transaction commit time.
  *
  * Assertions are evaluated only when the tables they reference have been modified.
- * The evaluator uses constraint analysis to determine whether assertions can be
- * checked per-row (more efficient) or require a full violation query.
+ * The evaluator uses binding analysis to determine whether assertions can be
+ * checked per-row, per-group, or require a full violation query.
  *
- * Compiled plans are cached and invalidated on schema changes to avoid
- * re-parsing/re-planning on every commit.
+ * Compiled plans and residual variants are cached and invalidated on schema
+ * changes to avoid re-parsing/re-planning on every commit.
  */
 export class AssertionEvaluator {
 	/** Cached compiled plans keyed by assertion name (lowercase) */
@@ -95,8 +119,21 @@ export class AssertionEvaluator {
 	private schemaGeneration = 0;
 	/** Unsubscribe function for schema change listener */
 	private unsubscribeSchemaChanges: (() => void) | null = null;
+	/** The shared delta dispatcher */
+	private readonly executor: DeltaExecutor;
 
 	constructor(private readonly ctx: AssertionEvaluatorContext) {
+		const executorCtx: DeltaExecutorContext = {
+			getChangedBaseTables: () => ctx.getChangedBaseTables(),
+			getChangedTuples: (base, cols, pk) => ctx.getChangedTuples(base, cols, pk),
+			getRowCount: (base) => {
+				const [schemaName, tableName] = base.split('.');
+				const table = ctx._findTable(tableName, schemaName);
+				return table?.estimatedRows;
+			},
+			deltaPerRowFallbackRatio: ctx.optimizer.tuning.deltaPerRowFallbackRatio,
+		};
+		this.executor = new DeltaExecutor(executorCtx);
 		this.subscribeToSchemaChanges();
 	}
 
@@ -112,7 +149,12 @@ export class AssertionEvaluator {
 
 	/** Remove an assertion from the plan cache (called on DROP ASSERTION) */
 	invalidateAssertion(name: string): void {
-		this.cache.delete(name.toLowerCase());
+		const key = name.toLowerCase();
+		const cached = this.cache.get(key);
+		if (cached) {
+			this.releaseCached(cached);
+			this.cache.delete(key);
+		}
 	}
 
 	/** Unsubscribe from schema changes and clear cached plans */
@@ -121,12 +163,25 @@ export class AssertionEvaluator {
 			this.unsubscribeSchemaChanges();
 			this.unsubscribeSchemaChanges = null;
 		}
+		for (const cached of this.cache.values()) {
+			this.releaseCached(cached);
+		}
 		this.cache.clear();
+		this.executor.disposeAll();
+	}
+
+	private releaseCached(cached: CachedAssertionPlan): void {
+		cached.subscriptionDisposer();
+		for (const d of cached.captureDisposers) d();
+		cached.captureDisposers.length = 0;
 	}
 
 	/**
-	 * Run all global assertions that are impacted by changes in the current transaction.
-	 * @throws QuereusError with CONSTRAINT status if any assertion is violated
+	 * Run all global assertions impacted by changes in the current transaction.
+	 * The DeltaExecutor walks all live subscriptions; assertion subscriptions
+	 * dispatch their own residual scheduler per binding tuple.
+	 *
+	 * @throws QuereusError with CONSTRAINT status if any assertion is violated.
 	 */
 	async runGlobalAssertions(): Promise<void> {
 		const assertions = this.ctx.schemaManager.getAllAssertions();
@@ -135,9 +190,25 @@ export class AssertionEvaluator {
 		const changedBases = this.ctx.getChangedBaseTables();
 		if (changedBases.size === 0) return;
 
+		// Ensure every assertion is compiled (registers its subscription on first
+		// touch). Subsequent commits reuse the cached subscription unless schema
+		// has changed.
 		for (const assertion of assertions) {
-			await this.evaluateAssertion(assertion, changedBases);
+			this.getOrCompilePlan(assertion);
 		}
+
+		// Assertions with no table dependencies (e.g. CHECK (1 = 0)) must run on
+		// every commit regardless of what changed — the kernel skips them because
+		// it dispatches on dependency overlap. Handle them directly here.
+		for (const assertion of assertions) {
+			const cached = this.cache.get(assertion.name.toLowerCase());
+			if (cached && cached.baseTablesInPlan.size === 0) {
+				await this.executeViolationOnce(assertion.name, assertion.violationSql);
+			}
+		}
+
+		// Kernel walks all live subscriptions; assertions throw on violation.
+		await this.executor.runAll();
 	}
 
 	private getOrCompilePlan(assertion: { name: string; violationSql: string }): CachedAssertionPlan {
@@ -145,6 +216,9 @@ export class AssertionEvaluator {
 		const existing = this.cache.get(key);
 		if (existing && existing.schemaGeneration === this.schemaGeneration) {
 			return existing;
+		}
+		if (existing) {
+			this.releaseCached(existing);
 		}
 
 		log('Compiling assertion plan for %s (generation %d)', assertion.name, this.schemaGeneration);
@@ -165,107 +239,116 @@ export class AssertionEvaluator {
 		const { plan } = this.ctx._buildPlan([ast]);
 		const analyzed = this.ctx.optimizer.optimizeForAnalysis(plan, this.ctx as unknown as Database) as BlockNode;
 
-		const relationKeyToBase = new Map<string, string>();
+		const bindings = extractBindings(analyzed);
+
+		// Collect baseTables and PK indices per base.
 		const baseTablesInPlan = new Set<string>();
-		this.collectTables(analyzed, relationKeyToBase, baseTablesInPlan);
+		const pkIndicesByBase = new Map<string, number[]>();
+		for (const base of bindings.relationToBase.values()) {
+			baseTablesInPlan.add(base);
+			if (!pkIndicesByBase.has(base)) {
+				const [schemaName, tableName] = base.split('.');
+				const table = this.ctx._findTable(tableName, schemaName);
+				if (table) {
+					pkIndicesByBase.set(base, table.primaryKeyDefinition.map(d => d.index));
+				}
+			}
+		}
 
-		const { classifications } = analyzeRowSpecific(analyzed as unknown as RelationalPlanNode);
-
-		// Pre-compile row-specific artifacts
-		const rowSpecificArtifacts = new Map<string, { instruction: Instruction; scheduler: Scheduler; pkIndices: number[] }>();
-		for (const [relKey, klass] of classifications) {
-			if (klass !== 'row') continue;
-			const base = relationKeyToBase.get(relKey);
+		// Register projection capture for 'group' bindings (PK is implicit;
+		// 'row' bindings always use PK so no extra columns needed there).
+		const captureDisposers: Array<() => void> = [];
+		const extraByBase = new Map<string, Set<number>>();
+		for (const [relKey, mode] of bindings.perRelation) {
+			if (mode.kind !== 'group') continue;
+			const base = bindings.relationToBase.get(relKey);
 			if (!base) continue;
-			const [schemaName, tableName] = base.split('.');
-			const table = this.ctx._findTable(tableName, schemaName);
-			if (!table) continue;
-			const pkIndices = table.primaryKeyDefinition.map(def => def.index);
+			let set = extraByBase.get(base);
+			if (!set) {
+				set = new Set<number>();
+				extraByBase.set(base, set);
+			}
+			for (const c of mode.groupColumns) set.add(c);
+		}
+		for (const [base, extra] of extraByBase) {
+			captureDisposers.push(this.ctx.registerCaptureSpec(base, { extraColumns: extra }));
+		}
 
-			const rewritten = this.injectPkFilter(analyzed, relKey, pkIndices);
+		// Pre-compile per-relation residuals for 'row' and 'group' bindings.
+		const residualsByRelation = new Map<string, ResidualArtifacts>();
+		for (const [relKey, mode] of bindings.perRelation) {
+			if (mode.kind === 'global') continue;
+			const bindCols = mode.kind === 'row' ? mode.keyColumns : mode.groupColumns;
+			const paramPrefix: 'pk' | 'gk' = mode.kind === 'row' ? 'pk' : 'gk';
+			const rewritten = this.injectKeyFilter(analyzed, relKey, bindCols, paramPrefix);
 			const optimizedPlan = this.ctx.optimizer.optimize(rewritten, this.ctx as unknown as Database) as BlockNode;
 			const emissionContext = new EmissionContext(this.ctx as unknown as Database);
 			const instruction = emitPlanNode(optimizedPlan, emissionContext);
 			const scheduler = new Scheduler(instruction);
-
-			rowSpecificArtifacts.set(relKey, { instruction, scheduler, pkIndices });
+			residualsByRelation.set(relKey, {
+				instruction,
+				scheduler,
+				bindColumns: [...bindCols],
+				paramPrefix,
+			});
 		}
 
 		const cached: CachedAssertionPlan = {
 			analyzedPlan: analyzed,
-			classifications,
-			relationKeyToBase,
+			bindings,
 			baseTablesInPlan,
-			rowSpecificArtifacts,
+			pkIndicesByBase,
+			residualsByRelation,
+			captureDisposers,
 			schemaGeneration: this.schemaGeneration,
+			subscriptionDisposer: () => { /* replaced below */ },
 		};
+
+		const subscription = this.buildSubscription(assertion, cached);
+		cached.subscriptionDisposer = this.executor.register(subscription);
+
 		this.cache.set(key, cached);
 		return cached;
 	}
 
-	private async evaluateAssertion(
+	private buildSubscription(
 		assertion: { name: string; violationSql: string },
-		changedBases: Set<string>
-	): Promise<void> {
-		const cached = this.getOrCompilePlan(assertion);
+		cached: CachedAssertionPlan,
+	): DeltaSubscription {
+		const id = `assertion:${assertion.name}`;
+		const bindingsForExecutor = new Map<string, BindingMode>(cached.bindings.perRelation);
+		const relationToBase = new Map<string, string>(cached.bindings.relationToBase);
+		const pkIndicesByBase = new Map<string, readonly number[]>(cached.pkIndicesByBase);
 
-		// Determine impact: if assertion has no dependencies, treat as global and always impacted
-		const hasDeps = cached.baseTablesInPlan.size > 0;
-		let impacted = !hasDeps;
-		if (hasDeps) {
-			for (const b of cached.baseTablesInPlan) {
-				if (changedBases.has(b)) {
-					impacted = true;
-					break;
+		const apply = async (input: DeltaApplyInput): Promise<void> => {
+			// Per-binding dispatch for 'row'/'group' relations.
+			for (const [relKey, tuples] of input.perRelationTuples) {
+				const residual = cached.residualsByRelation.get(relKey);
+				if (!residual) {
+					// Defensive: no residual compiled — run the full violation
+					// query once to maintain correctness.
+					await this.executeViolationOnce(assertion.name, assertion.violationSql);
+					return;
 				}
+				await this.executeResidualPerTuple(assertion.name, residual, tuples);
 			}
-		}
-		if (!impacted) return;
 
-		// If any changed base appears as a 'global' or 'group' instance, run full violation
-		// query once. TODO(fd-view-maintenance-binding-keys): 'group' should drive a
-		// parameterized per-group delta query instead of falling back to global.
-		let requiresGlobal = false;
-		for (const [relKey, klass] of cached.classifications) {
-			if (klass === 'global' || klass === 'group') {
-				const base = cached.relationKeyToBase.get(relKey);
-				if (base && changedBases.has(base)) {
-					requiresGlobal = true;
-					break;
-				}
-			}
-		}
-
-		if (requiresGlobal) {
-			await this.executeViolationOnce(assertion.name, assertion.violationSql);
-			return;
-		}
-
-		// Collect row-specific references that correspond to changed bases
-		const rowSpecificChanged: Array<{ relKey: string; base: string }> = [];
-		for (const [relKey, klass] of cached.classifications) {
-			if (klass !== 'row') continue;
-			const base = cached.relationKeyToBase.get(relKey);
-			if (base && changedBases.has(base)) {
-				rowSpecificChanged.push({ relKey, base });
-			}
-		}
-
-		if (rowSpecificChanged.length === 0) {
-			await this.executeViolationOnce(assertion.name, assertion.violationSql);
-			return;
-		}
-
-		// Execute parameterized variants per changed key for each row-specific reference
-		for (const { relKey, base } of rowSpecificChanged) {
-			const artifacts = cached.rowSpecificArtifacts.get(relKey);
-			if (!artifacts) {
-				// Fallback to global if artifacts weren't compiled
+			// Global re-evaluation: run once if any relation needs it. (Multiple
+			// 'global' relations for one assertion still only need one run.)
+			if (input.globalRelations.size > 0) {
 				await this.executeViolationOnce(assertion.name, assertion.violationSql);
-				return;
 			}
-			await this.executeViolationPerChangedKeys(assertion.name, artifacts, base);
-		}
+		};
+
+		return {
+			id,
+			dependencies: cached.baseTablesInPlan,
+			bindings: bindingsForExecutor,
+			relationToBase,
+			pkIndicesByBase,
+			apply,
+			dispose: () => { /* no per-sub resources beyond the cached entry */ },
+		};
 	}
 
 	private async executeViolationOnce(assertionName: string, sql: string): Promise<void> {
@@ -286,20 +369,19 @@ export class AssertionEvaluator {
 		}
 	}
 
-	private async executeViolationPerChangedKeys(
+	private async executeResidualPerTuple(
 		assertionName: string,
-		artifacts: { scheduler: Scheduler; pkIndices: number[] },
-		base: string
+		artifacts: ResidualArtifacts,
+		tuples: readonly SqlValue[][],
 	): Promise<void> {
-		const changedKeyTuples = this.ctx.getChangedKeyTuples(base);
-		if (changedKeyTuples.length === 0) return;
+		if (tuples.length === 0) return;
 
-		const { scheduler, pkIndices } = artifacts;
+		const { scheduler, paramPrefix } = artifacts;
 
-		for (const tuple of changedKeyTuples) {
+		for (const tuple of tuples) {
 			const params: Record<string, SqlValue> = {};
-			for (let i = 0; i < pkIndices.length; i++) {
-				params[`pk${i}`] = tuple[i];
+			for (let i = 0; i < tuple.length; i++) {
+				params[`${paramPrefix}${i}`] = tuple[i];
 			}
 
 			const runtimeCtx: RuntimeContext = {
@@ -315,7 +397,7 @@ export class AssertionEvaluator {
 			const result = await scheduler.run(runtimeCtx);
 			if (isAsyncIterable(result)) {
 				for await (const _ of result as AsyncIterable<unknown>) {
-					throw this.buildViolationError(assertionName, [tuple]);
+					throw this.buildViolationError(assertionName, [tuple as SqlValue[]]);
 				}
 			}
 		}
@@ -330,30 +412,49 @@ export class AssertionEvaluator {
 		return new QuereusError(message, StatusCode.CONSTRAINT);
 	}
 
-	private injectPkFilter(block: BlockNode, targetRelationKey: string, pkIndices: number[]): BlockNode {
+	/**
+	 * Inject a key-equality filter onto the `TableReferenceNode` matching
+	 * `targetRelationKey`. Used for both `'row'` (with PK columns + 'pk' prefix)
+	 * and `'group'` (with group-key columns + 'gk' prefix).
+	 */
+	private injectKeyFilter(
+		block: BlockNode,
+		targetRelationKey: string,
+		keyColumns: readonly number[],
+		paramPrefix: 'pk' | 'gk',
+	): BlockNode {
 		const newStatements = block.getChildren().map(stmt =>
-			this.rewriteForPkFilter(stmt, targetRelationKey, pkIndices)
+			this.rewriteForKeyFilter(stmt, targetRelationKey, keyColumns, paramPrefix)
 		);
 		if (newStatements.every((s, i) => s === block.getChildren()[i])) return block;
 		return new BlockNode(block.scope, newStatements, block.parameters);
 	}
 
-	private rewriteForPkFilter(node: PlanNode, targetRelationKey: string, pkIndices: number[]): PlanNode {
-		// If this node is the target TableReference instance, wrap with a Filter
-		const maybe = this.tryWrapTableReference(node, targetRelationKey, pkIndices);
+	private rewriteForKeyFilter(
+		node: PlanNode,
+		targetRelationKey: string,
+		keyColumns: readonly number[],
+		paramPrefix: 'pk' | 'gk',
+	): PlanNode {
+		const maybe = this.tryWrapTableReference(node, targetRelationKey, keyColumns, paramPrefix);
 		if (maybe) return maybe;
 
 		const originalChildren = node.getChildren();
 		if (!originalChildren || originalChildren.length === 0) return node;
 
 		const rewrittenChildren = originalChildren.map(child =>
-			this.rewriteForPkFilter(child, targetRelationKey, pkIndices)
+			this.rewriteForKeyFilter(child, targetRelationKey, keyColumns, paramPrefix)
 		);
 		const changed = rewrittenChildren.some((c, i) => c !== originalChildren[i]);
 		return changed ? node.withChildren(rewrittenChildren) : node;
 	}
 
-	private tryWrapTableReference(node: PlanNode, targetRelationKey: string, pkIndices: number[]): PlanNode | null {
+	private tryWrapTableReference(
+		node: PlanNode,
+		targetRelationKey: string,
+		keyColumns: readonly number[],
+		paramPrefix: 'pk' | 'gk',
+	): PlanNode | null {
 		if (!(node instanceof TableReferenceNode)) return null;
 
 		const tableSchema = node.tableSchema;
@@ -364,7 +465,6 @@ export class AssertionEvaluator {
 
 		if (relKey !== targetRelationKey) return null;
 
-		// Build predicate: AND(col_pk_i = :pk{i}) for all PK columns
 		const relational = node as RelationalPlanNode;
 		const scope = relational.scope;
 		const attributes = relational.getAttributes();
@@ -376,13 +476,14 @@ export class AssertionEvaluator {
 		};
 
 		const makeParamRef = (i: number, type: ScalarType): ScalarPlanNode => {
-			const pexpr: AST.ParameterExpr = { type: 'parameter', name: `pk${i}` };
-			return new ParameterReferenceNode(scope, pexpr, `pk${i}`, type);
+			const name = `${paramPrefix}${i}`;
+			const pexpr: AST.ParameterExpr = { type: 'parameter', name };
+			return new ParameterReferenceNode(scope, pexpr, name, type);
 		};
 
 		let predicate: ScalarPlanNode | null = null;
-		for (let i = 0; i < pkIndices.length; i++) {
-			const colIdx = pkIndices[i];
+		for (let i = 0; i < keyColumns.length; i++) {
+			const colIdx = keyColumns[i];
 			const left = makeColumnRef(colIdx);
 			const right = makeParamRef(i, attributes[colIdx].type);
 			const bexpr: AST.BinaryExpr = { type: 'binary', operator: '=', left: left.expression, right: right.expression };
@@ -400,18 +501,5 @@ export class AssertionEvaluator {
 		if (!predicate) return null;
 
 		return new FilterNode(scope, relational, predicate);
-	}
-
-	private collectTables(node: PlanNode, relToBase: Map<string, string>, bases: Set<string>): void {
-		for (const child of node.getChildren()) {
-			this.collectTables(child, relToBase, bases);
-		}
-		if (node instanceof TableReferenceNode) {
-			const schema = node.tableSchema;
-			const baseName = `${schema.schemaName}.${schema.name}`.toLowerCase();
-			bases.add(baseName);
-			const relKey = `${baseName}#${node.id ?? 'unknown'}`;
-			relToBase.set(relKey, baseName);
-		}
 	}
 }

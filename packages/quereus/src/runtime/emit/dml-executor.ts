@@ -385,11 +385,11 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					if (!updateResult) return undefined;
 
 					const existingKeyValues = pkColumnIndicesInSchema.map(idx => result.existingRow![idx]);
-					const newKeyValues = pkColumnIndicesInSchema.map(idx => updateResult.updatedRow[idx]);
 					ctx.db._recordUpdate(
 						`${tableSchema.schemaName}.${tableSchema.name}`,
-						existingKeyValues,
-						newKeyValues
+						result.existingRow!,
+						updateResult.updatedRow,
+						pkColumnIndicesInSchema,
 					);
 					await executeForeignKeyActions(ctx.db, tableSchema, 'update', result.existingRow!, updateResult.updatedRow);
 
@@ -423,9 +423,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		const replacedRow = result.replacedRow;
 
 		if (replacedRow) {
-			const existingKeyValues = pkColumnIndicesInSchema.map(idx => replacedRow[idx]);
 			const newKeyValues = pkColumnIndicesInSchema.map(idx => newRow[idx]);
-			ctx.db._recordUpdate(tableKey, existingKeyValues, newKeyValues);
+			ctx.db._recordUpdate(tableKey, replacedRow, newRow, pkColumnIndicesInSchema);
 			await executeForeignKeyActions(ctx.db, tableSchema, 'delete', replacedRow);
 
 			if (needsAutoEvents) {
@@ -438,8 +437,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 				emitAutoDataEvent(ctx, tableSchema, 'update', newKeyValues, [...replacedRow], [...newRow], changedColumns);
 			}
 		} else {
-			const pkValues = tableSchema.primaryKeyDefinition.map(def => newRow[def.index]);
-			ctx.db._recordInsert(tableKey, pkValues);
+			const pkValues = pkColumnIndicesInSchema.map(idx => newRow[idx]);
+			ctx.db._recordInsert(tableKey, newRow, pkColumnIndicesInSchema);
 
 			if (needsAutoEvents) {
 				emitAutoDataEvent(ctx, tableSchema, 'insert', pkValues, undefined, [...newRow]);
@@ -514,9 +513,14 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					continue;
 				}
 
-				// Track change (UPDATE): record OLD and NEW primary keys
-				const newKeyValues: SqlValue[] = tableSchema.primaryKeyDefinition.map(pkColDef => newRow[pkColDef.index]);
-				ctx.db._recordUpdate(`${tableSchema.schemaName}.${tableSchema.name}`, keyValues, newKeyValues);
+				// Track change (UPDATE): pass full rows so the change capture can
+				// project the columns any active subscription cares about.
+				ctx.db._recordUpdate(
+					`${tableSchema.schemaName}.${tableSchema.name}`,
+					oldRow,
+					newRow,
+					pkColumnIndicesInSchema,
+				);
 
 				// Execute FK cascading actions (CASCADE, SET NULL, SET DEFAULT)
 				await executeForeignKeyActions(ctx.db, tableSchema, 'update', oldRow, newRow);
@@ -602,8 +606,13 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					continue;
 				}
 
-				// Track change (DELETE): record OLD primary key
-				ctx.db._recordDelete(`${tableSchema.schemaName}.${tableSchema.name}`, keyValues);
+				// Track change (DELETE): record OLD row + PK indices so capture
+				// can project the columns subscribers care about.
+				ctx.db._recordDelete(
+					`${tableSchema.schemaName}.${tableSchema.name}`,
+					oldRow,
+					pkColumnIndicesInSchema,
+				);
 
 				// Execute FK cascading actions (CASCADE, SET NULL, SET DEFAULT)
 				await executeForeignKeyActions(ctx.db, tableSchema, 'delete', oldRow);
