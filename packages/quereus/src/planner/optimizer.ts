@@ -29,6 +29,7 @@ import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js'
 // Predicate pushdown rules
 // Core optimization rules
 import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
+import { ruleGroupByFdSimplification } from './rules/aggregate/rule-groupby-fd-simplification.js';
 import { ruleQuickPickJoinEnumeration } from './rules/join/rule-quickpick-enumeration.js';
 import { ruleJoinPhysicalSelection } from './rules/join/rule-join-physical-selection.js';
 import { ruleMonotonicMergeJoin } from './rules/join/rule-monotonic-merge-join.js';
@@ -180,6 +181,21 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleScalarCSE,
 			priority: 22
+		});
+
+		// GROUP BY FD simplification: drop GROUP BY columns determined by other
+		// GROUP BY columns under the aggregate's output FDs + ECs. Picker MIN()
+		// aggregates re-emit the dropped columns so output attribute IDs survive.
+		// Runs after aggregate-predicate-pushdown (priority 19) so filter-derived
+		// ECs are already on the aggregate's source, and before
+		// ruleAggregatePhysical (Physical pass) so the smaller GROUP BY feeds
+		// the stream/hash decision.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'groupby-fd-simplification',
+			nodeType: PlanNodeType.Aggregate,
+			phase: 'rewrite',
+			fn: ruleGroupByFdSimplification,
+			priority: 23
 		});
 
 		// Subquery decorrelation: transform correlated EXISTS/IN into semi/anti joins

@@ -1,0 +1,170 @@
+/**
+ * Rule: GROUP BY FD simplification
+ *
+ * Drops GROUP BY columns that are functionally determined by other remaining
+ * GROUP BY columns under the aggregate-output FDs and equivalence classes.
+ * Each dropped column is re-emitted as a `MIN(<original-column>)` picker
+ * aggregate so the output attribute IDs (and therefore downstream binding)
+ * are preserved.
+ *
+ * The aggregate's own `physical.fds` and `physical.equivClasses` are already
+ * projected onto its output column indices by `propagateAggregateFds`, so
+ * the rule reasons in aggregate-output space directly:
+ *
+ *   - candidate set = bare `ColumnReferenceNode` GROUP BY output indices
+ *   - ECs expand to bi-directional FDs over those indices
+ *   - `minimalCover` returns the surviving indices; the rest are dropped
+ *
+ * Soundness: aggregate-output FDs only survive for bare-column GROUP BYs
+ * (per `propagateAggregateFds`), and EC-derived FDs from `WHERE a = b` are
+ * sound because every surviving row has equal values on the EC members.
+ *
+ * Rewrite preserves the output schema (positions may shift, attribute IDs do
+ * not): kept GROUP BYs come first, then the picker MIN aggregates re-emitting
+ * the dropped columns at their original attribute IDs (via
+ * `preserveAttributeIds`), then the original aggregate expressions.
+ */
+
+import { createLogger } from '../../../common/logger.js';
+import type { PlanNode, ScalarPlanNode, Attribute, FunctionalDependency } from '../../nodes/plan-node.js';
+import type { OptContext } from '../../framework/context.js';
+import { AggregateNode, type AggregateExpression } from '../../nodes/aggregate-node.js';
+import { AggregateFunctionCallNode } from '../../nodes/aggregate-function.js';
+import { ColumnReferenceNode } from '../../nodes/reference.js';
+import { minimalCover } from '../../util/fd-utils.js';
+import { isAggregateFunctionSchema } from '../../../schema/function.js';
+import type * as AST from '../../../parser/ast.js';
+
+const log = createLogger('optimizer:rule:groupby-fd-simplification');
+
+export function ruleGroupByFdSimplification(node: PlanNode, context: OptContext): PlanNode | null {
+	if (!(node instanceof AggregateNode)) return null;
+	if (node.groupBy.length <= 1) return null;
+
+	const aggAttrs = node.getAttributes();
+
+	// Build the set of candidate output indices: bare-column GROUP BYs only.
+	// Map outIdx → original ColumnReferenceNode so we can wire pickers later.
+	const candidateExprs = new Map<number, ColumnReferenceNode>();
+	for (let i = 0; i < node.groupBy.length; i++) {
+		const gb = node.groupBy[i];
+		if (gb instanceof ColumnReferenceNode) {
+			candidateExprs.set(i, gb);
+		}
+	}
+	if (candidateExprs.size <= 1) return null;
+
+	const candidateSet = new Set<number>(candidateExprs.keys());
+
+	const sourceFds = node.physical.fds ?? [];
+	const ecs = node.physical.equivClasses ?? [];
+	const combinedFds = expandEcsToFds(ecs, sourceFds);
+
+	const cover = minimalCover(candidateSet, combinedFds);
+	if (cover.size === candidateSet.size) return null;
+
+	const dropped = new Set<number>();
+	for (const idx of candidateSet) {
+		if (!cover.has(idx)) dropped.add(idx);
+	}
+	if (dropped.size === 0) return null;
+
+	// Build new groupBy: keep non-candidates (expressions) AND kept candidates,
+	// preserving original relative order. Track the new output index each old
+	// index maps to so we can rebuild preserveAttributeIds correctly.
+	const keptGroupBy: ScalarPlanNode[] = [];
+	const keptGroupByOldIdx: number[] = [];
+	const droppedOldIdx: number[] = [];
+
+	for (let i = 0; i < node.groupBy.length; i++) {
+		if (candidateSet.has(i) && !cover.has(i)) {
+			droppedOldIdx.push(i);
+		} else {
+			keptGroupBy.push(node.groupBy[i]);
+			keptGroupByOldIdx.push(i);
+		}
+	}
+
+	// Synthesize picker MIN aggregates for each dropped column, in original order.
+	const minSchema = context.db._findFunction('min', 1);
+	if (!minSchema || !isAggregateFunctionSchema(minSchema)) {
+		log('min/1 not registered as aggregate; skipping');
+		return null;
+	}
+
+	const pickerAggregates: AggregateExpression[] = [];
+	for (const oldIdx of droppedOldIdx) {
+		const colRef = candidateExprs.get(oldIdx)!;
+		const origAttr = aggAttrs[oldIdx];
+		const minExpr: AST.FunctionExpr = {
+			type: 'function',
+			name: 'min',
+			args: [colRef.expression],
+			distinct: false,
+		};
+		const inferredType = minSchema.inferReturnType
+			? minSchema.inferReturnType([colRef.getType().logicalType])
+			: undefined;
+		const pickerCall = new AggregateFunctionCallNode(
+			node.scope,
+			minExpr,
+			'min',
+			minSchema,
+			[colRef],
+			false,
+			undefined,
+			undefined,
+			inferredType,
+		);
+		pickerAggregates.push({ expression: pickerCall, alias: origAttr.name });
+	}
+
+	// Rebuild preserveAttributeIds in the new physical order:
+	//   [kept-gb attrs..., dropped-gb attrs (as picker outputs)..., orig-agg attrs...]
+	const groupByCount = node.groupBy.length;
+	const newAttrs: Attribute[] = [];
+	for (const oldIdx of keptGroupByOldIdx) newAttrs.push(aggAttrs[oldIdx]);
+	for (const oldIdx of droppedOldIdx) newAttrs.push(aggAttrs[oldIdx]);
+	for (let i = groupByCount; i < aggAttrs.length; i++) newAttrs.push(aggAttrs[i]);
+
+	const newAggregates: AggregateExpression[] = [...pickerAggregates, ...node.aggregates];
+
+	log(
+		'Dropped %d/%d GROUP BY column(s); picker aggregates: %d',
+		dropped.size,
+		candidateSet.size,
+		pickerAggregates.length,
+	);
+
+	return new AggregateNode(
+		node.scope,
+		node.source,
+		keptGroupBy,
+		newAggregates,
+		undefined,
+		newAttrs,
+	);
+}
+
+/**
+ * Expand a list of equivalence classes into bi-directional FDs over the same
+ * column indices, then concatenate with the existing FDs. For a class
+ * `{c0, c1, ..., ck}` this emits `{ci} → {cj}` for every distinct ordered pair
+ * — enough for `computeClosure` to derive every member from any one of them.
+ */
+function expandEcsToFds(
+	ecs: ReadonlyArray<ReadonlyArray<number>>,
+	fds: ReadonlyArray<FunctionalDependency>,
+): FunctionalDependency[] {
+	const out: FunctionalDependency[] = fds.slice();
+	for (const cls of ecs) {
+		if (cls.length < 2) continue;
+		for (let i = 0; i < cls.length; i++) {
+			for (let j = 0; j < cls.length; j++) {
+				if (i === j) continue;
+				out.push({ determinants: [cls[i]], dependents: [cls[j]] });
+			}
+		}
+	}
+	return out;
+}
