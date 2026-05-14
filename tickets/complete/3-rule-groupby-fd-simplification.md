@@ -1,19 +1,19 @@
 ---
 description: Optimizer rule that drops GROUP BY columns functionally determined by other GROUP BY columns under aggregate-output FDs / ECs. Picker MIN() aggregates re-emit dropped columns so output attribute IDs survive.
 files:
-  - packages/quereus/src/planner/rules/aggregate/rule-groupby-fd-simplification.ts (new)
+  - packages/quereus/src/planner/rules/aggregate/rule-groupby-fd-simplification.ts
   - packages/quereus/src/planner/optimizer.ts
   - packages/quereus/src/planner/nodes/retrieve-node.ts
-  - packages/quereus/test/optimizer/rule-groupby-fd-simplification.spec.ts (new)
+  - packages/quereus/test/optimizer/rule-groupby-fd-simplification.spec.ts
   - packages/quereus/test/logic/07-aggregates.sqllogic
   - packages/quereus/test/logic/109-aggregate-physical-selection.sqllogic
   - packages/quereus/test/plan/aggregate-physical-selection.spec.ts
   - docs/optimizer.md
 ---
 
-## Summary
+## What was built
 
-Implemented `ruleGroupByFdSimplification` (Structural pass, priority 23). For an
+`ruleGroupByFdSimplification` (Structural pass, priority 23). For an
 `AggregateNode` with two or more bare-column GROUP BYs, the rule reads the
 aggregate-output FDs (already projected by `propagateAggregateFds`) plus its
 equivalence classes (expanded into bi-directional FDs), runs `minimalCover`
@@ -23,18 +23,24 @@ aggregate; the rewrite preserves the original output attribute IDs via
 `AggregateNode.preserveAttributeIds`, so HAVING / ORDER BY / outer Project
 continue to bind unchanged.
 
-### Out-of-scope fix that was actually required
+The rule is decomposed into a small private helper (`expandEcsToFds`) and
+reuses the existing `minimalCover` / FD utilities — no duplicate logic. Guards
+make the rule a strict no-op when fewer than two GROUP BY columns are bare
+`ColumnReferenceNode`s, when the cover doesn't shrink, or when `min/1` is
+unexpectedly not registered as an aggregate.
+
+### Foundation fix that landed alongside
 
 `RetrieveNode` had no `computePhysical` override, so it silently dropped every
 physical property (FDs, ECs, uniqueKeys, ordering, ...) at the module/Quereus
 boundary. This blocked the rule on the common `Aggregate(Retrieve(...))` shape
 — the aggregate saw `fds = undefined` even though the source's
-TableReferenceNode advertised the PK-derived FD. Added a minimal pass-through
+`TableReferenceNode` advertised the PK-derived FD. Added a minimal pass-through
 `computePhysical` (mirroring `AliasNode`): Retrieve's output is bit-for-bit
 its source pipeline's output, so all physical properties propagate verbatim.
 This is a real foundation gap and benefits more than just this rule (any
 future consumer of `physical.fds` above a Retrieve would have hit the same
-wall). Documented in the FD propagation table.
+wall). Documented in the FD propagation table in `docs/optimizer.md`.
 
 ### Other test churn
 
@@ -45,32 +51,38 @@ With the new rule, `c` is dropped (it's PK-determined), leaving
 `GROUP BY a, b` which matches the source ordering — so the plan now lands on
 `StreamAggregate`. Updated both assertions and added explanatory comments.
 
+## Key files
+
+- `packages/quereus/src/planner/rules/aggregate/rule-groupby-fd-simplification.ts` — the rule (new).
+- `packages/quereus/src/planner/optimizer.ts` — registration at priority 23, Structural pass.
+- `packages/quereus/src/planner/nodes/retrieve-node.ts` — pass-through `computePhysical`.
+- `packages/quereus/test/optimizer/rule-groupby-fd-simplification.spec.ts` — 9 specs (new).
+- `packages/quereus/test/logic/07-aggregates.sqllogic` — appended PK-driven and EC-driven result-row cases.
+- `docs/optimizer.md` — RetrieveNode FD propagation row + rule description.
+
 ## Testing notes
 
-Run:
+Validation that ran clean:
 
-```
-yarn workspace @quereus/quereus run lint
-yarn workspace @quereus/quereus run test
-```
+- `yarn workspace @quereus/quereus run lint` — 0 issues.
+- `yarn workspace @quereus/quereus run test` — 2827 passing, 2 pending, no failures.
+- Targeted: `node test-runner.mjs --grep "ruleGroupByFdSimplification"` — 9/9 passing.
 
-Spec file `test/optimizer/rule-groupby-fd-simplification.spec.ts` covers:
+Spec coverage:
 
-- PK-driven drop: `GROUP BY id, name, email` over a table with `id PRIMARY KEY` collapses to `GROUP BY id` with two `MIN()` picker aggregates.
+- PK-driven drop: `GROUP BY id, name, email` over `id PRIMARY KEY` collapses to `GROUP BY id` with two `MIN()` picker aggregates.
 - EC-driven drop: `SELECT a, b FROM e WHERE a = b GROUP BY a, b` collapses to `GROUP BY a` with one `MIN(b)` picker.
 - Negative — independent columns: rule does not fire.
 - Negative — expression GROUP BYs (`a + 1, b`): rule does not fire.
 - Negative — single GROUP BY column: rule does not fire.
-- Attribute-ID preservation: `SELECT id, name, email FROM p GROUP BY id, name, email` returns the right rows (downstream binding survives).
-- Physical aggregate operator still selected: result is `STREAMAGGREGATE` or `HASHAGGREGATE`.
+- Attribute-ID preservation: result rows verify downstream binding survives.
+- Physical aggregate operator still selected (`STREAMAGGREGATE` or `HASHAGGREGATE`).
 - HAVING on a dropped column still binds after simplification.
-- Result rows match un-simplified semantics under EC-driven drop (with duplicates and ordering).
+- Result rows match un-simplified semantics under EC-driven drop (duplicates + ordering).
 
-SQL-logic file `07-aggregates.sqllogic` got two appended cases proving result-row equality on both the PK-driven and EC-driven shapes.
+## Usage
 
-## Validation / usage
-
-Manual smoke (run after `yarn workspace @quereus/quereus run build`):
+Manual smoke (after `yarn workspace @quereus/quereus run build`):
 
 ```sql
 CREATE TABLE customers (id INT PRIMARY KEY, name TEXT, email TEXT);
@@ -88,12 +100,12 @@ SELECT properties FROM query_plan(
 ) WHERE op IN ('STREAMAGGREGATE','HASHAGGREGATE','AGGREGATE');
 ```
 
-The `groupBy` array in the JSON should have length 1 (`id`), and `aggregates`
-should contain two entries with expressions like `min(name)`, `min(email)`.
+The `groupBy` array in the JSON has length 1 (`id`), and `aggregates`
+contains two entries with expressions like `min(name)`, `min(email)`.
 
-## Out of scope (deferred — see ticket)
+## Out of scope (deferred)
 
 - Expression-grouping simplification (`GROUP BY x+1, x+2`) — needs injective-pair reasoning beyond single-attribute injectivity.
 - `DistinctNode` analogue (`DISTINCT a, b WHERE a = b` → `DISTINCT a`).
 - Cost-aware cover selection (prefer narrower-typed columns to keep). `minimalCover` is deterministic but not cost-aware.
-- FK-derived FDs would enable the FK-join-then-aggregate shape the ticket called out; that lives in a separate ticket (not yet landed).
+- FK-derived FDs would enable the full FK-join-then-aggregate shape; that lives in a separate ticket (not yet landed).
