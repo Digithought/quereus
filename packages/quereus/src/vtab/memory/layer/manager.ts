@@ -1491,11 +1491,14 @@ export class MemoryTableManager {
 }
 
 /**
- * Returns the first non-undefined `defaultConflict` declared on a primary-key
- * column. PK conflicts conceptually point at the table's PK; if any PK column
- * had `ON CONFLICT <action>` declared at column level, use that.
+ * Resolves the per-constraint default conflict action for PK conflicts.
+ * Prefers the table-level `PRIMARY KEY (...) ON CONFLICT <action>` clause
+ * (the constraint's own declaration) over any column-level `defaultConflict`
+ * declared on a PK column (which primarily targets that column's own
+ * constraints and only acts as a fallback for PK conflicts).
  */
 function resolvePkDefaultConflict(schema: TableSchema): ConflictResolution | undefined {
+	if (schema.primaryKeyDefaultConflict !== undefined) return schema.primaryKeyDefaultConflict;
 	for (const def of schema.primaryKeyDefinition) {
 		const col = schema.columns[def.index];
 		if (col && col.defaultConflict !== undefined) return col.defaultConflict;

@@ -675,9 +675,10 @@ export class SchemaManager {
 	): {
 		columns: ColumnSchema[];
 		pkDefinition: ReadonlyArray<import('./table.js').PrimaryKeyColumnDefinition>;
+		pkDefaultConflict: import('../common/constants.js').ConflictResolution | undefined;
 	} {
 		const preliminaryColumnSchemas: ColumnSchema[] = astColumns.map(colDef => columnDefToSchema(colDef, defaultNotNull));
-		const pkDefinition = findPKDefinition(preliminaryColumnSchemas, astConstraints);
+		const { pkDef: pkDefinition, defaultConflict: pkDefaultConflict } = findPKDefinition(preliminaryColumnSchemas, astConstraints);
 
 		const columns = preliminaryColumnSchemas.map((col, idx) => {
 			const isPkColumn = pkDefinition.some(pkCol => pkCol.index === idx);
@@ -692,7 +693,7 @@ export class SchemaManager {
 			};
 		});
 
-		return { columns, pkDefinition };
+		return { columns, pkDefinition, pkDefaultConflict };
 	}
 
 	/**
@@ -888,7 +889,7 @@ export class SchemaManager {
 		const defaultNotNull = defaultNullability === 'not_null';
 
 		const astColumns = stmt.columns || [];
-		const { columns, pkDefinition } = this.buildColumnSchemas(astColumns, stmt.constraints, defaultNotNull);
+		const { columns, pkDefinition, pkDefaultConflict } = this.buildColumnSchemas(astColumns, stmt.constraints, defaultNotNull);
 		const checkConstraints = this.extractCheckConstraints(astColumns, stmt.constraints);
 		const columnIndexMap = buildColumnIndexMap(columns);
 		const foreignKeys = this.extractForeignKeys(astColumns, stmt.constraints, columnIndexMap, tableName, targetSchemaName);
@@ -919,6 +920,7 @@ export class SchemaManager {
 			columns: Object.freeze(columns),
 			columnIndexMap,
 			primaryKeyDefinition: pkDefinition,
+			primaryKeyDefaultConflict: pkDefaultConflict,
 			checkConstraints: Object.freeze(checkConstraints),
 			foreignKeys: foreignKeys.length > 0 ? Object.freeze(foreignKeys) : undefined,
 			uniqueConstraints: uniqueConstraints.length > 0 ? Object.freeze(uniqueConstraints) : undefined,

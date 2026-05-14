@@ -1318,15 +1318,18 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 }
 
 /**
- * Returns the first non-undefined `defaultConflict` declared on a primary-key
- * column. PK conflicts conceptually point at the table's PK; if any PK column
- * had `ON CONFLICT <action>` declared at column level, use that.
+ * Resolves the per-constraint default conflict action for PK conflicts.
+ * Prefers the table-level `PRIMARY KEY (...) ON CONFLICT <action>` clause
+ * (the constraint's own declaration) over any column-level `defaultConflict`
+ * declared on a PK column (which primarily targets that column's own
+ * constraints and only acts as a fallback for PK conflicts).
  *
  * Mirrors the helper of the same name in `quereus/.../layer/manager.ts` — the
- * three-tier rule `statement OR > column-level default > ABORT` must agree
+ * three-tier rule `statement OR > per-constraint default > ABORT` must agree
  * between the overlay's pre-check and the wrapped vtab's resolver.
  */
 function resolvePkDefaultConflict(schema: TableSchema): ConflictResolution | undefined {
+	if (schema.primaryKeyDefaultConflict !== undefined) return schema.primaryKeyDefaultConflict;
 	for (const def of schema.primaryKeyDefinition) {
 		const col = schema.columns[def.index];
 		if (col?.defaultConflict !== undefined) return col.defaultConflict;

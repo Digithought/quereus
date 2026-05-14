@@ -29,6 +29,13 @@ export interface TableSchema {
 	columnIndexMap: ReadonlyMap<string, number>;
 	/** Definition of the primary key, including order and direction */
 	primaryKeyDefinition: ReadonlyArray<PrimaryKeyColumnDefinition>;
+	/**
+	 * Default conflict resolution declared on a table-level
+	 * `PRIMARY KEY (...) ON CONFLICT <action>` clause. Resolution precedence for
+	 * PK conflicts: statement-level OR > this field > column-level
+	 * `defaultConflict` on any PK column > ABORT.
+	 */
+	primaryKeyDefaultConflict?: ConflictResolution;
 	/** CHECK constraints defined on the table or its columns */
 	checkConstraints: ReadonlyArray<RowConstraintSchema>;
 	/** Reference to the registered module */
@@ -445,13 +452,20 @@ export interface PrimaryKeyColumnDefinition {
  * Helper to parse primary key from AST column and table constraints.
  * @param columns Parsed column definitions from AST.
  * @param constraints Parsed table constraints from AST.
- * @returns A ReadonlyArray defining the primary key columns (index and direction), or undefined.
+ * @returns The primary-key column list plus any table-level
+ * `PRIMARY KEY (...) ON CONFLICT <action>` directive. `defaultConflict` is
+ * undefined when the PK was column-declared (column-level `ON CONFLICT`
+ * lives on `ColumnSchema.defaultConflict`) or when no `ON CONFLICT` was
+ * declared on the table-level constraint.
  * @throws QuereusError if multiple primary keys are defined or PK column not found.
  */
 export function findPKDefinition(
 	columns: ReadonlyArray<ColumnSchema>,
 	constraints: ReadonlyArray<AST.TableConstraint> | undefined,
-): ReadonlyArray<PrimaryKeyColumnDefinition> {
+): {
+	pkDef: ReadonlyArray<PrimaryKeyColumnDefinition>;
+	defaultConflict: ConflictResolution | undefined;
+} {
 	const columnPK = findColumnPKDefinition(columns);
 	const constraintPK = findConstraintPKDefinition(columns, constraints);
 
@@ -459,7 +473,8 @@ export function findPKDefinition(
 		throw new QuereusError("Cannot define both table-level and column-level PRIMARY KEYs", StatusCode.CONSTRAINT);
 	}
 
-	let finalPkDef = constraintPK ?? columnPK;
+	let finalPkDef: ReadonlyArray<PrimaryKeyColumnDefinition> | undefined =
+		constraintPK?.pkDef ?? columnPK;
 
 	if (!finalPkDef) {
 		// Quereus-specific behavior: Include all columns in the primary key when no explicit primary key is defined
@@ -477,27 +492,37 @@ export function findPKDefinition(
 
 	// Don't require NOT NULL, we want to be more flexible
 
-	return finalPkDef as ReadonlyArray<PrimaryKeyColumnDefinition>;
+	return {
+		pkDef: finalPkDef,
+		defaultConflict: constraintPK?.defaultConflict,
+	};
 }
 
 function findConstraintPKDefinition(
 	columns: readonly ColumnSchema[],
 	constraints: readonly TableConstraint[] | undefined
-): PrimaryKeyColumnDefinition[] | undefined {
+): {
+	pkDef: PrimaryKeyColumnDefinition[];
+	defaultConflict: ConflictResolution | undefined;
+} | undefined {
 	const colMap = buildColumnIndexMap(columns);
-	let constraintPKs: PrimaryKeyColumnDefinition[] | undefined;
+	let result: {
+		pkDef: PrimaryKeyColumnDefinition[];
+		defaultConflict: ConflictResolution | undefined;
+	} | undefined;
 
 	if (constraints) {
 		for (const constraint of constraints) {
 			if (constraint.type === 'primaryKey') {
-				if (constraintPKs) {
+				if (result) {
 					throw new QuereusError("Multiple table-level PRIMARY KEY constraints defined", StatusCode.CONSTRAINT);
 				}
+				let pkDef: PrimaryKeyColumnDefinition[];
 				if (!constraint.columns || constraint.columns.length === 0) {
 					// An empty column list is fine; means table can have 0-1 rows
-					constraintPKs = [];
+					pkDef = [];
 				} else {
-					constraintPKs = constraint.columns.map(colInfo => {
+					pkDef = constraint.columns.map(colInfo => {
 						const colIndex = colMap.get(colInfo.name.toLowerCase());
 						if (colIndex === undefined) {
 							throw new QuereusError(`PRIMARY KEY column '${colInfo.name}' not found in table definition`, StatusCode.ERROR);
@@ -509,10 +534,11 @@ function findConstraintPKDefinition(
 						};
 					});
 				}
+				result = { pkDef, defaultConflict: constraint.onConflict };
 			}
 		}
 	}
-	return constraintPKs;
+	return result;
 }
 
 function findColumnPKDefinition(columns: ReadonlyArray<ColumnSchema>): ReadonlyArray<PrimaryKeyColumnDefinition> | undefined {
