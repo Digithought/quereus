@@ -232,6 +232,12 @@ describes more.
   falls back to `{kind:'full'}` rather than guessing. This is not a
   bug but may surprise callers who expect inter-table propagation
   beyond what the equivalence-class machinery already provides.
+- **Row bindings whose values are non-literal/non-parameter expressions.**
+  If the binding extractor sees an equality on a unique key but the
+  right-hand side is a complex expression (e.g. `pk = coalesce(?, 0)`)
+  that the analyzer cannot decode into a `ScopeValue`, the watch falls
+  back to `{kind:'full'}` rather than emitting `{kind:'rows', values: []}`
+  (which would describe "watch zero rows" and under-specify the scope).
 
 ## See also
 

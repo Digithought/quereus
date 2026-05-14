@@ -91,6 +91,23 @@ describe('analyzeChangeScope', () => {
 			expect(r.values).to.deep.equal([[42]]);
 			expect(scope.unboundParameters).to.deep.equal([]);
 		});
+
+		it('row binding whose values cannot be decoded falls back to full (soundness)', async () => {
+			await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+			// Equality of the PK against a non-literal/non-parameter expression
+			// may yield a 'row' binding mode the analyzer cannot decode value-by-
+			// value. The analyzer must NOT emit `{kind:'rows', values: []}` (which
+			// would describe "watch zero rows") — that would under-describe the
+			// scope and a watcher would silently miss firings. It must fall back
+			// to `{kind:'full'}` instead.
+			const scope = scopeFor(db, 'select * from t where id = coalesce(?, 0)');
+			const w = findWatch(scope, 'main', 't');
+			if (w.scope.kind === 'rows') {
+				expect(w.scope.values.length).to.be.greaterThan(0);
+			} else {
+				expect(w.scope.kind).to.equal('full');
+			}
+		});
 	});
 
 	describe('group-binding scopes', () => {

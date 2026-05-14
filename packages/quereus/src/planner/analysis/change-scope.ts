@@ -138,6 +138,13 @@ const KNOWN_TIME_FUNCS = new Set([
 ]);
 const KNOWN_RANDOM_FUNCS = new Set(['random', 'randomblob']);
 
+const DML_NODE_TYPES = new Set<PlanNodeType>([
+	PlanNodeType.Update,
+	PlanNodeType.Insert,
+	PlanNodeType.Delete,
+	PlanNodeType.UpdateExecutor,
+]);
+
 /* --- Analyzer ------------------------------------------------------------ */
 
 /**
@@ -196,13 +203,6 @@ export function analyzeChangeScope(
  * parameters in the WHERE/SET clauses still count toward unboundParameters).
  */
 function isDmlWithoutReturning(plan: PlanNode): boolean {
-	const dmlNodeTypes = new Set<PlanNodeType>([
-		PlanNodeType.Update,
-		PlanNodeType.Insert,
-		PlanNodeType.Delete,
-		PlanNodeType.UpdateExecutor,
-	]);
-
 	function hasReturning(node: PlanNode): boolean {
 		if (node.nodeType === PlanNodeType.Returning) return true;
 		for (const c of node.getChildren()) {
@@ -212,7 +212,7 @@ function isDmlWithoutReturning(plan: PlanNode): boolean {
 	}
 
 	function isDmlRoot(node: PlanNode): boolean {
-		if (dmlNodeTypes.has(node.nodeType)) return true;
+		if (DML_NODE_TYPES.has(node.nodeType)) return true;
 		if (node.nodeType === PlanNodeType.Block) {
 			// A Block wraps one or more statements; check the last statement.
 			const stmts = (node as unknown as { statements: PlanNode[] }).statements;
@@ -393,6 +393,12 @@ function buildScopeForMode(
 	if (mode.kind === 'row') {
 		const keyNames = mode.keyColumns.map(colName);
 		const values = extractRowKeyValues(plan, relKey, mode.keyColumns, unboundParams);
+		// If the binding-extractor classified this as 'row' but we couldn't
+		// decode literal/parameter values for every key column (e.g. equality
+		// against a complex expression like `pk = a + b`), an empty `values`
+		// array would mean "watch zero rows" — strictly less than what the
+		// query reads. Fall back to `full` to stay sound.
+		if (values.length === 0) return { kind: 'full' };
 		return { kind: 'rows', key: keyNames, values };
 	}
 	// mode.kind === 'group'
@@ -635,9 +641,8 @@ export function intersectScopes(a: ChangeScope, b: ChangeScope): ChangeScope {
 		if (merged) out.push(merged);
 	}
 	// Intersection of non-determinism is the set-intersection.
-	const aNonDet = new Set(a.nonDeterministicSources.map(nonDetKey));
 	const bNonDet = new Set(b.nonDeterministicSources.map(nonDetKey));
-	const sharedNonDet = a.nonDeterministicSources.filter(s => bNonDet.has(nonDetKey(s)) && aNonDet.has(nonDetKey(s)));
+	const sharedNonDet = a.nonDeterministicSources.filter(s => bNonDet.has(nonDetKey(s)));
 	// Intersection of unbound parameters is the set-intersection.
 	const aParams = new Set(a.unboundParameters);
 	const sharedParams = new Set<number | string>();
