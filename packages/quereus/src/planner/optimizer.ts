@@ -24,6 +24,7 @@ import { ruleGrowRetrieve } from './rules/retrieve/rule-grow-retrieve.js';
 import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown.js';
 import { ruleAggregatePredicatePushdown } from './rules/predicate/rule-aggregate-predicate-pushdown.js';
 import { ruleFilterMerge } from './rules/predicate/rule-filter-merge.js';
+import { rulePredicateInferenceEquivalence } from './rules/predicate/rule-predicate-inference-equivalence.js';
 import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
 import { ruleJoinElimination } from './rules/join/rule-join-elimination.js';
@@ -182,6 +183,22 @@ export class Optimizer {
 			nodeType: PlanNodeType.Project,
 			phase: 'rewrite',
 			fn: ruleScalarCSE,
+			priority: 22
+		});
+
+		// EC-driven predicate inference: materialize inferred equality predicates
+		// from the cross of predicate-derived constant bindings and the source's
+		// equivalence classes. Runs after predicate-pushdown (priority 20) and
+		// filter-merge (priority 21) so the predicate is already consolidated and
+		// pushdown won't immediately reabsorb the inferred conjuncts on this
+		// iteration; the Structural pass's fixed-point loop then re-runs pushdown
+		// on subsequent iterations so the new conjuncts can be carried to
+		// branch-level Retrieve pipelines.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'predicate-inference-equivalence',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: rulePredicateInferenceEquivalence,
 			priority: 22
 		});
 
