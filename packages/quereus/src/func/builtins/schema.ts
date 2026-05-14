@@ -194,7 +194,12 @@ export const tableInfoFunc = createIntegratedTableValuedFunction(
 			],
 			keys: [],
 			rowConstraints: []
-		}
+		},
+		relationalAdvertisement: {
+			isSet: true,
+			// `cid` (column 0) is the column ordinal — unique per row.
+			keys: [[{ index: 0 }]],
+		},
 	},
 	async function* (db: Database, tableName: SqlValue): AsyncIterable<Row> {
 		if (typeof tableName !== 'string') {
@@ -255,7 +260,12 @@ export const foreignKeyInfoFunc = createIntegratedTableValuedFunction(
 			],
 			keys: [],
 			rowConstraints: []
-		}
+		},
+		relationalAdvertisement: {
+			isSet: true,
+			// Composite key (id, seq): each FK has one row per referenced column.
+			keys: [[{ index: 0 }, { index: 10 }]],
+		},
 	},
 	async function* (db: Database, tableName: SqlValue): AsyncIterable<Row> {
 		if (typeof tableName !== 'string') {
@@ -330,7 +340,12 @@ export const indexInfoFunc = createIntegratedTableValuedFunction(
 			],
 			keys: [],
 			rowConstraints: []
-		}
+		},
+		relationalAdvertisement: {
+			isSet: true,
+			// Composite key (index_name, seq): each index has one row per indexed column position.
+			keys: [[{ index: 0 }, { index: 1 }]],
+		},
 	},
 	async function* (db: Database, tableName: SqlValue): AsyncIterable<Row> {
 		if (typeof tableName !== 'string') {
@@ -387,7 +402,12 @@ export const checkConstraintInfoFunc = createIntegratedTableValuedFunction(
 			],
 			keys: [],
 			rowConstraints: []
-		}
+		},
+		relationalAdvertisement: {
+			isSet: true,
+			// `id` (column 0) is the constraint ordinal — unique per emitted row.
+			keys: [[{ index: 0 }]],
+		},
 	},
 	async function* (db: Database, tableName: SqlValue): AsyncIterable<Row> {
 		if (typeof tableName !== 'string') {
@@ -435,7 +455,12 @@ export const uniqueConstraintInfoFunc = createIntegratedTableValuedFunction(
 			],
 			keys: [],
 			rowConstraints: []
-		}
+		},
+		relationalAdvertisement: {
+			isSet: true,
+			// Composite (id, seq): one row per (constraint, column position).
+			keys: [[{ index: 0 }, { index: 2 }]],
+		},
 	},
 	async function* (db: Database, tableName: SqlValue): AsyncIterable<Row> {
 		if (typeof tableName !== 'string') {
@@ -488,7 +513,11 @@ export const assertionInfoFunc = createIntegratedTableValuedFunction(
 			],
 			keys: [],
 			rowConstraints: []
-		}
+		},
+		relationalAdvertisement: {
+			isSet: true,
+			keys: [[{ index: 0 }]],
+		},
 	},
 	async function* (db: Database): AsyncIterable<Row> {
 		for (const assertion of db.schemaManager.getAllAssertions()) {
@@ -544,7 +573,12 @@ export const functionInfoFunc = createIntegratedTableValuedFunction(
 			],
 			keys: [],
 			rowConstraints: []
-		}
+		},
+		relationalAdvertisement: {
+			isSet: true,
+			// Composite (name, num_args): function-key matches the (name, numArgs) registration key.
+			keys: [[{ index: 0 }, { index: 1 }]],
+		},
 	},
 	async function* (db: Database, filterName?: SqlValue): AsyncIterable<Row> {
 		const nameFilter = (typeof filterName === 'string') ? filterName.toLowerCase() : null;

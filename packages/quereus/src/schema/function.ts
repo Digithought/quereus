@@ -2,12 +2,19 @@ import type { MaybePromise, Row, SqlValue, DeepReadonly } from '../common/types.
 import { FunctionFlags } from '../common/constants.js';
 
 import type { Database } from '../core/database.js';
-import type { BaseType, ScalarType, RelationType } from '../common/datatype.js';
+import type { BaseType, ScalarType, RelationType, ColRef } from '../common/datatype.js';
 import type { AggValue } from '../func/registration.js';
 import type { LogicalType } from '../types/logical-type.js';
 import type { ScalarFunctionCallNode } from '../planner/nodes/function.js';
 import type { EmissionContext } from '../runtime/emission-context.js';
 import type { Instruction } from '../runtime/types.js';
+import type {
+	ScalarPlanNode,
+	ConstantBinding,
+	FunctionalDependency,
+	MonotonicOnInfo,
+	PhysicalProperties,
+} from '../planner/nodes/plan-node.js';
 
 /**
  * Type for a scalar function implementation.
@@ -117,6 +124,89 @@ export interface ScalarFunctionSchema extends BaseFunctionSchema {
 }
 
 /**
+ * Function form for parameter-dependent advertisements. Receives the call
+ * operands so the implementation can read literal values, parameter slots, or
+ * operand types. Return `undefined` to decline (no property advertised).
+ */
+export type TVFAdvertiseFn<T> = (
+	operands: ReadonlyArray<ScalarPlanNode>,
+	schema: TableValuedFunctionSchema,
+) => T | undefined;
+
+/**
+ * Column-keyed monotonicity declaration. The TVF schema author talks in column
+ * indices; `TableFunctionCallNode` translates these to live attribute IDs when
+ * it builds physical properties.
+ */
+export interface MonotonicOnColumnInfo {
+	readonly column: number;
+	readonly direction: 'asc' | 'desc';
+	readonly strict?: boolean;
+}
+
+/**
+ * Optional advertisement of a TVF's relational and physical properties.
+ * Each field may be a static value or a function of the call's operands.
+ * Bad advertisements (invalid indices, wrong shape) are dropped at use time
+ * with a single warning rather than throwing.
+ */
+export interface TVFAdvertisement {
+	isSet?: boolean | TVFAdvertiseFn<boolean>;
+	keys?: ReadonlyArray<ReadonlyArray<ColRef>> | TVFAdvertiseFn<ReadonlyArray<ReadonlyArray<ColRef>>>;
+	fds?: ReadonlyArray<FunctionalDependency> | TVFAdvertiseFn<ReadonlyArray<FunctionalDependency>>;
+	equivClasses?: ReadonlyArray<ReadonlyArray<number>> | TVFAdvertiseFn<ReadonlyArray<ReadonlyArray<number>>>;
+	ordering?: ReadonlyArray<{ column: number; desc: boolean }> | TVFAdvertiseFn<ReadonlyArray<{ column: number; desc: boolean }>>;
+	monotonicOn?: ReadonlyArray<MonotonicOnInfo> | TVFAdvertiseFn<ReadonlyArray<MonotonicOnInfo>>;
+	/**
+	 * Column-keyed monotonicOn declarations. Preferred over `monotonicOn` for
+	 * schema-time annotations because attribute IDs are per-call and only the
+	 * node knows them.
+	 */
+	monotonicOnColumns?: ReadonlyArray<MonotonicOnColumnInfo> | TVFAdvertiseFn<ReadonlyArray<MonotonicOnColumnInfo>>;
+	constantBindings?: ReadonlyArray<ConstantBinding> | TVFAdvertiseFn<ReadonlyArray<ConstantBinding>>;
+	estimatedRows?: number | TVFAdvertiseFn<number>;
+	accessCapabilities?: PhysicalProperties['accessCapabilities'];
+	deterministic?: boolean;
+	readonly?: boolean;
+	idempotent?: boolean;
+}
+
+/**
+ * Resolves a possibly-functional advertisement spec to a concrete value.
+ * Returns `undefined` when the spec is absent or when the closure throws —
+ * a broken closure must never break planning.
+ */
+export function resolveAdvertisement<T>(
+	spec: T | TVFAdvertiseFn<T> | undefined,
+	operands: ReadonlyArray<ScalarPlanNode>,
+	schema: TableValuedFunctionSchema,
+): T | undefined {
+	if (spec === undefined) return undefined;
+	if (typeof spec === 'function') {
+		try {
+			return (spec as TVFAdvertiseFn<T>)(operands, schema);
+		} catch {
+			return undefined;
+		}
+	}
+	return spec;
+}
+
+/**
+ * Returns the literal value of a scalar operand, or `undefined` when the
+ * operand is not a literal. Used by advertisement closures that want to read
+ * compile-time operand values (e.g. `generate_series(1, 100)` advertising
+ * `estimatedRows: 100`).
+ */
+export function evaluateLiteralOperand(operand: ScalarPlanNode): SqlValue | undefined {
+	const candidate = operand as ScalarPlanNode & { readonly expression?: { type?: string; value?: SqlValue } };
+	if (candidate.expression && candidate.expression.type === 'literal') {
+		return candidate.expression.value;
+	}
+	return undefined;
+}
+
+/**
  * Schema for table-valued functions that return rows.
  */
 export interface TableValuedFunctionSchema extends BaseFunctionSchema {
@@ -125,6 +215,8 @@ export interface TableValuedFunctionSchema extends BaseFunctionSchema {
 	implementation: TableValuedFunc | IntegratedTableValuedFunc;
 	/** Whether this TVF requires database access as first parameter */
 	isIntegrated?: boolean;
+	/** Optional advertisement of relational / physical properties. */
+	relationalAdvertisement?: TVFAdvertisement;
 }
 
 /**

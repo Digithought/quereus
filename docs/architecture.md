@@ -172,6 +172,7 @@ See the [Optimizer Documentation](optimizer.md) for architecture details and [Op
 
 - Retrieve growth and push-down stabilized: query-based modules slide full nodes via `supports()`; index-style fallback injects supported-only fragments inside `Retrieve`, preserving residuals above.
 - Retrieve logical properties now expose `bindingsCount` and `bindingsNodeTypes` (visible in `query_plan().properties`) to aid verification that parameters/correlations are captured.
+- Table-valued functions can advertise relational and physical characteristics (keys, ordering, monotonicOn, estimated row count, etc.) via an optional `relationalAdvertisement` on `TableValuedFunctionSchema`. `TableFunctionCallNode.computePhysical` consumes the declaration on the standard physical-property path so FD propagation, DISTINCT/sort elimination, and cardinality-aware rules see the same information they get from a real vtab. See [Optimizer Documentation](optimizer.md#tvf-property-declarations).
 
 ## Testing Strategy
 

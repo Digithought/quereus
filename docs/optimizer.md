@@ -303,6 +303,59 @@ The function-call traits compose with the operand's own `monotonicityIn` / `isIn
 
 Consumers (key propagation through non-trivial projections, sargable predicate rewrites for `date(ts) = D`, etc.) will arrive in separate tickets.
 
+### TVF Property Declarations
+
+Table-valued functions can advertise relational and physical characteristics through an optional `relationalAdvertisement` field on `TableValuedFunctionSchema`. Without it, a TVF's logical `returnType.keys` / `returnType.isSet` are exposed but `physical` defaults are conservative (no `uniqueKeys`, no `ordering`, no `monotonicOn`, default `estimatedRows`). With an advertisement, `TableFunctionCallNode.computePhysical` consumes it on the standard physical-property path so downstream rules (FD propagation, DISTINCT elimination, sort/monotonic-window rules, cardinality estimation) see the same information they get from a real vtab.
+
+**Advertisement surface** — each field is either a static value or a `TVFAdvertiseFn<T>` that receives the call's operands and the schema and may return `undefined` to decline:
+
+| Field | Type | Notes |
+|---|---|---|
+| `isSet` | `boolean` | Overrides `returnType.isSet` when present. |
+| `keys` | `ReadonlyArray<ReadonlyArray<ColRef>>` | Output-column unique keys; populates `physical.uniqueKeys` and `getType().keys`. |
+| `fds` | `ReadonlyArray<FunctionalDependency>` | Additional (non-key) FDs over output columns. |
+| `equivClasses` | `ReadonlyArray<ReadonlyArray<number>>` | Equivalence classes; each class must have ≥ 2 members. |
+| `ordering` | `ReadonlyArray<{column, desc}>` | Output ordering. |
+| `monotonicOnColumns` | `ReadonlyArray<{column, direction, strict?}>` | Column-keyed monotonicity; preferred over `monotonicOn` because the node mints attribute IDs per call — the node translates `column → attrId` when assembling physical props. |
+| `monotonicOn` | `ReadonlyArray<MonotonicOnInfo>` | Direct form for advanced uses where the author already has the attrId. |
+| `constantBindings` | `ReadonlyArray<ConstantBinding>` | Columns pinned to a single value over the call. |
+| `estimatedRows` | `number` | Row-count estimate; the `TableFunctionCallNode.estimatedRows` getter consults this before falling back to the default. |
+| `accessCapabilities` | `PhysicalProperties['accessCapabilities']` | `ordinalSeek` / `asofRight`. |
+| `deterministic`, `readonly`, `idempotent` | `boolean` | Overrides the FunctionFlags-derived defaults. |
+
+**Literal operand inspection** — `evaluateLiteralOperand(operand)` (from `schema/function.js`) returns `operand.expression.value` when the operand is a literal and `undefined` otherwise. Use it in a `TVFAdvertiseFn` closure to declare parameter-dependent values:
+
+```typescript
+estimatedRows: (operands) => {
+  const start = evaluateLiteralOperand(operands[0]);
+  const end = evaluateLiteralOperand(operands[1]);
+  if (typeof start === 'number' && typeof end === 'number' && end >= start) {
+    return end - start + 1;
+  }
+  return undefined;  // Decline when bounds are non-literal.
+},
+```
+
+**Validation** — every advertised field is shape-checked against the call's column count and attribute set before it lands in `physical`. Bad advertisements (out-of-range column indices, empty FD dependents, equivalence classes of size < 1, duplicate ordering columns, etc.) are dropped silently with a single warning on the `planner:tvf` log channel — they never break planning. A `TVFAdvertiseFn` closure that throws is treated the same way. This guarantees a buggy third-party advertisement degrades to "no advertisement" instead of poisoning the optimizer.
+
+**Built-in annotations** — the following TVFs ship with relational advertisements:
+
+| TVF | Advertisement |
+|---|---|
+| `generate_series(start, end)` | `isSet`, `keys=[[value]]`, `ordering=[{value, asc}]`, `monotonicOnColumns=[{value, asc, strict}]`, `estimatedRows` (when bounds are literal). |
+| `json_each(json[, path])` | `isSet`, `keys=[[id]]`. |
+| `json_tree(json[, path])` | `isSet`, `keys=[[id]]`. |
+| `query_plan(sql)` | `isSet`, `keys=[[id]]`. |
+| `table_info(table)` | `isSet`, `keys=[[cid]]`. |
+| `index_info(table)` | `isSet`, `keys=[[index_name, seq]]`. |
+| `foreign_key_info(table)` | `isSet`, `keys=[[id, seq]]`. |
+| `unique_constraint_info(table)` | `isSet`, `keys=[[id, seq]]`. |
+| `check_constraint_info(table)` | `isSet`, `keys=[[id]]`. |
+| `assertion_info()` | `isSet`, `keys=[[name]]`. |
+| `function_info()` | `isSet`, `keys=[[name, num_args]]`. |
+
+Non-deterministic or trace-only TVFs (`execution_trace`, `row_trace`, `stack_trace`, `scheduler_program`, `schema_size`, `explain_assertion`, `schema`) skip advertisement.
+
 ### Constant Folding Subsystem
 
 Constant folding is an elaborate optimization that evaluates constant expressions at plan time rather than runtime. The system uses a three-phase algorithm with sophisticated dependency tracking.

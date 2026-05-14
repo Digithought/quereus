@@ -98,7 +98,13 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 			],
 			keys: [],
 			rowConstraints: []
-		}
+		},
+		relationalAdvertisement: {
+			isSet: true,
+			// `id` (column 0) is the assigned nodeId and is unique per plan node.
+			keys: [[{ index: 0 }]],
+			deterministic: true,
+		},
 	},
 	async function* (db: Database, sql: SqlValue): AsyncIterable<Row> {
 		if (typeof sql !== 'string') {

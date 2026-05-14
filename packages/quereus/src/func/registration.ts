@@ -1,5 +1,5 @@
 import type { AggregateFinalizer, AggregateReducer, IntegratedTableValuedFunc, ScalarFunc, TableValuedFunc, ScalarFunctionSchema,
-	TableValuedFunctionSchema, AggregateFunctionSchema } from '../schema/function.js';
+	TableValuedFunctionSchema, AggregateFunctionSchema, TVFAdvertisement } from '../schema/function.js';
 import { FunctionFlags } from '../common/constants.js';
 import type { ScalarType, RelationType } from '../common/datatype.js';
 import { REAL_TYPE } from '../types/builtin-types.js';
@@ -48,6 +48,8 @@ interface TableValuedFuncOptions {
 	deterministic?: boolean;
 	/** Return type (relation) information */
 	returnType?: RelationType;
+	/** Optional relational / physical property advertisement */
+	relationalAdvertisement?: TVFAdvertisement;
 }
 
 /* Interim values for aggregate functions don't have to be SqlValue; they can be anything */
@@ -134,7 +136,8 @@ export function createTableValuedFunction(options: TableValuedFuncOptions, jsFun
 		numArgs: options.numArgs,
 		flags: options.flags ?? (FunctionFlags.UTF8 | (options.deterministic !== false ? FunctionFlags.DETERMINISTIC : 0)),
 		returnType,
-		implementation: jsFunc
+		implementation: jsFunc,
+		relationalAdvertisement: options.relationalAdvertisement
 	};
 }
 
@@ -162,7 +165,8 @@ export function createIntegratedTableValuedFunction(options: TableValuedFuncOpti
 		flags: options.flags ?? (FunctionFlags.UTF8 | (options.deterministic !== false ? FunctionFlags.DETERMINISTIC : 0)),
 		returnType,
 		implementation: jsFunc,
-		isIntegrated: true
+		isIntegrated: true,
+		relationalAdvertisement: options.relationalAdvertisement
 	};
 }
 
