@@ -186,6 +186,34 @@ describe('ruleJoinElimination', () => {
 		expect(innerOut.map(r => r.order_id)).to.deep.equal([10, 11, 12]);
 	});
 
+	it('does NOT eliminate INNER JOIN when PK side has a row-reducing wrapper (Filter)', async () => {
+		await setupCustomersOrders();
+		// Inline view with WHERE on the PK side — original query produces 2 rows
+		// (orders whose customer is in EU). Naive elimination would survive all 3.
+		const q = "SELECT order_id FROM orders JOIN (SELECT id FROM customers WHERE region='EU') c ON orders.customer_id = c.id";
+		const out = await results(db, q + ' ORDER BY order_id');
+		// customers 1 (EU) is referenced by orders 10 and 12.
+		expect(out.map(r => r.order_id)).to.deep.equal([10, 12]);
+	});
+
+	it('does NOT eliminate INNER JOIN when PK side has a LimitOffset wrapper', async () => {
+		await setupCustomersOrders();
+		const q = "SELECT order_id FROM orders JOIN (SELECT id FROM customers ORDER BY id LIMIT 1) c ON orders.customer_id = c.id";
+		const out = await results(db, q + ' ORDER BY order_id');
+		// Only customer 1 survives the LIMIT, so only orders 10 and 12 match.
+		expect(out.map(r => r.order_id)).to.deep.equal([10, 12]);
+	});
+
+	it('LEFT JOIN with row-reducing wrapper on non-preserved side is still safely eliminated', async () => {
+		await setupCustomersOrders();
+		// Filter on the non-preserved (right) side of a LEFT JOIN cannot change
+		// the result row count when no right-side columns are selected, so
+		// eliminating is still safe.
+		const q = "SELECT order_id, total FROM orders LEFT JOIN (SELECT id FROM customers WHERE region='EU') c ON orders.customer_id = c.id";
+		const out = await results(db, q + ' ORDER BY order_id');
+		expect(out.map(r => r.order_id)).to.deep.equal([10, 11, 12]);
+	});
+
 	it('eliminates the inner join inside a view that selects only FK-side columns', async () => {
 		await setupCustomersOrders();
 		await db.exec(

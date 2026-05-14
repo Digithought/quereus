@@ -33,8 +33,9 @@ import { LimitOffsetNode } from '../../nodes/limit-offset.js';
 import { DistinctNode } from '../../nodes/distinct-node.js';
 import { AliasNode } from '../../nodes/alias-node.js';
 import { JoinNode, extractEquiPairsFromCondition } from '../../nodes/join-node.js';
-import { ColumnReferenceNode } from '../../nodes/reference.js';
+import { ColumnReferenceNode, TableReferenceNode } from '../../nodes/reference.js';
 import { BinaryOpNode } from '../../nodes/scalar.js';
+import { RetrieveNode } from '../../nodes/retrieve-node.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { checkFkPkAlignment, extractTableSchema } from '../../util/key-utils.js';
 import type { ForeignKeyConstraintSchema, TableSchema } from '../../../schema/table.js';
@@ -216,18 +217,51 @@ function tryEliminate(
 
 	if (!checkFkPkAlignment(fkSchema, pkSchema, fkEquiCols, pkEquiCols)) return null;
 
-	// INNER joins additionally require NOT NULL on every FK column the rule
-	// relies on. With nullable FK columns, rows with NULL FKs wouldn't survive
-	// the inner join (no PK match) but would survive elimination.
+	// INNER joins additionally require:
+	//  1. NOT NULL on every FK column — with nullable FK, rows with NULL FKs
+	//     wouldn't survive the inner join but would survive elimination.
+	//  2. The eliminable side must produce the underlying PK table's full row
+	//     set — any row-reducing wrapper (Filter, LimitOffset, Distinct,
+	//     RetrieveNode with a non-trivial pipeline) between the join and the
+	//     base table would have dropped rows that the FK→PK guarantee assumes
+	//     are present, so eliminating would silently survive orphaned FK rows.
 	if (join.joinType === 'inner') {
 		const fkRow = findMatchingForeignKey(fkSchema, pkSchema, fkEquiCols, pkEquiCols);
 		if (!fkRow) return null;
 		for (const colIdx of fkRow.columns) {
 			if (!fkSchema.columns[colIdx]?.notNull) return null;
 		}
+		const eliminableSide = sideToRemove === 'right' ? join.right : join.left;
+		if (!isRowPreservingPathToTable(eliminableSide as RelationalPlanNode)) return null;
 	}
 
 	return (sideToRemove === 'right' ? join.left : join.right) as RelationalPlanNode;
+}
+
+/**
+ * True when `node` is a chain of wrappers that produces the full row set of
+ * its underlying base table — i.e. nothing between the join and the table can
+ * filter, limit, or deduplicate rows. Required for INNER-JOIN elimination so
+ * that dropping the eliminable side doesn't silently survive rows the join
+ * would have filtered.
+ *
+ * Allowed wrappers: TableReferenceNode (base), RetrieveNode whose pipeline is
+ * the bare TableReferenceNode (no pushed-down pipeline filter), AliasNode,
+ * SortNode — all preserve row count *and* attribute-id mapping of their
+ * source. ProjectNode is intentionally excluded: it may reorder/drop columns
+ * which would invalidate the table-column-index→attribute-index assumption
+ * `checkFkPkAlignment` relies on.
+ * Anything else (Filter, LimitOffset, Distinct, Project, Join, Aggregate,
+ * Window, CTE, SetOperation, …) disqualifies.
+ */
+function isRowPreservingPathToTable(node: RelationalPlanNode): boolean {
+	if (node instanceof TableReferenceNode) return true;
+	if (node instanceof RetrieveNode) {
+		return node.source instanceof TableReferenceNode;
+	}
+	if (node instanceof AliasNode) return isRowPreservingPathToTable(node.source);
+	if (node instanceof SortNode) return isRowPreservingPathToTable(node.source);
+	return false;
 }
 
 function findMatchingForeignKey(
