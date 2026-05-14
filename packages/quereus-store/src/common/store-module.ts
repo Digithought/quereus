@@ -332,12 +332,24 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		// Refresh the connected table's cached schema so subsequent DML
 		// maintains the new index (the engine's schema registry is updated
 		// separately by SchemaManager.createIndex, but the StoreTable instance
-		// holds its own reference captured at connect time).
+		// holds its own reference captured at connect time). Mirrors
+		// SchemaManager.addIndexToTableSchema, including the UNIQUE → derived
+		// uniqueConstraint entry so checkUniqueConstraints enforces it.
 		const updatedIndexes = Object.freeze([
 			...(tableSchema.indexes ?? []),
 			indexSchema,
 		]);
 		const updatedSchema: TableSchema = { ...tableSchema, indexes: updatedIndexes };
+		if (indexSchema.unique) {
+			updatedSchema.uniqueConstraints = Object.freeze([
+				...(tableSchema.uniqueConstraints ?? []),
+				{
+					name: indexSchema.name,
+					columns: Object.freeze(indexSchema.columns.map(c => c.index)),
+					predicate: indexSchema.predicate,
+				},
+			]);
+		}
 		table.updateSchema(updatedSchema);
 
 		// Emit schema change event

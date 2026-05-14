@@ -202,6 +202,32 @@ describe('StoreTable column-level ON CONFLICT defaults', () => {
 			await db.exec(`DELETE FROM t WHERE id = 2`);
 			expect(await countEntries()).to.equal(2);
 		});
+
+		it('enforces uniqueness for a UNIQUE index created after CREATE TABLE', async () => {
+			await db.exec(`CREATE TABLE u (id INTEGER PRIMARY KEY, b INTEGER) USING store`);
+			await db.exec(`INSERT INTO u VALUES (1, 100)`);
+			await db.exec(`CREATE UNIQUE INDEX u_b ON u (b)`);
+
+			// Inserting a duplicate value on the newly-uniqued column must be
+			// rejected. Without uniqueConstraints being refreshed on the cached
+			// StoreTable schema, this insert silently succeeds.
+			let threw = false;
+			try {
+				await db.exec(`INSERT INTO u VALUES (2, 100)`);
+			} catch (e) {
+				threw = true;
+				expect(String(e)).to.match(/unique/i);
+			}
+			expect(threw, 'expected UNIQUE constraint violation').to.equal(true);
+
+			// A non-conflicting insert still works.
+			await db.exec(`INSERT INTO u VALUES (3, 200)`);
+			const rows = await collect(db, `SELECT id, b FROM u ORDER BY id`);
+			expect(rows).to.deep.equal([
+				{ id: 1, b: 100 },
+				{ id: 3, b: 200 },
+			]);
+		});
 	});
 
 	describe('UPDATE PK-change REPLACE cascades ON DELETE for evicted row', () => {
