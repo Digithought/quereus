@@ -160,8 +160,10 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 		// FDs are dropped — asof matches at most one right row and may NULL-pad in
 		// outer mode, neither of which preserves right-side FDs. The asof condition
 		// is an inequality, not an equality, so no equi-pair FDs are added.
+		// Constant bindings follow the same rule (inherit left only).
 		const fds = leftPhys?.fds;
 		const equivClasses = leftPhys?.equivClasses;
+		const constantBindings = leftPhys?.constantBindings;
 
 		return {
 			ordering,
@@ -172,6 +174,7 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 			uniqueKeys: undefined,
 			fds,
 			equivClasses,
+			constantBindings,
 		};
 	}
 

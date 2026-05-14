@@ -91,6 +91,7 @@ export class DistinctNode extends PlanNode implements UnaryRelationalNode {
       // emitted via uniqueKeys; pass through whatever the source proved.
       fds: sourcePhysical?.fds,
       equivClasses: sourcePhysical?.equivClasses,
+      constantBindings: sourcePhysical?.constantBindings,
     };
   }
 

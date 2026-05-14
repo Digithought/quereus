@@ -6,9 +6,9 @@
  */
 
 import { createLogger } from '../../common/logger.js';
-import type { FunctionalDependency, ScalarPlanNode } from '../nodes/plan-node.js';
+import type { ConstantBinding, ConstantValue, FunctionalDependency, ScalarPlanNode } from '../nodes/plan-node.js';
 import { ColumnReferenceNode, ParameterReferenceNode } from '../nodes/reference.js';
-import { BinaryOpNode, LiteralNode } from '../nodes/scalar.js';
+import { BinaryOpNode, CastNode, CollateNode, LiteralNode } from '../nodes/scalar.js';
 
 const log = createLogger('planner:fd');
 
@@ -318,28 +318,41 @@ export function superkeyToFd(
 }
 
 /**
- * Extracted FD/EC contributions from an equality-shaped predicate.
+ * Re-export so callers can import the binding shape from this module
+ * alongside the helpers (avoids reaching into `plan-node.js` for types
+ * that are conceptually part of the FD/EC layer).
+ */
+export type { ConstantBinding, ConstantValue };
+
+/**
+ * Extracted FD/EC/binding contributions from an equality-shaped predicate.
  *
  * - `fds`: FDs of the form `∅ → col` (column constant under the predicate)
  *   or `col1 → col2` / `col2 → col1` (mutual determination from `col1 = col2`).
  * - `equivPairs`: `[col1, col2]` pairs to be merged into the EC list.
+ * - `constantBindings`: per-column constant bindings (one per `col = const`
+ *   or `col = ?` conjunct). The caller is responsible for closing these
+ *   over the resulting EC list.
  */
 export interface EqualityFds {
 	readonly fds: ReadonlyArray<FunctionalDependency>;
 	readonly equivPairs: ReadonlyArray<readonly [number, number]>;
+	readonly constantBindings: ReadonlyArray<ConstantBinding>;
 }
 
 /**
- * Walk `predicate` (assumed to be a normalized conjunction) and extract FDs
- * and equivalence-class contributions from equality conjuncts.
+ * Walk `predicate` (assumed to be a normalized conjunction) and extract FDs,
+ * equivalence-class contributions, and constant bindings from equality
+ * conjuncts.
  *
  * `attrIdToIndex` maps an attribute ID to its column index in the predicate's
  * relation. Equality conjuncts referencing attributes outside this map
  * (correlated subqueries, etc.) are silently ignored.
  *
  * Recognized shapes (per AND-conjunct):
- *   - `col = const`  ⇒ FD `∅ → col`.
- *   - `col1 = col2`  ⇒ FDs `{col1} → {col2}` and `{col2} → {col1}` plus an
+ *   - `col = literal`  ⇒ FD `∅ → col`  +  binding `{col} → literal value`.
+ *   - `col = ?`        ⇒ FD `∅ → col`  +  binding `{col} → parameter ref`.
+ *   - `col1 = col2`    ⇒ FDs `{col1} → {col2}` and `{col2} → {col1}` plus an
  *     equivalence pair `[col1, col2]`.
  *
  * Non-equality conjuncts contribute nothing.
@@ -350,6 +363,7 @@ export function extractEqualityFds(
 ): EqualityFds {
 	const fds: FunctionalDependency[] = [];
 	const equivPairs: Array<readonly [number, number]> = [];
+	const constantBindings: ConstantBinding[] = [];
 
 	const stack: ScalarPlanNode[] = [predicate];
 	while (stack.length > 0) {
@@ -364,8 +378,8 @@ export function extractEqualityFds(
 
 		const lIsCol = n.left instanceof ColumnReferenceNode;
 		const rIsCol = n.right instanceof ColumnReferenceNode;
-		const lIsConst = isPredicateConstant(n.left);
-		const rIsConst = isPredicateConstant(n.right);
+		const lConst = constantValueOf(n.left);
+		const rConst = constantValueOf(n.right);
 
 		if (lIsCol && rIsCol) {
 			const lIdx = attrIdToIndex.get((n.left as ColumnReferenceNode).attributeId);
@@ -378,39 +392,195 @@ export function extractEqualityFds(
 			continue;
 		}
 
-		if (lIsCol && rIsConst) {
+		if (lIsCol && rConst !== undefined) {
 			const lIdx = attrIdToIndex.get((n.left as ColumnReferenceNode).attributeId);
 			if (lIdx !== undefined) {
 				fds.push({ determinants: [], dependents: [lIdx] });
+				constantBindings.push({ attrs: [lIdx], value: rConst });
 			}
 			continue;
 		}
 
-		if (rIsCol && lIsConst) {
+		if (rIsCol && lConst !== undefined) {
 			const rIdx = attrIdToIndex.get((n.right as ColumnReferenceNode).attributeId);
 			if (rIdx !== undefined) {
 				fds.push({ determinants: [], dependents: [rIdx] });
+				constantBindings.push({ attrs: [rIdx], value: lConst });
 			}
 			continue;
 		}
 	}
 
-	return { fds, equivPairs };
+	return { fds, equivPairs, constantBindings };
 }
 
 /**
- * A scalar expression treated as a "constant" relative to a filter's input
- * stream: a `LiteralNode`. Parameters are intentionally excluded because
- * `extractEqualityFds` is consumed by `computePhysical`, which describes
- * properties true for every row of a single execution — parameters are
- * fixed per execution but we do not model that here. This matches the
- * conservative rule in the ticket spec ("literal must be a constant
- * ScalarPlanNode, no parameters/subqueries").
+ * If `n` is "constant" relative to the filter's input stream — true for one
+ * full execution — return its `ConstantValue`; otherwise undefined.
+ *
+ * `LiteralNode` is constant at all times. `ParameterReferenceNode` is
+ * constant for the duration of a single execution: the parameter is bound
+ * once before iteration and the same value is observed by every row. That
+ * matches the scope `computePhysical` describes (per-execution properties),
+ * so the EC layer treats parameters and literals uniformly. Subqueries /
+ * correlated expressions remain rejected — they can vary per-row.
+ *
+ * `CastNode` and `CollateNode` are peeled through: they don't change row-wise
+ * behaviour (constant-after-cast is still constant). For a literal under a
+ * cast the inner `SqlValue` is reported as-is — downstream consumers needing
+ * the post-cast value must apply the cast themselves.
  */
-function isPredicateConstant(n: ScalarPlanNode): boolean {
-	if (n instanceof LiteralNode) return true;
-	// Parameters are excluded by design (see comment above). Listing the
-	// negative case explicitly keeps the intent obvious to a reader.
-	if (n instanceof ParameterReferenceNode) return false;
+function constantValueOf(n: ScalarPlanNode): ConstantValue | undefined {
+	while (n instanceof CastNode || n instanceof CollateNode) {
+		n = n.operand;
+	}
+	if (n instanceof LiteralNode) {
+		const v = n.expression.value;
+		if (v instanceof Promise) return undefined;
+		return { kind: 'literal', value: v };
+	}
+	if (n instanceof ParameterReferenceNode) {
+		return { kind: 'parameter', paramRef: n.nameOrIndex };
+	}
+	return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// ConstantBinding helpers
+// ---------------------------------------------------------------------------
+
+function constantValueEquals(a: ConstantValue, b: ConstantValue): boolean {
+	if (a.kind !== b.kind) return false;
+	if (a.kind === 'literal' && b.kind === 'literal') {
+		const av = a.value;
+		const bv = b.value;
+		if (av === bv) return true;
+		// Compare bigint/number/string by their textual form; everything else by identity.
+		if (av instanceof Uint8Array && bv instanceof Uint8Array) {
+			if (av.length !== bv.length) return false;
+			for (let i = 0; i < av.length; i++) if (av[i] !== bv[i]) return false;
+			return true;
+		}
+		return false;
+	}
+	if (a.kind === 'parameter' && b.kind === 'parameter') {
+		return a.paramRef === b.paramRef;
+	}
 	return false;
+}
+
+function unionAttrs(a: readonly number[], b: readonly number[]): number[] {
+	const out = new Set<number>(a);
+	for (const x of b) out.add(x);
+	return Array.from(out).sort((x, y) => x - y);
+}
+
+function normalizeBinding(b: ConstantBinding): ConstantBinding {
+	const attrs = Array.from(new Set(b.attrs)).sort((x, y) => x - y);
+	return { attrs, value: b.value };
+}
+
+/**
+ * Merge two binding lists, coalescing bindings that share a `ConstantValue`
+ * by unioning their `attrs`. Caps the result at `MAX_FDS_PER_NODE`; oldest
+ * entries are dropped when the cap is exceeded (matches the FD cap rule —
+ * bindings sourced from earlier nodes are preferred since they typically
+ * sit closer to keyed columns).
+ */
+export function mergeConstantBindings(
+	a: ReadonlyArray<ConstantBinding>,
+	b: ReadonlyArray<ConstantBinding>,
+): ConstantBinding[] {
+	const result: ConstantBinding[] = a.map(normalizeBinding);
+	for (const raw of b) {
+		const next = normalizeBinding(raw);
+		let merged = false;
+		for (let i = 0; i < result.length; i++) {
+			if (constantValueEquals(result[i].value, next.value)) {
+				result[i] = { attrs: unionAttrs(result[i].attrs, next.attrs), value: result[i].value };
+				merged = true;
+				break;
+			}
+		}
+		if (!merged) result.push(next);
+	}
+	return enforceBindingCap(result);
+}
+
+function enforceBindingCap(bindings: ConstantBinding[]): ConstantBinding[] {
+	if (bindings.length <= MAX_FDS_PER_NODE) return bindings;
+	const kept = bindings.slice(0, MAX_FDS_PER_NODE);
+	log('ConstantBinding cap reached: dropped %d binding(s) from %d', bindings.length - kept.length, bindings.length);
+	return kept;
+}
+
+/**
+ * Extend `bindings` over `ecs`: if a binding pins column `c` to value `v` and
+ * `c` is in an equivalence class `{c, c2, ...}`, fold every member of that
+ * class into the binding's `attrs`. This is what lets predicate-inference
+ * rules consume bindings directly without walking ECs.
+ */
+export function closeConstantBindingsOverEcs(
+	bindings: ReadonlyArray<ConstantBinding>,
+	ecs: ReadonlyArray<ReadonlyArray<number>>,
+): ConstantBinding[] {
+	if (bindings.length === 0) return [];
+	if (ecs.length === 0) return bindings.map(normalizeBinding);
+
+	const result: ConstantBinding[] = [];
+	for (const binding of bindings) {
+		const expanded = new Set<number>(binding.attrs);
+		let grew = true;
+		while (grew) {
+			grew = false;
+			for (const cls of ecs) {
+				const overlap = cls.some(c => expanded.has(c));
+				if (!overlap) continue;
+				for (const c of cls) {
+					if (!expanded.has(c)) {
+						expanded.add(c);
+						grew = true;
+					}
+				}
+			}
+		}
+		result.push({ attrs: Array.from(expanded).sort((x, y) => x - y), value: binding.value });
+	}
+
+	// Two bindings might now alias to the same value/attrs after closure; coalesce.
+	return mergeConstantBindings(result, []);
+}
+
+/**
+ * Project bindings through `mapping` (oldCol → newCol). A binding whose
+ * `attrs` lose every member is dropped; otherwise the surviving members are
+ * remapped.
+ */
+export function projectConstantBindings(
+	bindings: ReadonlyArray<ConstantBinding>,
+	mapping: ReadonlyMap<number, number>,
+): ConstantBinding[] {
+	const out: ConstantBinding[] = [];
+	for (const binding of bindings) {
+		const mapped: number[] = [];
+		for (const c of binding.attrs) {
+			const m = mapping.get(c);
+			if (m !== undefined && !mapped.includes(m)) mapped.push(m);
+		}
+		if (mapped.length === 0) continue;
+		out.push({ attrs: mapped.sort((x, y) => x - y), value: binding.value });
+	}
+	return mergeConstantBindings(out, []);
+}
+
+/** Shift `attrs` by `offset` (column-index translation for joins). */
+export function shiftConstantBindings(
+	bindings: ReadonlyArray<ConstantBinding>,
+	offset: number,
+): ConstantBinding[] {
+	if (offset === 0) return bindings.map(normalizeBinding);
+	return bindings.map(binding => ({
+		attrs: binding.attrs.map(c => c + offset).sort((x, y) => x - y),
+		value: binding.value,
+	}));
 }

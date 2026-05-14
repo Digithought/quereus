@@ -1087,7 +1087,7 @@ The context-scoped design enables sophisticated optimization strategies:
 
 ### Functional Dependency Tracking
 
-Every relational physical node carries two optional fields on `PhysicalProperties` in addition to `uniqueKeys`:
+Every relational physical node carries three optional fields on `PhysicalProperties` in addition to `uniqueKeys`:
 
 ```typescript
 export interface FunctionalDependency {
@@ -1095,14 +1095,36 @@ export interface FunctionalDependency {
   readonly dependents: readonly number[];
 }
 
+export type ConstantValue =
+  | { readonly kind: 'literal'; readonly value: SqlValue }
+  | { readonly kind: 'parameter'; readonly paramRef: string | number };
+
+export interface ConstantBinding {
+  readonly attrs: readonly number[];
+  readonly value: ConstantValue;
+}
+
 interface PhysicalProperties {
   // ... ordering, estimatedRows, uniqueKeys, monotonicOn ...
   fds?: ReadonlyArray<FunctionalDependency>;
   equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
+  constantBindings?: ReadonlyArray<ConstantBinding>;
 }
 ```
 
 Column indices are output-column indices, consistent with `uniqueKeys`. Superkeys (entries in `uniqueKeys`) imply the FD `key → all-columns`; `fds` carries the additional, non-key dependencies. The list is **non-canonical** — each operator stores only what it can prove locally. Use `computeClosure(attrs, fds)` from `planner/util/fd-utils.ts` to derive what a set of attributes implies.
+
+#### Equivalence classes
+
+An **equivalence class** (EC) is a set of output column indices known to hold equal values for every row. ECs are derived from equality predicates (`col1 = col2` conjuncts in a Filter; equi-pairs in an inner join). They flow through operators alongside FDs — the per-operator table below applies to both. Two columns in the same EC can be freely substituted for each other in scalar expressions: that's what predicate-inference and ordering-pruning rules consume.
+
+#### Constant bindings
+
+A **constant binding** (`ConstantBinding`) is a companion to a `∅ → col` FD: that FD says "this column is constant under this scope," while a binding additionally records **what value** it is pinned to. Bindings let consumers (predicate inference, ordering pruning) read off the value without re-walking the predicate AST.
+
+Parameters are constants here. A `ParameterReferenceNode` is bound once before iteration and the same value is observed by every row — that matches the per-execution scope `computePhysical` describes, so `WHERE col = ?` produces both a `∅ → col` FD and a `ConstantBinding { attrs: [col], value: { kind: 'parameter', paramRef: ... } }`. Literal equality produces the same shape with `value.kind === 'literal'`.
+
+Bindings are closed over equivalence classes: at every node that contributes bindings (Filter, inner join), if a binding pins column `c` to value `v` and there's an EC `{c, c2, ...}`, the binding's `attrs` are extended to cover every EC member. So `WHERE t.k = u.k AND t.k = 5` lands as a single binding `{ attrs: [t.k, u.k], value: literal 5 }` on the join's output — exactly the input the predicate-inference rule will read.
 
 **Per-operator propagation:**
 
@@ -1110,15 +1132,15 @@ Column indices are output-column indices, consistent with `uniqueKeys`. Superkey
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TableReferenceNode`                      | Seed `key → others` for each declared key (PK + UNIQUE).                                                                                    |
 | `SeqScanNode` / `IndexScanNode` / `IndexSeekNode` | Pass child FDs/ECs through unchanged.                                                                                                |
-| `FilterNode`                              | Inherit child. For each equality conjunct in the predicate: `col = literal` ⇒ `∅ → col`; `col1 = col2` ⇒ bi-directional FDs and EC merge.   |
+| `FilterNode`                              | Inherit child. For each equality conjunct: `col = literal` or `col = ?` ⇒ `∅ → col` FD plus a `ConstantBinding`; `col1 = col2` ⇒ bi-directional FDs and EC merge. Bindings are then closed over the resulting EC list. |
 | `ProjectNode` / `ReturningNode`           | Project FDs/ECs through the source→output mapping built from bare column-reference projections. Non-trivial expressions drop the column out. |
 | `AliasNode` / `DistinctNode`              | Pass through unchanged (Distinct still adds the all-columns superkey via `uniqueKeys`).                                                     |
 | `StreamAggregateNode` / `HashAggregateNode` / `AggregateNode` | A source FD `X → Y` survives only if `X` and `Y` are all column-reference GROUP BY columns; project to output indices. ECs project the same way. |
-| `JoinNode` / `BloomJoinNode` / `MergeJoinNode` (inner / cross) | `union(leftFds, shift(rightFds, leftCols))`; for each equi-pair `(L, R')`: add bi-directional FDs and EC merge `L ≡ R'`. |
-| Join (left outer)                         | Keep left's FDs/ECs only; drop right's and equi-pair FDs (NULL-padded rows can violate them).                                               |
+| `JoinNode` / `BloomJoinNode` / `MergeJoinNode` (inner / cross) | `union(leftFds, shift(rightFds, leftCols))`; for each equi-pair `(L, R')`: add bi-directional FDs and EC merge `L ≡ R'`. Constant bindings union both sides (right shifted), then close over the merged EC list — so a one-sided `t.k = 5` plus an equi-pair `t.k = u.k` lands as a single binding covering both columns. |
+| Join (left outer)                         | Keep left's FDs/ECs/bindings only; drop right's and equi-pair contributions (NULL-padded rows can violate them).                            |
 | Join (right outer)                        | Mirror of left outer.                                                                                                                       |
-| Join (full outer)                         | Drop both sides' FDs/ECs (conservative).                                                                                                    |
-| Join (semi / anti)                        | Left's FDs/ECs survive; no right contribution.                                                                                              |
+| Join (full outer)                         | Drop both sides' FDs/ECs/bindings (conservative).                                                                                           |
+| Join (semi / anti)                        | Left's FDs/ECs/bindings survive; no right contribution.                                                                                     |
 | `AsofScanNode`                            | Inherit left's FDs/ECs. Right's FDs are dropped (asof = at-most-one match, NULL-padded in outer mode). The asof condition is not an equality, so no equi-pair FDs. |
 | `SetOperationNode`                        | Conservative: drop all FDs/ECs.                                                                                                             |
 | `WindowNode`                              | Pass source FDs/ECs through unchanged (window output columns are not in any new FDs — deferred).                                            |
@@ -1132,10 +1154,13 @@ Column indices are output-column indices, consistent with `uniqueKeys`. Superkey
 - `projectFds(fds, mapping)` — drop FDs that lose any determinant or dependent column.
 - `shiftFds(fds, offset)` / `shiftEquivClasses(classes, offset)` — column index translation for joins.
 - `mergeEquivClasses(a, b)` / `addEquivalence(classes, a, b)` — transitive-closure union of overlapping classes.
+- `mergeConstantBindings(a, b)` — coalesce bindings sharing a `ConstantValue` by unioning `attrs`.
+- `closeConstantBindingsOverEcs(bindings, ecs)` — extend each binding's `attrs` over every overlapping EC member (the predicate-inference surface).
+- `projectConstantBindings(bindings, mapping)` / `shiftConstantBindings(bindings, offset)` — projection/translation mirrors of the FD/EC variants.
 - `superkeyToFd(key, columnCount)` — build `key → others` from a superkey.
-- `extractEqualityFds(predicate, attrIdToIndex)` — predicate walker used by `FilterNode`.
+- `extractEqualityFds(predicate, attrIdToIndex)` — predicate walker used by `FilterNode`; returns FDs, EC pairs, and constant bindings (literals and parameters both contribute bindings).
 
-**De-dup / cap behavior:** `addFd` performs subsumption (drop existing FDs with the same determinants whose dependent set is a subset of the new one, and skip adding a new FD already subsumed). When the resulting list exceeds the cap, FDs whose determinants are not a subset of any `uniqueKeys` entry on the same node are dropped first; truncations are logged at debug under `quereus:planner:fd`.
+**De-dup / cap behavior:** `addFd` performs subsumption (drop existing FDs with the same determinants whose dependent set is a subset of the new one, and skip adding a new FD already subsumed). When the resulting list exceeds the cap, FDs whose determinants are not a subset of any `uniqueKeys` entry on the same node are dropped first; truncations are logged at debug under `quereus:planner:fd`. `mergeConstantBindings` enforces the same cap and logs the same way.
 
 **Consumers are forthcoming.** This pass lands the foundation only; existing `uniqueKeys` consumers (`rule-distinct-elimination`, `analyzeJoinKeyCoverage`, `CatalogStatsProvider.joinSelectivity`, change-detection classification) are untouched. Follow-up tickets will migrate consumers to read `fds`/`equivClasses` and add new optimizations (GROUP BY simplification, ORDER BY pruning, join elimination, predicate inference through ECs, etc.).
 

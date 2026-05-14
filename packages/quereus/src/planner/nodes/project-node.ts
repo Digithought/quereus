@@ -4,7 +4,7 @@ import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
 import { projectKeys } from '../util/key-utils.js';
-import { projectFds } from '../util/fd-utils.js';
+import { projectConstantBindings, projectFds } from '../util/fd-utils.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { formatProjection } from '../../util/plan-formatter.js';
 import { ColumnReferenceNode } from './reference.js';
@@ -205,6 +205,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 			}
 			if (mapped.length >= 2) projectedEquiv.push(mapped.sort((a, b) => a - b));
 		}
+		const projectedBindings = projectConstantBindings(sourcePhysical?.constantBindings ?? [], map);
 
 		return {
 			estimatedRows: this.source.estimatedRows,
@@ -213,6 +214,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 			monotonicOn: projectMonotonicOnByAttrId(sourcePhysical?.monotonicOn, preservedAttrIds),
 			fds: fds.length > 0 ? fds : undefined,
 			equivClasses: projectedEquiv.length > 0 ? projectedEquiv : undefined,
+			constantBindings: projectedBindings.length > 0 ? projectedBindings : undefined,
 		};
 	}
 

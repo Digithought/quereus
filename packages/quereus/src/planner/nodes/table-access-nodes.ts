@@ -169,6 +169,7 @@ export class SeqScanNode extends TableAccessNode {
 			ordering: undefined,
 			fds: sourcePhysical?.fds,
 			equivClasses: sourcePhysical?.equivClasses,
+			constantBindings: sourcePhysical?.constantBindings,
 		};
 		if (this.rangeBoundedOn) out.rangeBoundedOn = this.rangeBoundedOn;
 		return out;
@@ -248,6 +249,7 @@ export class IndexScanNode extends TableAccessNode {
 			ordering: this.providesOrdering,
 			fds: sourcePhysical?.fds,
 			equivClasses: sourcePhysical?.equivClasses,
+			constantBindings: sourcePhysical?.constantBindings,
 			...lifted,
 		};
 		if (this.rangeBoundedOn) out.rangeBoundedOn = this.rangeBoundedOn;
@@ -379,6 +381,7 @@ export class IndexSeekNode extends TableAccessNode {
 			estimatedRows: Math.min(this.source.estimatedRows || 1000, 100),
 			fds: sourcePhysical?.fds,
 			equivClasses: sourcePhysical?.equivClasses,
+			constantBindings: sourcePhysical?.constantBindings,
 			...lifted,
 		} as Partial<PhysicalProperties>;
 		if (this.rangeBoundedOn) base.rangeBoundedOn = this.rangeBoundedOn;

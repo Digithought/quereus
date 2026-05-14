@@ -100,6 +100,7 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			monotonicOn: propagateJoinMonotonicOn(this.joinType, leftPhys, rightPhys, this.equiPairs),
 			fds: fdResult.fds,
 			equivClasses: fdResult.equivClasses,
+			constantBindings: fdResult.constantBindings,
 		};
 	}
 

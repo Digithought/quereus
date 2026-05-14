@@ -276,10 +276,11 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 			uniqueKeys: sourcePhysical?.uniqueKeys,
 			monotonicOn,
 			// Window functions append columns but don't change the source row stream;
-			// FDs and equivalence classes pass through on the source columns.
-			// (Window output columns are not in any new FDs — deferred.)
+			// FDs, equivalence classes, and constant bindings pass through on the
+			// source columns. (Window output columns are not in any new FDs — deferred.)
 			fds: sourcePhysical?.fds,
 			equivClasses: sourcePhysical?.equivClasses,
+			constantBindings: sourcePhysical?.constantBindings,
 		};
 	}
 

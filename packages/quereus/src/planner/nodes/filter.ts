@@ -8,7 +8,7 @@ import { StatusCode } from '../../common/types.js';
 import { PredicateCapable, type PredicateSourceCapable } from '../framework/characteristics.js';
 import { createTableInfoFromNode, extractConstraints } from '../analysis/constraint-extractor.js';
 import { normalizePredicate } from '../analysis/predicate-normalizer.js';
-import { addFd, extractEqualityFds, mergeEquivClasses } from '../util/fd-utils.js';
+import { addFd, closeConstantBindingsOverEcs, extractEqualityFds, mergeConstantBindings, mergeEquivClasses } from '../util/fd-utils.js';
 
 /**
  * Represents a filter operation (WHERE clause).
@@ -80,7 +80,7 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 		// implied by equality conjuncts in the predicate.
 		const attrIdToIndex = new Map<number, number>();
 		this.source.getAttributes().forEach((a, i) => attrIdToIndex.set(a.id, i));
-		const { fds: predFds, equivPairs } = extractEqualityFds(this.predicate, attrIdToIndex);
+		const { fds: predFds, equivPairs, constantBindings: predBindings } = extractEqualityFds(this.predicate, attrIdToIndex);
 
 		let fds = sourcePhysical?.fds ?? [];
 		for (const fd of predFds) {
@@ -92,6 +92,13 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 			equivClasses = mergeEquivClasses(equivClasses, equivPairs.map(p => [p[0], p[1]]));
 		}
 
+		// Merge predicate-derived constant bindings with the child's, then close
+		// over the resulting EC list so a binding on column `c` also pins every
+		// EC-equivalent column. This is the surface predicate-inference rules
+		// consume.
+		const mergedBindings = mergeConstantBindings(sourcePhysical?.constantBindings ?? [], predBindings);
+		const constantBindings = closeConstantBindingsOverEcs(mergedBindings, equivClasses);
+
 		return {
 			estimatedRows: rows,
 			ordering: sourcePhysical?.ordering,
@@ -100,6 +107,7 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 			monotonicOn: sourcePhysical?.monotonicOn,
 			fds: fds.length > 0 ? fds : undefined,
 			equivClasses: equivClasses.length > 0 ? equivClasses : undefined,
+			constantBindings: constantBindings.length > 0 ? constantBindings : undefined,
 		};
 	}
 

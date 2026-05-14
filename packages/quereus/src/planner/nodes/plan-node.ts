@@ -45,6 +45,28 @@ export interface FunctionalDependency {
 }
 
 /**
+ * A pinned-constant value associated with a `ConstantBinding`. Either a
+ * compile-time literal `SqlValue`, or a bound parameter identified by
+ * `paramRef` (numeric 1-based index for `?`, string name for `:foo`-style).
+ */
+export type ConstantValue =
+  | { readonly kind: 'literal'; readonly value: SqlValue }
+  | { readonly kind: 'parameter'; readonly paramRef: string | number };
+
+/**
+ * Output columns pinned to a single value across every row of one execution.
+ * Companion to `∅ → col` FDs: that FD records *that* a column is constant,
+ * while a `ConstantBinding` additionally records *what value* it is pinned
+ * to. Downstream rules (predicate inference through ECs, ordering pruning)
+ * consume bindings directly instead of re-walking predicate ASTs.
+ */
+export interface ConstantBinding {
+  /** Output column indices pinned to `value`. */
+  readonly attrs: readonly number[];
+  readonly value: ConstantValue;
+}
+
+/**
  * Physical properties that execution nodes can provide or require
  */
 export interface PhysicalProperties {
@@ -75,6 +97,15 @@ export interface PhysicalProperties {
    * equality predicates and equi-join conditions.
    */
   equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
+
+  /**
+   * Output columns pinned to a known constant value within a single execution.
+   * Mirrors `∅ → col` FDs but carries the *value* so downstream rules
+   * (predicate inference, ordering pruning) can rewrite predicates without
+   * re-walking the source predicate AST. Parameters (`?` / `:foo`) count as
+   * constants here because they are bound once before iteration.
+   */
+  constantBindings?: ReadonlyArray<ConstantBinding>;
 
   /**
    * Attributes the relation is monotonically ordered on. Stronger than `ordering`:

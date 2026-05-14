@@ -1,7 +1,14 @@
-import type { Attribute, FunctionalDependency, MonotonicOnInfo, PhysicalProperties } from './plan-node.js';
+import type { Attribute, ConstantBinding, FunctionalDependency, MonotonicOnInfo, PhysicalProperties } from './plan-node.js';
 import type { JoinType } from './join-node.js';
 import type { RelationType, ColRef } from '../../common/datatype.js';
-import { addEquivalence, addFd, mergeEquivClasses, mergeFds, shiftEquivClasses, shiftFds } from '../util/fd-utils.js';
+import {
+	addEquivalence, addFd,
+	closeConstantBindingsOverEcs,
+	mergeConstantBindings,
+	mergeEquivClasses, mergeFds,
+	shiftConstantBindings,
+	shiftEquivClasses, shiftFds,
+} from '../util/fd-utils.js';
 
 /**
  * An equi-join pair: left attribute = right attribute.
@@ -159,13 +166,29 @@ export function propagateJoinFds(
 	equiPairs: ReadonlyArray<{ left: number; right: number }>,
 	leftColumnCount: number,
 	uniqueKeys: ReadonlyArray<ReadonlyArray<number>> | undefined,
-): { fds?: ReadonlyArray<FunctionalDependency>; equivClasses?: ReadonlyArray<ReadonlyArray<number>> } {
+): {
+	fds?: ReadonlyArray<FunctionalDependency>;
+	equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
+	constantBindings?: ReadonlyArray<ConstantBinding>;
+} {
 	const leftFds = leftPhys?.fds ?? [];
 	const rightFds = rightPhys?.fds ?? [];
 	const leftEC = leftPhys?.equivClasses ?? [];
 	const rightEC = rightPhys?.equivClasses ?? [];
+	const leftBindings = leftPhys?.constantBindings ?? [];
+	const rightBindings = rightPhys?.constantBindings ?? [];
 
 	const opts = { uniqueKeys };
+
+	const wrap = (
+		fds: ReadonlyArray<FunctionalDependency>,
+		equiv: ReadonlyArray<ReadonlyArray<number>>,
+		bindings: ReadonlyArray<ConstantBinding>,
+	) => ({
+		fds: fds.length > 0 ? fds : undefined,
+		equivClasses: equiv.length > 0 ? equiv : undefined,
+		constantBindings: bindings.length > 0 ? bindings : undefined,
+	});
 
 	switch (joinType) {
 		case 'inner':
@@ -178,33 +201,32 @@ export function propagateJoinFds(
 				fds = addFd(fds, { determinants: [rShifted], dependents: [p.left] }, opts);
 				equiv = addEquivalence(equiv, p.left, rShifted);
 			}
-			return {
-				fds: fds.length > 0 ? fds : undefined,
-				equivClasses: equiv.length > 0 ? equiv : undefined,
-			};
+			// Bindings: union of both sides, then close over the merged EC list so
+			// a one-sided constant `t.k = 5` plus an equi-pair `t.k = u.k` lands as
+			// a binding covering both `t.k` and `u.k`.
+			const mergedBindings = mergeConstantBindings(
+				leftBindings,
+				shiftConstantBindings(rightBindings, leftColumnCount),
+			);
+			const bindings = closeConstantBindingsOverEcs(mergedBindings, equiv);
+			return wrap(fds, equiv, bindings);
 		}
 		case 'left': {
-			return {
-				fds: leftFds.length > 0 ? leftFds.slice() : undefined,
-				equivClasses: leftEC.length > 0 ? leftEC.map(c => c.slice()) : undefined,
-			};
+			// Left's bindings survive on left's columns; right's are dropped (the
+			// NULL-padding from unmatched left rows breaks any right-side pin).
+			return wrap(leftFds.slice(), leftEC.map(c => c.slice()), leftBindings.map(b => ({ ...b })));
 		}
 		case 'right': {
 			const fds = shiftFds(rightFds, leftColumnCount);
 			const equiv = shiftEquivClasses(rightEC, leftColumnCount);
-			return {
-				fds: fds.length > 0 ? fds : undefined,
-				equivClasses: equiv.length > 0 ? equiv : undefined,
-			};
+			const bindings = shiftConstantBindings(rightBindings, leftColumnCount);
+			return wrap(fds, equiv, bindings);
 		}
 		case 'full':
 			return {};
 		case 'semi':
 		case 'anti':
-			return {
-				fds: leftFds.length > 0 ? leftFds.slice() : undefined,
-				equivClasses: leftEC.length > 0 ? leftEC.map(c => c.slice()) : undefined,
-			};
+			return wrap(leftFds.slice(), leftEC.map(c => c.slice()), leftBindings.map(b => ({ ...b })));
 		default:
 			return {};
 	}

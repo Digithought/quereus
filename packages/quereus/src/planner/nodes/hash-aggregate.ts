@@ -178,7 +178,7 @@ export class HashAggregateNode extends PlanNode implements UnaryRelationalNode {
 
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const sourcePhysical = childrenPhysical[0];
-		const { fds, equivClasses } = propagateAggregateFds(
+		const { fds, equivClasses, constantBindings } = propagateAggregateFds(
 			this.source.getAttributes(),
 			this.groupBy,
 			sourcePhysical,
@@ -195,6 +195,7 @@ export class HashAggregateNode extends PlanNode implements UnaryRelationalNode {
 			monotonicOn: undefined,
 			fds,
 			equivClasses,
+			constantBindings,
 		};
 	}
 

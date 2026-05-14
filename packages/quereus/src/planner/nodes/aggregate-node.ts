@@ -1,7 +1,8 @@
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, type PhysicalProperties } from './plan-node.js';
 import { ColumnReferenceNode } from './reference.js';
-import { projectFds } from '../util/fd-utils.js';
+import { projectConstantBindings, projectFds } from '../util/fd-utils.js';
+import type { ConstantBinding, FunctionalDependency } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -29,7 +30,11 @@ export function propagateAggregateFds(
   sourceAttrs: readonly Attribute[],
   groupBy: readonly ScalarPlanNode[],
   sourcePhysical: PhysicalProperties | undefined,
-): { fds?: ReadonlyArray<import('./plan-node.js').FunctionalDependency>; equivClasses?: ReadonlyArray<ReadonlyArray<number>> } {
+): {
+  fds?: ReadonlyArray<FunctionalDependency>;
+  equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
+  constantBindings?: ReadonlyArray<ConstantBinding>;
+} {
   if (groupBy.length === 0) return {};
 
   const map = new Map<number, number>();
@@ -52,9 +57,14 @@ export function propagateAggregateFds(
     if (mapped.length >= 2) projectedEquiv.push(mapped.sort((a, b) => a - b));
   }
 
+  // Constant bindings on GROUP BY columns survive; aggregate-output columns get
+  // none (they are computed expressions, not in the column-mapping).
+  const projectedBindings = projectConstantBindings(sourcePhysical?.constantBindings ?? [], map);
+
   return {
     fds: fds.length > 0 ? fds : undefined,
     equivClasses: projectedEquiv.length > 0 ? projectedEquiv : undefined,
+    constantBindings: projectedBindings.length > 0 ? projectedBindings : undefined,
   };
 }
 
@@ -238,7 +248,7 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
     // Output attribute indices for group-by are 0..groupCount-1 per buildAttributes
     const uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
 
-    const { fds, equivClasses } = propagateAggregateFds(
+    const { fds, equivClasses, constantBindings } = propagateAggregateFds(
       this.source.getAttributes(),
       this.groupBy,
       sourcePhysical,
@@ -250,6 +260,7 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
       ordering: sourcePhysical?.ordering,
       fds,
       equivClasses,
+      constantBindings,
     };
   }
 

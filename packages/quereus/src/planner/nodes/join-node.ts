@@ -128,6 +128,7 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 			monotonicOn: propagateJoinMonotonicOn(this.joinType, leftPhys, rightPhys, attrIdPairs),
 			fds: fdResult.fds,
 			equivClasses: fdResult.equivClasses,
+			constantBindings: fdResult.constantBindings,
 		};
 	}
 
