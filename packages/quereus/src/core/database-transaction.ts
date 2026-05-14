@@ -431,10 +431,22 @@ export class TransactionManager {
 	 *  - UPDATE after INSERT → INSERT (with refreshed newProjection)
 	 *  - DELETE after INSERT → drop entry (net no-op)
 	 *  - DELETE after UPDATE → DELETE with carrying-over oldProjection from the first OLD
+	 *  - INSERT/UPDATE chains preserve the original `oldProjection` so the OLD
+	 *    state seen at the start of the layer is never overwritten by later
+	 *    intra-layer activity on the same PK.
 	 */
 	private mergeRecord(base: string, pkKey: string, incoming: CapturedRow): void {
 		const layer = this.activeLayer();
-		const lower = base.toLowerCase();
+		this.mergeRecordInto(layer, base.toLowerCase(), pkKey, incoming);
+	}
+
+	/**
+	 * Same merge state machine as `mergeRecord`, but writes to an arbitrary
+	 * target layer. Used both for normal record paths (via `mergeRecord`) and
+	 * for savepoint RELEASE (merging the released layer into its parent), so
+	 * the two paths cannot drift.
+	 */
+	private mergeRecordInto(layer: ChangeLogLayer, lower: string, pkKey: string, incoming: CapturedRow): void {
 		let tableMap = layer.get(lower);
 		if (!tableMap) {
 			tableMap = new Map();
@@ -460,6 +472,8 @@ export class TransactionManager {
 			return;
 		}
 		if (prev === 'update' && next === 'update') {
+			// Preserve the earliest oldProjection (existing) and pick up the
+			// latest newProjection (incoming).
 			existing.newProjection = incoming.newProjection ?? existing.newProjection;
 			return;
 		}
@@ -473,7 +487,12 @@ export class TransactionManager {
 			existing.newProjection = incoming.newProjection;
 			return;
 		}
-		// Fallback: replace with incoming
+		if (prev === 'delete' && next === 'delete') {
+			// Idempotent: a second delete with the same PK can't happen against
+			// committed state, but keep the existing oldProjection.
+			return;
+		}
+		// Defensive fallback for any unanticipated combination — replace.
 		tableMap.set(pkKey, incoming);
 	}
 
@@ -720,9 +739,11 @@ export class TransactionManager {
 	}
 
 	/**
-	 * Release the current savepoint layer, merging into the parent with
-	 * last-write-wins semantics per PK. DELETE-after-INSERT collapses to no
-	 * entry (set in `mergeRecord`).
+	 * Release the current savepoint layer, merging into the parent through
+	 * the same `mergeRecordInto` state machine the record path uses. This
+	 * keeps the two paths consistent — in particular, an UPDATE-after-UPDATE
+	 * preserves the parent layer's `oldProjection` so per-group dispatch
+	 * still sees the row's pre-savepoint state.
 	 */
 	private releaseSavepointLayer(): void {
 		const top = this.changeLogLayers.pop();
@@ -733,33 +754,8 @@ export class TransactionManager {
 			: this.changeLog;
 
 		for (const [table, rowMap] of top) {
-			let tgt = target.get(table);
-			if (!tgt) {
-				tgt = new Map();
-				target.set(table, tgt);
-			}
 			for (const [pkKey, rec] of rowMap) {
-				const existing = tgt.get(pkKey);
-				if (!existing) {
-					tgt.set(pkKey, rec);
-					continue;
-				}
-				const prev = existing.op;
-				const next = rec.op;
-				if (prev === 'insert' && next === 'delete') {
-					tgt.delete(pkKey);
-				} else if (prev === 'insert' && next === 'update') {
-					existing.newProjection = rec.newProjection ?? existing.newProjection;
-				} else if (prev === 'update' && next === 'delete') {
-					existing.op = 'delete';
-					existing.newProjection = undefined;
-				} else if (prev === 'delete' && next === 'insert') {
-					existing.op = 'update';
-					existing.newProjection = rec.newProjection;
-				} else {
-					// Default last-write-wins: overwrite with incoming.
-					tgt.set(pkKey, rec);
-				}
+				this.mergeRecordInto(target, table, pkKey, rec);
 			}
 		}
 

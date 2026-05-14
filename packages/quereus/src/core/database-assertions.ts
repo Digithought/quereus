@@ -255,20 +255,35 @@ export class AssertionEvaluator {
 			}
 		}
 
-		// Register projection capture for 'group' bindings (PK is implicit;
-		// 'row' bindings always use PK so no extra columns needed there).
+		// Register projection capture for any binding whose key columns aren't
+		// already covered by the table's PK. PK columns are always captured
+		// implicitly; 'row' bindings normally bind on PK and need nothing extra,
+		// but a 'row' binding picked from a covered non-PK unique key (and any
+		// 'group' binding) requires its non-PK columns to be retained on every
+		// change.
 		const captureDisposers: Array<() => void> = [];
 		const extraByBase = new Map<string, Set<number>>();
+		const recordExtras = (base: string, cols: readonly number[]): void => {
+			const pk = pkIndicesByBase.get(base);
+			const pkSet = pk ? new Set<number>(pk) : new Set<number>();
+			for (const c of cols) {
+				if (pkSet.has(c)) continue;
+				let set = extraByBase.get(base);
+				if (!set) {
+					set = new Set<number>();
+					extraByBase.set(base, set);
+				}
+				set.add(c);
+			}
+		};
 		for (const [relKey, mode] of bindings.perRelation) {
-			if (mode.kind !== 'group') continue;
 			const base = bindings.relationToBase.get(relKey);
 			if (!base) continue;
-			let set = extraByBase.get(base);
-			if (!set) {
-				set = new Set<number>();
-				extraByBase.set(base, set);
+			if (mode.kind === 'row') {
+				recordExtras(base, mode.keyColumns);
+			} else if (mode.kind === 'group') {
+				recordExtras(base, mode.groupColumns);
 			}
-			for (const c of mode.groupColumns) set.add(c);
 		}
 		for (const [base, extra] of extraByBase) {
 			captureDisposers.push(this.ctx.registerCaptureSpec(base, { extraColumns: extra }));

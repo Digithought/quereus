@@ -48,9 +48,14 @@ union of non-PK columns any active spec needs. The returned dispose handle
 removes that spec from the union; capture demand for a table is fully
 released once all specs are disposed.
 
-A `'row'` binding does not need any extra capture — PK is always present.
-A `'group'` binding registers its group-key columns so changes preserve the
-values needed to bind per-group at COMMIT.
+A `'row'` binding whose chosen key is the table's primary key needs no
+extra capture — PK is always present. A `'row'` binding picked from a
+covered non-PK unique key (and any `'group'` binding) registers the
+non-PK columns it cares about so the values needed to bind at COMMIT are
+preserved. The shared merge state machine in `TransactionManager` keeps
+the earliest `oldProjection` for the row across both intra-layer activity
+and savepoint RELEASE — per-group dispatch always sees a row's
+pre-transaction state, even after a chain of updates inside savepoints.
 
 ### Recording changes
 
