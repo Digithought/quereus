@@ -128,6 +128,54 @@ export interface ChangeScope {
 	readonly unboundParameters: ReadonlyArray<number | string>;
 }
 
+/* --- Watcher types (consumed by Database.watch) -------------------------- */
+
+/**
+ * Handle returned by `Database.watch(scope, handler)`. Calling
+ * `unsubscribe()` stops further firings and releases any capture-spec
+ * demand the subscription registered. Idempotent.
+ */
+export interface Subscription {
+	readonly id: string;
+	unsubscribe(): void;
+}
+
+/**
+ * Per-watch hit produced for a single fired `WatchEvent`.
+ *
+ * - For a `rows` / `rowsByGroup` watch, `hits` lists the bound tuples
+ *   from the watch's `values` that intersected the changes in this txn.
+ * - For a `groups` watch, `hits` lists the distinct group-key tuples
+ *   touched in this txn.
+ * - For a `full` watch, `hits` is always empty (the watch describes the
+ *   whole table — there is no narrower set of keys to report).
+ */
+export interface MatchedWatch {
+	readonly watch: TableWatch;
+	readonly hits: ReadonlyArray<ReadonlyArray<SqlValue>>;
+}
+
+/**
+ * Event delivered to a `WatchHandler` after a transaction commits.
+ *
+ * `matched` contains one entry per `TableWatch` in the subscription's
+ * scope that actually saw a change in this transaction; watches that
+ * weren't touched are omitted. The handler is not invoked at all when
+ * `matched` would be empty.
+ */
+export interface WatchEvent {
+	readonly matched: ReadonlyArray<MatchedWatch>;
+	readonly txnId: string;
+}
+
+/**
+ * Handler signature for `Database.watch`. May be sync or async. A
+ * Promise return is awaited before the watcher proceeds to the next
+ * subscription; rejections are logged and swallowed (watcher errors
+ * do not roll back the commit — assertions own that contract).
+ */
+export type WatchHandler = (event: WatchEvent) => void | Promise<void>;
+
 /* --- Constants ----------------------------------------------------------- */
 
 const KNOWN_TIME_FUNCS = new Set([

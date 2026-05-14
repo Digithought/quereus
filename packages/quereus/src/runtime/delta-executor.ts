@@ -15,8 +15,17 @@
  */
 
 import { createLogger } from '../common/logger.js';
-import type { SqlValue } from '../common/types.js';
+import { QuereusError } from '../common/errors.js';
+import { StatusCode, type SqlValue } from '../common/types.js';
 import type { BindingMode } from '../planner/analysis/binding-extractor.js';
+import type {
+	ChangeScope,
+	MatchedWatch,
+	QualifiedName,
+	ScopeValue,
+	TableWatch,
+	WatchHandler,
+} from '../planner/analysis/change-scope.js';
 
 const log = createLogger('runtime:delta-executor');
 
@@ -188,4 +197,309 @@ export class DeltaExecutor {
 		const input: DeltaApplyInput = { perRelationTuples, globalRelations };
 		await sub.apply(input);
 	}
+}
+
+/* ─────────────────────────── ChangeScope → Subscription ─────────────────────────── */
+
+/**
+ * Minimal table-info shape used by `subscriptionFromChangeScope` for column
+ * resolution and PK lookup. Kept generic so the helper does not import the
+ * schema module directly.
+ */
+export interface ChangeScopeTableInfo {
+	/** Lowercased column name → column index. */
+	readonly columnIndexMap: ReadonlyMap<string, number>;
+	/** Primary-key column indices, in PK order. */
+	readonly pkIndices: readonly number[];
+}
+
+/** Context provided by `Database.watch` to the helper. */
+export interface SubscriptionFromChangeScopeContext {
+	/** Resolve a qualified base table. Used for column-index lookup and as
+	 *  the existence gate (returns `undefined` if the table is missing). */
+	resolveTable(qname: QualifiedName): ChangeScopeTableInfo | undefined;
+	/** Register a column-capture spec; returns a dispose handle. Called once
+	 *  per base table that needs extra columns captured (i.e. row/group key
+	 *  columns outside the PK, and `full` watches with a non-`'all'` column
+	 *  set). */
+	registerCaptureSpec(baseTable: string, spec: { extraColumns: ReadonlySet<number> }): () => void;
+	/** Return a stable transaction id for the current commit. The watcher
+	 *  subscription includes this on every emitted `WatchEvent`. */
+	getCurrentTxnId(): string;
+}
+
+export interface SubscriptionFromChangeScopeResult {
+	subscription: DeltaSubscription;
+	/** Capture-spec dispose handles to release on `unsubscribe`. */
+	captureDisposers: Array<() => void>;
+}
+
+/** Synthetic relation key for the i-th watch in a scope. */
+function relKeyForWatch(table: QualifiedName, watchIndex: number): string {
+	return `${table.schema}.${table.table}#watch_${watchIndex}`;
+}
+
+function baseKeyFor(table: QualifiedName): string {
+	return `${table.schema}.${table.table}`;
+}
+
+/**
+ * Stable string key for an SqlValue tuple, used to intersect kernel-emitted
+ * tuples against a watch's literal `values`.
+ */
+function tupleKey(tuple: readonly SqlValue[]): string {
+	const parts: string[] = [];
+	for (const v of tuple) {
+		if (v === null) parts.push('null');
+		else if (typeof v === 'bigint') parts.push(`b:${v.toString()}`);
+		else if (typeof v === 'number') parts.push(`n:${v}`);
+		else if (typeof v === 'string') parts.push(`s:${v}`);
+		else if (typeof v === 'boolean') parts.push(`B:${v}`);
+		else if (v instanceof Uint8Array) parts.push(`x:${Array.from(v).map(b => b.toString(16).padStart(2, '0')).join('')}`);
+		else parts.push(`j:${JSON.stringify(v)}`);
+	}
+	return parts.join('|');
+}
+
+/**
+ * Resolve a column name on a base table or throw a clear error.
+ */
+function resolveColumn(qname: QualifiedName, info: ChangeScopeTableInfo, name: string): number {
+	const idx = info.columnIndexMap.get(name.toLowerCase());
+	if (idx === undefined) {
+		throw new QuereusError(
+			`watch: column '${name}' does not exist on ${qname.schema}.${qname.table}`,
+			StatusCode.ERROR,
+		);
+	}
+	return idx;
+}
+
+/**
+ * Translate a public `ChangeScope` into a `DeltaSubscription` plus its
+ * capture-spec dispose handles. Pure shape-translation: callers (i.e.
+ * `Database.watch`) own validation of unbound parameters, schema-change
+ * invalidation, and registration with the executor.
+ *
+ * Throws synchronously if:
+ * - any referenced table no longer exists in the schema;
+ * - any column referenced in `key` / `groupBy` / `columns` does not exist
+ *   on its table.
+ */
+export function subscriptionFromChangeScope(
+	scope: ChangeScope,
+	handler: WatchHandler,
+	id: string,
+	ctx: SubscriptionFromChangeScopeContext,
+): SubscriptionFromChangeScopeResult {
+	const bindings = new Map<string, BindingMode>();
+	const relationToBase = new Map<string, string>();
+	const pkIndicesByBase = new Map<string, readonly number[]>();
+	const dependencies = new Set<string>();
+	const captureDisposers: Array<() => void> = [];
+
+	// Per-watch metadata for the apply path. Aligned 1:1 with scope.watches.
+	interface WatchPlan {
+		readonly watch: TableWatch;
+		readonly relKey: string;
+		readonly base: string;
+		/** Literal-only key/group values, pre-filtered. */
+		readonly literalValues: ReadonlyArray<ReadonlyArray<SqlValue>> | null;
+	}
+	const plans: WatchPlan[] = [];
+
+	scope.watches.forEach((watch, i) => {
+		const info = ctx.resolveTable(watch.table);
+		if (!info) {
+			throw new QuereusError(
+				`watch: table ${watch.table.schema}.${watch.table.table} does not exist`,
+				StatusCode.ERROR,
+			);
+		}
+		const base = baseKeyFor(watch.table);
+		const relKey = relKeyForWatch(watch.table, i);
+		dependencies.add(base);
+		relationToBase.set(relKey, base);
+		if (!pkIndicesByBase.has(base)) {
+			pkIndicesByBase.set(base, info.pkIndices);
+		}
+
+		const extras = new Set<number>();
+		const pkSet = new Set<number>(info.pkIndices);
+		const recordExtras = (cols: readonly number[]): void => {
+			for (const c of cols) {
+				if (!pkSet.has(c)) extras.add(c);
+			}
+		};
+
+		let mode: BindingMode;
+		let literalValues: ReadonlyArray<ReadonlyArray<SqlValue>> | null = null;
+
+		switch (watch.scope.kind) {
+			case 'full': {
+				mode = { kind: 'global' };
+				if (watch.columns !== 'all') {
+					for (const name of watch.columns) {
+						const idx = resolveColumn(watch.table, info, name);
+						if (!pkSet.has(idx)) extras.add(idx);
+					}
+				}
+				break;
+			}
+			case 'rows': {
+				const keyCols = watch.scope.key.map(n => resolveColumn(watch.table, info, n));
+				literalValues = literalValuesOnly(watch.scope.values);
+				recordExtras(keyCols);
+				mode = { kind: 'row', keyColumns: keyCols };
+				break;
+			}
+			case 'groups': {
+				const groupCols = watch.scope.groupBy.map(n => resolveColumn(watch.table, info, n));
+				recordExtras(groupCols);
+				mode = { kind: 'group', groupColumns: groupCols };
+				break;
+			}
+			case 'rowsByGroup': {
+				const groupCols = watch.scope.groupBy.map(n => resolveColumn(watch.table, info, n));
+				literalValues = literalValuesOnly(watch.scope.values);
+				recordExtras(groupCols);
+				mode = { kind: 'group', groupColumns: groupCols };
+				break;
+			}
+		}
+
+		bindings.set(relKey, mode);
+		if (extras.size > 0) {
+			captureDisposers.push(ctx.registerCaptureSpec(base, { extraColumns: extras }));
+		}
+		plans.push({ watch, relKey, base, literalValues });
+	});
+
+	const apply = async (input: DeltaApplyInput): Promise<void> => {
+		const matched: MatchedWatch[] = [];
+
+		for (const plan of plans) {
+			const { watch, relKey, literalValues } = plan;
+			const isGlobal = input.globalRelations.has(relKey);
+			const kernelTuples = input.perRelationTuples.get(relKey);
+
+			if (!isGlobal && !kernelTuples) {
+				// No change for this watch's base; skip.
+				continue;
+			}
+
+			let hits: ReadonlyArray<ReadonlyArray<SqlValue>>;
+			let observable: boolean;
+			switch (watch.scope.kind) {
+				case 'full': {
+					// Column-narrowing for `full + columns` is best-effort in v1:
+					// we register a capture spec but always fire on any change.
+					hits = [];
+					// Fire whenever the table was touched (kernel signals via
+					// globalRelations for 'global' bindings).
+					observable = isGlobal;
+					break;
+				}
+				case 'rows': {
+					if (isGlobal) {
+						// Kernel fell back to global; we can't narrow precisely.
+						// Surface every literal value the watch was registered
+						// for so the handler treats them all as possibly-changed.
+						hits = literalValues ?? [];
+						observable = hits.length > 0;
+					} else {
+						hits = intersectTuples(kernelTuples ?? [], literalValues);
+						observable = hits.length > 0;
+					}
+					break;
+				}
+				case 'groups': {
+					hits = isGlobal ? [] : (kernelTuples ?? []);
+					observable = hits.length > 0;
+					break;
+				}
+				case 'rowsByGroup': {
+					if (isGlobal) {
+						hits = literalValues ?? [];
+					} else {
+						hits = intersectTuples(kernelTuples ?? [], literalValues);
+					}
+					observable = hits.length > 0;
+					break;
+				}
+			}
+
+			if (observable) matched.push({ watch, hits });
+		}
+
+		if (matched.length === 0) return;
+
+		const event = { matched, txnId: ctx.getCurrentTxnId() };
+		try {
+			const r = handler(event);
+			if (r && typeof (r as Promise<void>).then === 'function') {
+				await r;
+			}
+		} catch (err) {
+			log('Watch handler %s threw: %O', id, err);
+		}
+	};
+
+	const subscription: DeltaSubscription = {
+		id,
+		dependencies,
+		bindings,
+		relationToBase,
+		pkIndicesByBase,
+		apply,
+		dispose: () => { /* capture disposers handled by caller */ },
+	};
+	return { subscription, captureDisposers };
+}
+
+/**
+ * Filter a ScopeValue-tuple list to literal-only tuples. Returns `null`
+ * if the list is empty after filtering (i.e. the watch had no literal
+ * values at all, or none survived).
+ *
+ * `Database.watch` rejects scopes with `unboundParameters.length > 0` up
+ * front, so by the time we reach here, any surviving `ParamScopeValue`
+ * placeholders represent a caller-side bug; we drop them defensively
+ * rather than throw deep in the runtime path.
+ */
+function literalValuesOnly(
+	values: ReadonlyArray<ReadonlyArray<ScopeValue>>,
+): ReadonlyArray<ReadonlyArray<SqlValue>> {
+	const out: SqlValue[][] = [];
+	for (const tuple of values) {
+		let allLiteral = true;
+		const lit: SqlValue[] = [];
+		for (const v of tuple) {
+			if (v !== null && typeof v === 'object' && !(v instanceof Uint8Array) && !Array.isArray(v) && (v as { kind?: unknown }).kind === 'param') {
+				allLiteral = false;
+				break;
+			}
+			lit.push(v as SqlValue);
+		}
+		if (allLiteral) out.push(lit);
+	}
+	return out;
+}
+
+function intersectTuples(
+	kernel: readonly SqlValue[][],
+	watch: ReadonlyArray<ReadonlyArray<SqlValue>> | null,
+): ReadonlyArray<ReadonlyArray<SqlValue>> {
+	if (!watch || watch.length === 0) return [];
+	const watchKeys = new Set<string>();
+	for (const t of watch) watchKeys.add(tupleKey(t));
+	const out: SqlValue[][] = [];
+	const seen = new Set<string>();
+	for (const kt of kernel) {
+		const k = tupleKey(kt);
+		if (!watchKeys.has(k) || seen.has(k)) continue;
+		seen.add(k);
+		out.push([...kt]);
+	}
+	return out;
 }

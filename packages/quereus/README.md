@@ -206,7 +206,7 @@ Quereus is a feature-complete SQL query processor with a modern planner and inst
 *   **Robust transaction support** — multi-level savepoints and rollback. See [Usage Guide](../../docs/usage.md#transactions) for details
 *   **Rich built-in function library** — scalar, aggregate, window, JSON, and date/time functions
 *   **Rule-based optimizer** — constant folding, caching, streaming aggregation, bloom-join selection, and correlated subquery decorrelation. See [Architecture — Optimizer](../../docs/architecture.md#optimizer).
-*   **Change-scope introspection** — `Statement.getChangeScope()` returns a JSON-serializable description of what base-table state and external inputs a prepared statement reads from, suitable for plumbing into watchers and incremental view maintenance. See [Change-scope Documentation](../../docs/change-scope.md).
+*   **Change-scope introspection and reactive subscriptions** — `Statement.getChangeScope()` returns a JSON-serializable description of what base-table state and external inputs a prepared statement reads from. The companion `Database.watch(scope, handler)` consumes any `ChangeScope` value (analyzed, deserialized, or hand-built) and fires a post-commit callback whenever matching rows, groups, or tables change. See [Change-scope Documentation](../../docs/change-scope.md).
 
 [TODO List](../../docs/todo.md) has remaining priorities.
 

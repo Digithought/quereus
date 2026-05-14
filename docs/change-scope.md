@@ -15,10 +15,10 @@ A `ChangeScope` answers questions like:
 - "Does this query depend on time, random, or external (parameter)
   inputs that watching state alone cannot detect?"
 
-The companion `Database.watch` watcher (ships in a follow-up ticket)
-consumes the same shape end-to-end. The change-scope API itself stops
-at *analysis*: it produces the description; the watcher fires
-callbacks.
+The companion `Database.watch` watcher consumes the same shape
+end-to-end. The change-scope API itself stops at *analysis*: it
+produces the description; the watcher fires callbacks. See the
+[Watcher](#watcher) section below.
 
 ## Data contract
 
@@ -238,6 +238,136 @@ describes more.
   that the analyzer cannot decode into a `ScopeValue`, the watch falls
   back to `{kind:'full'}` rather than emitting `{kind:'rows', values: []}`
   (which would describe "watch zero rows" and under-specify the scope).
+
+## Watcher
+
+`Database.watch(scope, handler)` registers a post-commit callback
+driven by the same `ChangeScope` shape the analyzer produces.
+
+```ts
+interface Subscription {
+  readonly id: string;        // 'watch:<base32-hash>:<nonce>'
+  unsubscribe(): void;        // idempotent
+}
+
+interface MatchedWatch {
+  readonly watch: TableWatch;
+  readonly hits: ReadonlyArray<ReadonlyArray<SqlValue>>;
+}
+
+interface WatchEvent {
+  readonly matched: ReadonlyArray<MatchedWatch>;
+  readonly txnId: string;
+}
+
+type WatchHandler = (event: WatchEvent) => void | Promise<void>;
+
+watch(scope: ChangeScope, handler: WatchHandler): Subscription;
+```
+
+The watcher is **plan-independent**: any `ChangeScope` value works —
+freshly analyzed, deserialized from disk, hand-built in test code, or
+received over a network.
+
+### Firing semantics
+
+- **After-commit only.** The handler runs once per successful commit,
+  after every connection has committed and before the change log is
+  cleared. Mirrors assertion COMMIT eval and MV maintenance.
+- **One event per commit.** A multi-table scope produces a single
+  `WatchEvent` whose `matched` array carries every `TableWatch` that
+  saw a change in this transaction. Watches that weren't touched are
+  omitted.
+- **Empty match → no fire.** If every `TableWatch` would have an empty
+  hits set (e.g. a `rows(pk=[7])` watch when only id=8 changed), the
+  handler is not called at all.
+- **Re-entrancy is safe.** A handler that calls `database.watch` or
+  `subscription.unsubscribe` during a fire is legal; the kernel
+  iterates a snapshot of subscriptions per commit, so the new/removed
+  subscription takes effect on the next commit, not the current one.
+
+### `hits` semantics
+
+| `WatchScope.kind` | `hits` contents |
+| --- | --- |
+| `full`        | Always `[]` (the watch describes the whole table — no narrower set to report). |
+| `rows`        | The bound tuples from `values` that intersected the changes in this txn. |
+| `groups`      | The distinct group-key tuples touched in this txn. |
+| `rowsByGroup` | The bound tuples from `values` that intersected the changes in this txn. |
+
+If the kernel falls back to a global re-evaluation (e.g. missing PK or
+the cost-based fallback fired) on a `rows` / `rowsByGroup` watch, the
+watcher surfaces every literal value the watch was registered for —
+"all of your watched keys may have changed."
+
+### Validation
+
+`watch(scope, handler)` rejects synchronously (throws `QuereusError`)
+when:
+
+- `scope.unboundParameters.length > 0` — the kernel can't bind values
+  from `ScopeValue.param` placeholders. Call `bindParameters(scope,
+  params)` first. The error message says so.
+- Any `TableWatch` references a table that does not exist in the
+  current schema, or any column referenced in `key`, `groupBy`, or
+  `columns` (when not `'all'`) does not exist on its table.
+
+`watch(scope, handler)` accepts and warns once (via the logger) when:
+
+- `scope.watches.length === 0` **and**
+  `scope.nonDeterministicSources.length === 0` — a dead subscription
+  that will never fire. The warning includes the `Subscription.id`.
+
+`scope.nonDeterministicSources` is **advisory metadata only**. The
+watcher does not synthesize fake events for time/random sources. If
+a caller needs polling for time-sensitive queries, that is out of
+scope here.
+
+### Handler errors do not roll back the commit
+
+Asymmetric with assertions: assertions enforce (a violation rolls the
+commit back); watchers observe. A handler that throws — synchronously
+or via a rejected Promise — has its error logged and swallowed. The
+commit has already succeeded by the time the handler runs.
+
+### Schema-change invalidation
+
+If a table or column the scope mentions is later dropped or altered
+(any `'table_removed'` or `'table_modified'` schema change), the
+subscription is **disposed**: capture-spec demand is released, the
+kernel forgets it, and further commits won't fire it. A warning is
+logged with the `Subscription.id`. To continue watching, build a fresh
+`ChangeScope` against the new schema and re-subscribe. This is
+intentional v1 simplicity — auto-rebind is deferred.
+
+### `Subscription.id` shape
+
+`watch:<base32-hash>:<nonce>` where the hash is a 6-character djb2
+digest over a canonical serialization of the scope (sorted column
+sets, JSON of each watch, sorted non-det sources). Two subscriptions
+on the same scope share the same hash prefix; the nonce
+disambiguates individual registrations. Useful in logs and for
+cross-process correlation.
+
+### `txnId`
+
+Opaque string from a monotonic counter inside the `Database` —
+`txn:1`, `txn:2`, .... Stable within one `Database` instance, not
+portable across processes. There is no public transaction-id surface
+today; the counter exists so handlers can deduplicate or correlate
+events.
+
+### Known limitations (v1)
+
+- **Column tracking on `full` watches over-fires.** A
+  `{kind: 'full', columns: {a, b}}` watch registers capture demand
+  for `a` and `b` so the column-level deltas are recorded, but the
+  watcher always fires on any change to the table — the underlying
+  change-log API doesn't yet expose a "did column X change" predicate.
+  This is sound (never misses) but coarse. A precise narrowing pass is
+  a future optimization.
+- **No auto-rebind on schema change.** As described above.
+- **Watcher errors don't roll commits back.** As described above.
 
 ## See also
 

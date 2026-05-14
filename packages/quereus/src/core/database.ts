@@ -53,6 +53,8 @@ import {
 } from './database-events.js';
 import { TransactionManager, type TransactionManagerContext } from './database-transaction.js';
 import { AssertionEvaluator, type AssertionEvaluatorContext } from './database-assertions.js';
+import { WatcherManager, type WatcherManagerContext } from './database-watchers.js';
+import type { ChangeScope, Subscription, WatchHandler } from '../planner/analysis/change-scope.js';
 import type { VTableEventEmitter } from '../vtab/events.js';
 
 const log = createLogger('core:database');
@@ -86,7 +88,7 @@ function tryGetEventEmitter(module: AnyVirtualTableModule): VTableEventEmitter |
  * Represents a connection to an Quereus database (in-memory in this port).
  * Manages schema, prepared statements, virtual tables, and functions.
  */
-export class Database implements TransactionManagerContext, AssertionEvaluatorContext {
+export class Database implements TransactionManagerContext, AssertionEvaluatorContext, WatcherManagerContext {
 	public readonly schemaManager: SchemaManager;
 	public readonly declaredSchemaManager: DeclaredSchemaManager;
 	private isOpen = true;
@@ -109,6 +111,8 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	private readonly transactionManager: TransactionManager;
 	/** Assertion evaluation */
 	private readonly assertionEvaluator: AssertionEvaluator;
+	/** Post-commit watcher dispatch */
+	private readonly watcherManager: WatcherManager;
 	/** Per-database collation registry — comparator + optional key normalizer.
 	 *  The normalizer is required for index participation; comparator-only
 	 *  collations may still be used in ORDER BY but cannot back a compound index. */
@@ -139,6 +143,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		// Initialize transaction manager and assertion evaluator
 		this.transactionManager = new TransactionManager(this);
 		this.assertionEvaluator = new AssertionEvaluator(this);
+		this.watcherManager = new WatcherManager(this);
 
 		// Set up option change listeners
 		this.setupOptionListeners();
@@ -794,6 +799,9 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 
 		// Clean up assertion evaluator (unsubscribe schema change listener, clear plan cache)
 		this.assertionEvaluator.dispose();
+
+		// Clean up watcher manager (dispose all subscriptions + schema listener)
+		this.watcherManager.dispose();
 
 		// Clear schemas, ensuring VTabs are potentially disconnected
 		// This will also call destroy on VTabs via SchemaManager.clearAll -> schema.clearTables -> schemaManager.dropTable
@@ -1536,6 +1544,38 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 
 	public async runGlobalAssertions(): Promise<void> {
 		await this.assertionEvaluator.runGlobalAssertions();
+	}
+
+	/**
+	 * Subscribe to changes described by a {@link ChangeScope}.
+	 *
+	 * The watcher fires its handler **after** a transaction commits (mirrors
+	 * assertion COMMIT eval), once per commit, with all matching watches in
+	 * a single {@link WatchEvent}. Handler errors are caught and logged —
+	 * they do not roll the commit back (assertions own that contract).
+	 *
+	 * Validation is synchronous:
+	 * - Throws if `scope.unboundParameters` is non-empty (caller must
+	 *   `bindParameters(scope, params)` first).
+	 * - Throws if any referenced table or column does not exist in the
+	 *   current schema.
+	 *
+	 * If the table or any column the scope mentions is later dropped or
+	 * altered, the subscription is **invalidated and disposed**; re-subscribe
+	 * to continue watching.
+	 *
+	 * @returns A {@link Subscription} handle whose `unsubscribe()` is
+	 *   idempotent and releases capture-spec demand.
+	 */
+	watch(scope: ChangeScope, handler: WatchHandler): Subscription {
+		this.checkOpen();
+		return this.watcherManager.watch(scope, handler);
+	}
+
+	/** @internal Invoked by the TransactionManager after a successful commit
+	 *  and before the change log is cleared. */
+	public async runPostCommitWatchers(): Promise<void> {
+		await this.watcherManager.runPostCommit();
 	}
 
 	/** @internal Invalidate cached assertion plan (called on DROP ASSERTION) */

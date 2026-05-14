@@ -41,6 +41,10 @@ export interface TransactionManagerContext {
 	runGlobalAssertions(): Promise<void>;
 	/** Run deferred row constraints before commit */
 	runDeferredRowConstraints(): Promise<void>;
+	/** Fire post-commit watchers (Database.watch). Errors logged, never rolled
+	 *  back. Invoked after all connections commit but before the change log
+	 *  is cleared. */
+	runPostCommitWatchers(): Promise<void>;
 }
 
 /**
@@ -235,6 +239,15 @@ export class TransactionManager {
 				commitSucceeded = true;
 			} finally {
 				this.inCoordinatedCommit = false;
+			}
+
+			// Fire post-commit watchers while the change log is still alive.
+			// Errors are swallowed inside the manager — watchers do not roll
+			// back the commit.
+			try {
+				await this.ctx.runPostCommitWatchers();
+			} catch (err) {
+				errorLog('Post-commit watcher dispatch threw: %O', err);
 			}
 		} catch (e) {
 			// On pre-commit assertion failure (or commit error), rollback all connections

@@ -201,6 +201,10 @@ export type {
 	NonDetSource,
 	QualifiedName,
 	SerializedChangeScope,
+	Subscription,
+	WatchEvent,
+	MatchedWatch,
+	WatchHandler,
 } from './planner/analysis/change-scope.js';
 export {
 	analyzeChangeScope,

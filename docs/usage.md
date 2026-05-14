@@ -618,8 +618,69 @@ const wire = JSON.stringify(serializeChangeScope(merged));
 // ...ship `wire` somewhere...
 ```
 
-The end-to-end watcher case (`Database.watch(scope, handler)`) ships in a
-follow-up ticket.
+### Reactive subscriptions (`Database.watch`)
+
+`Database.watch(scope, handler)` registers a post-commit callback
+driven by any `ChangeScope` value — analyzed, deserialized, or
+hand-built. The watcher is plan-independent: nothing in its design
+ties to a particular `Statement`.
+
+```typescript
+import { Database, type ChangeScope, type WatchEvent } from '@quereus/quereus';
+
+const db = new Database();
+await db.exec('create table t (id integer primary key, v text)');
+
+// Hand-built scope: "watch row id=7 on table t." No Statement needed.
+const scope: ChangeScope = {
+    watches: [{
+        table: { schema: 'main', table: 't' },
+        columns: new Set(['id', 'v']),
+        scope: { kind: 'rows', key: ['id'], values: [[7]] },
+    }],
+    nonDeterministicSources: [],
+    unboundParameters: [],
+};
+
+const sub = db.watch(scope, (event: WatchEvent) => {
+    console.log(`watch ${sub.id} fired in ${event.txnId}`);
+    for (const m of event.matched) {
+        console.log(`  ${m.watch.table.schema}.${m.watch.table.table} hits=${JSON.stringify(m.hits)}`);
+    }
+});
+
+await db.exec("insert into t values (7, 'seven')");
+// → watch fired with hits=[[7]]
+
+sub.unsubscribe();
+```
+
+End-to-end with the analyzer:
+
+```typescript
+import { Database } from '@quereus/quereus';
+
+const db = new Database();
+await db.exec('create table orders (id integer primary key, total integer)');
+const stmt = db.prepare('select total from orders where id = ?');
+
+// Statement.getChangeScope() returns a parameter-aware ChangeScope; passing
+// values resolves placeholders so `db.watch` accepts it without further
+// `bindParameters` calls.
+const scope = stmt.getChangeScope([42]);
+const sub = db.watch(scope, (event) => {
+    console.log(`order #42 changed in ${event.txnId}`);
+});
+await stmt.finalize();
+// later... await db.exec('update orders set total = 100 where id = 42'); // fires
+```
+
+The handler fires once per successful commit and receives every
+`MatchedWatch` for that transaction in a single event. Handler
+errors are logged but do not roll the commit back (assertions enforce;
+watchers observe). See [change-scope.md](change-scope.md) for the
+full firing semantics, schema-change invalidation policy, and the
+list of v1 limitations.
 
 ## Virtual Tables
 
