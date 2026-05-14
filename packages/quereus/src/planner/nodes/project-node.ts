@@ -180,8 +180,7 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 
 		// Project the source's logical unique keys (from RelationType) through the
 		// column map: each surviving key K' becomes the FD `K' → (all_other_out_cols)`
-		// on the projection's output. This carries forward the "key-ness" claim that
-		// was previously emitted via `uniqueKeys`.
+		// on the projection's output, carrying the "key-ness" claim through.
 		const sourceLogicalKeys = this.source.getType().keys.map(k => k.map(ref => ref.index));
 		const projectedKeys: number[][] = [];
 		for (const key of sourceLogicalKeys) {

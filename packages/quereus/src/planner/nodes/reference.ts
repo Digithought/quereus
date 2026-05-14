@@ -79,11 +79,10 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 	}
 
 	computePhysical(_childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
-		// Seed FDs from declared keys: each declared key (PK + UNIQUE) implies
-		// `key → other-columns`. This duplicates the all-columns implication
-		// already carried by `uniqueKeys` (consumers can also derive it via
-		// `superkeyToFd`); the explicit form is intentional so future FD
-		// consumers can read `fds` uniformly without special-casing keys.
+		// Seed FDs from declared keys: each declared key (PK + UNIQUE) becomes
+		// `key → other-columns`. This is the canonical encoding of "K is a unique
+		// key" — downstream consumers query `physical.fds` (via `isSuperkey` /
+		// `hasAnyKey`) without special-casing keys.
 		const relType = this.getType();
 		const colCount = relType.columns.length;
 		let fds: ReadonlyArray<FunctionalDependency> = [];

@@ -27,9 +27,7 @@ import {
 	mergeOrderings,
 	orderingsEqual,
 	orderingsCompatible,
-	projectUniqueKeys,
 	projectOrdering,
-	uniqueKeysImplyDistinct,
 	type Ordering,
 } from '../../src/planner/framework/physical-utils.js';
 import {
@@ -776,27 +774,6 @@ describe('Planner Framework', () => {
 			});
 		});
 
-		describe('projectUniqueKeys', () => {
-
-			it('projects keys through mapping', () => {
-				const keys = [[0, 1], [2]];
-				const mapping = new Map([[0, 10], [1, 11], [2, 12]]);
-				expect(projectUniqueKeys(keys, mapping)).to.deep.equal([[10, 11], [12]]);
-			});
-
-			it('drops keys with unmapped columns', () => {
-				const keys = [[0, 1], [2]];
-				const mapping = new Map([[0, 10], [2, 12]]); // column 1 not mapped
-				expect(projectUniqueKeys(keys, mapping)).to.deep.equal([[12]]);
-			});
-
-			it('returns empty when all keys have unmapped columns', () => {
-				const keys = [[0, 1]];
-				const mapping = new Map<number, number>();
-				expect(projectUniqueKeys(keys, mapping)).to.deep.equal([]);
-			});
-		});
-
 		describe('projectOrdering', () => {
 
 			it('projects ordering through mapping', () => {
@@ -822,24 +799,6 @@ describe('Planner Framework', () => {
 			});
 		});
 
-		describe('uniqueKeysImplyDistinct', () => {
-
-			it('unique key subset of projected columns → true', () => {
-				expect(uniqueKeysImplyDistinct([[0, 1]], [0, 1, 2])).to.equal(true);
-			});
-
-			it('unique key not subset → false', () => {
-				expect(uniqueKeysImplyDistinct([[0, 1]], [0, 2])).to.equal(false);
-			});
-
-			it('any key matching is sufficient', () => {
-				expect(uniqueKeysImplyDistinct([[0, 1], [2]], [2, 3])).to.equal(true);
-			});
-
-			it('empty keys → false', () => {
-				expect(uniqueKeysImplyDistinct([], [0, 1])).to.equal(false);
-			});
-		});
 	});
 
 	// ---------------------------------------------------------------------------
