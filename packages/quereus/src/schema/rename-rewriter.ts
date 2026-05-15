@@ -15,6 +15,8 @@ interface ScopeFrame {
 	unaliased: Set<string>;
 	/** Lowercase alias → lowercase underlying table name. */
 	aliasMap: Map<string, string>;
+	/** Lowercase CTE names declared in this WITH that re-expose the renamed column. */
+	ctesExposingRenamed: Set<string>;
 }
 
 const eq = (a: string | undefined, b: string | undefined): boolean =>
@@ -263,36 +265,51 @@ interface ColumnRewriteState {
 	changed: boolean;
 }
 
-function buildScopeFrame(from: AST.FromClause[] | undefined, defaultSchema: string): ScopeFrame {
-	const frame: ScopeFrame = { unaliased: new Set(), aliasMap: new Map() };
+function emptyFrame(): ScopeFrame {
+	return { unaliased: new Set(), aliasMap: new Map(), ctesExposingRenamed: new Set() };
+}
+
+function buildScopeFrame(from: AST.FromClause[] | undefined, state: ColumnRewriteState): ScopeFrame {
+	const frame = emptyFrame();
 	if (!from) return frame;
 	for (const item of from) {
-		collectFromBindings(item, defaultSchema, frame);
+		collectFromBindings(item, state, frame);
 	}
 	return frame;
 }
 
 function collectFromBindings(
 	item: AST.FromClause,
-	defaultSchema: string,
+	state: ColumnRewriteState,
 	frame: ScopeFrame,
 ): void {
 	switch (item.type) {
 		case 'table': {
 			const ts = item as AST.TableSource;
-			const schema = (ts.table.schema ?? defaultSchema).toLowerCase();
 			const name = ts.table.name.toLowerCase();
+			// Unqualified reference to an exposing CTE — bind as if it were the renamed table.
+			if (ts.table.schema === undefined && isCteExposingInScope(state, name)) {
+				if (ts.alias) {
+					frame.aliasMap.set(ts.alias.toLowerCase(), state.tableName);
+				} else {
+					frame.unaliased.add(state.tableName);
+					// The CTE name acts as an implicit qualifier for refs like "a.k".
+					frame.aliasMap.set(name, state.tableName);
+				}
+				break;
+			}
+			const schemaLower = (ts.table.schema ?? state.defaultSchema).toLowerCase();
 			if (ts.alias) {
 				frame.aliasMap.set(ts.alias.toLowerCase(), name);
-			} else if (schema === defaultSchema.toLowerCase() || ts.table.schema === undefined) {
+			} else if (schemaLower === state.defaultSchema || ts.table.schema === undefined) {
 				frame.unaliased.add(name);
 			}
 			break;
 		}
 		case 'join': {
 			const join = item as AST.JoinClause;
-			collectFromBindings(join.left, defaultSchema, frame);
-			collectFromBindings(join.right, defaultSchema, frame);
+			collectFromBindings(join.left, state, frame);
+			collectFromBindings(join.right, state, frame);
 			break;
 		}
 		case 'subquerySource':
@@ -302,6 +319,13 @@ function collectFromBindings(
 			// unqualified resolution purposes.
 			break;
 	}
+}
+
+function isCteExposingInScope(state: ColumnRewriteState, name: string): boolean {
+	for (const frame of state.scopeStack) {
+		if (frame.ctesExposingRenamed.has(name)) return true;
+	}
+	return false;
 }
 
 function isTableInUnaliasedScope(state: ColumnRewriteState): boolean {
@@ -326,22 +350,26 @@ function visitColumnRename(node: AST.AstNode | undefined, state: ColumnRewriteSt
 	switch (node.type) {
 		case 'select': {
 			const stmt = node as AST.SelectStmt;
-			stmt.withClause?.ctes.forEach(cte => visitColumnRename(cte.query, state));
-			const frame = buildScopeFrame(stmt.from, state.defaultSchema);
-			state.scopeStack.push(frame);
+			pushWithFrame(stmt.withClause, state);
 			try {
-				(stmt.columns ?? []).forEach(c => {
-					if (c.type === 'column') visitColumnRename(c.expr, state);
-				});
-				(stmt.from ?? []).forEach(f => visitColumnRename(f, state));
-				visitColumnRename(stmt.where, state);
-				(stmt.groupBy ?? []).forEach(g => visitColumnRename(g, state));
-				visitColumnRename(stmt.having, state);
-				(stmt.orderBy ?? []).forEach(o => visitColumnRename(o.expr, state));
-				visitColumnRename(stmt.limit, state);
-				visitColumnRename(stmt.offset, state);
-				visitColumnRename(stmt.union, state);
-				if (stmt.compound) visitColumnRename(stmt.compound.select, state);
+				const frame = buildScopeFrame(stmt.from, state);
+				state.scopeStack.push(frame);
+				try {
+					(stmt.columns ?? []).forEach(c => {
+						if (c.type === 'column') visitColumnRename(c.expr, state);
+					});
+					(stmt.from ?? []).forEach(f => visitColumnRename(f, state));
+					visitColumnRename(stmt.where, state);
+					(stmt.groupBy ?? []).forEach(g => visitColumnRename(g, state));
+					visitColumnRename(stmt.having, state);
+					(stmt.orderBy ?? []).forEach(o => visitColumnRename(o.expr, state));
+					visitColumnRename(stmt.limit, state);
+					visitColumnRename(stmt.offset, state);
+					visitColumnRename(stmt.union, state);
+					if (stmt.compound) visitColumnRename(stmt.compound.select, state);
+				} finally {
+					state.scopeStack.pop();
+				}
 			} finally {
 				state.scopeStack.pop();
 			}
@@ -349,76 +377,47 @@ function visitColumnRename(node: AST.AstNode | undefined, state: ColumnRewriteSt
 		}
 		case 'insert': {
 			const stmt = node as AST.InsertStmt;
-			stmt.withClause?.ctes.forEach(cte => visitColumnRename(cte.query, state));
-			const targetIsRenamed =
-				eq(stmt.table.name, state.tableName) &&
-				(stmt.table.schema === undefined || eq(stmt.table.schema, state.defaultSchema));
-			if (targetIsRenamed && stmt.columns) {
-				stmt.columns = stmt.columns.map(c => {
-					if (c.toLowerCase() === state.oldCol) {
-						state.changed = true;
-						return state.newCol;
-					}
-					return c;
-				});
-			}
-			if (targetIsRenamed) {
-				(stmt.upsertClauses ?? []).forEach(uc => {
-					if (uc.conflictTarget) {
-						uc.conflictTarget = uc.conflictTarget.map(c => {
-							if (c.toLowerCase() === state.oldCol) {
-								state.changed = true;
-								return state.newCol;
-							}
-							return c;
-						});
-					}
-					if (uc.assignments) {
-						for (const a of uc.assignments) {
-							if (a.column.toLowerCase() === state.oldCol) {
-								a.column = state.newCol;
-								state.changed = true;
+			pushWithFrame(stmt.withClause, state);
+			try {
+				const targetIsRenamed =
+					eq(stmt.table.name, state.tableName) &&
+					(stmt.table.schema === undefined || eq(stmt.table.schema, state.defaultSchema));
+				if (targetIsRenamed && stmt.columns) {
+					stmt.columns = stmt.columns.map(c => {
+						if (c.toLowerCase() === state.oldCol) {
+							state.changed = true;
+							return state.newCol;
+						}
+						return c;
+					});
+				}
+				if (targetIsRenamed) {
+					(stmt.upsertClauses ?? []).forEach(uc => {
+						if (uc.conflictTarget) {
+							uc.conflictTarget = uc.conflictTarget.map(c => {
+								if (c.toLowerCase() === state.oldCol) {
+									state.changed = true;
+									return state.newCol;
+								}
+								return c;
+							});
+						}
+						if (uc.assignments) {
+							for (const a of uc.assignments) {
+								if (a.column.toLowerCase() === state.oldCol) {
+									a.column = state.newCol;
+									state.changed = true;
+								}
 							}
 						}
-					}
-				});
-			}
-			(stmt.values ?? []).forEach(row => row.forEach(v => visitColumnRename(v, state)));
-			visitColumnRename(stmt.select, state);
-			(stmt.upsertClauses ?? []).forEach(uc => {
-				(uc.assignments ?? []).forEach(a => visitColumnRename(a.value, state));
-				visitColumnRename(uc.where, state);
-			});
-			(stmt.returning ?? []).forEach(r => {
-				if (r.type === 'column') visitColumnRename(r.expr, state);
-			});
-			(stmt.contextValues ?? []).forEach(cv => visitColumnRename(cv.value, state));
-			break;
-		}
-		case 'update': {
-			const stmt = node as AST.UpdateStmt;
-			stmt.withClause?.ctes.forEach(cte => visitColumnRename(cte.query, state));
-			const targetIsRenamed =
-				eq(stmt.table.name, state.tableName) &&
-				(stmt.table.schema === undefined || eq(stmt.table.schema, state.defaultSchema));
-			if (targetIsRenamed) {
-				for (const a of stmt.assignments) {
-					if (a.column.toLowerCase() === state.oldCol) {
-						a.column = state.newCol;
-						state.changed = true;
-					}
+					});
 				}
-			}
-			// Push a scope frame so unqualified column refs in WHERE/RETURNING
-			// resolve against the update target.
-			const frame: ScopeFrame = { unaliased: new Set(), aliasMap: new Map() };
-			if (stmt.table.schema === undefined || eq(stmt.table.schema, state.defaultSchema)) {
-				frame.unaliased.add(stmt.table.name.toLowerCase());
-			}
-			state.scopeStack.push(frame);
-			try {
-				stmt.assignments.forEach(a => visitColumnRename(a.value, state));
-				visitColumnRename(stmt.where, state);
+				(stmt.values ?? []).forEach(row => row.forEach(v => visitColumnRename(v, state)));
+				visitColumnRename(stmt.select, state);
+				(stmt.upsertClauses ?? []).forEach(uc => {
+					(uc.assignments ?? []).forEach(a => visitColumnRename(a.value, state));
+					visitColumnRename(uc.where, state);
+				});
 				(stmt.returning ?? []).forEach(r => {
 					if (r.type === 'column') visitColumnRename(r.expr, state);
 				});
@@ -428,20 +427,61 @@ function visitColumnRename(node: AST.AstNode | undefined, state: ColumnRewriteSt
 			}
 			break;
 		}
+		case 'update': {
+			const stmt = node as AST.UpdateStmt;
+			pushWithFrame(stmt.withClause, state);
+			try {
+				const targetIsRenamed =
+					eq(stmt.table.name, state.tableName) &&
+					(stmt.table.schema === undefined || eq(stmt.table.schema, state.defaultSchema));
+				if (targetIsRenamed) {
+					for (const a of stmt.assignments) {
+						if (a.column.toLowerCase() === state.oldCol) {
+							a.column = state.newCol;
+							state.changed = true;
+						}
+					}
+				}
+				// Push a scope frame so unqualified column refs in WHERE/RETURNING
+				// resolve against the update target.
+				const frame = emptyFrame();
+				if (stmt.table.schema === undefined || eq(stmt.table.schema, state.defaultSchema)) {
+					frame.unaliased.add(stmt.table.name.toLowerCase());
+				}
+				state.scopeStack.push(frame);
+				try {
+					stmt.assignments.forEach(a => visitColumnRename(a.value, state));
+					visitColumnRename(stmt.where, state);
+					(stmt.returning ?? []).forEach(r => {
+						if (r.type === 'column') visitColumnRename(r.expr, state);
+					});
+					(stmt.contextValues ?? []).forEach(cv => visitColumnRename(cv.value, state));
+				} finally {
+					state.scopeStack.pop();
+				}
+			} finally {
+				state.scopeStack.pop();
+			}
+			break;
+		}
 		case 'delete': {
 			const stmt = node as AST.DeleteStmt;
-			stmt.withClause?.ctes.forEach(cte => visitColumnRename(cte.query, state));
-			const frame: ScopeFrame = { unaliased: new Set(), aliasMap: new Map() };
-			if (stmt.table.schema === undefined || eq(stmt.table.schema, state.defaultSchema)) {
-				frame.unaliased.add(stmt.table.name.toLowerCase());
-			}
-			state.scopeStack.push(frame);
+			pushWithFrame(stmt.withClause, state);
 			try {
-				visitColumnRename(stmt.where, state);
-				(stmt.returning ?? []).forEach(r => {
-					if (r.type === 'column') visitColumnRename(r.expr, state);
-				});
-				(stmt.contextValues ?? []).forEach(cv => visitColumnRename(cv.value, state));
+				const frame = emptyFrame();
+				if (stmt.table.schema === undefined || eq(stmt.table.schema, state.defaultSchema)) {
+					frame.unaliased.add(stmt.table.name.toLowerCase());
+				}
+				state.scopeStack.push(frame);
+				try {
+					visitColumnRename(stmt.where, state);
+					(stmt.returning ?? []).forEach(r => {
+						if (r.type === 'column') visitColumnRename(r.expr, state);
+					});
+					(stmt.contextValues ?? []).forEach(cv => visitColumnRename(cv.value, state));
+				} finally {
+					state.scopeStack.pop();
+				}
 			} finally {
 				state.scopeStack.pop();
 			}
@@ -553,4 +593,115 @@ function visitColumnRename(node: AST.AstNode | undefined, state: ColumnRewriteSt
 		default:
 			break;
 	}
+}
+
+/**
+ * Push a with-frame that registers any CTEs in the given WITH clause that
+ * re-expose the renamed column. CTEs are visited in declaration order so
+ * later CTEs see earlier ones in the same WITH.
+ *
+ * Caller is responsible for popping the frame via `state.scopeStack.pop()`.
+ */
+function pushWithFrame(
+	withClause: AST.WithClause | undefined,
+	state: ColumnRewriteState,
+): ScopeFrame {
+	const frame = emptyFrame();
+	state.scopeStack.push(frame);
+	if (withClause) {
+		for (const cte of withClause.ctes) {
+			visitColumnRename(cte.query, state);
+			if (cteExposesRenamedColumn(cte, state)) {
+				frame.ctesExposingRenamed.add(cte.name.toLowerCase());
+			}
+		}
+	}
+	return frame;
+}
+
+/**
+ * Rebuild a with-frame's `ctesExposingRenamed` set for exposure analysis
+ * without re-visiting CTE bodies (they were already visited).
+ */
+function analyzeWithFrame(
+	withClause: AST.WithClause | undefined,
+	state: ColumnRewriteState,
+): ScopeFrame {
+	const frame = emptyFrame();
+	if (!withClause) return frame;
+	state.scopeStack.push(frame);
+	try {
+		for (const cte of withClause.ctes) {
+			if (cteExposesRenamedColumn(cte, state)) {
+				frame.ctesExposingRenamed.add(cte.name.toLowerCase());
+			}
+		}
+	} finally {
+		state.scopeStack.pop();
+	}
+	return frame;
+}
+
+/**
+ * Determine whether a CTE re-exposes the renamed column under name `state.newCol`
+ * (the column has already been rewritten inside its body if the body referenced it).
+ *
+ * Returns false when:
+ * - The CTE has an explicit column list (renaming the input to fixed names).
+ * - The body is not a SELECT (INSERT/UPDATE/DELETE WITH RETURNING — out of scope).
+ * - No passthrough result column references the renamed table's column.
+ */
+function cteExposesRenamedColumn(
+	cte: AST.CommonTableExpr,
+	state: ColumnRewriteState,
+): boolean {
+	if (cte.columns) return false;
+	const query = cte.query;
+	if (query.type !== 'select') return false;
+	const select = query as AST.SelectStmt;
+
+	// Recreate the body's own with-frame so nested CTE refs in `select.from`
+	// resolve correctly during exposure analysis.
+	const bodyWithFrame = analyzeWithFrame(select.withClause, state);
+	state.scopeStack.push(bodyWithFrame);
+	try {
+		const bodyFrame = buildScopeFrame(select.from, state);
+		for (const col of select.columns ?? []) {
+			if (isResultColumnExposure(col, bodyFrame, state)) return true;
+		}
+		return false;
+	} finally {
+		state.scopeStack.pop();
+	}
+}
+
+function isResultColumnExposure(
+	col: AST.ResultColumn,
+	bodyFrame: ScopeFrame,
+	state: ColumnRewriteState,
+): boolean {
+	if (col.type === 'all') {
+		if (col.table === undefined) {
+			return bodyFrame.unaliased.has(state.tableName);
+		}
+		const qualLower = col.table.toLowerCase();
+		if (qualLower === state.tableName && bodyFrame.unaliased.has(state.tableName)) return true;
+		return bodyFrame.aliasMap.get(qualLower) === state.tableName;
+	}
+	if (col.alias !== undefined) return false;
+	const expr = col.expr;
+	if (expr.type !== 'column') return false;
+	const colExpr = expr as AST.ColumnExpr;
+	if (colExpr.name.toLowerCase() !== state.newCol.toLowerCase()) return false;
+	if (colExpr.table === undefined) {
+		return bodyFrame.unaliased.has(state.tableName);
+	}
+	const qualLower = colExpr.table.toLowerCase();
+	if (
+		qualLower === state.tableName &&
+		(colExpr.schema === undefined || eq(colExpr.schema, state.defaultSchema))
+	) {
+		return true;
+	}
+	return bodyFrame.aliasMap.get(qualLower) === state.tableName;
 }

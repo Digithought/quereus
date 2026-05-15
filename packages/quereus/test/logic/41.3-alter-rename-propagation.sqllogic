@@ -107,19 +107,103 @@ drop table t_vc;
 -- 6. RENAME COLUMN referenced inside a CTE in a view
 -- ===================================
 
--- TODO bug: rename propagation through views (including CTEs in views) is unimplemented
--- create table t_cte (id integer primary key, k integer not null);
--- insert into t_cte values (1, 10), (2, 20);
---
--- create view v_cte as with c as (select k from t_cte) select k from c;
---
--- alter table t_cte rename column k to kk;
---
--- select * from v_cte order by kk;
--- → [{"kk":10},{"kk":20}]
---
--- drop view v_cte;
--- drop table t_cte;
+create table t_cte (id integer primary key, k integer not null);
+insert into t_cte values (1, 10), (2, 20);
+
+create view v_cte as with c as (select k from t_cte) select k from c;
+
+alter table t_cte rename column k to kk;
+
+select * from v_cte order by kk;
+→ [{"kk":10},{"kk":20}]
+
+drop view v_cte;
+drop table t_cte;
+
+-- ===================================
+-- 6a. Aliased CTE projection does NOT propagate
+-- ===================================
+
+create table t_a (id integer primary key, k integer not null);
+insert into t_a values (1, 10);
+
+create view v_a as with c as (select k as kk_alias from t_a) select kk_alias from c;
+
+alter table t_a rename column k to kk;
+
+select * from v_a;
+→ [{"kk_alias":10}]
+
+drop view v_a;
+drop table t_a;
+
+-- ===================================
+-- 6b. Explicit CTE column list stops propagation
+-- ===================================
+
+create table t_x (id integer primary key, k integer not null);
+insert into t_x values (1, 5);
+
+create view v_cl as with c(x) as (select k from t_x) select x from c;
+
+alter table t_x rename column k to kk;
+
+select * from v_cl;
+→ [{"x":5}]
+
+drop view v_cl;
+drop table t_x;
+
+-- ===================================
+-- 6c. Multi-CTE chain propagates through every link
+-- ===================================
+
+create table t_chain (id integer primary key, k integer not null);
+insert into t_chain values (1, 7), (2, 8);
+
+create view v_chain as with a as (select k from t_chain), b as (select k from a) select k from b;
+
+alter table t_chain rename column k to kk;
+
+select * from v_chain order by kk;
+→ [{"kk":7},{"kk":8}]
+
+drop view v_chain;
+drop table t_chain;
+
+-- ===================================
+-- 6d. CTE inside a subquery in the view body
+-- ===================================
+
+create table t_sub (id integer primary key, k integer not null);
+insert into t_sub values (1, 42);
+
+create view v_sub as select * from (with c as (select k from t_sub) select k from c) s;
+
+alter table t_sub rename column k to kk;
+
+select * from v_sub;
+→ [{"kk":42}]
+
+drop view v_sub;
+drop table t_sub;
+
+-- ===================================
+-- 6e. CTE body using select * (star passthrough)
+-- ===================================
+
+create table t_star (id integer primary key, k integer not null);
+insert into t_star values (1, 99);
+
+create view v_star as with c as (select * from t_star) select k from c;
+
+alter table t_star rename column k to kk;
+
+select kk from v_star;
+→ [{"kk":99}]
+
+drop view v_star;
+drop table t_star;
 
 -- ===================================
 -- 7. RENAME COLUMN referenced inside an index expression
