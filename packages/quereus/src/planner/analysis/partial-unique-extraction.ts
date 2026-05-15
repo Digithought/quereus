@@ -24,6 +24,12 @@
  *   NOT col  (NOT-NULL col)    ⇒ eq-literal { col, value: 0 }    (SQL false)
  *   col IN (lit, lit, …)       ⇒ or-of [eq-literal …] (singleton collapses)
  *   a OR b OR …                ⇒ or-of [recognize(a), recognize(b), …]
+ *   col >  literal             ⇒ range { col, min: lit, minInc: false, maxInc: false }
+ *   col >= literal             ⇒ range { col, min: lit, minInc: true,  maxInc: false }
+ *   col <  literal             ⇒ range { col, max: lit, maxInc: false, minInc: false }
+ *   col <= literal             ⇒ range { col, max: lit, maxInc: true,  minInc: false }
+ *   literal op col             ⇒ flipped to col op' literal, then as above
+ *   col BETWEEN lo AND hi      ⇒ range { col, min: lo, max: hi, minInc: true, maxInc: true }
  *
  * `NOT col` is rewritten to `col = 0` (SQLite encodes boolean FALSE as 0).
  * This excludes NULL rows semantically — but the NOT-NULL gate below is
@@ -43,16 +49,18 @@
  * relaxed for partial scopes that establish non-nullness themselves.
  *
  * Out-of-scope shapes (filed as backlog tickets in the implement ticket):
- *   - range subsumption (`age >= 21` discharges `age >= 18`)
  *   - function-call / cast-wrapped column references in IN / NOT shapes
  *   - standalone `col` (truthy test) — only `NOT col` is recognized
  *   - IN / NOT / OR inside CHECK implication disjuncts
+ *   - NOT BETWEEN (decomposes to a disjunction of two ranges)
+ *   - symbolic/parameter range bounds (`age >= ?`)
+ *   - per-column collation-aware text bound comparison
  */
 
 import type { FunctionalDependency, GuardClause, GuardPredicate } from '../nodes/plan-node.js';
 import type { TableSchema } from '../../schema/table.js';
 import type * as AST from '../../parser/ast.js';
-import { columnIndexFromExpr, flattenDisjunction, literalValue } from './predicate-shape.js';
+import { columnIndexFromExpr, flattenDisjunction, flipComparison, literalValue } from './predicate-shape.js';
 
 const cache = new WeakMap<TableSchema, ReadonlyArray<FunctionalDependency>>();
 
@@ -161,9 +169,16 @@ function recognizeGuardClauses(
  *   NOT col             ⇒ eq-literal { column, value: 0 }   (declared NOT NULL only)
  *   col IN (lit, …)     ⇒ or-of [eq-literal { col, lit_i } …]
  *   a OR b OR …         ⇒ or-of [recognize(a), recognize(b), …]
+ *   col >  literal      ⇒ range { col, min: lit, minInc: false, maxInc: false }
+ *   col >= literal      ⇒ range { col, min: lit, minInc: true,  maxInc: false }
+ *   col <  literal      ⇒ range { col, max: lit, maxInc: false, minInc: false }
+ *   col <= literal      ⇒ range { col, max: lit, maxInc: true,  minInc: false }
+ *   literal op col      ⇒ flipped to col op' literal, then as above
+ *   col BETWEEN lo AND hi ⇒ range { col, min: lo, max: hi, minInc: true, maxInc: true }
  *
- * `=` and `==` are interchangeable. Anything else returns undefined — the
- * whole predicate is then dropped on the floor by the caller.
+ * `=` and `==` are interchangeable. NULL-literal bounds are rejected. Anything
+ * else returns undefined — the whole predicate is then dropped on the floor
+ * by the caller.
  *
  * For `NOT col`, only declared-NOT-NULL columns are accepted: the rewrite to
  * `col = 0` implicitly excludes NULL rows, but the NOT-NULL gate for the UC
@@ -194,33 +209,97 @@ function recognizeClause(
 	if (expr.type === 'in') {
 		return recognizeIn(expr as AST.InExpr, columnIndexMap);
 	}
+	if (expr.type === 'between') {
+		return recognizeBetween(expr as AST.BetweenExpr, columnIndexMap);
+	}
 	if (expr.type === 'binary') {
 		const b = expr as AST.BinaryExpr;
 		if (b.operator === 'OR') {
 			return recognizeOr(b, columnIndexMap, isColumnNotNullDeclared);
 		}
-		if (b.operator !== '=' && b.operator !== '==') return undefined;
+		if (b.operator === '=' || b.operator === '==') {
+			const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
+			const rIdx = columnIndexFromExpr(b.right, columnIndexMap);
 
-		const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
-		const rIdx = columnIndexFromExpr(b.right, columnIndexMap);
-
-		if (lIdx !== undefined && rIdx !== undefined) {
-			if (lIdx === rIdx) return undefined;
-			return { kind: 'eq-column', left: lIdx, right: rIdx };
+			if (lIdx !== undefined && rIdx !== undefined) {
+				if (lIdx === rIdx) return undefined;
+				return { kind: 'eq-column', left: lIdx, right: rIdx };
+			}
+			if (lIdx !== undefined) {
+				const lit = literalValue(b.right);
+				if (lit === undefined) return undefined;
+				return { kind: 'eq-literal', column: lIdx, value: lit };
+			}
+			if (rIdx !== undefined) {
+				const lit = literalValue(b.left);
+				if (lit === undefined) return undefined;
+				return { kind: 'eq-literal', column: rIdx, value: lit };
+			}
+			return undefined;
 		}
-		if (lIdx !== undefined) {
-			const lit = literalValue(b.right);
-			if (lit === undefined) return undefined;
-			return { kind: 'eq-literal', column: lIdx, value: lit };
-		}
-		if (rIdx !== undefined) {
-			const lit = literalValue(b.left);
-			if (lit === undefined) return undefined;
-			return { kind: 'eq-literal', column: rIdx, value: lit };
+		if (b.operator === '<' || b.operator === '<=' || b.operator === '>' || b.operator === '>=') {
+			return recognizeRange(b, columnIndexMap);
 		}
 		return undefined;
 	}
 	return undefined;
+}
+
+/**
+ * Recognize `col op literal` (or operand-flipped `literal op col`) as a range
+ * guard. NULL literal bounds are rejected.
+ */
+function recognizeRange(
+	b: AST.BinaryExpr,
+	columnIndexMap: ReadonlyMap<string, number>,
+): GuardClause | undefined {
+	const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
+	const rIdx = columnIndexFromExpr(b.right, columnIndexMap);
+	let colIdx: number | undefined;
+	let lit: ReturnType<typeof literalValue>;
+	let op: string;
+	if (lIdx !== undefined) {
+		lit = literalValue(b.right);
+		colIdx = lIdx;
+		op = b.operator;
+	} else if (rIdx !== undefined) {
+		lit = literalValue(b.left);
+		colIdx = rIdx;
+		op = flipComparison(b.operator);
+	} else {
+		return undefined;
+	}
+	if (lit === undefined || lit === null || colIdx === undefined) return undefined;
+	switch (op) {
+		case '>':
+			return { kind: 'range', column: colIdx, min: lit, minInclusive: false, maxInclusive: false };
+		case '>=':
+			return { kind: 'range', column: colIdx, min: lit, minInclusive: true, maxInclusive: false };
+		case '<':
+			return { kind: 'range', column: colIdx, max: lit, minInclusive: false, maxInclusive: false };
+		case '<=':
+			return { kind: 'range', column: colIdx, max: lit, minInclusive: false, maxInclusive: true };
+	}
+	return undefined;
+}
+
+/**
+ * Recognize `col BETWEEN literal AND literal` as a closed-interval range
+ * guard. `NOT BETWEEN` is rejected (decomposes to a disjunction of two range
+ * halves which doesn't fit a single range clause).
+ */
+function recognizeBetween(
+	expr: AST.BetweenExpr,
+	columnIndexMap: ReadonlyMap<string, number>,
+): GuardClause | undefined {
+	if (expr.not === true) return undefined;
+	const colIdx = columnIndexFromExpr(expr.expr, columnIndexMap);
+	if (colIdx === undefined) return undefined;
+	const lo = literalValue(expr.lower);
+	const hi = literalValue(expr.upper);
+	if (lo === undefined || lo === null) return undefined;
+	if (hi === undefined || hi === null) return undefined;
+	return { kind: 'range', column: colIdx, min: lo, max: hi, minInclusive: true, maxInclusive: true };
 }
 
 /**

@@ -47,6 +47,25 @@ export function literalValue(expr: AST.Expression): SqlValue | undefined {
 }
 
 /**
+ * Flip a comparison operator across its operands: if you rewrite `b op a` as
+ * `a flipComparison(op) b`, the truth value is preserved. Unrecognized
+ * operators (including `=`/`==`) round-trip unchanged.
+ *
+ * Used by both `partial-unique-extraction.ts` and `check-extraction.ts` to
+ * normalize `lit op col` into `col flipped lit`. This is distinct from
+ * predicate negation (`invertComparison` in `predicate-normalizer.ts`).
+ */
+export function flipComparison(op: string): string {
+	switch (op) {
+		case '<': return '>';
+		case '<=': return '>=';
+		case '>': return '<';
+		case '>=': return '<=';
+		default: return op;
+	}
+}
+
+/**
  * Flatten a top-level `OR` chain into an array of disjunct expressions.
  * Non-OR roots return as a single-element array. Textual order is preserved.
  *

@@ -65,16 +65,32 @@ export interface GuardPredicate {
  * checking. Each shape is something `extractEqualityFds` / EC / binding layers
  * can already reason about, so activation is a structural check.
  *
- * `or-of` is a flat disjunction of the other three shapes; recognizers flatten
- * nested `or-of` clauses at construction time so a sub-clause is never itself
- * an `or-of`. `IN (lit, ...)` and `NOT col` shapes are pre-normalized at
- * recognition time into the same vocabulary (IN-list → `or-of [eq-literal]`,
- * `NOT col` → `eq-literal { col, value: 0 }`).
+ * Shapes:
+ * - `eq-literal` / `eq-column` / `is-null` — equality and null-test atoms.
+ * - `range` — open or closed interval on one column, matching `DomainConstraint`
+ *   range shape. Inclusivity flags for absent bounds are unobservable but
+ *   stored conservatively as `false`. Discharge subsumption ("filter ⊆ guard")
+ *   is via per-side bound comparison.
+ * - `or-of` — flat disjunction of the other shapes; recognizers flatten nested
+ *   `or-of` clauses at construction time so a sub-clause is never itself an
+ *   `or-of`.
+ *
+ * `IN (lit, ...)` and `NOT col` shapes are pre-normalized at recognition time
+ * into the same vocabulary (IN-list → `or-of [eq-literal]`, `NOT col` →
+ * `eq-literal { col, value: 0 }`).
  */
 export type GuardClause =
   | { readonly kind: 'eq-literal'; readonly column: number; readonly value: SqlValue }
   | { readonly kind: 'eq-column'; readonly left: number; readonly right: number }
   | { readonly kind: 'is-null'; readonly column: number; readonly negated: boolean }
+  | {
+      readonly kind: 'range';
+      readonly column: number;
+      readonly min?: SqlValue;
+      readonly max?: SqlValue;
+      readonly minInclusive: boolean;
+      readonly maxInclusive: boolean;
+    }
   | { readonly kind: 'or-of'; readonly clauses: readonly GuardClause[] };
 
 /**

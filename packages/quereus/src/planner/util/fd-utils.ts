@@ -8,9 +8,10 @@
 import { createLogger } from '../../common/logger.js';
 import type { ConstantBinding, ConstantValue, DomainConstraint, FunctionalDependency, GuardClause, GuardPredicate, ScalarPlanNode } from '../nodes/plan-node.js';
 import { ColumnReferenceNode, ParameterReferenceNode } from '../nodes/reference.js';
-import { BinaryOpNode, CastNode, CollateNode, LiteralNode, UnaryOpNode } from '../nodes/scalar.js';
+import { BetweenNode, BinaryOpNode, CastNode, CollateNode, LiteralNode, UnaryOpNode } from '../nodes/scalar.js';
 import { InNode } from '../nodes/subquery.js';
 import type { SqlValue } from '../../common/types.js';
+import { compareSqlValues } from '../../util/comparison.js';
 
 const log = createLogger('planner:fd');
 
@@ -159,6 +160,20 @@ function guardClauseEquals(a: GuardClause, b: GuardClause): boolean {
 	}
 	if (a.kind === 'is-null' && b.kind === 'is-null') {
 		return a.column === b.column && a.negated === b.negated;
+	}
+	if (a.kind === 'range' && b.kind === 'range') {
+		if (a.column !== b.column) return false;
+		const aHasMin = a.min !== undefined;
+		const bHasMin = b.min !== undefined;
+		if (aHasMin !== bHasMin) return false;
+		if (aHasMin && !sqlValueEquals(a.min!, b.min!)) return false;
+		if (aHasMin && a.minInclusive !== b.minInclusive) return false;
+		const aHasMax = a.max !== undefined;
+		const bHasMax = b.max !== undefined;
+		if (aHasMax !== bHasMax) return false;
+		if (aHasMax && !sqlValueEquals(a.max!, b.max!)) return false;
+		if (aHasMax && a.maxInclusive !== b.maxInclusive) return false;
+		return true;
 	}
 	if (a.kind === 'or-of' && b.kind === 'or-of') {
 		if (a.clauses.length !== b.clauses.length) return false;
@@ -376,6 +391,11 @@ function projectClause(
 			if (m === undefined) return undefined;
 			return { kind: 'is-null', column: m, negated: clause.negated };
 		}
+		case 'range': {
+			const m = mapping.get(clause.column);
+			if (m === undefined) return undefined;
+			return { ...clause, column: m };
+		}
 		case 'or-of': {
 			const sub: GuardClause[] = [];
 			for (const c of clause.clauses) {
@@ -420,6 +440,8 @@ function shiftClause(clause: GuardClause, offset: number): GuardClause {
 			return { kind: 'eq-column', left: clause.left + offset, right: clause.right + offset };
 		case 'is-null':
 			return { kind: 'is-null', column: clause.column + offset, negated: clause.negated };
+		case 'range':
+			return { ...clause, column: clause.column + offset };
 		case 'or-of':
 			return { kind: 'or-of', clauses: clause.clauses.map(c => shiftClause(c, offset)) };
 	}
@@ -768,6 +790,24 @@ interface PredicateFacts {
 	 * no function calls). Used to discharge `or-of [eq-literal …]` guards.
 	 */
 	readonly inListEqs: ReadonlyMap<number, ReadonlySet<SqlValue>>;
+	/**
+	 * column index → intersected range over every literal-bounded `<`/`<=`/
+	 * `>`/`>=` conjunct (and column-vs-literal-vs-literal BETWEEN) observed in
+	 * the filter. The strongest bounds win on intersection: on equal values the
+	 * exclusive flag is preferred. Used to discharge `range` guards.
+	 */
+	readonly rangeBounds: ReadonlyMap<number, FilterRange>;
+}
+
+/**
+ * Mutable per-column range fact accumulated during `buildPredicateFacts`. At
+ * least one bound side is defined; inclusivity for absent sides is unused.
+ */
+interface FilterRange {
+	min?: SqlValue;
+	max?: SqlValue;
+	minInclusive: boolean;
+	maxInclusive: boolean;
 }
 
 function buildPredicateFacts(
@@ -779,6 +819,7 @@ function buildPredicateFacts(
 	const isNullCols = new Set<number>();
 	const isNotNullCols = new Set<number>();
 	const inListEqs = new Map<number, Set<SqlValue>>();
+	const rangeBounds = new Map<number, FilterRange>();
 
 	const addColumnEq = (a: number, b: number): void => {
 		if (a === b) return;
@@ -795,6 +836,74 @@ function buildPredicateFacts(
 			return attrIdToIndex.get(n.attributeId);
 		}
 		return undefined;
+	};
+
+	const tightenLowerBound = (col: number, value: SqlValue, inclusive: boolean): void => {
+		const cur = rangeBounds.get(col);
+		if (!cur) {
+			rangeBounds.set(col, { min: value, minInclusive: inclusive, maxInclusive: false });
+			return;
+		}
+		if (cur.min === undefined) {
+			cur.min = value;
+			cur.minInclusive = inclusive;
+			return;
+		}
+		const cmp = compareSqlValues(value, cur.min);
+		if (cmp > 0) {
+			cur.min = value;
+			cur.minInclusive = inclusive;
+		} else if (cmp === 0 && cur.minInclusive && !inclusive) {
+			// Tighten: same value, but new bound is exclusive (excludes the boundary).
+			cur.minInclusive = false;
+		}
+	};
+
+	const tightenUpperBound = (col: number, value: SqlValue, inclusive: boolean): void => {
+		const cur = rangeBounds.get(col);
+		if (!cur) {
+			rangeBounds.set(col, { max: value, maxInclusive: inclusive, minInclusive: false });
+			return;
+		}
+		if (cur.max === undefined) {
+			cur.max = value;
+			cur.maxInclusive = inclusive;
+			return;
+		}
+		const cmp = compareSqlValues(value, cur.max);
+		if (cmp < 0) {
+			cur.max = value;
+			cur.maxInclusive = inclusive;
+		} else if (cmp === 0 && cur.maxInclusive && !inclusive) {
+			cur.maxInclusive = false;
+		}
+	};
+
+	const recordComparison = (col: number, op: string, lit: SqlValue): void => {
+		switch (op) {
+			case '>':
+				tightenLowerBound(col, lit, false);
+				return;
+			case '>=':
+				tightenLowerBound(col, lit, true);
+				return;
+			case '<':
+				tightenUpperBound(col, lit, false);
+				return;
+			case '<=':
+				tightenUpperBound(col, lit, true);
+				return;
+		}
+	};
+
+	const flipOp = (op: string): string => {
+		switch (op) {
+			case '<': return '>';
+			case '<=': return '>=';
+			case '>': return '<';
+			case '>=': return '<=';
+			default: return op;
+		}
 	};
 
 	const stack: ScalarPlanNode[] = [predicate];
@@ -832,7 +941,32 @@ function buildPredicateFacts(
 				if (lit !== null) continue;
 				if (op === 'IS') isNullCols.add(lIdx);
 				else isNotNullCols.add(lIdx);
+				continue;
 			}
+			if (op === '<' || op === '<=' || op === '>' || op === '>=') {
+				const lIdx = columnIndexOf(n.left);
+				const rIdx = columnIndexOf(n.right);
+				if (lIdx !== undefined && rIdx === undefined) {
+					const lit = literalSqlValueOf(n.right);
+					if (lit === undefined || lit === null) continue;
+					recordComparison(lIdx, op, lit);
+				} else if (rIdx !== undefined && lIdx === undefined) {
+					const lit = literalSqlValueOf(n.left);
+					if (lit === undefined || lit === null) continue;
+					recordComparison(rIdx, flipOp(op), lit);
+				}
+				continue;
+			}
+			continue;
+		}
+		if (n instanceof BetweenNode) {
+			if (n.expression.not === true) continue;
+			const cIdx = columnIndexOf(n.expr);
+			if (cIdx === undefined) continue;
+			const lo = literalSqlValueOf(n.lower);
+			const hi = literalSqlValueOf(n.upper);
+			if (lo !== undefined && lo !== null) tightenLowerBound(cIdx, lo, true);
+			if (hi !== undefined && hi !== null) tightenUpperBound(cIdx, hi, true);
 			continue;
 		}
 		if (n instanceof UnaryOpNode) {
@@ -886,7 +1020,7 @@ function buildPredicateFacts(
 		}
 	}
 
-	return { literalEqs, columnEqs, isNullCols, isNotNullCols, inListEqs };
+	return { literalEqs, columnEqs, isNullCols, isNotNullCols, inListEqs, rangeBounds };
 }
 
 function literalSqlValueOf(n: ScalarPlanNode): SqlValue | undefined {
@@ -1002,6 +1136,16 @@ function clauseEntailed(
 			// "col IS NULL" guard.
 			return facts.isNullCols.has(column);
 		}
+		case 'range': {
+			// Try the guard column and every EC peer / binding-shared column —
+			// any of them carrying a subset range discharges the guard.
+			const cands = candidateColumns(clause.column, ecs, bindings);
+			for (const c of cands) {
+				const filter = facts.rangeBounds.get(c);
+				if (filter && filterRangeSubsetOfGuardRange(filter, clause)) return true;
+			}
+			return false;
+		}
 		case 'or-of': {
 			// (a) Any sub-clause directly entailed by facts ⇒ OR entailed.
 			for (const sub of clause.clauses) {
@@ -1068,6 +1212,32 @@ function inListEntailed(
 		}
 	}
 	return false;
+}
+
+/**
+ * True iff every value satisfying `filter` also satisfies `guard`. Per-side
+ * check: a guard side with no bound is trivially satisfied; otherwise the
+ * filter must have a matching bound that is strictly tighter, or equal-and-
+ * compatible on inclusivity. BINARY collation for text comparison — consistent
+ * with how DomainConstraint range subsumption is handled today.
+ */
+function filterRangeSubsetOfGuardRange(
+	filter: FilterRange,
+	guard: GuardClause & { kind: 'range' },
+): boolean {
+	if (guard.min !== undefined) {
+		if (filter.min === undefined) return false;
+		const cmp = compareSqlValues(filter.min, guard.min);
+		if (cmp < 0) return false;
+		if (cmp === 0 && filter.minInclusive && !guard.minInclusive) return false;
+	}
+	if (guard.max !== undefined) {
+		if (filter.max === undefined) return false;
+		const cmp = compareSqlValues(filter.max, guard.max);
+		if (cmp > 0) return false;
+		if (cmp === 0 && filter.maxInclusive && !guard.maxInclusive) return false;
+	}
+	return true;
 }
 
 function candidateColumns(

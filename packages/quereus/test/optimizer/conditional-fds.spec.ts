@@ -12,7 +12,7 @@ import {
 	stripGuard,
 } from '../../src/planner/util/fd-utils.js';
 import { EmptyScope } from '../../src/planner/scopes/empty.js';
-import { BinaryOpNode, LiteralNode, UnaryOpNode } from '../../src/planner/nodes/scalar.js';
+import { BetweenNode, BinaryOpNode, LiteralNode, UnaryOpNode } from '../../src/planner/nodes/scalar.js';
 import { InNode } from '../../src/planner/nodes/subquery.js';
 import { ColumnReferenceNode } from '../../src/planner/nodes/reference.js';
 import type {
@@ -140,6 +140,26 @@ function orPlanNode(left: ScalarPlanNode, right: ScalarPlanNode): BinaryOpNode {
 		right: (right as unknown as { expression: AST.Expression }).expression,
 	};
 	return new BinaryOpNode(scope, ast, left, right);
+}
+
+function cmpNode(operator: string, left: ScalarPlanNode, right: ScalarPlanNode): BinaryOpNode {
+	const ast: AST.BinaryExpr = {
+		type: 'binary',
+		operator,
+		left: (left as unknown as { expression: AST.Expression }).expression,
+		right: (right as unknown as { expression: AST.Expression }).expression,
+	};
+	return new BinaryOpNode(scope, ast, left, right);
+}
+
+function betweenPlanNode(expr: ScalarPlanNode, lower: ScalarPlanNode, upper: ScalarPlanNode): BetweenNode {
+	const ast: AST.BetweenExpr = {
+		type: 'between',
+		expr: (expr as unknown as { expression: AST.Expression }).expression,
+		lower: (lower as unknown as { expression: AST.Expression }).expression,
+		upper: (upper as unknown as { expression: AST.Expression }).expression,
+	};
+	return new BetweenNode(scope, ast, expr, lower, upper);
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +414,95 @@ describe('predicateImpliesGuard', () => {
 		);
 		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
 	});
+
+	// -----------------------------------------------------------------
+	// range clause discharge
+	// -----------------------------------------------------------------
+
+	it("range: filter age >= 21 entails guard {age >= 18}", () => {
+		const guard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const pred = cmpNode('>=', colNode(100, 0), litNode(21));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("range: filter age >= 18 entails guard {age >= 18} (same bound)", () => {
+		const guard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const pred = cmpNode('>=', colNode(100, 0), litNode(18));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("range: filter age > 18 entails guard {age >= 18} (stricter inclusivity)", () => {
+		const guard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const pred = cmpNode('>', colNode(100, 0), litNode(18));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("range: filter age >= 18 does NOT entail guard {age > 18} (filter inclusive, guard exclusive at same value)", () => {
+		const guard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: false, maxInclusive: false }],
+		};
+		const pred = cmpNode('>=', colNode(100, 0), litNode(18));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+	});
+
+	it("range: filter age >= 17 does NOT entail guard {age >= 18}", () => {
+		const guard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const pred = cmpNode('>=', colNode(100, 0), litNode(17));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+	});
+
+	it("range: filter age BETWEEN 21 AND 30 entails guards {age >= 18} and {age <= 50}", () => {
+		const lowerGuard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const upperGuard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, max: 50, maxInclusive: true, minInclusive: false }],
+		};
+		const pred = betweenPlanNode(colNode(100, 0), litNode(21), litNode(30));
+		expect(predicateImpliesGuard(pred, lowerGuard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, upperGuard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("range: filter (age >= 21 AND age <= 30) intersects to a closed interval", () => {
+		const closedGuard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, max: 50, minInclusive: true, maxInclusive: true }],
+		};
+		const pred = andNode(
+			cmpNode('>=', colNode(100, 0), litNode(21)),
+			cmpNode('<=', colNode(100, 0), litNode(30)),
+		);
+		expect(predicateImpliesGuard(pred, closedGuard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("range: filter age = 25 (eq-literal) does NOT auto-discharge a range guard via the range path", () => {
+		// eq-literal is its own clause kind; the range path doesn't piggyback
+		// on equality. Out of scope per ticket.
+		const guard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const pred = eqNode(colNode(100, 0), litNode(25));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+	});
+
+	it("range: EC-peer discharge — filter c1 >= 21 AND c1 = c2 entails guard {c2 >= 18}", () => {
+		const guard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 1, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const pred = andNode(
+			cmpNode('>=', colNode(100, 0), litNode(21)),
+			eqNode(colNode(100, 0), colNode(101, 1)),
+		);
+		const ecs: ReadonlyArray<ReadonlyArray<number>> = [[0, 1]];
+		expect(predicateImpliesGuard(pred, guard, ecs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -485,6 +594,51 @@ describe('extractCheckConstraints (implication form)', () => {
 		);
 		const result = extractCheckConstraints([check(expr)], checkColMap, allDeterministic);
 		expect(result.fds).to.have.length(0);
+	});
+
+	// Implication-form range guards:  (¬range) OR body.
+	// In each disjunct the comparison operator is *negated* to produce the
+	// actual range guard for the body.
+
+	it("check (region < 'eu' or x = y) emits guarded FDs with range guard {region >= 'eu'}", () => {
+		// The disjunct `region < 'eu'` is the negation of the guard, so the
+		// implied guard is `region >= 'eu'`.
+		const expr = or(
+			bin('<', colExpr('region'), lit('eu')),
+			bin('=', colExpr('x'), colExpr('y')),
+		);
+		const result = extractCheckConstraints([check(expr)], checkColMap, allDeterministic);
+		expect(result.fds).to.have.length(2);
+		for (const fd of result.fds) {
+			expect(fd.guard, 'expected guard on body FD').to.not.equal(undefined);
+			expect(fd.guard!.clauses).to.have.length(1);
+			const c = fd.guard!.clauses[0];
+			expect(c.kind).to.equal('range');
+			if (c.kind !== 'range') return;
+			expect(c.column).to.equal(2);
+			expect(c.min).to.equal('eu');
+			expect(c.minInclusive).to.equal(true);
+			expect(c.maxInclusive).to.equal(false);
+			expect(c.max).to.equal(undefined);
+		}
+	});
+
+	it("check (region >= 'eu' or x = y) emits guarded FDs with range guard {region < 'eu'}", () => {
+		// The disjunct `region >= 'eu'` is the negation of `region < 'eu'`.
+		const expr = or(
+			bin('>=', colExpr('region'), lit('eu')),
+			bin('=', colExpr('x'), colExpr('y')),
+		);
+		const result = extractCheckConstraints([check(expr)], checkColMap, allDeterministic);
+		expect(result.fds).to.have.length(2);
+		const c = result.fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('range');
+		if (c.kind !== 'range') return;
+		expect(c.column).to.equal(2);
+		expect(c.max).to.equal('eu');
+		expect(c.maxInclusive).to.equal(false);
+		expect(c.minInclusive).to.equal(false);
+		expect(c.min).to.equal(undefined);
 	});
 });
 
@@ -655,6 +809,85 @@ describe('fd-utils: guarded FD helpers', () => {
 		).sort((a, b) => a - b);
 		expect(cols).to.deep.equal([10, 11]);
 	});
+
+	// -----------------------------------------------------------------
+	// range: equality, projection, shifting
+	// -----------------------------------------------------------------
+
+	it("shiftFds shifts range guard column", () => {
+		const rangeGuard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const fdRange: FunctionalDependency = { determinants: [1], dependents: [2], guard: rangeGuard };
+		const out = shiftFds([fdRange], 10);
+		const c = out[0].guard!.clauses[0];
+		expect(c.kind).to.equal('range');
+		if (c.kind !== 'range') return;
+		expect(c.column).to.equal(10);
+		expect(c.min).to.equal(18);
+		expect(c.minInclusive).to.equal(true);
+	});
+
+	it("projectFds drops a range-guarded FD when the guard column is missing from the mapping", () => {
+		const rangeGuard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const fdRange: FunctionalDependency = { determinants: [1], dependents: [2], guard: rangeGuard };
+		const mapping = new Map<number, number>([[1, 100], [2, 200]]);
+		expect(projectFds([fdRange], mapping)).to.have.length(0);
+	});
+
+	it("projectFds remaps a range-guarded FD when all columns survive", () => {
+		const rangeGuard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const fdRange: FunctionalDependency = { determinants: [1], dependents: [2], guard: rangeGuard };
+		const mapping = new Map<number, number>([[0, 50], [1, 100], [2, 200]]);
+		const out = projectFds([fdRange], mapping);
+		expect(out).to.have.length(1);
+		const c = out[0].guard!.clauses[0];
+		expect(c.kind).to.equal('range');
+		if (c.kind !== 'range') return;
+		expect(c.column).to.equal(50);
+	});
+
+	it("addFd dedupes structurally equal range guards", () => {
+		const rangeGuard: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const fdA: FunctionalDependency = { determinants: [1], dependents: [2], guard: rangeGuard };
+		const fdB: FunctionalDependency = {
+			determinants: [1],
+			dependents: [2],
+			guard: { clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }] },
+		};
+		const after = addFd([fdA], fdB);
+		expect(after).to.have.length(1);
+	});
+
+	it("addFd keeps range guards with different bound values side by side", () => {
+		const a: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const b: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 21, minInclusive: true, maxInclusive: false }],
+		};
+		const fdA: FunctionalDependency = { determinants: [1], dependents: [2], guard: a };
+		const fdB: FunctionalDependency = { determinants: [1], dependents: [2], guard: b };
+		expect(addFd([fdA], fdB)).to.have.length(2);
+	});
+
+	it("addFd keeps range guards with different inclusivity side by side", () => {
+		const a: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
+		};
+		const b: GuardPredicate = {
+			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: false, maxInclusive: false }],
+		};
+		const fdA: FunctionalDependency = { determinants: [1], dependents: [2], guard: a };
+		const fdB: FunctionalDependency = { determinants: [1], dependents: [2], guard: b };
+		expect(addFd([fdA], fdB)).to.have.length(2);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -788,10 +1021,114 @@ describe('extractPartialUniqueGuardedFds', () => {
 		expect(cols).to.deep.equal([1, 2]);
 	});
 
-	it('rejects col > literal (range)', () => {
+	it('recognizes col > literal as range guard (exclusive lower bound)', () => {
 		const schema = makeSchema(
 			[makeColumn('c', true), makeColumn('age', true)],
 			[{ columns: [0], predicate: bin('>', colExpr('age'), lit(18)) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('range');
+		if (c.kind !== 'range') return;
+		expect(c.column).to.equal(1);
+		expect(c.min).to.equal(18);
+		expect(c.minInclusive).to.equal(false);
+		expect(c.max).to.equal(undefined);
+		expect(c.maxInclusive).to.equal(false);
+	});
+
+	it('recognizes col >= literal as range guard (inclusive lower bound)', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('age', true)],
+			[{ columns: [0], predicate: bin('>=', colExpr('age'), lit(18)) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('range');
+		if (c.kind !== 'range') return;
+		expect(c.min).to.equal(18);
+		expect(c.minInclusive).to.equal(true);
+	});
+
+	it('recognizes col < literal as range guard (exclusive upper bound)', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('age', true)],
+			[{ columns: [0], predicate: bin('<', colExpr('age'), lit(65)) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('range');
+		if (c.kind !== 'range') return;
+		expect(c.max).to.equal(65);
+		expect(c.maxInclusive).to.equal(false);
+		expect(c.min).to.equal(undefined);
+	});
+
+	it('recognizes col <= literal as range guard (inclusive upper bound)', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('age', true)],
+			[{ columns: [0], predicate: bin('<=', colExpr('age'), lit(65)) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('range');
+		if (c.kind !== 'range') return;
+		expect(c.max).to.equal(65);
+		expect(c.maxInclusive).to.equal(true);
+	});
+
+	it('recognizes literal < col (operand-flipped) as same guard as col > literal', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('age', true)],
+			[{ columns: [0], predicate: bin('<', lit(18), colExpr('age')) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('range');
+		if (c.kind !== 'range') return;
+		expect(c.min).to.equal(18);
+		expect(c.minInclusive).to.equal(false);
+	});
+
+	it('recognizes col BETWEEN lo AND hi as closed-interval range guard', () => {
+		const between: AST.BetweenExpr = {
+			type: 'between',
+			expr: colExpr('age'),
+			lower: lit(18),
+			upper: lit(65),
+		};
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('age', true)],
+			[{ columns: [0], predicate: between }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('range');
+		if (c.kind !== 'range') return;
+		expect(c.column).to.equal(1);
+		expect(c.min).to.equal(18);
+		expect(c.max).to.equal(65);
+		expect(c.minInclusive).to.equal(true);
+		expect(c.maxInclusive).to.equal(true);
+	});
+
+	it('rejects NOT BETWEEN', () => {
+		const between: AST.BetweenExpr = {
+			type: 'between',
+			expr: colExpr('age'),
+			lower: lit(18),
+			upper: lit(65),
+			not: true,
+		};
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('age', true)],
+			[{ columns: [0], predicate: between }],
 		);
 		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
 	});
@@ -917,13 +1254,15 @@ describe('extractPartialUniqueGuardedFds', () => {
 	});
 
 	it('rejects OR with one unrecognized disjunct (whole predicate dropped)', () => {
+		// `status != 'a'` is not a recognized guard clause shape (only `=` /
+		// `==` produce eq-literal; `!=` is out of scope).
 		const schema = makeSchema(
 			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE), makeColumn('age', true)],
 			[{
 				columns: [0],
 				predicate: or(
 					bin('=', colExpr('status'), lit('a')),
-					bin('>', colExpr('age'), lit(18))),
+					bin('!=', colExpr('age'), lit(18))),
 			}],
 		);
 		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
@@ -1024,13 +1363,15 @@ describe('extractPartialUniqueGuardedFds', () => {
 	});
 
 	it('rejects the whole predicate if one conjunct is unrecognized (soundness)', () => {
+		// `age != 18` is not a recognized clause shape, so the whole predicate
+		// must be dropped even though the other conjunct is recognized.
 		const schema = makeSchema(
 			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE), makeColumn('age', true)],
 			[{
 				columns: [0],
 				predicate: bin('AND',
 					bin('=', colExpr('status'), lit('active')),
-					bin('>', colExpr('age'), lit(18))),
+					bin('!=', colExpr('age'), lit(18))),
 			}],
 		);
 		// One conjunct recognized, one not — whole FD is dropped.
@@ -1472,6 +1813,50 @@ describe('Conditional FDs: end-to-end propagation', () => {
 				);
 				expect(wronglyActivated ?? false, 'archived=1 must not activate').to.equal(false);
 			}
+		});
+
+		// -----------------------------------------------------------------
+		// Range partial UNIQUE — subset subsumption
+		// -----------------------------------------------------------------
+
+		const setupRangeUnique = async (): Promise<void> => {
+			await db.exec(
+				"CREATE TABLE prng (" +
+				" id INTEGER PRIMARY KEY," +
+				" c TEXT NOT NULL," +
+				" created_at TEXT NOT NULL" +
+				") USING memory"
+			);
+			await db.exec("CREATE UNIQUE INDEX ix_prng ON prng(c) WHERE created_at >= '2025-01-01'");
+		};
+
+		it("partial UNIQUE WHERE created_at >= 'D': stronger filter activates the guard", async () => {
+			await setupRangeUnique();
+			const rows = await planRows(db, "SELECT * FROM prng WHERE created_at >= '2025-06-01'");
+			const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+			expect(filterProps, 'expected Filter physical props').to.not.equal(undefined);
+			// Columns: id=0, c=1, created_at=2.
+			const activated = filterProps!.fds?.some(fd =>
+				fd.guard === undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.dependents.includes(0),
+			);
+			expect(activated, 'stronger range filter activates the partial-UC FD').to.equal(true);
+		});
+
+		it("partial UNIQUE WHERE created_at >= 'D': weaker filter does NOT activate", async () => {
+			await setupRangeUnique();
+			const rows = await planRows(db, "SELECT * FROM prng WHERE created_at >= '2024-01-01'");
+			const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+			expect(filterProps, 'expected Filter physical props').to.not.equal(undefined);
+			const wronglyActivated = filterProps!.fds?.some(fd =>
+				fd.guard === undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.dependents.includes(0),
+			);
+			expect(wronglyActivated ?? false, 'weaker range filter must not activate').to.equal(false);
 		});
 	});
 

@@ -14,7 +14,7 @@ import type { ConstantBinding, DomainConstraint, FunctionalDependency, GuardClau
 import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
 import type * as AST from '../../parser/ast.js';
 import type { SqlValue } from '../../common/types.js';
-import { columnIndexFromExpr, literalValue, collectColumnNames, flattenDisjunction } from './predicate-shape.js';
+import { columnIndexFromExpr, literalValue, collectColumnNames, flattenDisjunction, flipComparison } from './predicate-shape.js';
 
 export interface CheckExtraction {
 	readonly fds: ReadonlyArray<FunctionalDependency>;
@@ -288,14 +288,23 @@ function handleImplication(
 }
 
 /**
- * Recognize one disjunct as the negation of an equality or is-null shape and
- * return the corresponding guard clause. Returns undefined for any other shape.
+ * Recognize one disjunct as the negation of an equality, is-null, or range
+ * shape and return the corresponding guard clause. Returns undefined for any
+ * other shape.
  *
  * Patterns recognized:
  *   col <> literal       ⇒ eq-literal {col, literal}
  *   col1 <> col2         ⇒ eq-column {col1, col2}
  *   col IS NOT NULL      ⇒ is-null {col, negated: false}
  *   col IS NULL          ⇒ is-null {col, negated: true}
+ *   col <  literal       ⇒ range {col, min: lit, minInc: true,  maxInc: false} (i.e. col >= lit)
+ *   col <= literal       ⇒ range {col, min: lit, minInc: false, maxInc: false} (i.e. col >  lit)
+ *   col >  literal       ⇒ range {col, max: lit, maxInc: true,  minInc: false} (i.e. col <= lit)
+ *   col >= literal       ⇒ range {col, max: lit, maxInc: false, minInc: false} (i.e. col <  lit)
+ *
+ * `lit op col` shapes are flipped via `flipComparison` so the column ends up
+ * on the left before the negation table above is applied. NULL literal
+ * bounds are rejected (NULL is not a meaningful comparison anchor).
  */
 function recognizeNegatedGuard(
 	expr: AST.Expression,
@@ -317,22 +326,56 @@ function recognizeNegatedGuard(
 	}
 	if (expr.type !== 'binary') return undefined;
 	const b = expr as AST.BinaryExpr;
-	if (b.operator !== '<>' && b.operator !== '!=') return undefined;
-	const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
-	const rIdx = columnIndexFromExpr(b.right, columnIndexMap);
-	if (lIdx !== undefined && rIdx !== undefined) {
-		if (lIdx === rIdx) return undefined;
-		return { kind: 'eq-column', left: lIdx, right: rIdx };
+	const op = b.operator;
+	if (op === '<>' || op === '!=') {
+		const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
+		const rIdx = columnIndexFromExpr(b.right, columnIndexMap);
+		if (lIdx !== undefined && rIdx !== undefined) {
+			if (lIdx === rIdx) return undefined;
+			return { kind: 'eq-column', left: lIdx, right: rIdx };
+		}
+		if (lIdx !== undefined) {
+			const lit = literalValue(b.right);
+			if (lit === undefined) return undefined;
+			return { kind: 'eq-literal', column: lIdx, value: lit };
+		}
+		if (rIdx !== undefined) {
+			const lit = literalValue(b.left);
+			if (lit === undefined) return undefined;
+			return { kind: 'eq-literal', column: rIdx, value: lit };
+		}
+		return undefined;
 	}
-	if (lIdx !== undefined) {
-		const lit = literalValue(b.right);
-		if (lit === undefined) return undefined;
-		return { kind: 'eq-literal', column: lIdx, value: lit };
-	}
-	if (rIdx !== undefined) {
-		const lit = literalValue(b.left);
-		if (lit === undefined) return undefined;
-		return { kind: 'eq-literal', column: rIdx, value: lit };
+	if (op === '<' || op === '<=' || op === '>' || op === '>=') {
+		// Normalize so the column is on the left.
+		const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
+		const rIdx = columnIndexFromExpr(b.right, columnIndexMap);
+		let colIdx: number | undefined;
+		let lit: SqlValue | undefined;
+		let normOp: string;
+		if (lIdx !== undefined) {
+			lit = literalValue(b.right);
+			colIdx = lIdx;
+			normOp = op;
+		} else if (rIdx !== undefined) {
+			lit = literalValue(b.left);
+			colIdx = rIdx;
+			normOp = flipComparison(op);
+		} else {
+			return undefined;
+		}
+		if (lit === undefined || lit === null || colIdx === undefined) return undefined;
+		switch (normOp) {
+			case '<':
+				return { kind: 'range', column: colIdx, min: lit, minInclusive: true, maxInclusive: false };
+			case '<=':
+				return { kind: 'range', column: colIdx, min: lit, minInclusive: false, maxInclusive: false };
+			case '>':
+				return { kind: 'range', column: colIdx, max: lit, maxInclusive: true, minInclusive: false };
+			case '>=':
+				return { kind: 'range', column: colIdx, max: lit, maxInclusive: false, minInclusive: false };
+		}
+		return undefined;
 	}
 	return undefined;
 }
@@ -393,16 +436,6 @@ function recognizeGuardedBody(
 				fds.push({ determinants: [singleCol], dependents: [rIdx], guard });
 			}
 		}
-	}
-}
-
-function flipComparison(op: string): string {
-	switch (op) {
-		case '<': return '>';
-		case '<=': return '>=';
-		case '>': return '<';
-		case '>=': return '<=';
-		default: return op;
 	}
 }
 
