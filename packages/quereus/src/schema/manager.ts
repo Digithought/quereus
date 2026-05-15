@@ -1258,6 +1258,7 @@ export class SchemaManager {
 				name: indexSchema.name,
 				columns: Object.freeze(indexSchema.columns.map(c => c.index)),
 				predicate: indexSchema.predicate,
+				derivedFromIndex: indexSchema.name,
 			};
 			const updatedConstraints = [...(tableSchema.uniqueConstraints ?? []), newConstraint];
 			result.uniqueConstraints = Object.freeze(updatedConstraints);
@@ -1313,13 +1314,20 @@ export class SchemaManager {
 			}
 		}
 
-		// Remove the index from the table schema
+		// Remove the index from the table schema, along with any uniqueConstraint
+		// that was synthesized from this index (see addIndexToTableSchema).
 		const updatedIndexes = (ownerTable.indexes || []).filter(
 			idx => idx.name.toLowerCase() !== lowerIndexName
+		);
+		const updatedUniqueConstraints = (ownerTable.uniqueConstraints ?? []).filter(
+			uc => uc.derivedFromIndex?.toLowerCase() !== lowerIndexName
 		);
 		const updatedTableSchema: TableSchema = {
 			...ownerTable,
 			indexes: Object.freeze(updatedIndexes),
+			uniqueConstraints: updatedUniqueConstraints.length > 0
+				? Object.freeze(updatedUniqueConstraints)
+				: undefined,
 		};
 		schema.addTable(updatedTableSchema);
 

@@ -438,6 +438,11 @@ export interface UniqueConstraintSchema {
 	 *  fall outside the partial scope. Only set when the constraint was synthesized
 	 *  from a `CREATE UNIQUE INDEX ... WHERE ...`. */
 	predicate?: Expression;
+	/** When set, this constraint was synthesized from a UNIQUE index of the
+	 *  given name (see SchemaManager.addIndexToTableSchema). DROP INDEX of that
+	 *  index removes this constraint. Unset for constraints declared at
+	 *  CREATE TABLE time. */
+	derivedFromIndex?: string;
 	/** Arbitrary metadata tags (informational only) */
 	tags?: Readonly<Record<string, SqlValue>>;
 }

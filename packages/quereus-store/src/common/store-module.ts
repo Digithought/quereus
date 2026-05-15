@@ -341,12 +341,17 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		]);
 		const updatedSchema: TableSchema = { ...tableSchema, indexes: updatedIndexes };
 		if (indexSchema.unique) {
+			// `derivedFromIndex` tags this synthesized constraint so a future
+			// `StoreModule.dropIndex` can filter it out symmetrically (mirrors
+			// SchemaManager.dropIndex / MemoryTableManager.dropIndex). Without that
+			// filter on the drop side, the UNIQUE check would survive the index.
 			updatedSchema.uniqueConstraints = Object.freeze([
 				...(tableSchema.uniqueConstraints ?? []),
 				{
 					name: indexSchema.name,
 					columns: Object.freeze(indexSchema.columns.map(c => c.index)),
 					predicate: indexSchema.predicate,
+					derivedFromIndex: indexSchema.name,
 				},
 			]);
 		}

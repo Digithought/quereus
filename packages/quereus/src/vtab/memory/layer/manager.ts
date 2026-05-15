@@ -1285,10 +1285,11 @@ export class MemoryTableManager {
 			const updatedIndexes = Object.freeze([...(this.tableSchema.indexes || []), newIndexSchemaEntry]);
 			let updatedUniqueConstraints = this.tableSchema.uniqueConstraints;
 			if (newIndexSchemaEntry.unique) {
-				const newConstraint = {
+				const newConstraint: UniqueConstraintSchema = {
 					name: newIndexSchemaEntry.name,
 					columns: Object.freeze(newIndexSchemaEntry.columns.map(c => c.index)),
 					predicate: newIndexSchemaEntry.predicate,
+					derivedFromIndex: newIndexSchemaEntry.name,
 				};
 				updatedUniqueConstraints = Object.freeze([
 					...(this.tableSchema.uniqueConstraints ?? []),
@@ -1341,9 +1342,18 @@ export class MemoryTableManager {
 				}
 				throw new QuereusError(`Index '${indexName}' not on table '${this._tableName}'.`, StatusCode.ERROR);
 			}
+			// Strip any UNIQUE constraint synthesized from this index alongside
+			// the index itself (mirrors SchemaManager.dropIndex). Without this,
+			// checkUniqueConstraints would keep enforcing it after DROP INDEX.
+			const remainingUniqueConstraints = (this.tableSchema.uniqueConstraints ?? []).filter(
+				uc => uc.derivedFromIndex?.toLowerCase() !== indexNameLower
+			);
 			const finalNewTableSchema: TableSchema = Object.freeze({
 				...this.tableSchema,
-				indexes: Object.freeze((this.tableSchema.indexes || []).filter(idx => idx.name.toLowerCase() !== indexNameLower))
+				indexes: Object.freeze((this.tableSchema.indexes || []).filter(idx => idx.name.toLowerCase() !== indexNameLower)),
+				uniqueConstraints: remainingUniqueConstraints.length > 0
+					? Object.freeze(remainingUniqueConstraints)
+					: undefined,
 			});
 			this.baseLayer.updateSchema(finalNewTableSchema);
 			await this.baseLayer.dropIndexFromBase(indexName);
