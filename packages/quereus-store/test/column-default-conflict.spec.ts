@@ -286,6 +286,32 @@ describe('StoreTable column-level ON CONFLICT defaults', () => {
 			const rows = await collect(db, `SELECT count(*) AS cnt FROM u_null`);
 			expect(rows).to.deep.equal([{ cnt: 2 }]);
 		});
+
+		it('partial UNIQUE seed pass: duplicates outside the predicate scope are allowed', async () => {
+			await db.exec(`CREATE TABLE u_partial_ok (k INTEGER PRIMARY KEY, x TEXT NOT NULL, active INTEGER NOT NULL) USING store`);
+			// Two rows with the same x but BOTH outside the partial-predicate (active=1) scope.
+			await db.exec(`INSERT INTO u_partial_ok VALUES (1, 'dup', 0), (2, 'dup', 0), (3, 'unique', 1)`);
+
+			await db.exec(`CREATE UNIQUE INDEX u_partial_ok_idx ON u_partial_ok (x) WHERE active = 1`);
+
+			const rows = await collect(db, `SELECT count(*) AS cnt FROM u_partial_ok`);
+			expect(rows).to.deep.equal([{ cnt: 3 }]);
+		});
+
+		it('partial UNIQUE seed pass: duplicates inside the predicate scope are rejected', async () => {
+			await db.exec(`CREATE TABLE u_partial_bad (k INTEGER PRIMARY KEY, x TEXT NOT NULL, active INTEGER NOT NULL) USING store`);
+			// Two rows with the same x BOTH inside the partial-predicate (active=1) scope.
+			await db.exec(`INSERT INTO u_partial_bad VALUES (1, 'dup', 1), (2, 'dup', 1), (3, 'dup', 0)`);
+
+			let err: Error | null = null;
+			try {
+				await db.exec(`CREATE UNIQUE INDEX u_partial_bad_idx ON u_partial_bad (x) WHERE active = 1`);
+			} catch (e) {
+				err = e as Error;
+			}
+			expect(err, 'expected partial UNIQUE seed pass to fail on in-scope duplicates').to.not.be.null;
+			expect(err!.message).to.match(/UNIQUE/i);
+		});
 	});
 
 	describe('UPDATE PK-change REPLACE cascades ON DELETE for evicted row', () => {
