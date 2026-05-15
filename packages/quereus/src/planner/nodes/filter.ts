@@ -85,6 +85,10 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 			const attr = sourceAttrs[col];
 			return attr ? attr.type.nullable === false : false;
 		};
+		const isColumnNumeric = (col: number): boolean => {
+			const attr = sourceAttrs[col];
+			return attr?.type.logicalType?.isNumeric === true;
+		};
 		let fds: ReadonlyArray<FunctionalDependency> = activateGuardedFds(
 			sourcePhysical?.fds ?? [],
 			this.predicate,
@@ -92,6 +96,7 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 			constantBindings,
 			attrIdToIndex,
 			isColumnNonNullable,
+			isColumnNumeric,
 		);
 
 		// Predicate-derived FDs are unconditional — fold them in next.
@@ -206,6 +211,7 @@ function activateGuardedFds(
 	bindings: ReadonlyArray<ConstantBinding>,
 	attrIdToIndex: ReadonlyMap<number, number>,
 	isColumnNonNullable: (col: number) => boolean,
+	isColumnNumeric: (col: number) => boolean,
 ): FunctionalDependency[] {
 	const out: FunctionalDependency[] = [];
 	for (const fd of sourceFds) {
@@ -213,7 +219,7 @@ function activateGuardedFds(
 			out.push(fd);
 			continue;
 		}
-		if (predicateImpliesGuard(predicate, fd.guard, ecs, bindings, attrIdToIndex, isColumnNonNullable)) {
+		if (predicateImpliesGuard(predicate, fd.guard, ecs, bindings, attrIdToIndex, isColumnNonNullable, isColumnNumeric)) {
 			out.push(stripGuard(fd));
 		} else {
 			out.push(fd);

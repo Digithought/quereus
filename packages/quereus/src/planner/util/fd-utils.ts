@@ -814,6 +814,7 @@ interface FilterRange {
 function buildPredicateFacts(
 	predicate: ScalarPlanNode,
 	attrIdToIndex: ReadonlyMap<number, number>,
+	isColumnNumeric: (col: number) => boolean,
 ): PredicateFacts {
 	const literalEqs = new Map<number, SqlValue>();
 	const columnEqs = new Map<number, Set<number>>();
@@ -968,8 +969,14 @@ function buildPredicateFacts(
 			else if (op === 'IS NOT NULL') isNotNullCols.add(cIdx);
 			// `WHERE NOT col` excludes both NULL and zero rows. Pin `col = 0` so
 			// it discharges partial-UC guards rewritten the same way at production.
+			// Numeric-only: for TEXT/BLOB/BOOLEAN columns `col = 0` (strict
+			// `sqlValueEquals`) is not equivalent to `NOT col` (TEXT `''` and
+			// boolean `false` are falsy but compare unequal to integer 0), so the
+			// rewrite would falsely discharge a `col = 0` guard for rows the
+			// runtime filter actually keeps. `IS NOT NULL` is still recorded —
+			// that's sound regardless of type.
 			else if (op === 'NOT') {
-				literalEqs.set(cIdx, 0);
+				if (isColumnNumeric(cIdx)) literalEqs.set(cIdx, 0);
 				isNotNullCols.add(cIdx);
 			}
 			continue;
@@ -1053,6 +1060,12 @@ function bindingForColumn(
  * `isColumnNonNullable(col)` reports whether the source's output column is
  * declared NOT NULL; the helper uses it to discharge `is-null negated:true`
  * guards from type information alone.
+ *
+ * `isColumnNumeric(col)` reports whether the source's output column has a
+ * numeric logical type. Used to gate the `NOT col → col = 0` rewrite: only
+ * sound for numeric columns since the consumer matches `eq-literal{col, 0}`
+ * via strict `sqlValueEquals`, which treats TEXT `''`, BLOB, and boolean
+ * `false` as unequal to integer 0.
  */
 export function predicateImpliesGuard(
 	predicate: ScalarPlanNode,
@@ -1061,8 +1074,9 @@ export function predicateImpliesGuard(
 	bindings: ReadonlyArray<ConstantBinding>,
 	attrIdToIndex: ReadonlyMap<number, number>,
 	isColumnNonNullable: (col: number) => boolean,
+	isColumnNumeric: (col: number) => boolean,
 ): boolean {
-	const facts = buildPredicateFacts(predicate, attrIdToIndex);
+	const facts = buildPredicateFacts(predicate, attrIdToIndex, isColumnNumeric);
 
 	for (const clause of guard.clauses) {
 		if (!clauseEntailed(clause, facts, ecs, bindings, isColumnNonNullable)) {

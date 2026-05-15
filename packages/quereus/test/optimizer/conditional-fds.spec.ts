@@ -171,11 +171,13 @@ describe('predicateImpliesGuard', () => {
 	const noBindings: ConstantBinding[] = [];
 	const noEcs: ReadonlyArray<ReadonlyArray<number>> = [];
 	const allNullable = () => false;
+	const allNumeric = (_: number) => true;
+	const noneNumeric = (_: number) => false;
 
 	it('eq-literal direct match: predicate c = "x" entails guard {c="x"}', () => {
 		const guard: GuardPredicate = { clauses: [{ kind: 'eq-literal', column: 0, value: 'x' }] };
 		const pred = eqNode(textColNode(100, 0), litNode('x'));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it('eq-literal via EC: predicate c1="x" and c1=c2 entails guard {c2="x"}', () => {
@@ -185,7 +187,7 @@ describe('predicateImpliesGuard', () => {
 			eqNode(colNode(100, 0), colNode(101, 1)),
 		);
 		const ecs: ReadonlyArray<ReadonlyArray<number>> = [[0, 1]];
-		expect(predicateImpliesGuard(pred, guard, ecs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, ecs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it('eq-literal via existing binding', () => {
@@ -195,45 +197,45 @@ describe('predicateImpliesGuard', () => {
 		const bindings: ConstantBinding[] = [
 			{ attrs: [0], value: { kind: 'literal', value: 5 } },
 		];
-		expect(predicateImpliesGuard(pred, guard, noEcs, bindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, bindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it('eq-column via existing EC', () => {
 		const guard: GuardPredicate = { clauses: [{ kind: 'eq-column', left: 0, right: 1 }] };
 		const pred = eqNode(litNode(1), litNode(1));
 		const ecs: ReadonlyArray<ReadonlyArray<number>> = [[0, 1]];
-		expect(predicateImpliesGuard(pred, guard, ecs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, ecs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it('eq-column via predicate conjunct', () => {
 		const guard: GuardPredicate = { clauses: [{ kind: 'eq-column', left: 0, right: 1 }] };
 		const pred = eqNode(colNode(100, 0), colNode(101, 1));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it('is-null direct: predicate c is null matches guard {c is null}', () => {
 		const guard: GuardPredicate = { clauses: [{ kind: 'is-null', column: 0, negated: false }] };
 		const pred = isNullUnary(colNode(100, 0, true), false);
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it('is-null negated via non-nullable column metadata', () => {
 		const guard: GuardPredicate = { clauses: [{ kind: 'is-null', column: 0, negated: true }] };
 		const pred = eqNode(litNode(1), litNode(1));
 		const nonNullable = (col: number) => col === 0;
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, nonNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, nonNullable, allNumeric)).to.equal(true);
 	});
 
 	it('is-null negated via "is not null" predicate conjunct', () => {
 		const guard: GuardPredicate = { clauses: [{ kind: 'is-null', column: 0, negated: true }] };
 		const pred = isNullUnary(colNode(100, 0, true), true);
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it('conservative false: predicate c > 5 does not entail guard {c = "x"}', () => {
 		const guard: GuardPredicate = { clauses: [{ kind: 'eq-literal', column: 0, value: 'x' }] };
 		const pred = gtNode(colNode(100, 0), litNode(5));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(false);
 	});
 
 	it('conservative false: top-level OR with no AND-conjunct match', () => {
@@ -251,7 +253,7 @@ describe('predicateImpliesGuard', () => {
 			eqNode(textColNode(100, 0), litNode('y')),
 		);
 		// Our extractor only walks AND-conjunctions; a top-level OR yields no facts.
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(false);
 	});
 
 	it('conjunctive guard requires all clauses to match', () => {
@@ -263,13 +265,13 @@ describe('predicateImpliesGuard', () => {
 		};
 		// Only the literal half holds.
 		const pred = eqNode(textColNode(100, 0), litNode('x'));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(false);
 		// Both halves hold.
 		const pred2 = andNode(
 			eqNode(textColNode(100, 0), litNode('x')),
 			isNullUnary(colNode(101, 1, true), true),
 		);
-		expect(predicateImpliesGuard(pred2, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred2, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	// -----------------------------------------------------------------
@@ -287,7 +289,7 @@ describe('predicateImpliesGuard', () => {
 			}],
 		};
 		const pred = inNode(textColNode(100, 0), [litNode('a'), litNode('b')]);
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("or-of: predicate c='a' entails guard {col=a OR col=b} (singleton subset of OR-set)", () => {
@@ -301,7 +303,7 @@ describe('predicateImpliesGuard', () => {
 			}],
 		};
 		const pred = eqNode(textColNode(100, 0), litNode('a'));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("or-of: predicate c='c' (literal outside OR-set) does NOT entail guard {col=a OR col=b}", () => {
@@ -315,7 +317,7 @@ describe('predicateImpliesGuard', () => {
 			}],
 		};
 		const pred = eqNode(textColNode(100, 0), litNode('c'));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(false);
 	});
 
 	it("or-of: predicate c IN ('a','c') (filter set ⊄ OR-set) does NOT entail guard", () => {
@@ -329,7 +331,7 @@ describe('predicateImpliesGuard', () => {
 			}],
 		};
 		const pred = inNode(textColNode(100, 0), [litNode('a'), litNode('c')]);
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(false);
 	});
 
 	it("or-of mixed: predicate `deleted_at IS NULL` entails guard {deleted_at IS NULL OR status=archived}", () => {
@@ -344,7 +346,7 @@ describe('predicateImpliesGuard', () => {
 			}],
 		};
 		const pred = isNullUnary(colNode(100, 0, true), false);
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("or-of mixed: predicate `status='archived'` entails guard {deleted_at IS NULL OR status=archived}", () => {
@@ -358,7 +360,7 @@ describe('predicateImpliesGuard', () => {
 			}],
 		};
 		const pred = eqNode(textColNode(101, 1), litNode('archived'));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("or-of mixed: unrelated predicate `id=1` does NOT entail guard {deleted_at IS NULL OR status=archived}", () => {
@@ -372,19 +374,43 @@ describe('predicateImpliesGuard', () => {
 			}],
 		};
 		const pred = eqNode(colNode(102, 2), litNode(1));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(false);
 	});
 
 	it("NOT col predicate pins col=0 (discharges eq-literal{col, 0} guard)", () => {
 		const guard: GuardPredicate = { clauses: [{ kind: 'eq-literal', column: 0, value: 0 }] };
 		const pred = notUnary(colNode(100, 0));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("predicate col=0 also discharges eq-literal{col, 0} guard (NOT col rewritten the same)", () => {
 		const guard: GuardPredicate = { clauses: [{ kind: 'eq-literal', column: 0, value: 0 }] };
 		const pred = eqNode(colNode(100, 0), litNode(0));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
+	});
+
+	it("NOT col on TEXT column does NOT discharge eq-literal{col, 0} guard (numeric-only rewrite)", () => {
+		// `NOT col` on a TEXT column is only equivalent to `col = ''` under
+		// SQLite's truthiness rules, NOT to `col = 0`. Pinning col=0 here
+		// would falsely discharge a guard the runtime UC never enforced.
+		const guard: GuardPredicate = { clauses: [{ kind: 'eq-literal', column: 0, value: 0 }] };
+		const pred = notUnary(textColNode(100, 0));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, noneNumeric)).to.equal(false);
+	});
+
+	it("WHERE col = 0 on TEXT column still discharges eq-literal{col, 0} guard (= path unaffected)", () => {
+		// The numeric gate applies only to the `NOT col → col = 0` rewrite.
+		// A direct `col = 0` conjunct is recognized regardless of column type —
+		// this documents the asymmetric treatment is intentional.
+		const guard: GuardPredicate = { clauses: [{ kind: 'eq-literal', column: 0, value: 0 }] };
+		const pred = eqNode(textColNode(100, 0), litNode(0));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, noneNumeric)).to.equal(true);
+	});
+
+	it("NOT col on INTEGER column still discharges eq-literal{col, 0} guard (feature regression guard)", () => {
+		const guard: GuardPredicate = { clauses: [{ kind: 'eq-literal', column: 0, value: 0 }] };
+		const pred = notUnary(colNode(100, 0));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("or-of via EC peer: c1 pinned to literal in OR-set, guard on c2 (c1 ≡ c2)", () => {
@@ -399,7 +425,7 @@ describe('predicateImpliesGuard', () => {
 		};
 		const pred = eqNode(textColNode(100, 0), litNode('a'));
 		const ecs: ReadonlyArray<ReadonlyArray<number>> = [[0, 1]];
-		expect(predicateImpliesGuard(pred, guard, ecs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, ecs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("top-level OR predicate (status=a OR status=b) does NOT discharge guard col=a (AND-only walker)", () => {
@@ -412,7 +438,7 @@ describe('predicateImpliesGuard', () => {
 			eqNode(textColNode(100, 0), litNode('a')),
 			eqNode(textColNode(100, 0), litNode('b')),
 		);
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(false);
 	});
 
 	// -----------------------------------------------------------------
@@ -424,7 +450,7 @@ describe('predicateImpliesGuard', () => {
 			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
 		};
 		const pred = cmpNode('>=', colNode(100, 0), litNode(21));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("range: filter age >= 18 entails guard {age >= 18} (same bound)", () => {
@@ -432,7 +458,7 @@ describe('predicateImpliesGuard', () => {
 			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
 		};
 		const pred = cmpNode('>=', colNode(100, 0), litNode(18));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("range: filter age > 18 entails guard {age >= 18} (stricter inclusivity)", () => {
@@ -440,7 +466,7 @@ describe('predicateImpliesGuard', () => {
 			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
 		};
 		const pred = cmpNode('>', colNode(100, 0), litNode(18));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("range: filter age >= 18 does NOT entail guard {age > 18} (filter inclusive, guard exclusive at same value)", () => {
@@ -448,7 +474,7 @@ describe('predicateImpliesGuard', () => {
 			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: false, maxInclusive: false }],
 		};
 		const pred = cmpNode('>=', colNode(100, 0), litNode(18));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(false);
 	});
 
 	it("range: filter age >= 17 does NOT entail guard {age >= 18}", () => {
@@ -456,7 +482,7 @@ describe('predicateImpliesGuard', () => {
 			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
 		};
 		const pred = cmpNode('>=', colNode(100, 0), litNode(17));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(false);
 	});
 
 	it("range: filter age BETWEEN 21 AND 30 entails guards {age >= 18} and {age <= 50}", () => {
@@ -467,8 +493,8 @@ describe('predicateImpliesGuard', () => {
 			clauses: [{ kind: 'range', column: 0, max: 50, maxInclusive: true, minInclusive: false }],
 		};
 		const pred = betweenPlanNode(colNode(100, 0), litNode(21), litNode(30));
-		expect(predicateImpliesGuard(pred, lowerGuard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
-		expect(predicateImpliesGuard(pred, upperGuard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, lowerGuard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
+		expect(predicateImpliesGuard(pred, upperGuard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("range: filter (age >= 21 AND age <= 30) intersects to a closed interval", () => {
@@ -479,7 +505,7 @@ describe('predicateImpliesGuard', () => {
 			cmpNode('>=', colNode(100, 0), litNode(21)),
 			cmpNode('<=', colNode(100, 0), litNode(30)),
 		);
-		expect(predicateImpliesGuard(pred, closedGuard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, closedGuard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 
 	it("range: filter age = 25 (eq-literal) does NOT auto-discharge a range guard via the range path", () => {
@@ -489,7 +515,7 @@ describe('predicateImpliesGuard', () => {
 			clauses: [{ kind: 'range', column: 0, min: 18, minInclusive: true, maxInclusive: false }],
 		};
 		const pred = eqNode(colNode(100, 0), litNode(25));
-		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable, allNumeric)).to.equal(false);
 	});
 
 	it("range: EC-peer discharge — filter c1 >= 21 AND c1 = c2 entails guard {c2 >= 18}", () => {
@@ -501,7 +527,7 @@ describe('predicateImpliesGuard', () => {
 			eqNode(colNode(100, 0), colNode(101, 1)),
 		);
 		const ecs: ReadonlyArray<ReadonlyArray<number>> = [[0, 1]];
-		expect(predicateImpliesGuard(pred, guard, ecs, noBindings, attrMap, allNullable)).to.equal(true);
+		expect(predicateImpliesGuard(pred, guard, ecs, noBindings, attrMap, allNullable, allNumeric)).to.equal(true);
 	});
 });
 
@@ -1249,6 +1275,17 @@ describe('extractPartialUniqueGuardedFds', () => {
 		const schema = makeSchema(
 			[makeColumn('id', true), makeColumn('archived', false)],
 			[{ columns: [0], predicate: un('NOT', colExpr('archived')) }],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it('rejects NOT col on declared-NOT-NULL TEXT column (numeric-only rewrite)', () => {
+		// `NOT col` rewrites to `col = 0`, but for a TEXT column `col = 0` is
+		// not equivalent to `NOT col` under strict `sqlValueEquals` — the
+		// rewrite would produce an FD the runtime UC never enforces.
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('flag', true, TEXT_TYPE)],
+			[{ columns: [0], predicate: un('NOT', colExpr('flag')) }],
 		);
 		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
 	});

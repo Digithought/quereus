@@ -21,7 +21,7 @@
  *   col1 = col2                ⇒ eq-column
  *   col IS NULL                ⇒ is-null (negated:false)
  *   col IS NOT NULL            ⇒ is-null (negated:true)
- *   NOT col  (NOT-NULL col)    ⇒ eq-literal { col, value: 0 }    (SQL false)
+ *   NOT col  (NOT-NULL numeric col) ⇒ eq-literal { col, value: 0 }    (SQL false)
  *   col IN (lit, lit, …)       ⇒ or-of [eq-literal …] (singleton collapses)
  *   a OR b OR …                ⇒ or-of [recognize(a), recognize(b), …]
  *   col >  literal             ⇒ range { col, min: lit, minInc: false, maxInc: false }
@@ -34,7 +34,12 @@
  * `NOT col` is rewritten to `col = 0` (SQLite encodes boolean FALSE as 0).
  * This excludes NULL rows semantically — but the NOT-NULL gate below is
  * syntactic, so `NOT col` on a nominally-nullable UC column is rejected to
- * avoid double-counting that exclusion across producer and consumer.
+ * avoid double-counting that exclusion across producer and consumer. The
+ * rewrite is additionally gated on the column's logical type being numeric:
+ * for TEXT/BLOB/BOOLEAN columns `col = 0` is not equivalent to `NOT col`
+ * (TEXT `''` is falsy but is not equal-to-integer-0 under the strict
+ * `sqlValueEquals` comparison used by the consumer), so the rewrite would
+ * falsely activate a `col = 0` guard for rows the runtime UC never excluded.
  *
  * NOT-NULL gate: every UC column must be effectively non-NULL inside the
  * partial scope. A column qualifies if either (a) it is declared NOT NULL on
@@ -87,10 +92,13 @@ export function extractPartialUniqueGuardedFds(
 	const isColumnNotNullDeclared = (col: number): boolean =>
 		tableSchema.columns[col]?.notNull === true;
 
+	const isColumnNumericDeclared = (col: number): boolean =>
+		tableSchema.columns[col]?.logicalType?.isNumeric === true;
+
 	for (const uc of ucs) {
 		if (uc.predicate === undefined) continue;
 
-		const clauses = recognizeGuardClauses(uc.predicate, tableSchema.columnIndexMap, isColumnNotNullDeclared);
+		const clauses = recognizeGuardClauses(uc.predicate, tableSchema.columnIndexMap, isColumnNotNullDeclared, isColumnNumericDeclared);
 		if (!clauses) continue;
 		if (clauses.length === 0) continue;
 
@@ -133,6 +141,7 @@ function recognizeGuardClauses(
 	expr: AST.Expression,
 	columnIndexMap: ReadonlyMap<string, number>,
 	isColumnNotNullDeclared: (col: number) => boolean,
+	isColumnNumericDeclared: (col: number) => boolean,
 ): GuardClause[] | undefined {
 	const conjuncts: AST.Expression[] = [];
 	const stack: AST.Expression[] = [expr];
@@ -149,7 +158,7 @@ function recognizeGuardClauses(
 
 	const clauses: GuardClause[] = [];
 	for (const conjunct of conjuncts) {
-		const clause = recognizeClause(conjunct, columnIndexMap, isColumnNotNullDeclared);
+		const clause = recognizeClause(conjunct, columnIndexMap, isColumnNotNullDeclared, isColumnNumericDeclared);
 		if (!clause) return undefined;
 		clauses.push(clause);
 	}
@@ -166,7 +175,7 @@ function recognizeGuardClauses(
  *   col1 = col2         ⇒ eq-column  { left, right }
  *   col IS NULL         ⇒ is-null    { column, negated:false }
  *   col IS NOT NULL     ⇒ is-null    { column, negated:true }
- *   NOT col             ⇒ eq-literal { column, value: 0 }   (declared NOT NULL only)
+ *   NOT col             ⇒ eq-literal { column, value: 0 }   (declared NOT NULL + numeric only)
  *   col IN (lit, …)     ⇒ or-of [eq-literal { col, lit_i } …]
  *   a OR b OR …         ⇒ or-of [recognize(a), recognize(b), …]
  *   col >  literal      ⇒ range { col, min: lit, minInc: false, maxInc: false }
@@ -180,16 +189,21 @@ function recognizeGuardClauses(
  * else returns undefined — the whole predicate is then dropped on the floor
  * by the caller.
  *
- * For `NOT col`, only declared-NOT-NULL columns are accepted: the rewrite to
- * `col = 0` implicitly excludes NULL rows, but the NOT-NULL gate for the UC
- * is syntactic. Rather than teach the gate about `NOT col`, the simpler/sound
- * choice is to reject `NOT col` on nominally-nullable columns at the
- * producer.
+ * For `NOT col`, only declared-NOT-NULL **and** declared-numeric columns are
+ * accepted: the rewrite to `col = 0` implicitly excludes NULL rows, but the
+ * NOT-NULL gate for the UC is syntactic. Rather than teach the gate about
+ * `NOT col`, the simpler/sound choice is to reject `NOT col` on
+ * nominally-nullable columns at the producer. The numeric gate is required
+ * because `col = 0` (under strict `sqlValueEquals`) only matches numeric
+ * zero — TEXT `''` and BOOLEAN `false` are falsy but compare unequal to
+ * integer 0, so the rewrite would falsely activate the FD for rows the
+ * runtime UC never excluded.
  */
 function recognizeClause(
 	expr: AST.Expression,
 	columnIndexMap: ReadonlyMap<string, number>,
 	isColumnNotNullDeclared: (col: number) => boolean,
+	isColumnNumericDeclared: (col: number) => boolean,
 ): GuardClause | undefined {
 	if (expr.type === 'unary') {
 		const u = expr as AST.UnaryExpr;
@@ -202,6 +216,7 @@ function recognizeClause(
 			const col = columnIndexFromExpr(u.expr, columnIndexMap);
 			if (col === undefined) return undefined;
 			if (!isColumnNotNullDeclared(col)) return undefined;
+			if (!isColumnNumericDeclared(col)) return undefined;
 			return { kind: 'eq-literal', column: col, value: 0 };
 		}
 		return undefined;
@@ -215,7 +230,7 @@ function recognizeClause(
 	if (expr.type === 'binary') {
 		const b = expr as AST.BinaryExpr;
 		if (b.operator === 'OR') {
-			return recognizeOr(b, columnIndexMap, isColumnNotNullDeclared);
+			return recognizeOr(b, columnIndexMap, isColumnNotNullDeclared, isColumnNumericDeclared);
 		}
 		if (b.operator === '=' || b.operator === '==') {
 			const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
@@ -335,12 +350,13 @@ function recognizeOr(
 	expr: AST.BinaryExpr,
 	columnIndexMap: ReadonlyMap<string, number>,
 	isColumnNotNullDeclared: (col: number) => boolean,
+	isColumnNumericDeclared: (col: number) => boolean,
 ): GuardClause | undefined {
 	const disjuncts = flattenDisjunction(expr);
 	if (disjuncts.length === 0) return undefined;
 	const subs: GuardClause[] = [];
 	for (const d of disjuncts) {
-		const sub = recognizeClause(d, columnIndexMap, isColumnNotNullDeclared);
+		const sub = recognizeClause(d, columnIndexMap, isColumnNotNullDeclared, isColumnNumericDeclared);
 		if (!sub) return undefined;
 		if (sub.kind === 'or-of') {
 			for (const s of sub.clauses) subs.push(s);

@@ -338,6 +338,52 @@ select count(*) as n from (select distinct c from p7j where archived = 0);
 drop table p7j;
 
 -- =====================================================
+-- 7j-NOT-on-TEXT. Regression: `NOT col` on a TEXT column must NOT
+--     yield a `col = 0` rewrite. SQLite's strict sqlValueEquals treats
+--     TEXT '' as unequal to integer 0; the partial UC predicate
+--     `WHERE NOT val` keeps rows with val='' (falsy text), but those
+--     rows are NOT distinguished by val under the rewritten guard.
+--     Before this fix the planner believed `WHERE NOT val` activated
+--     the partial UC and a FILTER-emitted FD c → {…} fired over rows
+--     that actually share c, producing observably wrong results
+--     (DISTINCT / aggregate-elimination misfire).
+-- =====================================================
+create table p7j_text (id integer primary key, c integer not null, val text not null);
+create unique index ix_p7j_text on p7j_text(c) where val = 0;
+
+-- Two rows with identical c and val='' (falsy in SQLite's NOT-truthiness).
+-- The partial UC predicate `val = 0` does not match val='' under strict
+-- equality, so neither row is in the partial scope — duplicates allowed.
+insert into p7j_text values (1, 1, '');
+insert into p7j_text values (2, 1, '');
+
+-- `WHERE NOT val` keeps both rows. They share c=1, so any planner-level
+-- claim "c → others" would be unsound. Pin the count.
+select c, count(*) as n from p7j_text where not val group by c order by c;
+→ [{"c":1,"n":2}]
+
+drop table p7j_text;
+
+-- Mirror: same shape with val INTEGER NOT NULL — `NOT val` correctly
+-- rewrites to `val = 0` and the partial UC still activates. Confirms the
+-- numeric-only gate didn't regress the INT case.
+create table p7j_int (id integer primary key, c integer not null, val integer not null);
+create unique index ix_p7j_int on p7j_int(c) where val = 0;
+
+insert into p7j_int values (1, 1, 0);
+-- Duplicate inside scope (val=0): rejected.
+insert into p7j_int values (2, 1, 0);
+-- error: UNIQUE
+
+-- Outside scope (val != 0): duplicates allowed.
+insert into p7j_int values (3, 1, 1);
+
+select c, count(*) as n from p7j_int where not val group by c order by c;
+→ [{"c":1,"n":1}]
+
+drop table p7j_int;
+
+-- =====================================================
 -- 7k. Partial UNIQUE with top-level OR predicate: producer recognizes
 --     `a OR b` as an `or-of` guard. Either disjunct in a filter
 --     discharges it; an unrelated filter does not.
