@@ -53,6 +53,7 @@ import {
 	ruleDistinctFoldEmpty,
 	ruleJoinFoldEmpty,
 } from './rules/predicate/rule-empty-relation-folding.js';
+import { ruleFilterContradiction } from './rules/predicate/rule-filter-contradiction.js';
 import { ruleDistinctElimination } from './rules/distinct/rule-distinct-elimination.js';
 import { ruleProjectionPruning } from './rules/retrieve/rule-projection-pruning.js';
 import { ruleScalarCSE } from './rules/cache/rule-scalar-cse.js';
@@ -298,6 +299,26 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleOrderByFdPruning,
 			priority: 26
+		});
+
+		// Predicate-contradiction folding (priority 27 — after IND rules at 26):
+		// detect when (filter predicate ∧ source domainConstraints ∧ literal
+		// constantBindings) is provably unsatisfiable, and emit EmptyRelationNode
+		// carrying the Filter's own schema. Runs alongside the empty-relation
+		// folding rules so its output cascades up the same pass.
+		//
+		// Inner-join `on`-clause contradiction is intentionally NOT registered
+		// here. The filter rule already covers WHERE clauses pushed onto the
+		// lowest Filter by `predicate-pushdown`; the join-on variant is tracked
+		// as follow-up work — it requires deciding how to preserve the join's
+		// post-rewrite output schema for parent operators that reference the
+		// right side's attribute IDs.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'filter-contradiction',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleFilterContradiction,
+			priority: 27,
 		});
 
 		// Empty-relation folding (priority 27 — after IND rules at 26): recognize

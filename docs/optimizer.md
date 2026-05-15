@@ -1395,6 +1395,43 @@ The fold rule's `isEmpty` helper looks through `AliasNode` wrappers (FROM-clause
 
 Cascade limits: the Structural pass traverses top-down, so a parent's rules fire BEFORE its children are visited. When an inner Filter folds to `EmptyRelation` mid-traversal, the residual operators above it (Sort, LimitOffset, Project, Join, …) have already been rule-visited and won't re-fire automatically. The runtime is unaffected — `EmptyRelation` yields no rows, so output is correct — but the plan may still show residual operators above the `EmptyRelation`. The IND rules and the fold rules co-located in the Structural pass mean that whenever the IND rule rewrites an anti-join to `EmptyRelation` *within the same node visit*, the JoinFoldEmpty rule can still fire via the per-node fixed-point loop in `applyPassRules`.
 
+### Predicate contradiction detection
+
+`rule-filter-contradiction.ts` (Structural pass priority 27) recognizes when a Filter's predicate, conjoined with the source's `domainConstraints` and literal `constantBindings`, is provably unsatisfiable, and emits `EmptyRelationNode` carrying the Filter's own attribute IDs / RelationType. The const-fold cascade above (Project / Sort / LimitOffset / Distinct / inner-or-cross-or-semi Join) then collapses the surrounding subtree.
+
+The reasoning is implemented by `planner/analysis/sat-checker.ts` — a single-pass per-column accumulator over the conjuncts. Scope is intentionally narrow:
+
+- **In-scope** (can prove `unsat`):
+  - Single-column comparisons against literals: `= / == / != / <> / < / <= / > / >=`.
+  - Single-column positive `BETWEEN literal AND literal`.
+  - Single-column `IN (lit, lit, ...)` and intersection across multiple IN-lists.
+  - Range intersection across multiple bounds, with inclusive/exclusive arithmetic.
+  - Domain-vs-predicate intersection (CHECK-derived `range` and `enum`).
+  - Literal `ConstantBinding` from the source (treated as a degenerate point range plus singleton enum).
+- **Out of scope** (clauses set a per-column `sawUnknown` flag; never produces a false `unsat`):
+  - `OR` / `CASE` branch analysis — would require case-decomposition.
+  - Cross-column arithmetic (`a + b > 10`), function calls, `LIKE` patterns, `IS NULL` / `IS NOT NULL`, `NOT (...)`, parameter bindings (the runtime value isn't known at plan time).
+  - Outer-join `on`-clause contradiction (null padding survives; deferred).
+  - Inner-join `on`-clause contradiction — covered by the filter rule whenever `predicate-pushdown` has lowered the predicate onto a Filter, which is the canonical shape. The standalone `on`-clause variant is a tracked follow-up.
+
+The `sawUnknown` flag is **per column**, not global: a LIKE pattern on `b` does not block proving an interval-range contradiction on `a`.
+
+Prereqs in the propagation chain (already landed):
+- `optimizer-check-derived-fds-and-domains` — populates `PhysicalProperties.domainConstraints` from declared CHECK.
+- `optimizer-empty-relation-node` — supplies the schema-polymorphic empty target so the rewrite preserves attribute IDs.
+
+**Worked example**:
+
+```sql
+CREATE TABLE t (id INTEGER PRIMARY KEY, qty INTEGER, CHECK (qty >= 0));
+
+-- Source advertises domainConstraints = [{ kind: 'range', column: 1, min: 0, minInclusive: true }].
+-- WHERE qty < 0 contributes the conjunct `qty < 0` → upper bound 0 exclusive on column 1.
+-- Intersection: min=0 (inclusive) ∧ max=0 (exclusive) → empty range → 'unsat'.
+SELECT * FROM t WHERE qty < 0;
+-- → EmptyRelationNode (the SeqScan and downstream Filter are eliminated by the fold cascade).
+```
+
 **DISTINCT elimination** (`rule-distinct-elimination.ts`):
 - When a `DistinctNode`'s source already has a key (from logical `RelationType.keys`, or an FD-encoded key in `physical.fds` via `hasAnyKey` / `hasSingletonFd`), the DISTINCT is redundant and removed
 - Registered in the structural pass at priority 18 (after key inference, before predicate pushdown)

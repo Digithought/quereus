@@ -72,6 +72,33 @@ describe('Performance sentinels', function () {
 		});
 	});
 
+	// --------------------------------------------------------- Planning time
+	describe('Planning time', () => {
+		it('plans a 50-column SELECT with non-contradicting WHERE under budget', async () => {
+			const db = new Database();
+			try {
+				const cols = Array.from({ length: 50 }, (_, i) => `c${i} INTEGER CHECK (c${i} >= 0)`).join(', ');
+				await db.exec(`CREATE TABLE wide (id INTEGER PRIMARY KEY, ${cols}) USING memory`);
+				// 50 conjuncts on distinct columns, every one within the declared
+				// CHECK domain → the sat-checker walks all of them and concludes 'sat'.
+				const whereClauses = Array.from({ length: 50 }, (_, i) => `c${i} < 1000`).join(' AND ');
+				const sql = `SELECT * FROM wide WHERE ${whereClauses}`;
+
+				const elapsed = await timeMs(async () => {
+					for (let i = 0; i < 50; i++) {
+						const stmt = db.prepare(sql);
+						await stmt.finalize();
+					}
+				});
+				// O(conjuncts × columns_mentioned) — 50 × 1 column each = trivial.
+				// Generous budget for CI headroom.
+				expect(elapsed).to.be.below(2000, `50 plans of 50-col WHERE took ${elapsed.toFixed(1)} ms`);
+			} finally {
+				await db.close();
+			}
+		});
+	});
+
 	// --------------------------------------------------------- End-to-end query
 	describe('End-to-end query execution', () => {
 		let db: Database;
