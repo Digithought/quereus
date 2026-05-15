@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, isScalarNode, type PhysicalProperties, type FunctionalDependency } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, isScalarNode, type PhysicalProperties, type FunctionalDependency, type ConstantBinding } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { formatExpression } from '../../util/plan-formatter.js';
@@ -8,7 +8,7 @@ import { StatusCode } from '../../common/types.js';
 import { PredicateCapable, type PredicateSourceCapable } from '../framework/characteristics.js';
 import { createTableInfoFromNode, extractConstraints } from '../analysis/constraint-extractor.js';
 import { normalizePredicate } from '../analysis/predicate-normalizer.js';
-import { addFd, closeConstantBindingsOverEcs, extractEqualityFds, mergeConstantBindings, mergeEquivClasses, singletonFd } from '../util/fd-utils.js';
+import { addFd, closeConstantBindingsOverEcs, extractEqualityFds, mergeConstantBindings, mergeEquivClasses, predicateImpliesGuard, singletonFd, stripGuard } from '../util/fd-utils.js';
 
 /**
  * Represents a filter operation (WHERE clause).
@@ -63,14 +63,38 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 			? Math.min(srcRows, est)
 			: (srcRows ?? est);
 
-		// FD/EC propagation: inherit source contributions, then add any FDs/ECs
-		// implied by equality conjuncts in the predicate.
 		const sourceAttrs = this.source.getAttributes();
 		const attrIdToIndex = new Map<number, number>();
 		sourceAttrs.forEach((a, i) => attrIdToIndex.set(a.id, i));
 		const { fds: predFds, equivPairs, constantBindings: predBindings } = extractEqualityFds(this.predicate, attrIdToIndex);
 
-		let fds: ReadonlyArray<FunctionalDependency> = sourcePhysical?.fds ?? [];
+		// Merge ECs and bindings up front so guard activation can consult the
+		// post-predicate view of equivalence classes and constant bindings.
+		let equivClasses = sourcePhysical?.equivClasses ?? [];
+		if (equivPairs.length > 0) {
+			equivClasses = mergeEquivClasses(equivClasses, equivPairs.map(p => [p[0], p[1]]));
+		}
+		const mergedBindings = mergeConstantBindings(sourcePhysical?.constantBindings ?? [], predBindings);
+		const constantBindings = closeConstantBindingsOverEcs(mergedBindings, equivClasses);
+
+		// Activate any guarded FDs on the source whose guard is entailed by the
+		// predicate (combined with the merged ECs/bindings). Activation replaces
+		// the guarded FD with its unconditional twin so downstream operators see
+		// it as an ordinary FD.
+		const isColumnNonNullable = (col: number): boolean => {
+			const attr = sourceAttrs[col];
+			return attr ? attr.type.nullable === false : false;
+		};
+		let fds: ReadonlyArray<FunctionalDependency> = activateGuardedFds(
+			sourcePhysical?.fds ?? [],
+			this.predicate,
+			equivClasses,
+			constantBindings,
+			attrIdToIndex,
+			isColumnNonNullable,
+		);
+
+		// Predicate-derived FDs are unconditional — fold them in next.
 		for (const fd of predFds) {
 			fds = addFd(fds, fd);
 		}
@@ -88,18 +112,6 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 				rows = 1;
 			}
 		}
-
-		let equivClasses = sourcePhysical?.equivClasses ?? [];
-		if (equivPairs.length > 0) {
-			equivClasses = mergeEquivClasses(equivClasses, equivPairs.map(p => [p[0], p[1]]));
-		}
-
-		// Merge predicate-derived constant bindings with the child's, then close
-		// over the resulting EC list so a binding on column `c` also pins every
-		// EC-equivalent column. This is the surface predicate-inference rules
-		// consume.
-		const mergedBindings = mergeConstantBindings(sourcePhysical?.constantBindings ?? [], predBindings);
-		const constantBindings = closeConstantBindingsOverEcs(mergedBindings, equivClasses);
 
 		return {
 			estimatedRows: rows,
@@ -178,4 +190,34 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 	getPredicates(): readonly ScalarPlanNode[] {
 		return [normalizePredicate(this.predicate)];
 	}
+}
+
+/**
+ * Walk inherited FDs and, for each one carrying a `guard`, ask
+ * `predicateImpliesGuard` whether the surrounding predicate entails the guard.
+ * Entailed guarded FDs are replaced with their unconditional twin (`stripGuard`).
+ * Unentailed guarded FDs pass through unchanged so a later Filter / Join can
+ * still activate them once additional facts land.
+ */
+function activateGuardedFds(
+	sourceFds: ReadonlyArray<FunctionalDependency>,
+	predicate: ScalarPlanNode,
+	ecs: ReadonlyArray<ReadonlyArray<number>>,
+	bindings: ReadonlyArray<ConstantBinding>,
+	attrIdToIndex: ReadonlyMap<number, number>,
+	isColumnNonNullable: (col: number) => boolean,
+): FunctionalDependency[] {
+	const out: FunctionalDependency[] = [];
+	for (const fd of sourceFds) {
+		if (fd.guard === undefined) {
+			out.push(fd);
+			continue;
+		}
+		if (predicateImpliesGuard(predicate, fd.guard, ecs, bindings, attrIdToIndex, isColumnNonNullable)) {
+			out.push(stripGuard(fd));
+		} else {
+			out.push(fd);
+		}
+	}
+	return out;
 }

@@ -1157,7 +1157,17 @@ Functional dependencies (FDs) are the canonical surface for "what determines wha
 export interface FunctionalDependency {
   readonly determinants: readonly number[]; // empty = "constant"
   readonly dependents: readonly number[];
+  readonly guard?: GuardPredicate;          // when present, activation-gated
 }
+
+export interface GuardPredicate {
+  readonly clauses: readonly GuardClause[]; // conjunctive
+}
+
+export type GuardClause =
+  | { readonly kind: 'eq-literal'; readonly column: number; readonly value: SqlValue }
+  | { readonly kind: 'eq-column'; readonly left: number; readonly right: number }
+  | { readonly kind: 'is-null'; readonly column: number; readonly negated: boolean };
 
 export type ConstantValue =
   | { readonly kind: 'literal'; readonly value: SqlValue }
@@ -1238,7 +1248,32 @@ Declared `CHECK` constraints contribute to the table reference's physical proper
 | `col IN (lit, lit, ...)`         | enum domain                                                                        |
 | `<expr-a> AND <expr-b>`          | recurse into both                                                                  |
 
-Disjunctions (`OR`), `NOT`, subqueries, and any function call the schema marks non-deterministic skip the whole CHECK. Schema validation already rejects non-deterministic functions in CHECK at CREATE TABLE time, so the in-cache extraction passes a `() => true` callback; the function-level callback exists for tests and future external callers.
+Disjunctions (`OR`), `NOT`, subqueries, and any function call the schema marks non-deterministic skip the whole CHECK — with the **exception** of implication-form disjunctions covered in the next subsection. Schema validation already rejects non-deterministic functions in CHECK at CREATE TABLE time, so the in-cache extraction passes a `() => true` callback; the function-level callback exists for tests and future external callers.
+
+#### Guarded (conditional) FDs
+
+A *guarded FD* `K → D | guard` activates only when a surrounding predicate entails every clause of `guard`. The canonical source is an implication-form CHECK such as `CHECK (status <> 'active' OR assigned_region = customer_region)` — read as "if `status = 'active'` then `assigned_region = customer_region`". The check extractor flattens the top-level `OR` chain, recognizes all-but-the-last disjunct as the negation of an equality / is-null clause, and emits guarded body FDs:
+
+| Disjunct shape                | Negation = guard clause                                       |
+| ----------------------------- | ------------------------------------------------------------- |
+| `col <> literal`              | `eq-literal { column, value }`                                |
+| `col1 <> col2`                | `eq-column { left, right }`                                   |
+| `col IS NOT NULL`             | `is-null { column, negated: false }` (guard = `col is null`)  |
+| `col IS NULL`                 | `is-null { column, negated: true }`  (guard = `col is not null`) |
+
+The body is recognized only as a guarded **equality** (bi-directional FDs for `col1 = col2`, `∅ → col` for `col = literal`, one-way for single-column expressions). No equivalence pairs, constant bindings, or domain constraints are lifted from a guarded body — those are unconditional facts and a guarded source cannot guarantee them.
+
+**Activation lives at `FilterNode.computePhysical`.** Before extracting predicate-derived FDs, the filter walks inherited FDs and asks `predicateImpliesGuard(predicate, fd.guard, ecs, bindings, attrIdToIndex, isColumnNonNullable)` — a conservative implication check that flattens the predicate's `AND` conjunction and matches each guard clause against direct conjuncts, equivalence classes, constant bindings, and (for `is-null negated:true`) the source column's nullability. When entailed, the guard is stripped and the FD becomes an ordinary unconditional FD downstream; otherwise the guarded FD passes through unchanged so a later Filter / Join can still activate it once additional facts land.
+
+**Propagation rules:**
+
+- `computeClosure` / `determines` / `isSuperkey` / `hasAnyKey` / `hasSingletonFd` / `isAssertedKey` / `deriveKeysFromFds` all **skip** guarded FDs — a guarded FD is not a closure-time fact and cannot prove a key claim.
+- `addFd` subsumption applies only when two FDs share the same guard; FDs with different guards (or one guarded and one not) coexist.
+- `shiftFds` shifts guard column indices alongside determinants/dependents.
+- `projectFds` drops a guarded FD whose guard references any column missing from the mapping — the guard would become unobservable and the FD could never re-activate downstream.
+- Outer joins drop guarded FDs that sit on the NULL-padded side (along with that side's unconditional FDs), because NULL-padding can flip guard satisfaction.
+
+Predicates `predicateImpliesGuard` recognizes today: `col = literal` / `col = col2` (and via EC closure), `col is null`, `col is not null`, and column non-nullability from the type system. Inequality, IN-list, and arithmetic-shape guards are intentionally out of scope — extending the vocabulary is mechanical when consumers need it.
 
 **Helper surface** (`planner/util/fd-utils.ts`):
 
@@ -1260,7 +1295,9 @@ Disjunctions (`OR`), `NOT`, subqueries, and any function call the schema marks n
 - `projectConstantBindings(bindings, mapping)` / `shiftConstantBindings(bindings, offset)` — projection/translation mirrors of the FD/EC variants.
 - `mergeDomainConstraints(a, b)` / `projectDomainConstraints(domains, mapping)` / `shiftDomainConstraints(domains, offset)` — analogous helpers for the new `domainConstraints` surface. `merge` concatenates dropping structural duplicates; intersection of overlapping ranges/enums is **not** done here (deferred to `optimizer-predicate-contradiction-detection`).
 - `extractEqualityFds(predicate, attrIdToIndex)` — predicate walker used by `FilterNode`; returns FDs, EC pairs, and constant bindings (literals and parameters both contribute bindings).
-- `extractCheckConstraints(checks, columnIndexMap, isDeterministic)` (in `planner/analysis/check-extraction.ts`) — schema-time AST walker used by `TableReferenceNode` to lift declared CHECK constraints into FDs / EC pairs / `ConstantBinding`s / `DomainConstraint`s. Cached per `TableSchema` via `getCheckExtraction`.
+- `extractCheckConstraints(checks, columnIndexMap, isDeterministic)` (in `planner/analysis/check-extraction.ts`) — schema-time AST walker used by `TableReferenceNode` to lift declared CHECK constraints into FDs / EC pairs / `ConstantBinding`s / `DomainConstraint`s. Cached per `TableSchema` via `getCheckExtraction`. Recognizes implication-form disjunctions and emits guarded FDs.
+- `predicateImpliesGuard(predicate, guard, ecs, bindings, attrIdToIndex, isColumnNonNullable)` — conservative implication check used by `FilterNode` to activate guarded FDs.
+- `stripGuard(fd)` — return the unconditional twin of a guarded FD (used by Filter activation).
 
 **De-dup / cap behavior:** `addFd` performs subsumption (drop existing FDs with the same determinants whose dependent set is a subset of the new one, and skip adding a new FD already subsumed). When the resulting list exceeds the cap, FDs whose determinants are not a subset of any `keyHints` entry passed by the caller are dropped first; truncations are logged at debug under `quereus:planner:fd`. `mergeConstantBindings` enforces the same cap and logs the same way.
 

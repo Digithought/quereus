@@ -6,9 +6,10 @@
  */
 
 import { createLogger } from '../../common/logger.js';
-import type { ConstantBinding, ConstantValue, DomainConstraint, FunctionalDependency, ScalarPlanNode } from '../nodes/plan-node.js';
+import type { ConstantBinding, ConstantValue, DomainConstraint, FunctionalDependency, GuardClause, GuardPredicate, ScalarPlanNode } from '../nodes/plan-node.js';
 import { ColumnReferenceNode, ParameterReferenceNode } from '../nodes/reference.js';
-import { BinaryOpNode, CastNode, CollateNode, LiteralNode } from '../nodes/scalar.js';
+import { BinaryOpNode, CastNode, CollateNode, LiteralNode, UnaryOpNode } from '../nodes/scalar.js';
+import type { SqlValue } from '../../common/types.js';
 
 const log = createLogger('planner:fd');
 
@@ -22,6 +23,10 @@ export const MAX_FDS_PER_NODE = 64;
 /**
  * Closure of `attrs` under `fds`. Iterative fixed-point.
  *
+ * Guarded FDs (`fd.guard !== undefined`) are skipped — they are only valid
+ * under a surrounding predicate, and the closure layer has no notion of one.
+ * Filter activation strips the guard before the FD reaches closure consumers.
+ *
  * O(|fds| × growth) — terminates when no new attribute is added in a pass.
  */
 export function computeClosure(
@@ -33,6 +38,7 @@ export function computeClosure(
 	while (changed) {
 		changed = false;
 		for (const fd of fds) {
+			if (fd.guard !== undefined) continue;
 			if (fd.determinants.every(d => closure.has(d))) {
 				for (const dep of fd.dependents) {
 					if (!closure.has(dep)) {
@@ -116,7 +122,44 @@ function fdsEqual(a: FunctionalDependency, b: FunctionalDependency): boolean {
 	for (const d of b.determinants) if (!aDet.has(d)) return false;
 	const aDep = new Set(a.dependents);
 	for (const d of b.dependents) if (!aDep.has(d)) return false;
+	return guardsEqual(a.guard, b.guard);
+}
+
+function guardsEqual(a: GuardPredicate | undefined, b: GuardPredicate | undefined): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	if (a.clauses.length !== b.clauses.length) return false;
+	// Order-insensitive clause comparison.
+	const used = new Array<boolean>(b.clauses.length).fill(false);
+	for (const ac of a.clauses) {
+		let matched = false;
+		for (let i = 0; i < b.clauses.length; i++) {
+			if (used[i]) continue;
+			if (guardClauseEquals(ac, b.clauses[i])) {
+				used[i] = true;
+				matched = true;
+				break;
+			}
+		}
+		if (!matched) return false;
+	}
 	return true;
+}
+
+function guardClauseEquals(a: GuardClause, b: GuardClause): boolean {
+	if (a.kind !== b.kind) return false;
+	if (a.kind === 'eq-literal' && b.kind === 'eq-literal') {
+		return a.column === b.column && sqlValueEquals(a.value, b.value);
+	}
+	if (a.kind === 'eq-column' && b.kind === 'eq-column') {
+		// Order-insensitive on left/right.
+		return (a.left === b.left && a.right === b.right)
+			|| (a.left === b.right && a.right === b.left);
+	}
+	if (a.kind === 'is-null' && b.kind === 'is-null') {
+		return a.column === b.column && a.negated === b.negated;
+	}
+	return false;
 }
 
 function determinantsEqual(a: readonly number[], b: readonly number[]): boolean {
@@ -144,9 +187,13 @@ export interface AddFdOptions {
 
 /**
  * Add a single FD, dropping any existing entry with the same determinants
- * whose dependents are a subset of the new one (subsumption). When the
- * resulting list exceeds the cap, drop FDs whose determinants are not a
- * subset of any `keyHints` entry on the same node.
+ * (and same guard) whose dependents are a subset of the new one (subsumption).
+ * When the resulting list exceeds the cap, drop FDs whose determinants are
+ * not a subset of any `keyHints` entry on the same node.
+ *
+ * Guard-aware: FDs with different `guard` predicates are kept side-by-side
+ * even when their determinants/dependents match — they are logically distinct
+ * facts and may be activated by different surrounding predicates.
  */
 export function addFd(
 	fds: ReadonlyArray<FunctionalDependency>,
@@ -163,8 +210,11 @@ export function addFd(
 			result.push(existing);
 			continue;
 		}
-		if (determinantsEqual(existing.determinants, next.determinants)) {
-			// Same determinants: keep whichever has the larger dependent set.
+		if (
+			determinantsEqual(existing.determinants, next.determinants) &&
+			guardsEqual(existing.guard, next.guard)
+		) {
+			// Same determinants and guard: keep whichever has the larger dependent set.
 			if (dependentsSubset(existing.dependents, next.dependents)) {
 				// existing ⊂ next, drop existing
 				continue;
@@ -232,6 +282,10 @@ export function mergeFds(
  * marker) survives as long as at least one dependent does — losing some
  * dependent columns to projection doesn't invalidate the at-most-one-row
  * claim on the surviving columns.
+ *
+ * Guarded FDs additionally require every column referenced in `guard.clauses`
+ * to be in the mapping — if any guard column is dropped the guard becomes
+ * unobservable and the FD can never be re-activated downstream.
  */
 export function projectFds(
 	fds: ReadonlyArray<FunctionalDependency>,
@@ -254,21 +308,93 @@ export function projectFds(
 			if (m !== undefined) newDep.push(m);
 		}
 		if (newDep.length === 0) continue;
-		result.push({ determinants: newDet, dependents: newDep });
+
+		let newGuard: GuardPredicate | undefined;
+		if (fd.guard !== undefined) {
+			const mappedGuard = projectGuard(fd.guard, mapping);
+			if (!mappedGuard) continue;
+			newGuard = mappedGuard;
+		}
+
+		result.push(newGuard
+			? { determinants: newDet, dependents: newDep, guard: newGuard }
+			: { determinants: newDet, dependents: newDep });
 	}
 	return result;
 }
 
-/** Shift all column indices in `fds` by `offset`. */
+function projectGuard(
+	guard: GuardPredicate,
+	mapping: ReadonlyMap<number, number>,
+): GuardPredicate | undefined {
+	const clauses: GuardClause[] = [];
+	for (const clause of guard.clauses) {
+		switch (clause.kind) {
+			case 'eq-literal': {
+				const m = mapping.get(clause.column);
+				if (m === undefined) return undefined;
+				clauses.push({ kind: 'eq-literal', column: m, value: clause.value });
+				break;
+			}
+			case 'eq-column': {
+				const ml = mapping.get(clause.left);
+				const mr = mapping.get(clause.right);
+				if (ml === undefined || mr === undefined) return undefined;
+				clauses.push({ kind: 'eq-column', left: ml, right: mr });
+				break;
+			}
+			case 'is-null': {
+				const m = mapping.get(clause.column);
+				if (m === undefined) return undefined;
+				clauses.push({ kind: 'is-null', column: m, negated: clause.negated });
+				break;
+			}
+		}
+	}
+	return { clauses };
+}
+
+/** Shift all column indices in `fds` (including any `guard` columns) by `offset`. */
 export function shiftFds(
 	fds: ReadonlyArray<FunctionalDependency>,
 	offset: number,
 ): FunctionalDependency[] {
 	if (offset === 0) return fds.slice();
-	return fds.map(fd => ({
-		determinants: fd.determinants.map(d => d + offset),
-		dependents: fd.dependents.map(d => d + offset),
-	}));
+	return fds.map(fd => {
+		const shifted: FunctionalDependency = {
+			determinants: fd.determinants.map(d => d + offset),
+			dependents: fd.dependents.map(d => d + offset),
+		};
+		if (fd.guard !== undefined) {
+			return { ...shifted, guard: shiftGuard(fd.guard, offset) };
+		}
+		return shifted;
+	});
+}
+
+function shiftGuard(guard: GuardPredicate, offset: number): GuardPredicate {
+	return {
+		clauses: guard.clauses.map(c => {
+			switch (c.kind) {
+				case 'eq-literal':
+					return { kind: 'eq-literal', column: c.column + offset, value: c.value };
+				case 'eq-column':
+					return { kind: 'eq-column', left: c.left + offset, right: c.right + offset };
+				case 'is-null':
+					return { kind: 'is-null', column: c.column + offset, negated: c.negated };
+			}
+		}),
+	};
+}
+
+/**
+ * Return the unconditional twin of `fd` — drop the guard but keep determinants
+ * and dependents. Used by Filter activation when the surrounding predicate
+ * entails the guard.
+ */
+export function stripGuard(fd: FunctionalDependency): FunctionalDependency {
+	if (fd.guard === undefined) return fd;
+	return { determinants: fd.determinants, dependents: fd.dependents };
 }
 
 /** Shift all column indices in `classes` by `offset`. */
@@ -389,6 +515,7 @@ export function deriveKeysFromFds(
 	const results: number[][] = [];
 	const seen = new Set<string>();
 	for (const fd of fds) {
+		if (fd.guard !== undefined) continue;
 		if (fd.determinants.length >= columnCount) continue;
 		const det = new Set(fd.determinants);
 		if (!isSuperkey(det, fds, columnCount)) continue;
@@ -418,6 +545,7 @@ export function hasAnyKey(
 ): boolean {
 	if (!fds || fds.length === 0) return false;
 	return fds.some(fd =>
+		fd.guard === undefined &&
 		fd.determinants.length < columnCount &&
 		isSuperkey(new Set(fd.determinants), fds, columnCount),
 	);
@@ -434,6 +562,7 @@ export function hasSingletonFd(
 ): boolean {
 	if (!fds) return false;
 	return fds.some(fd =>
+		fd.guard === undefined &&
 		fd.determinants.length === 0 &&
 		isSuperkey(new Set<number>(), fds, columnCount),
 	);
@@ -468,6 +597,7 @@ export function isAssertedKey(
 ): boolean {
 	if (!fds || fds.length === 0) return false;
 	for (const fd of fds) {
+		if (fd.guard !== undefined) continue;
 		// Determinants must be a subset of attrs.
 		let subset = true;
 		for (const d of fd.determinants) {
@@ -575,6 +705,217 @@ export function extractEqualityFds(
 	}
 
 	return { fds, equivPairs, constantBindings };
+}
+
+// ---------------------------------------------------------------------------
+// Guard implication checking
+// ---------------------------------------------------------------------------
+
+/**
+ * Conjuncts pulled from a predicate, indexed for fast guard-clause matching.
+ * Built once per Filter and reused across every guarded FD on the source.
+ */
+interface PredicateFacts {
+	/** column index → literal value seen in `col = literal`. */
+	readonly literalEqs: ReadonlyMap<number, SqlValue>;
+	/** column index → set of column indices it's directly equated to. */
+	readonly columnEqs: ReadonlyMap<number, ReadonlySet<number>>;
+	/** column indices known to be NULL via `col IS NULL`. */
+	readonly isNullCols: ReadonlySet<number>;
+	/** column indices known to be NOT NULL via `col IS NOT NULL`. */
+	readonly isNotNullCols: ReadonlySet<number>;
+}
+
+function buildPredicateFacts(
+	predicate: ScalarPlanNode,
+	attrIdToIndex: ReadonlyMap<number, number>,
+): PredicateFacts {
+	const literalEqs = new Map<number, SqlValue>();
+	const columnEqs = new Map<number, Set<number>>();
+	const isNullCols = new Set<number>();
+	const isNotNullCols = new Set<number>();
+
+	const addColumnEq = (a: number, b: number): void => {
+		if (a === b) return;
+		let aSet = columnEqs.get(a);
+		if (!aSet) { aSet = new Set<number>(); columnEqs.set(a, aSet); }
+		aSet.add(b);
+		let bSet = columnEqs.get(b);
+		if (!bSet) { bSet = new Set<number>(); columnEqs.set(b, bSet); }
+		bSet.add(a);
+	};
+
+	const columnIndexOf = (n: ScalarPlanNode): number | undefined => {
+		if (n instanceof ColumnReferenceNode) {
+			return attrIdToIndex.get(n.attributeId);
+		}
+		return undefined;
+	};
+
+	const stack: ScalarPlanNode[] = [predicate];
+	while (stack.length > 0) {
+		const n = stack.pop()!;
+		if (n instanceof BinaryOpNode) {
+			const op = n.expression.operator;
+			if (op === 'AND') {
+				stack.push(n.left, n.right);
+				continue;
+			}
+			if (op === '=' || op === '==') {
+				const lIdx = columnIndexOf(n.left);
+				const rIdx = columnIndexOf(n.right);
+				if (lIdx !== undefined && rIdx !== undefined) {
+					addColumnEq(lIdx, rIdx);
+					continue;
+				}
+				if (lIdx !== undefined) {
+					const lit = literalSqlValueOf(n.right);
+					if (lit !== undefined) literalEqs.set(lIdx, lit);
+					continue;
+				}
+				if (rIdx !== undefined) {
+					const lit = literalSqlValueOf(n.left);
+					if (lit !== undefined) literalEqs.set(rIdx, lit);
+				}
+				continue;
+			}
+			// IS / IS NOT may be written as binary with literal NULL on the right.
+			if (op === 'IS' || op === 'IS NOT') {
+				const lIdx = columnIndexOf(n.left);
+				if (lIdx === undefined) continue;
+				const lit = literalSqlValueOf(n.right);
+				if (lit !== null) continue;
+				if (op === 'IS') isNullCols.add(lIdx);
+				else isNotNullCols.add(lIdx);
+			}
+			continue;
+		}
+		if (n instanceof UnaryOpNode) {
+			const op = n.expression.operator;
+			const cIdx = columnIndexOf(n.operand);
+			if (cIdx === undefined) continue;
+			if (op === 'IS NULL') isNullCols.add(cIdx);
+			else if (op === 'IS NOT NULL') isNotNullCols.add(cIdx);
+		}
+	}
+
+	return { literalEqs, columnEqs, isNullCols, isNotNullCols };
+}
+
+function literalSqlValueOf(n: ScalarPlanNode): SqlValue | undefined {
+	let cur: ScalarPlanNode = n;
+	while (cur instanceof CastNode || cur instanceof CollateNode) {
+		cur = cur.operand;
+	}
+	if (cur instanceof LiteralNode) {
+		const v = cur.expression.value;
+		if (v instanceof Promise) return undefined;
+		return v;
+	}
+	return undefined;
+}
+
+function ecIndexOf(
+	col: number,
+	ecs: ReadonlyArray<ReadonlyArray<number>>,
+): number | undefined {
+	for (let i = 0; i < ecs.length; i++) {
+		if (ecs[i].includes(col)) return i;
+	}
+	return undefined;
+}
+
+function bindingForColumn(
+	col: number,
+	bindings: ReadonlyArray<ConstantBinding>,
+): ConstantBinding | undefined {
+	for (const b of bindings) if (b.attrs.includes(col)) return b;
+	return undefined;
+}
+
+/**
+ * Decide whether the surrounding `predicate` (combined with the source's ECs
+ * and constant bindings) entails every clause in `guard`. Conservative — when
+ * in doubt, returns `false`.
+ *
+ * `isColumnNonNullable(col)` reports whether the source's output column is
+ * declared NOT NULL; the helper uses it to discharge `is-null negated:true`
+ * guards from type information alone.
+ */
+export function predicateImpliesGuard(
+	predicate: ScalarPlanNode,
+	guard: GuardPredicate,
+	ecs: ReadonlyArray<ReadonlyArray<number>>,
+	bindings: ReadonlyArray<ConstantBinding>,
+	attrIdToIndex: ReadonlyMap<number, number>,
+	isColumnNonNullable: (col: number) => boolean,
+): boolean {
+	const facts = buildPredicateFacts(predicate, attrIdToIndex);
+
+	for (const clause of guard.clauses) {
+		if (!clauseEntailed(clause, facts, ecs, bindings, isColumnNonNullable)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function clauseEntailed(
+	clause: GuardClause,
+	facts: PredicateFacts,
+	ecs: ReadonlyArray<ReadonlyArray<number>>,
+	bindings: ReadonlyArray<ConstantBinding>,
+	isColumnNonNullable: (col: number) => boolean,
+): boolean {
+	switch (clause.kind) {
+		case 'eq-literal': {
+			const { column, value } = clause;
+			// Direct conjunct match.
+			const direct = facts.literalEqs.get(column);
+			if (direct !== undefined && sqlValueEquals(direct, value)) return true;
+			// Via EC: any column in `column`'s EC pinned to the literal.
+			const ecIdx = ecIndexOf(column, ecs);
+			if (ecIdx !== undefined) {
+				for (const peer of ecs[ecIdx]) {
+					const peerLit = facts.literalEqs.get(peer);
+					if (peerLit !== undefined && sqlValueEquals(peerLit, value)) return true;
+				}
+			}
+			// Via binding: source already pins `column` to the same literal.
+			const binding = bindingForColumn(column, bindings);
+			if (binding && binding.value.kind === 'literal' && sqlValueEquals(binding.value.value, value)) {
+				return true;
+			}
+			return false;
+		}
+		case 'eq-column': {
+			const { left, right } = clause;
+			if (left === right) return true;
+			// Same EC.
+			const li = ecIndexOf(left, ecs);
+			const ri = ecIndexOf(right, ecs);
+			if (li !== undefined && li === ri) return true;
+			// Direct conjunct match.
+			const leftPeers = facts.columnEqs.get(left);
+			if (leftPeers && leftPeers.has(right)) return true;
+			// Bound to the same ConstantValue (literal or parameter) on both sides.
+			const lBind = bindingForColumn(left, bindings);
+			const rBind = bindingForColumn(right, bindings);
+			if (lBind && rBind && constantValueEquals(lBind.value, rBind.value)) return true;
+			return false;
+		}
+		case 'is-null': {
+			const { column, negated } = clause;
+			if (negated) {
+				// "col IS NOT NULL" guard.
+				if (facts.isNotNullCols.has(column)) return true;
+				if (isColumnNonNullable(column)) return true;
+				return false;
+			}
+			// "col IS NULL" guard.
+			return facts.isNullCols.has(column);
+		}
+	}
 }
 
 /**

@@ -37,13 +37,38 @@ export interface MonotonicOnInfo {
  *   stored. Use `computeClosure` to derive what a set of attributes implies.
  * - The full-relation case (`K = all_cols`, i.e. set semantics with no smaller
  *   discoverable key) is communicated via `RelationType.isSet`, not an FD.
+ * - `guard`, when present, restricts the FD to predicates that entail every
+ *   clause in the conjunction. A guarded FD never participates in closure;
+ *   `FilterNode` activates it (strips the guard) when its predicate implies
+ *   the guard, after which it propagates as an ordinary unconditional FD.
  */
 export interface FunctionalDependency {
   /** Determinant column indices in the node's output. Empty array means "constant" (no row variation). */
   readonly determinants: readonly number[];
   /** Dependent column indices in the node's output. Non-empty. */
   readonly dependents: readonly number[];
+  /** When defined, the FD only activates if a surrounding predicate entails every clause. */
+  readonly guard?: GuardPredicate;
 }
+
+/**
+ * Predicate guarding a conditional functional dependency. All clauses must be
+ * entailed by the surrounding predicate (conjunctively) before the guarded FD
+ * activates.
+ */
+export interface GuardPredicate {
+  readonly clauses: readonly GuardClause[];
+}
+
+/**
+ * Narrow guard-clause vocabulary recognized by predicate-implies-guard
+ * checking. Each shape is something `extractEqualityFds` / EC / binding layers
+ * can already reason about, so activation is a structural check.
+ */
+export type GuardClause =
+  | { readonly kind: 'eq-literal'; readonly column: number; readonly value: SqlValue }
+  | { readonly kind: 'eq-column'; readonly left: number; readonly right: number }
+  | { readonly kind: 'is-null'; readonly column: number; readonly negated: boolean };
 
 /**
  * A pinned-constant value associated with a `ConstantBinding`. Either a

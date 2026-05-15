@@ -10,7 +10,7 @@
  * properties via `fd-utils` helpers.
  */
 
-import type { ConstantBinding, DomainConstraint, FunctionalDependency } from '../nodes/plan-node.js';
+import type { ConstantBinding, DomainConstraint, FunctionalDependency, GuardClause, GuardPredicate } from '../nodes/plan-node.js';
 import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
 import type * as AST from '../../parser/ast.js';
 import type { SqlValue } from '../../common/types.js';
@@ -112,6 +112,10 @@ function recognize(
 			case '>':
 			case '>=': {
 				handleInequality(b, columnIndexMap, domainConstraints);
+				return;
+			}
+			case 'OR': {
+				handleImplication(b, columnIndexMap, fds);
 				return;
 			}
 			default:
@@ -246,6 +250,164 @@ function handleInequality(
 		case '<':
 			domainConstraints.push({ kind: 'range', column: colIdx, max: lit, minInclusive: false, maxInclusive: false });
 			return;
+	}
+}
+
+/**
+ * Recognize an implication-form CHECK: `(¬g_1) OR (¬g_2) OR ... OR (body)`.
+ *
+ * All but the last disjunct must parse as a negated equality / is-null clause
+ * (e.g. `status <> 'active'`, `a is not null`); the last is the implied body,
+ * recognized as a guarded equality only. Bails out (skipping the whole CHECK)
+ * if any preceding disjunct is not a recognized guard-negation shape.
+ *
+ * Domain contributions are NOT lifted from implication-form CHECKs — a range
+ * or enum that holds only under a guard isn't safely consumable until the
+ * guard activation path also threads through domains.
+ */
+function handleImplication(
+	root: AST.BinaryExpr,
+	columnIndexMap: ReadonlyMap<string, number>,
+	fds: FunctionalDependency[],
+): void {
+	const disjuncts = flattenDisjunction(root);
+	if (disjuncts.length < 2) return;
+
+	const guardClauses: GuardClause[] = [];
+	for (let i = 0; i < disjuncts.length - 1; i++) {
+		const clause = recognizeNegatedGuard(disjuncts[i], columnIndexMap);
+		if (!clause) return;
+		guardClauses.push(clause);
+	}
+	if (guardClauses.length === 0) return;
+
+	const body = disjuncts[disjuncts.length - 1];
+	const guard: GuardPredicate = { clauses: guardClauses };
+	recognizeGuardedBody(body, guard, columnIndexMap, fds);
+}
+
+function flattenDisjunction(expr: AST.Expression): AST.Expression[] {
+	const out: AST.Expression[] = [];
+	const stack: AST.Expression[] = [expr];
+	while (stack.length > 0) {
+		const cur = stack.pop()!;
+		if (cur.type === 'binary' && (cur as AST.BinaryExpr).operator === 'OR') {
+			const b = cur as AST.BinaryExpr;
+			// Preserve textual order: push right then left so left is popped first.
+			stack.push(b.right, b.left);
+			continue;
+		}
+		out.push(cur);
+	}
+	return out;
+}
+
+/**
+ * Recognize one disjunct as the negation of an equality or is-null shape and
+ * return the corresponding guard clause. Returns undefined for any other shape.
+ *
+ * Patterns recognized:
+ *   col <> literal       ⇒ eq-literal {col, literal}
+ *   col1 <> col2         ⇒ eq-column {col1, col2}
+ *   col IS NOT NULL      ⇒ is-null {col, negated: false}
+ *   col IS NULL          ⇒ is-null {col, negated: true}
+ */
+function recognizeNegatedGuard(
+	expr: AST.Expression,
+	columnIndexMap: ReadonlyMap<string, number>,
+): GuardClause | undefined {
+	if (expr.type === 'unary') {
+		const u = expr as AST.UnaryExpr;
+		if (u.operator === 'IS NULL' || u.operator === 'IS NOT NULL') {
+			const col = columnIndexFromExpr(u.expr, columnIndexMap);
+			if (col === undefined) return undefined;
+			// `col is not null` disjunct ⇒ guard is `col is null` (negated of "is null" is false).
+			// Negating `c is not null` gives `c is null`, so the implied guard is `c is null`.
+			// In our scheme: { kind: 'is-null', column: c, negated: false } means "guard: c is null".
+			return u.operator === 'IS NOT NULL'
+				? { kind: 'is-null', column: col, negated: false }
+				: { kind: 'is-null', column: col, negated: true };
+		}
+		return undefined;
+	}
+	if (expr.type !== 'binary') return undefined;
+	const b = expr as AST.BinaryExpr;
+	if (b.operator !== '<>' && b.operator !== '!=') return undefined;
+	const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
+	const rIdx = columnIndexFromExpr(b.right, columnIndexMap);
+	if (lIdx !== undefined && rIdx !== undefined) {
+		if (lIdx === rIdx) return undefined;
+		return { kind: 'eq-column', left: lIdx, right: rIdx };
+	}
+	if (lIdx !== undefined) {
+		const lit = literalValue(b.right);
+		if (lit === undefined) return undefined;
+		return { kind: 'eq-literal', column: lIdx, value: lit };
+	}
+	if (rIdx !== undefined) {
+		const lit = literalValue(b.left);
+		if (lit === undefined) return undefined;
+		return { kind: 'eq-literal', column: rIdx, value: lit };
+	}
+	return undefined;
+}
+
+/**
+ * Recognize the body of an implication-form CHECK as a guarded equality. We
+ * accept the equality shapes that `handleEquality` accepts, but emit the
+ * resulting FDs with the supplied `guard` attached and do NOT contribute
+ * equivalence pairs or constant bindings — equivalences/bindings are
+ * unconditional facts.
+ */
+function recognizeGuardedBody(
+	body: AST.Expression,
+	guard: GuardPredicate,
+	columnIndexMap: ReadonlyMap<string, number>,
+	fds: FunctionalDependency[],
+): void {
+	if (body.type !== 'binary') return;
+	const b = body as AST.BinaryExpr;
+	if (b.operator !== '=' && b.operator !== '==') return;
+
+	const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
+	const rIdx = columnIndexFromExpr(b.right, columnIndexMap);
+
+	if (lIdx !== undefined && rIdx !== undefined) {
+		if (lIdx === rIdx) return;
+		fds.push({ determinants: [lIdx], dependents: [rIdx], guard });
+		fds.push({ determinants: [rIdx], dependents: [lIdx], guard });
+		return;
+	}
+
+	if (lIdx !== undefined) {
+		const lit = literalValue(b.right);
+		if (lit !== undefined) {
+			fds.push({ determinants: [], dependents: [lIdx], guard });
+			return;
+		}
+		const cols = collectColumnNames(b.right, columnIndexMap);
+		if (cols.size === 1) {
+			const [singleCol] = cols;
+			if (singleCol !== lIdx) {
+				fds.push({ determinants: [singleCol], dependents: [lIdx], guard });
+			}
+		}
+		return;
+	}
+
+	if (rIdx !== undefined) {
+		const lit = literalValue(b.left);
+		if (lit !== undefined) {
+			fds.push({ determinants: [], dependents: [rIdx], guard });
+			return;
+		}
+		const cols = collectColumnNames(b.left, columnIndexMap);
+		if (cols.size === 1) {
+			const [singleCol] = cols;
+			if (singleCol !== rIdx) {
+				fds.push({ determinants: [singleCol], dependents: [rIdx], guard });
+			}
+		}
 	}
 }
 
