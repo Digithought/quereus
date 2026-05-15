@@ -166,7 +166,6 @@ The PassManager already supports selective pass execution — Tier 0 would run o
 
 | Ticket | Relationship |
 |---|---|
-| **adjustPlanForOrdering** (adjust-plan-for-ordering-unrelated-index) | Correctness bug — must fix regardless. No amount of adaptive re-optimization fixes a structurally broken plan. Prerequisite for trusting plan quality. |
 | **Expression properties** (expression-properties-injective-monotone) | Improves Tier 1 plan quality. Better key propagation → better cardinality estimates → less need for Tier 2 correction. |
 | **Sargable range rewrites** (optimizations-key-preserving-and-sargable-range-rewrites) | Turns non-indexable predicates into indexable ones. Huge for Tier 0 — the heuristic "use index on equality match" fires more often after range rewrites expose index opportunities. |
 | **Covering indexes** (covering-indexes) | Improves physical operator quality. Could benefit from runtime feedback — if an index-only scan is available but the cost model doesn't pick it, runtime counters showing fetch overhead would trigger re-plan. |
