@@ -645,6 +645,11 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 				const pkIndices = this.getPrimaryKeyIndices();
 				const pk = values ? pkIndices.map(i => values[i]) : undefined;
 
+				// Captured when OR REPLACE displaces a row that lives only in the
+				// underlying store — surfaced as `replacedRow` so the DML executor
+				// fires ON DELETE cascades for the displaced parent.
+				let replacedUnderlyingRow: Row | undefined;
+
 				if (pk) {
 					const existingRow = await this.getOverlayRow(overlay, pk);
 					if (existingRow && existingRow[tombstoneIndex] === 1) {
@@ -678,8 +683,9 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 
 					if (!existingRow) {
 						// No overlay entry — check underlying for PK conflict
-						const pkConflict = await this.checkMergedPKConflict(overlay, pk, tombstoneIndex, args.onConflict);
-						if (pkConflict !== null) return pkConflict;
+						const pkOutcome = await this.checkMergedPKConflict(overlay, pk, tombstoneIndex, args.onConflict);
+						if (pkOutcome.terminating) return pkOutcome.terminating;
+						replacedUnderlyingRow = pkOutcome.replacedUnderlyingRow;
 
 						// Check non-PK UNIQUE constraints against merged view
 						const ucResult = await this.checkMergedUniqueConstraints(overlay, values!, [pk], tombstoneIndex, args.onConflict);
@@ -693,7 +699,8 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 					...argsForOverlay,
 					values: overlayRow,
 				});
-				return this.stripTombstoneFromResult(result, tombstoneIndex);
+				const stripped = this.stripTombstoneFromResult(result, tombstoneIndex);
+				return this.attachReplacedUnderlying(stripped, replacedUnderlyingRow);
 			}
 
 			case 'update': {
@@ -720,8 +727,8 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 						// PK is changing: check for conflicts at the new PK, then tombstone the old
 						// overlay slot and insert a fresh row at the new PK so the underlying row
 						// at targetPK is shadowed (tombstoned) after flush.
-						const pkConflict = await this.checkMergedPKConflict(overlay, newPK, tombstoneIndex, args.onConflict);
-						if (pkConflict !== null) return pkConflict;
+						const pkOutcome = await this.checkMergedPKConflict(overlay, newPK, tombstoneIndex, args.onConflict);
+						if (pkOutcome.terminating) return pkOutcome.terminating;
 
 						const ucResult = await this.checkMergedUniqueConstraints(overlay, values!, [targetPK, newPK], tombstoneIndex, args.onConflict);
 						if (ucResult !== null) return ucResult;
@@ -737,7 +744,8 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 							values: overlayRow,
 							onConflict: effectiveOR,
 						});
-						return this.stripTombstoneFromResult(result, tombstoneIndex);
+						const stripped = this.stripTombstoneFromResult(result, tombstoneIndex);
+						return this.attachReplacedUnderlying(stripped, pkOutcome.replacedUnderlyingRow);
 					}
 
 					// Same PK — update the overlay row in place
@@ -752,9 +760,11 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 					const newPK = pkIndices.map(i => values![i]);
 					const pkChanged = !this.keysEqual(targetPK, newPK);
 
+					let replacedUnderlyingRow: Row | undefined;
 					if (pkChanged) {
-						const pkConflict = await this.checkMergedPKConflict(overlay, newPK, tombstoneIndex, args.onConflict);
-						if (pkConflict !== null) return pkConflict;
+						const pkOutcome = await this.checkMergedPKConflict(overlay, newPK, tombstoneIndex, args.onConflict);
+						if (pkOutcome.terminating) return pkOutcome.terminating;
+						replacedUnderlyingRow = pkOutcome.replacedUnderlyingRow;
 					}
 
 					const selfPks: SqlValue[][] = pkChanged ? [targetPK, newPK] : [targetPK];
@@ -771,7 +781,8 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 						values: overlayRow,
 						onConflict: effectiveOR,
 					});
-					return this.stripTombstoneFromResult(result, tombstoneIndex);
+					const stripped = this.stripTombstoneFromResult(result, tombstoneIndex);
+					return this.attachReplacedUnderlying(stripped, replacedUnderlyingRow);
 				}
 			}
 
@@ -840,9 +851,21 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	 */
 	private stripTombstoneFromResult(result: UpdateResult, tombstoneIndex: number): UpdateResult {
 		if (isUpdateOk(result) && result.row) {
-			return { status: 'ok', row: result.row.slice(0, tombstoneIndex) };
+			return { status: 'ok', row: result.row.slice(0, tombstoneIndex), replacedRow: result.replacedRow };
 		}
 		return result;
+	}
+
+	/**
+	 * If a REPLACE conflict displaced a row that lives only in the underlying store,
+	 * surface it as `replacedRow` on the success result.  The overlay-only path
+	 * already carries `replacedRow` (the overlay's memory module emits it natively);
+	 * this overrides only when we have a store-side displacement to report.
+	 */
+	private attachReplacedUnderlying(result: UpdateResult, replacedUnderlyingRow: Row | undefined): UpdateResult {
+		if (!replacedUnderlyingRow) return result;
+		if (!isUpdateOk(result) || !result.row) return result;
+		return { status: 'ok', row: result.row, replacedRow: replacedUnderlyingRow };
 	}
 
 	/**
@@ -966,29 +989,39 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 
 	/**
 	 * Checks if newPK conflicts with an underlying row not already shadowed in the overlay.
-	 * Returns null (no conflict or REPLACE applied) or an UpdateResult (IGNORE / constraint).
+	 *
+	 * Returns a discriminated outcome:
+	 * - `{}` — no conflict (or overlay is authoritative); proceed.
+	 * - `{ terminating }` — short-circuit with this UpdateResult (IGNORE / constraint).
+	 * - `{ replacedUnderlyingRow }` — REPLACE applied against a row that lives only
+	 *   in the underlying store. The caller must surface this row as `replacedRow`
+	 *   in the final UpdateResult so the DML executor fires ON DELETE cascades for
+	 *   the displaced parent. The overlay still inserts normally; at flush time the
+	 *   same-PK collision becomes an UPDATE on the underlying.
 	 */
 	private async checkMergedPKConflict(
 		overlay: VirtualTable,
 		newPK: SqlValue[],
 		tombstoneIndex: number,
 		onConflict?: ConflictResolution,
-	): Promise<UpdateResult | null> {
+	): Promise<{ terminating?: UpdateResult; replacedUnderlyingRow?: Row }> {
 		const overlayRow = await this.getOverlayRow(overlay, newPK);
-		if (overlayRow) return null; // overlay handles it (tombstone = no conflict; real = overlay enforces)
+		if (overlayRow) return {}; // overlay handles it (tombstone = no conflict; real = overlay enforces)
 
 		const underlyingRow = await this.getUnderlyingRow(newPK);
-		if (!underlyingRow) return null;
+		if (!underlyingRow) return {};
 
 		// Statement OR > per-constraint default > ABORT.
 		const effective = resolveEffective(onConflict, resolvePkDefaultConflict(this.tableSchema!));
-		if (effective === ConflictResolution.IGNORE) return { status: 'ok', row: undefined };
-		if (effective === ConflictResolution.REPLACE) return null; // same-PK replace: flush will UPDATE underlying
+		if (effective === ConflictResolution.IGNORE) return { terminating: { status: 'ok', row: undefined } };
+		if (effective === ConflictResolution.REPLACE) return { replacedUnderlyingRow: underlyingRow };
 		return {
-			status: 'constraint',
-			constraint: 'unique',
-			message: `UNIQUE constraint failed: ${this.tableName} PK.`,
-			existingRow: underlyingRow,
+			terminating: {
+				status: 'constraint',
+				constraint: 'unique',
+				message: `UNIQUE constraint failed: ${this.tableName} PK.`,
+				existingRow: underlyingRow,
+			}
 		};
 	}
 
