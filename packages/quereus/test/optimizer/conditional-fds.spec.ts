@@ -605,6 +605,39 @@ describe('extractPartialUniqueGuardedFds', () => {
 		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
 	});
 
+	// Mixed shape: one UC column admitted via IS-NOT-NULL conjunct, another via
+	// table-declared NOT-NULL — admits only when both halves resolve.
+	it('admits composite UC mixing IS NOT NULL conjunct with table-declared NOT NULL column', () => {
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('email', false, TEXT_TYPE), makeColumn('region', true, TEXT_TYPE)],
+			[{
+				columns: [1, 2],
+				predicate: bin('AND',
+					un('IS NOT NULL', colExpr('email')),
+					bin('=', colExpr('region'), lit('us'))),
+			}],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		expect([...fds[0].determinants].sort()).to.deep.equal([1, 2]);
+	});
+
+	// Same shape but `region` nullable on the table: the eq-literal conjunct
+	// does NOT establish non-NULL for region, and there is no IS NOT NULL
+	// conjunct on region — so the FD must be dropped.
+	it('rejects composite UC mixing IS NOT NULL conjunct with eq-literal on a nullable column', () => {
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('email', false, TEXT_TYPE), makeColumn('region', false, TEXT_TYPE)],
+			[{
+				columns: [1, 2],
+				predicate: bin('AND',
+					un('IS NOT NULL', colExpr('email')),
+					bin('=', colExpr('region'), lit('us'))),
+			}],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
 	it('rejects the whole predicate if one conjunct is unrecognized (soundness)', () => {
 		const schema = makeSchema(
 			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE), makeColumn('age', true)],
