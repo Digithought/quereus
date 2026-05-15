@@ -14,6 +14,7 @@ import type { ConstantBinding, DomainConstraint, FunctionalDependency, GuardClau
 import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
 import type * as AST from '../../parser/ast.js';
 import type { SqlValue } from '../../common/types.js';
+import { columnIndexFromExpr, literalValue, collectColumnNames } from './predicate-shape.js';
 
 export interface CheckExtraction {
 	readonly fds: ReadonlyArray<FunctionalDependency>;
@@ -419,72 +420,6 @@ function flipComparison(op: string): string {
 		case '>=': return '<=';
 		default: return op;
 	}
-}
-
-function columnIndexFromExpr(
-	expr: AST.Expression,
-	columnIndexMap: ReadonlyMap<string, number>,
-): number | undefined {
-	if (expr.type === 'column') {
-		const ref = expr as AST.ColumnExpr;
-		return columnIndexMap.get(ref.name.toLowerCase());
-	}
-	if (expr.type === 'identifier') {
-		const ref = expr as AST.IdentifierExpr;
-		if (ref.schema) return undefined;
-		return columnIndexMap.get(ref.name.toLowerCase());
-	}
-	return undefined;
-}
-
-/**
- * Return the literal `SqlValue` for an `AST.LiteralExpr`, or undefined for any
- * other expression shape (functions, casts, casts-of-literals, etc.). Only
- * compile-time literals count for binding/domain purposes.
- */
-function literalValue(expr: AST.Expression): SqlValue | undefined {
-	if (expr.type !== 'literal') return undefined;
-	const lit = expr as AST.LiteralExpr;
-	const v = lit.value;
-	if (v instanceof Promise) return undefined;
-	return v;
-}
-
-/**
- * Collect the set of column indices referenced by `expr`. Only column /
- * identifier nodes naming columns in `columnIndexMap` count. Returns an empty
- * set when the expression references zero recognized columns; the caller can
- * distinguish "no columns" (constant expression) from "exactly one column"
- * by inspecting the size.
- */
-function collectColumnNames(
-	expr: AST.Expression,
-	columnIndexMap: ReadonlyMap<string, number>,
-): Set<number> {
-	const out = new Set<number>();
-	const stack: AST.AstNode[] = [expr as AST.AstNode];
-	while (stack.length > 0) {
-		const node = stack.pop()!;
-		const idx = node.type === 'column' || node.type === 'identifier'
-			? columnIndexFromExpr(node as AST.Expression, columnIndexMap)
-			: undefined;
-		if (idx !== undefined) out.add(idx);
-		// Walk all sub-expression-shaped properties.
-		for (const key of Object.keys(node)) {
-			const v = (node as unknown as Record<string, unknown>)[key];
-			if (!v) continue;
-			if (Array.isArray(v)) {
-				for (const item of v) {
-					if (item && typeof item === 'object' && 'type' in item) {
-						stack.push(item as AST.AstNode);
-					}
-				}
-			} else if (typeof v === 'object' && 'type' in (v as object)) {
-				stack.push(v as AST.AstNode);
-			}
-		}
-	}
-	return out;
 }
 
 /**

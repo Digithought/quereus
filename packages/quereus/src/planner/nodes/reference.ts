@@ -2,6 +2,7 @@ import type { BaseType, ScalarType, RelationType } from '../../common/datatype.j
 import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute, type InjectivityResult, type MonotonicityResult, type PhysicalProperties, type FunctionalDependency, type ConstantBinding } from './plan-node.js';
 import { addFd, closeConstantBindingsOverEcs, mergeConstantBindings, mergeEquivClasses } from '../util/fd-utils.js';
 import { getCheckExtraction } from '../analysis/check-extraction.js';
+import { getPartialUniqueGuardedFds } from '../analysis/partial-unique-extraction.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { Scope } from '../scopes/scope.js';
@@ -102,6 +103,15 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 		// Merge in CHECK-derived FDs/ECs/bindings/domains. Cached per-schema.
 		const checkExt = getCheckExtraction(this.tableSchema);
 		for (const fd of checkExt.fds) {
+			fds = addFd(fds, fd);
+		}
+
+		// Guarded FDs from partial UNIQUE constraints (`CREATE UNIQUE INDEX (K)
+		// WHERE P`). The unconditional UC path in relationTypeFromTableSchema
+		// skips these (uniqueness only holds within P's scope); here we emit
+		// `K → others [guard=P]` so Filter activation can discharge the guard
+		// for queries whose WHERE clause entails P.
+		for (const fd of getPartialUniqueGuardedFds(this.tableSchema)) {
 			fds = addFd(fds, fd);
 		}
 

@@ -1263,6 +1263,20 @@ A *guarded FD* `K → D | guard` activates only when a surrounding predicate ent
 
 The body is recognized only as a guarded **equality** (bi-directional FDs for `col1 = col2`, `∅ → col` for `col = literal`, one-way for single-column expressions). No equivalence pairs, constant bindings, or domain constraints are lifted from a guarded body — those are unconditional facts and a guarded source cannot guarantee them.
 
+**Partial UNIQUE indexes** are the second producer of guarded FDs. `CREATE UNIQUE INDEX (K) WHERE P` records a `predicate` on the synthesized `UniqueConstraintSchema`; `relationTypeFromTableSchema` skips it (the constraint isn't a relation-level key — see § Unique constraints above), and `planner/analysis/partial-unique-extraction.ts` instead emits a guarded FD `K → (all_cols \ K) | P` per partial UC. The recognizer flattens `P`'s top-level `AND` and maps each conjunct to a guard clause:
+
+| Conjunct shape       | Guard clause                                |
+| -------------------- | ------------------------------------------- |
+| `col = literal`      | `eq-literal { column, value }`              |
+| `literal = col`      | same (normalized)                           |
+| `col1 = col2`        | `eq-column { left, right }`                 |
+| `col IS NULL`        | `is-null { column, negated: false }`        |
+| `col IS NOT NULL`    | `is-null { column, negated: true }`         |
+
+If **any** conjunct fails to map, the whole FD is dropped — a partial guard would falsely activate over rows the unrecognized conjunct excludes. A NOT-NULL gate matches the unconditional-UC path: every UC column must be declared NOT NULL, because nullable UC columns admit multiple NULLs even within the partial scope.
+
+Extraction is cached per `TableSchema` via `getPartialUniqueGuardedFds`. The downstream activation path is identical to the implication-form CHECK case: a Filter whose predicate entails `P` strips the guard and the FD becomes an ordinary key downstream, unlocking DISTINCT elimination, GROUP BY simplification, ORDER BY pruning, and FK→PK join elimination for queries inside the partial scope.
+
 **Activation lives at `FilterNode.computePhysical`.** Before extracting predicate-derived FDs, the filter walks inherited FDs and asks `predicateImpliesGuard(predicate, fd.guard, ecs, bindings, attrIdToIndex, isColumnNonNullable)` — a conservative implication check that flattens the predicate's `AND` conjunction and matches each guard clause against direct conjuncts, equivalence classes, constant bindings, and (for `is-null negated:true`) the source column's nullability. When entailed, the guard is stripped and the FD becomes an ordinary unconditional FD downstream; otherwise the guarded FD passes through unchanged so a later Filter / Join can still activate it once additional facts land.
 
 **Propagation rules:**
@@ -1324,7 +1338,7 @@ Predicates `predicateImpliesGuard` recognizes today: `col = literal` / `col = co
 - When equi-join pairs align with a foreign key→primary key relationship, the PK side's key is guaranteed covered (each FK row matches ≤1 PK row)
 - `CatalogStatsProvider.joinSelectivity()` uses FK→PK detection to produce tighter selectivity (`1/ndv_pk`) instead of the general `1/max(ndv_left, ndv_right)`
 - FK constraints stored in `TableSchema.foreignKeys`, extracted from AST during CREATE TABLE
-- Unique constraints stored in `TableSchema.uniqueConstraints`, surfaced as additional `RelationType.keys` (only when **all constrained columns are NOT NULL** and the constraint is **not partial** — partial UNIQUE constraints, i.e. those carrying a `predicate` from `CREATE UNIQUE INDEX ... WHERE ...`, only guarantee uniqueness within their scope and would derive an unsound `K → all-other-cols` FD over the whole table; see `relationTypeFromTableSchema` in `src/planner/type-utils.ts`)
+- Unique constraints stored in `TableSchema.uniqueConstraints`, surfaced as additional `RelationType.keys` (only when **all constrained columns are NOT NULL** and the constraint is **not partial** — partial UNIQUE constraints, i.e. those carrying a `predicate` from `CREATE UNIQUE INDEX ... WHERE ...`, only guarantee uniqueness within their scope and would derive an unsound `K → all-other-cols` FD over the whole table; see `relationTypeFromTableSchema` in `src/planner/type-utils.ts`). Partial UCs are instead routed through `partial-unique-extraction.ts` to emit *guarded* FDs that Filter activation discharges when a surrounding predicate entails the partial WHERE — see § Guarded (conditional) FDs above.
 
 **Inclusion-dependency reasoning** (`util/ind-utils.ts` + `rule-anti-join-fk-empty.ts` + `rule-semi-join-fk-trivial.ts` + `rule-join-elimination.ts`):
 

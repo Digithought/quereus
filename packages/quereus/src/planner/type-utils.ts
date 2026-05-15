@@ -43,8 +43,10 @@ export function relationTypeFromTableSchema(tableSchema: TableSchema): RelationT
   // the partial scope, so they cannot be promoted to relation-level keys —
   // doing so would let the FD layer derive `K → all-other-cols` over the
   // whole table and silently break DISTINCT/GROUP BY/ORDER BY/join-elimination
-  // for rows outside the scope. See fd-conditional-fd-from-partial-unique-index
-  // for the conditional-FD optimization opportunity.
+  // for rows outside the scope. Partial UCs are instead routed through
+  // `planner/analysis/partial-unique-extraction.ts`, which emits *guarded* FDs
+  // that Filter activation discharges when a surrounding predicate entails
+  // the partial WHERE.
   if (tableSchema.uniqueConstraints) {
     for (const uc of tableSchema.uniqueConstraints) {
       if (uc.predicate !== undefined) continue;

@@ -3,6 +3,7 @@ import { Database } from '../../src/core/database.js';
 import {
 	extractCheckConstraints,
 } from '../../src/planner/analysis/check-extraction.js';
+import { extractPartialUniqueGuardedFds } from '../../src/planner/analysis/partial-unique-extraction.js';
 import {
 	predicateImpliesGuard,
 	projectFds,
@@ -19,8 +20,9 @@ import type {
 	GuardPredicate,
 	ScalarPlanNode,
 } from '../../src/planner/nodes/plan-node.js';
-import type { RowConstraintSchema } from '../../src/schema/table.js';
-import { DEFAULT_ROWOP_MASK } from '../../src/schema/table.js';
+import type { ColumnSchema } from '../../src/schema/column.js';
+import type { RowConstraintSchema, TableSchema, UniqueConstraintSchema } from '../../src/schema/table.js';
+import { DEFAULT_ROWOP_MASK, buildColumnIndexMap } from '../../src/schema/table.js';
 import type * as AST from '../../src/parser/ast.js';
 import { INTEGER_TYPE, TEXT_TYPE } from '../../src/types/builtin-types.js';
 
@@ -370,6 +372,215 @@ describe('fd-utils: guarded FD helpers', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Partial UNIQUE extraction — unit tests
+// ---------------------------------------------------------------------------
+
+function makeColumn(name: string, notNull: boolean, type = INTEGER_TYPE): ColumnSchema {
+	return {
+		name,
+		logicalType: type,
+		notNull,
+		primaryKey: false,
+		pkOrder: 0,
+		defaultValue: null,
+		collation: 'BINARY',
+		generated: false,
+	};
+}
+
+function makeSchema(columns: ColumnSchema[], uniqueConstraints: UniqueConstraintSchema[]): TableSchema {
+	return {
+		name: 't',
+		schemaName: 'main',
+		columns,
+		columnIndexMap: buildColumnIndexMap(columns),
+		primaryKeyDefinition: [],
+		checkConstraints: [],
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		vtabModule: undefined as any,
+		vtabModuleName: 'memory',
+		isView: false,
+		uniqueConstraints,
+	};
+}
+
+describe('extractPartialUniqueGuardedFds', () => {
+	it('recognizes col = literal as a single eq-literal guard clause', () => {
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('c', true), makeColumn('status', true, TEXT_TYPE)],
+			[{ columns: [1], predicate: bin('=', colExpr('status'), lit('active')) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		expect(fds[0].determinants).to.deep.equal([1]);
+		expect(fds[0].dependents).to.deep.equal([0, 2]);
+		expect(fds[0].guard!.clauses).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('eq-literal');
+		if (c.kind !== 'eq-literal') return;
+		expect(c.column).to.equal(2);
+		expect(c.value).to.equal('active');
+	});
+
+	it("recognizes literal = col (operand-flipped) as eq-literal", () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE)],
+			[{ columns: [0], predicate: bin('=', lit('active'), colExpr('status')) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('eq-literal');
+		if (c.kind !== 'eq-literal') return;
+		expect(c.column).to.equal(1);
+		expect(c.value).to.equal('active');
+	});
+
+	it('recognizes col1 = col2 as eq-column', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('a', true), makeColumn('b', true)],
+			[{ columns: [0], predicate: bin('=', colExpr('a'), colExpr('b')) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('eq-column');
+		if (c.kind !== 'eq-column') return;
+		expect([c.left, c.right].sort()).to.deep.equal([1, 2]);
+	});
+
+	it('recognizes col IS NULL as is-null negated:false', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('deleted_at', false, TEXT_TYPE)],
+			[{ columns: [0], predicate: un('IS NULL', colExpr('deleted_at')) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('is-null');
+		if (c.kind !== 'is-null') return;
+		expect(c.column).to.equal(1);
+		expect(c.negated).to.equal(false);
+	});
+
+	it('recognizes col IS NOT NULL as is-null negated:true', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('archived', false, TEXT_TYPE)],
+			[{ columns: [0], predicate: un('IS NOT NULL', colExpr('archived')) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('is-null');
+		if (c.kind !== 'is-null') return;
+		expect(c.column).to.equal(1);
+		expect(c.negated).to.equal(true);
+	});
+
+	it('recognizes multi-conjunct AND into a multi-clause guard', () => {
+		const schema = makeSchema(
+			[
+				makeColumn('c', true),
+				makeColumn('status', true, TEXT_TYPE),
+				makeColumn('region', true, TEXT_TYPE),
+			],
+			[{
+				columns: [0],
+				predicate: bin('AND',
+					bin('=', colExpr('status'), lit('active')),
+					bin('=', colExpr('region'), lit('us'))),
+			}],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const clauses = fds[0].guard!.clauses;
+		expect(clauses).to.have.length(2);
+		const cols = clauses
+			.filter(c => c.kind === 'eq-literal')
+			.map(c => (c as { kind: 'eq-literal'; column: number; value: AST.LiteralExpr['value'] }).column)
+			.sort();
+		expect(cols).to.deep.equal([1, 2]);
+	});
+
+	it('rejects col > literal (range)', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('age', true)],
+			[{ columns: [0], predicate: bin('>', colExpr('age'), lit(18)) }],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it("rejects col != literal", () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE)],
+			[{ columns: [0], predicate: bin('!=', colExpr('status'), lit('x')) }],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it('rejects col IN (...)', () => {
+		const inExpr: AST.InExpr = {
+			type: 'in',
+			expr: colExpr('status'),
+			values: [lit('a'), lit('b')],
+		};
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE)],
+			[{ columns: [0], predicate: inExpr }],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it('rejects top-level OR', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE), makeColumn('region', true, TEXT_TYPE)],
+			[{
+				columns: [0],
+				predicate: or(
+					bin('=', colExpr('status'), lit('a')),
+					bin('=', colExpr('region'), lit('b'))),
+			}],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it('rejects nullable UC column (NOT-NULL gate)', () => {
+		const schema = makeSchema(
+			[makeColumn('c', false), makeColumn('status', true, TEXT_TYPE)],
+			[{ columns: [0], predicate: bin('=', colExpr('status'), lit('active')) }],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it('rejects the whole predicate if one conjunct is unrecognized (soundness)', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE), makeColumn('age', true)],
+			[{
+				columns: [0],
+				predicate: bin('AND',
+					bin('=', colExpr('status'), lit('active')),
+					bin('>', colExpr('age'), lit(18))),
+			}],
+		);
+		// One conjunct recognized, one not — whole FD is dropped.
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it('skips non-partial UCs', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE)],
+			[{ columns: [0] }],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it('returns nothing when table has no uniqueConstraints', () => {
+		const schema = makeSchema([makeColumn('c', true)], []);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // End-to-end via query_plan(...)
 // ---------------------------------------------------------------------------
 
@@ -460,6 +671,167 @@ describe('Conditional FDs: end-to-end propagation', () => {
 			return fdHas(props.fds, [1], [2]) || fdHas(props.fds, [2], [1]);
 		});
 		expect(anyUnguardedActivation, 'no node should have activated guard without status=active').to.equal(false);
+	});
+
+	describe('Partial UNIQUE → guarded FD', () => {
+		const setupPartialUnique = async (): Promise<void> => {
+			await db.exec(
+				"CREATE TABLE p (" +
+				" id INTEGER PRIMARY KEY," +
+				" c TEXT NOT NULL," +
+				" status TEXT NOT NULL," +
+				" region TEXT NOT NULL," +
+				" amt INTEGER NOT NULL" +
+				") USING memory"
+			);
+			await db.exec("CREATE UNIQUE INDEX ix_p_active ON p(c) WHERE status = 'active'");
+		};
+
+		it("table reference carries a guarded FD with eq-literal guard on `status`", async () => {
+			await setupPartialUnique();
+			const rows = await planRows(db, 'SELECT * FROM p');
+			const props = physicalOf(rows, r => /TABLEREF/i.test(r.op))
+				?? physicalOf(rows, r => /SCAN/i.test(r.op));
+			expect(props, 'expected table-ref physical props').to.not.equal(undefined);
+			// Columns: id=0, c=1, status=2, region=3, amt=4.
+			const guardedFd = props!.fds?.find(fd =>
+				fd.guard !== undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.guard.clauses.length === 1 &&
+				fd.guard.clauses[0].kind === 'eq-literal' &&
+				(fd.guard.clauses[0] as { kind: 'eq-literal'; column: number }).column === 2,
+			);
+			expect(guardedFd, 'expected guarded FD c → others with eq-literal status guard').to.not.equal(undefined);
+		});
+
+		it("filter with status='active' activates the guard: c → other-columns becomes unguarded", async () => {
+			await setupPartialUnique();
+			const rows = await planRows(db, "SELECT * FROM p WHERE status = 'active'");
+			const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+			expect(filterProps, 'expected Filter physical props').to.not.equal(undefined);
+			// Columns: id=0, c=1, status=2, region=3, amt=4.
+			// The activated FD's determinant is [1]; dependents should cover id/region/amt
+			// (status is pinned by the filter binding and may be merged or split).
+			const activated = filterProps!.fds?.find(fd =>
+				fd.guard === undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.dependents.includes(0) &&
+				fd.dependents.includes(3) &&
+				fd.dependents.includes(4),
+			);
+			expect(activated, 'expected activated unconditional FD c → others').to.not.equal(undefined);
+		});
+
+		it("filter with operand-flipped 'active' = status also activates the guard", async () => {
+			await setupPartialUnique();
+			const rows = await planRows(db, "SELECT * FROM p WHERE 'active' = status");
+			const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+			expect(filterProps, 'expected Filter physical props').to.not.equal(undefined);
+			const activated = filterProps!.fds?.some(fd =>
+				fd.guard === undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.dependents.length > 0,
+			);
+			expect(activated, 'expected operand-flipped predicate to discharge the guard').to.equal(true);
+		});
+
+		it("filter with status='inactive' (wrong literal) does NOT activate the guard", async () => {
+			await setupPartialUnique();
+			const rows = await planRows(db, "SELECT * FROM p WHERE status = 'inactive'");
+			const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+			expect(filterProps, 'expected Filter physical props').to.not.equal(undefined);
+			const anyUnconditionalCKey = filterProps!.fds?.some(fd =>
+				fd.guard === undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.dependents.includes(0),
+			);
+			expect(anyUnconditionalCKey ?? false, 'wrong filter must not activate guard').to.equal(false);
+		});
+
+		it("filter superset (status='active' AND amt > 5) still activates the guard", async () => {
+			await setupPartialUnique();
+			const rows = await planRows(db, "SELECT * FROM p WHERE status = 'active' AND amt > 5");
+			const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+			expect(filterProps, 'expected Filter physical props').to.not.equal(undefined);
+			const activated = filterProps!.fds?.some(fd =>
+				fd.guard === undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.dependents.includes(0),
+			);
+			expect(activated, 'extra conjuncts in filter are harmless to entailment').to.equal(true);
+		});
+
+		it("multi-conjunct partial predicate requires all conjuncts in the filter", async () => {
+			await db.exec(
+				"CREATE TABLE p2 (" +
+				" id INTEGER PRIMARY KEY," +
+				" c TEXT NOT NULL," +
+				" status TEXT NOT NULL," +
+				" region TEXT NOT NULL" +
+				") USING memory"
+			);
+			await db.exec("CREATE UNIQUE INDEX ix_p2 ON p2(c) WHERE status = 'active' AND region = 'us'");
+
+			// Both conjuncts present ⇒ activated.
+			{
+				const rows = await planRows(db, "SELECT * FROM p2 WHERE status = 'active' AND region = 'us'");
+				const fp = physicalOf(rows, r => r.op === 'FILTER');
+				expect(fp).to.not.equal(undefined);
+				const activated = fp!.fds?.some(fd =>
+					fd.guard === undefined &&
+					fd.determinants.length === 1 &&
+					fd.determinants[0] === 1 &&
+					fd.dependents.includes(0),
+				);
+				expect(activated, 'matching multi-conjunct filter activates').to.equal(true);
+			}
+
+			// Single conjunct only ⇒ NOT activated (the other guard clause remains unsatisfied).
+			{
+				const rows = await planRows(db, "SELECT * FROM p2 WHERE status = 'active'");
+				const fp = physicalOf(rows, r => r.op === 'FILTER');
+				expect(fp).to.not.equal(undefined);
+				const guardedSurvives = fp!.fds?.some(fd =>
+					fd.guard !== undefined &&
+					fd.determinants.length === 1 &&
+					fd.determinants[0] === 1,
+				);
+				const wronglyActivated = fp!.fds?.some(fd =>
+					fd.guard === undefined &&
+					fd.determinants.length === 1 &&
+					fd.determinants[0] === 1 &&
+					fd.dependents.includes(0),
+				);
+				expect(wronglyActivated ?? false, 'partial entailment must not activate').to.equal(false);
+				expect(guardedSurvives, 'guarded FD should still be present, waiting for a stronger filter').to.equal(true);
+			}
+		});
+
+		it("nullable UC column suppresses the FD (NOT-NULL gate) — no guarded FD on the source", async () => {
+			await db.exec(
+				"CREATE TABLE pn (" +
+				" id INTEGER PRIMARY KEY," +
+				" c TEXT NULL," +
+				" status TEXT NOT NULL" +
+				") USING memory"
+			);
+			await db.exec("CREATE UNIQUE INDEX ix_pn ON pn(c) WHERE status = 'active'");
+			const rows = await planRows(db, 'SELECT * FROM pn');
+			const props = physicalOf(rows, r => /TABLEREF/i.test(r.op))
+				?? physicalOf(rows, r => /SCAN/i.test(r.op));
+			expect(props, 'expected table-ref physical props').to.not.equal(undefined);
+			const partialFd = props!.fds?.find(fd =>
+				fd.guard !== undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1,
+			);
+			expect(partialFd, 'NOT-NULL gate must suppress the partial-UC FD').to.equal(undefined);
+		});
 	});
 
 	it("LEFT OUTER JOIN drops right-side guarded FDs", async () => {

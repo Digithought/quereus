@@ -177,3 +177,77 @@ insert into p_fdkey_full values (2, 'B');
 select count(*) as n from (select distinct c from p_fdkey_full);
 → [{"n":2}]
 drop table p_fdkey_full;
+
+-- =====================================================
+-- 7. Partial UNIQUE index → guarded FD; correctness across filter shapes.
+--
+-- The producer (partial-unique-extraction) emits a guarded FD `K → others | P`
+-- on the table reference. Filter activation discharges the guard when the
+-- surrounding predicate entails P. Observable plan-shape verification of the
+-- activation happens in unit tests (conditional-fds.spec.ts), which inspect
+-- the FilterNode's physical FDs directly. Here we pin runtime correctness:
+-- queries that *should* be safe against duplicates inside the partial scope
+-- must return the right rows whether or not the optimizer chose to eliminate
+-- DISTINCT / GROUP BY.
+-- =====================================================
+create table p7 (id integer primary key, c text not null, status text not null, region text not null, amt integer not null);
+create unique index ix_p7_active on p7(c) where status = 'active';
+insert into p7 values (1, 'A', 'active', 'us', 10);
+insert into p7 values (2, 'A', 'inactive', 'us', 20);
+insert into p7 values (3, 'B', 'active', 'us', 30);
+insert into p7 values (4, 'C', 'active', 'eu', 40);
+
+-- 7a. Direct match: filter exactly equal to the partial predicate.
+select c from p7 where status = 'active' order by c;
+→ [{"c":"A"},{"c":"B"},{"c":"C"}]
+
+-- 7b. DISTINCT is correct whether eliminated or not.
+select distinct c from (select c from p7 where status = 'active') order by c;
+→ [{"c":"A"},{"c":"B"},{"c":"C"}]
+
+-- 7c. Negative — no filter: DISTINCT must dedupe ('A' appears twice).
+select c from (select distinct c from p7) order by c;
+→ [{"c":"A"},{"c":"B"},{"c":"C"}]
+
+-- 7d. Negative — wrong filter: 'A' duplicates outside the partial scope.
+select count(*) as n from (select distinct c from p7 where status = 'inactive');
+→ [{"n":1}]
+
+-- 7e. GROUP BY: one row per group regardless of partial-FD discharge.
+select c, max(amt) as max_amt from p7 where status = 'active' group by c order by c;
+→ [{"c":"A","max_amt":10},{"c":"B","max_amt":30},{"c":"C","max_amt":40}]
+
+drop table p7;
+
+-- 7f. Multi-conjunct partial predicate: correctness when both clauses match,
+-- and when only one does (uniqueness no longer holds).
+create table p7m (id integer primary key, c text not null, status text not null, region text not null);
+create unique index ix_p7m on p7m(c) where status = 'active' and region = 'us';
+insert into p7m values (1, 'A', 'active', 'us');
+insert into p7m values (2, 'A', 'active', 'eu');
+insert into p7m values (3, 'B', 'active', 'us');
+
+-- Both conjuncts present: 'A' appears once (only the 'us' row matches).
+select c from p7m where status = 'active' and region = 'us' order by c;
+→ [{"c":"A"},{"c":"B"}]
+
+-- Single conjunct: 'A' appears twice (two active rows, different regions).
+-- DISTINCT must deduplicate (the partial UC doesn't cover the broader scope).
+select count(*) as n from (select distinct c from p7m where status = 'active');
+→ [{"n":2}]
+
+drop table p7m;
+
+-- 7g. Nullable UC column: NOT-NULL gate suppresses the FD entirely. Even
+-- with a perfectly matching filter, the partial UC doesn't give a key —
+-- nullable c admits duplicate NULLs inside the partial scope.
+create table p7n (id integer primary key, c text null, status text not null);
+create unique index ix_p7n on p7n(c) where status = 'active';
+insert into p7n values (1, 'A', 'active');
+insert into p7n values (2, 'B', 'active');
+insert into p7n values (3, null, 'active');
+
+select count(*) as n from (select distinct c from p7n where status = 'active');
+→ [{"n":3}]
+
+drop table p7n;
