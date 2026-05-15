@@ -32,13 +32,13 @@ import { SortNode } from '../../nodes/sort.js';
 import { LimitOffsetNode } from '../../nodes/limit-offset.js';
 import { DistinctNode } from '../../nodes/distinct-node.js';
 import { AliasNode } from '../../nodes/alias-node.js';
+import { AggregateNode } from '../../nodes/aggregate-node.js';
 import { JoinNode, extractEquiPairsFromCondition } from '../../nodes/join-node.js';
-import { ColumnReferenceNode, TableReferenceNode } from '../../nodes/reference.js';
+import { ColumnReferenceNode } from '../../nodes/reference.js';
 import { BinaryOpNode } from '../../nodes/scalar.js';
-import { RetrieveNode } from '../../nodes/retrieve-node.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { checkFkPkAlignment, extractTableSchema } from '../../util/key-utils.js';
-import type { ForeignKeyConstraintSchema, TableSchema } from '../../../schema/table.js';
+import { lookupCoveringFK, isRowPreservingPathToTable } from '../../util/ind-utils.js';
 
 const log = createLogger('optimizer:rule:join-elimination');
 
@@ -178,7 +178,7 @@ function setsIntersect(a: ReadonlySet<number>, b: ReadonlySet<number>): boolean 
  * disqualifies the rewrite — those residuals can change row counts beyond what
  * the FK→PK guarantee covers.
  */
-function isAndOfColumnEqualities(expr: ScalarPlanNode): boolean {
+export function isAndOfColumnEqualities(expr: ScalarPlanNode): boolean {
 	if (!(expr instanceof BinaryOpNode)) return false;
 	const stack: ScalarPlanNode[] = [expr];
 	while (stack.length > 0) {
@@ -226,75 +226,14 @@ function tryEliminate(
 	//     base table would have dropped rows that the FK→PK guarantee assumes
 	//     are present, so eliminating would silently survive orphaned FK rows.
 	if (join.joinType === 'inner') {
-		const fkRow = findMatchingForeignKey(fkSchema, pkSchema, fkEquiCols, pkEquiCols);
-		if (!fkRow) return null;
-		for (const colIdx of fkRow.columns) {
-			if (!fkSchema.columns[colIdx]?.notNull) return null;
-		}
+		const match = lookupCoveringFK(fkSchema, pkSchema, fkEquiCols, pkEquiCols);
+		if (!match) return null;
+		if (match.nullable) return null;
 		const eliminableSide = sideToRemove === 'right' ? join.right : join.left;
 		if (!isRowPreservingPathToTable(eliminableSide as RelationalPlanNode)) return null;
 	}
 
 	return (sideToRemove === 'right' ? join.left : join.right) as RelationalPlanNode;
-}
-
-/**
- * True when `node` is a chain of wrappers that produces the full row set of
- * its underlying base table — i.e. nothing between the join and the table can
- * filter, limit, or deduplicate rows. Required for INNER-JOIN elimination so
- * that dropping the eliminable side doesn't silently survive rows the join
- * would have filtered.
- *
- * Allowed wrappers: TableReferenceNode (base), RetrieveNode whose pipeline is
- * the bare TableReferenceNode (no pushed-down pipeline filter), AliasNode,
- * SortNode — all preserve row count *and* attribute-id mapping of their
- * source. ProjectNode is intentionally excluded: it may reorder/drop columns
- * which would invalidate the table-column-index→attribute-index assumption
- * `checkFkPkAlignment` relies on.
- * Anything else (Filter, LimitOffset, Distinct, Project, Join, Aggregate,
- * Window, CTE, SetOperation, …) disqualifies.
- */
-function isRowPreservingPathToTable(node: RelationalPlanNode): boolean {
-	if (node instanceof TableReferenceNode) return true;
-	if (node instanceof RetrieveNode) {
-		return node.source instanceof TableReferenceNode;
-	}
-	if (node instanceof AliasNode) return isRowPreservingPathToTable(node.source);
-	if (node instanceof SortNode) return isRowPreservingPathToTable(node.source);
-	return false;
-}
-
-function findMatchingForeignKey(
-	fkSchema: TableSchema,
-	pkSchema: TableSchema,
-	fkEquiCols: ReadonlyArray<number>,
-	pkEquiCols: ReadonlyArray<number>,
-): ForeignKeyConstraintSchema | undefined {
-	if (!fkSchema.foreignKeys) return undefined;
-
-	const equiMap = new Map<number, number>();
-	for (let i = 0; i < fkEquiCols.length; i++) {
-		equiMap.set(fkEquiCols[i], pkEquiCols[i]);
-	}
-
-	const pkColSet = new Set(pkSchema.primaryKeyDefinition.map(p => p.index));
-
-	for (const fk of fkSchema.foreignKeys) {
-		if (fk.referencedTable.toLowerCase() !== pkSchema.name.toLowerCase()) continue;
-		if (pkSchema.primaryKeyDefinition.length === 0) continue;
-		if (fk.columns.length !== pkSchema.primaryKeyDefinition.length) continue;
-
-		let aligned = true;
-		for (const fkColIdx of fk.columns) {
-			const pkColIdx = equiMap.get(fkColIdx);
-			if (pkColIdx === undefined || !pkColSet.has(pkColIdx)) {
-				aligned = false;
-				break;
-			}
-		}
-		if (aligned) return fk;
-	}
-	return undefined;
 }
 
 function rebuildChain(chain: ReadonlyArray<ChainEntry>, bottom: RelationalPlanNode): RelationalPlanNode {
@@ -331,6 +270,85 @@ function rebuildChain(chain: ReadonlyArray<ChainEntry>, bottom: RelationalPlanNo
 		}
 	}
 	return current;
+}
+
+/**
+ * Aggregate counterpart of `ruleJoinElimination`: when an Aggregate sits over
+ * a chain ending in an FK-covered inner join and the aggregate's payload only
+ * depends on the FK (left) side, drop the join.
+ *
+ * Why correct for `count(*)` and similar cardinality-only aggregates: a
+ * non-null FK with the IND `L.fk ⊆ R.pk` and an unfiltered R guarantees
+ * `|L ⋈ R| == |L|`, so `count(*)` over the join equals `count(*)` over L.
+ * More generally, when no aggregate argument or group key references R, the
+ * inner join's only effect is to gate L by `fk IS NOT NULL`, which the
+ * NOT-NULL precondition already rules out.
+ *
+ * Implementation mirrors the Project entrypoint: collect attribute IDs the
+ * Aggregate demands (group-key expressions + every aggregate expression),
+ * walk the wrapper chain to find the Join, run the same FK-PK alignment +
+ * row-preserving checks as the inner-join case, then rebuild the chain on
+ * the preserved side.
+ *
+ * Only `inner` joins are eligible here — outer joins reduce to inner in this
+ * context only when both sides demand attrs, which we'd have rejected already.
+ */
+export function ruleJoinEliminationUnderAggregate(node: PlanNode, _context: OptContext): PlanNode | null {
+	if (!(node instanceof AggregateNode)) return null;
+
+	const demanded = new Set<number>();
+	for (const groupExpr of node.groupBy) {
+		collectAttrIds(groupExpr, demanded);
+	}
+	for (const agg of node.aggregates) {
+		collectAttrIds(agg.expression, demanded);
+	}
+
+	const walk = walkChain(node.source, demanded);
+	if (!walk) return null;
+
+	const { join, chain } = walk;
+	// Only inner-eliminable shapes — see `ruleJoinElimination` notes.
+	if (join.joinType !== 'inner') return null;
+	if (!join.condition) return null;
+
+	const leftAttrs = join.left.getAttributes();
+	const rightAttrs = join.right.getAttributes();
+	const pairs = extractEquiPairsFromCondition(join.condition, leftAttrs, rightAttrs);
+	if (pairs.length === 0) return null;
+
+	const normalized = normalizePredicate(join.condition);
+	if (!isAndOfColumnEqualities(normalized)) return null;
+
+	const leftIds = new Set(leftAttrs.map(a => a.id));
+	const rightIds = new Set(rightAttrs.map(a => a.id));
+	const usesLeft = setsIntersect(demanded, leftIds);
+	const usesRight = setsIntersect(demanded, rightIds);
+
+	let preserved: RelationalPlanNode | null = null;
+	if (!usesRight) {
+		preserved = tryEliminate(join, 'right', pairs);
+	}
+	if (!preserved && !usesLeft) {
+		preserved = tryEliminate(join, 'left', pairs);
+	}
+	if (!preserved) return null;
+
+	log('Eliminating inner join under Aggregate; preserved side has %d attrs',
+		preserved.getAttributes().length);
+
+	const newSource = rebuildChain(chain, preserved);
+	if (!isRelationalNode(newSource)) {
+		throw new Error('rule-join-elimination-aggregate: rebuilt source must be relational');
+	}
+	return new AggregateNode(
+		node.scope,
+		newSource as RelationalPlanNode,
+		node.groupBy,
+		node.aggregates,
+		undefined,
+		node.getAttributes(),
+	);
 }
 
 function rebuildProject(project: ProjectNode, newSource: RelationalPlanNode): ProjectNode {

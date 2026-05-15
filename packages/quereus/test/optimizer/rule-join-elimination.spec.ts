@@ -152,7 +152,7 @@ describe('ruleJoinElimination', () => {
 		expect(joinCount(rows), `plan ops=${rows.map(r => r.op).join(',')}`).to.be.greaterThan(0);
 	});
 
-	it('does NOT eliminate FULL OUTER / CROSS / SEMI / ANTI joins', async () => {
+	it('does NOT eliminate FULL OUTER / CROSS joins via the Project-based rule', async () => {
 		await setupCustomersOrders();
 		// CROSS JOIN
 		const cross =
@@ -160,9 +160,14 @@ describe('ruleJoinElimination', () => {
 		const crossPlan = await planRows(db, cross);
 		expect(joinCount(crossPlan), `cross ops=${crossPlan.map(r => r.op).join(',')}`).to.be.greaterThan(0);
 
-		// SEMI / ANTI: EXISTS-based — decorrelation may transform but the result
-		// should still contain a join operator (semi or anti).
-		const semi = 'SELECT order_id FROM orders WHERE EXISTS (SELECT 1 FROM customers WHERE customers.id = orders.customer_id)';
+		// SEMI / ANTI without FK coverage: decorrelation produces a semi-join, the
+		// IND-existence folding rules abstain (no declared FK), and ruleJoinElimination
+		// itself never fires on SEMI/ANTI shapes — so a join op must survive.
+		await db.exec("CREATE TABLE plain_parent (id INTEGER PRIMARY KEY, label TEXT) USING memory");
+		await db.exec("CREATE TABLE plain_child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, payload TEXT) USING memory");
+		await db.exec("INSERT INTO plain_parent VALUES (1, 'p1')");
+		await db.exec("INSERT INTO plain_child VALUES (10, 1, 'a')");
+		const semi = 'SELECT id FROM plain_child c WHERE EXISTS (SELECT 1 FROM plain_parent p WHERE p.id = c.parent_id)';
 		const semiPlan = await planRows(db, semi);
 		const semiHasJoin = semiPlan.some(r => JOIN_OPS.has(r.op));
 		expect(semiHasJoin, `semi ops=${semiPlan.map(r => r.op).join(',')}`).to.equal(true);

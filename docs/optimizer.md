@@ -1289,6 +1289,18 @@ Disjunctions (`OR`), `NOT`, subqueries, and any function call the schema marks n
 - FK constraints stored in `TableSchema.foreignKeys`, extracted from AST during CREATE TABLE
 - Unique constraints stored in `TableSchema.uniqueConstraints`, surfaced as additional `RelationType.keys` (only when **all constrained columns are NOT NULL** and the constraint is **not partial** — partial UNIQUE constraints, i.e. those carrying a `predicate` from `CREATE UNIQUE INDEX ... WHERE ...`, only guarantee uniqueness within their scope and would derive an unsound `K → all-other-cols` FD over the whole table; see `relationTypeFromTableSchema` in `src/planner/type-utils.ts`)
 
+**Inclusion-dependency reasoning** (`util/ind-utils.ts` + `rule-anti-join-fk-empty.ts` + `rule-semi-join-fk-trivial.ts` + `rule-join-elimination.ts`):
+
+Foreign keys are inclusion dependencies — `child.fk ⊆ parent.pk` — and three optimizer rules exploit them to remove parent-side access entirely. All three run in the Structural pass at priority 26, after `rule-subquery-decorrelation` (priority 25) has materialized `EXISTS / NOT EXISTS / IN` as semi/anti joins. The shared util `lookupCoveringFK` walks `TableSchema.foreignKeys`, matches the equi-pairs (in any permutation), and reports the matched FK plus whether any child column is nullable; `isRowPreservingPathToTable` guards against parent-side filters/limits/distincts that would invalidate the IND under filtering.
+
+- **`rule-anti-join-fk-empty`**: `AntiJoin(L, R, p)` where `p` is AND-of-column-equalities, the equi-pairs cover a non-null FK on L referencing R's PK, and R is a row-preserving path to its base table → rewrite to `Filter(L, false)`. Correct because the IND guarantees every (non-null) L row has a matching parent in R, so the anti-join is empty.
+- **`rule-semi-join-fk-trivial`**: `SemiJoin(L, R, p)` with the same preconditions → rewrite to `L` (every L row matches) if every FK column is NOT NULL, otherwise to `Filter(L, fk_col IS NOT NULL AND …)` (rows with NULL in any FK column never match the equi-condition).
+- **`rule-join-elimination` (Aggregate entrypoint)**: `Aggregate(group, aggs, source = chain → Join(L, R))` where the inner join is FK-covered (non-null FK, row-preserving R) and neither the group keys nor any aggregate expression reference R → drop the join, keep the wrapper chain. Covers `count(*) from child join parent on …` since `|L ⋈ R| == |L|` under the FK/non-null guarantee.
+
+The federated-vtab payoff: each fold removes a remote round-trip to the parent table. Rules abstain conservatively when: the FK is undeclared, equi-pairs don't cover all FK columns, the parent side has a row-reducing wrapper (Filter, LimitOffset, Distinct, Project, non-trivial Retrieve pipeline), or — for the anti-join and inner-join cases — any FK column is nullable.
+
+The anti-join-to-empty rewrite emits `Filter(L, LiteralNode(false))` rather than a generic `EmptyRelationNode`; the codebase has no schema-polymorphic empty-relation primitive, and `Filter(L, false)` preserves L's attribute IDs so callers above the join keep working. A dedicated `EmptyRelationNode` is parked in backlog as a follow-up if profiling shows the literal-false pattern is opaque to downstream passes.
+
 **DISTINCT elimination** (`rule-distinct-elimination.ts`):
 - When a `DistinctNode`'s source already has a key (from logical `RelationType.keys`, or an FD-encoded key in `physical.fds` via `hasAnyKey` / `hasSingletonFd`), the DISTINCT is redundant and removed
 - Registered in the structural pass at priority 18 (after key inference, before predicate pushdown)

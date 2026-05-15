@@ -27,7 +27,7 @@ import { ruleFilterMerge } from './rules/predicate/rule-filter-merge.js';
 import { rulePredicateInferenceEquivalence } from './rules/predicate/rule-predicate-inference-equivalence.js';
 import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
-import { ruleJoinElimination } from './rules/join/rule-join-elimination.js';
+import { ruleJoinElimination, ruleJoinEliminationUnderAggregate } from './rules/join/rule-join-elimination.js';
 // Predicate pushdown rules
 // Core optimization rules
 import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
@@ -43,6 +43,8 @@ import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
 import { ruleInSubqueryCache } from './rules/cache/rule-in-subquery-cache.js';
 import { ruleSubqueryDecorrelation } from './rules/subquery/rule-subquery-decorrelation.js';
+import { ruleAntiJoinFkEmpty } from './rules/subquery/rule-anti-join-fk-empty.js';
+import { ruleSemiJoinFkTrivial } from './rules/subquery/rule-semi-join-fk-trivial.js';
 import { ruleDistinctElimination } from './rules/distinct/rule-distinct-elimination.js';
 import { ruleProjectionPruning } from './rules/retrieve/rule-projection-pruning.js';
 import { ruleScalarCSE } from './rules/cache/rule-scalar-cse.js';
@@ -238,6 +240,40 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleSubqueryDecorrelation,
 			priority: 25
+		});
+
+		// IND-driven existence folding (priority 26 — runs after decorrelation has
+		// materialized EXISTS / NOT EXISTS as semi/anti joins):
+		//   - Anti-join over a covering non-null FK → Filter(L, false)
+		//   - Semi-join over a covering FK → drop join (or Filter L on IS NOT NULL
+		//     when the FK is nullable)
+		// Both rules read `lookupCoveringFK` from `util/ind-utils.ts`.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'anti-join-fk-empty',
+			nodeType: PlanNodeType.Join,
+			phase: 'rewrite',
+			fn: ruleAntiJoinFkEmpty,
+			priority: 26
+		});
+
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'semi-join-fk-trivial',
+			nodeType: PlanNodeType.Join,
+			phase: 'rewrite',
+			fn: ruleSemiJoinFkTrivial,
+			priority: 26
+		});
+
+		// Aggregate variant of join-elimination: when an Aggregate sits over an
+		// FK-covered inner join and only references the FK side (or `count(*)`),
+		// drop the join. Shares chain-walking + FK-PK alignment with
+		// ruleJoinElimination via the same module.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'join-elimination-aggregate',
+			nodeType: PlanNodeType.Aggregate,
+			phase: 'rewrite',
+			fn: ruleJoinEliminationUnderAggregate,
+			priority: 26
 		});
 
 		// ORDER BY FD pruning: drop trailing ORDER BY keys functionally determined
