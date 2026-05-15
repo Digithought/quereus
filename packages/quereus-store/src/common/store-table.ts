@@ -18,9 +18,12 @@ import {
 	StatusCode,
 	compareSqlValues,
 	validateAndParse,
+	compilePredicate,
 	type Database,
 	type DatabaseInternal,
 	type TableSchema,
+	type UniqueConstraintSchema,
+	type CompiledPredicate,
 	type Row,
 	type FilterInfo,
 	type SqlValue,
@@ -138,6 +141,12 @@ export class StoreTable extends VirtualTable {
 	protected pendingStatsDelta = 0;
 	protected mutationCount = 0;
 	protected statsFlushPending = false;
+
+	// Lazy cache of compiled partial-UNIQUE predicates. Keyed on the
+	// UniqueConstraintSchema object identity — UC schemas are frozen and a
+	// new constraint object after CREATE/DROP INDEX produces a fresh compile;
+	// the WeakMap lets the GC reclaim entries for retired constraints.
+	private readonly predicateCache: WeakMap<UniqueConstraintSchema, CompiledPredicate> = new WeakMap();
 
 	constructor(
 		db: Database,
@@ -904,6 +913,21 @@ export class StoreTable extends VirtualTable {
 		}
 	}
 
+	/**
+	 * Returns the compiled predicate for a partial-UNIQUE constraint, or undefined
+	 * when the constraint covers the full table. Compilation is memoized per
+	 * UniqueConstraintSchema instance so the hot UNIQUE-check path doesn't recompile.
+	 */
+	private compileFor(uc: UniqueConstraintSchema): CompiledPredicate | undefined {
+		if (!uc.predicate) return undefined;
+		let compiled = this.predicateCache.get(uc);
+		if (!compiled) {
+			compiled = compilePredicate(uc.predicate, this.tableSchema!.columns);
+			this.predicateCache.set(uc, compiled);
+		}
+		return compiled;
+	}
+
 	/** Check if two PK arrays are equal. */
 	protected keysEqual(a: SqlValue[], b: SqlValue[]): boolean {
 		if (a.length !== b.length) return false;
@@ -913,13 +937,26 @@ export class StoreTable extends VirtualTable {
 		return true;
 	}
 
-	/** Returns true if any column covered by a UNIQUE constraint differs between oldRow and newRow. */
+	/**
+	 * Returns true if any column covered by a UNIQUE constraint differs between
+	 * oldRow and newRow, or — for partial UNIQUE — any column referenced by the
+	 * partial predicate differs (which can transition the row across the
+	 * predicate scope and re-trigger the uniqueness check).
+	 */
 	protected uniqueColumnsChanged(oldRow: Row, newRow: Row): boolean {
 		const ucs = this.tableSchema?.uniqueConstraints;
 		if (!ucs || ucs.length === 0) return false;
 		for (const uc of ucs) {
 			for (const colIdx of uc.columns) {
 				if (compareSqlValues(oldRow[colIdx], newRow[colIdx]) !== 0) return true;
+			}
+			if (uc.predicate) {
+				const compiled = this.compileFor(uc);
+				if (compiled) {
+					for (const colIdx of compiled.referencedColumns) {
+						if (compareSqlValues(oldRow[colIdx], newRow[colIdx]) !== 0) return true;
+					}
+				}
 			}
 		}
 		return false;
@@ -951,7 +988,12 @@ export class StoreTable extends VirtualTable {
 		for (const uc of uniqueConstraints) {
 			if (uc.columns.some(idx => newRow[idx] === null)) continue;
 
-			const conflict = await this.findUniqueConflict(uc.columns, newRow, selfPks);
+			// Partial UNIQUE: a row whose predicate is not unambiguously TRUE is
+			// outside the index's scope and contributes nothing to uniqueness.
+			const predicate = this.compileFor(uc);
+			if (predicate && predicate.evaluate(newRow) !== true) continue;
+
+			const conflict = await this.findUniqueConflict(uc, predicate, newRow, selfPks);
 			if (!conflict) continue;
 
 			// Resolve action per-constraint: statement OR > per-UC default > ABORT.
@@ -976,11 +1018,13 @@ export class StoreTable extends VirtualTable {
 
 	/**
 	 * Scan committed + pending data rows for a row matching `newRow` on
-	 * `constrainedCols` whose PK is not in `selfPks`. Returns the first match
-	 * or null.
+	 * `uc.columns` whose PK is not in `selfPks`. For partial UNIQUE, candidates
+	 * whose row does not satisfy the predicate are skipped. Returns the first
+	 * match or null.
 	 */
 	private async findUniqueConflict(
-		constrainedCols: ReadonlyArray<number>,
+		uc: UniqueConstraintSchema,
+		predicate: CompiledPredicate | undefined,
 		newRow: Row,
 		selfPks: SqlValue[][],
 	): Promise<{ pk: SqlValue[]; row: Row } | null> {
@@ -988,6 +1032,7 @@ export class StoreTable extends VirtualTable {
 		const pending = this.coordinator?.isInTransaction()
 			? this.coordinator.getPendingOpsForStore(store)
 			: null;
+		const constrainedCols = uc.columns;
 
 		const matches = (candidate: Row): { pk: SqlValue[]; row: Row } | null => {
 			const pk = this.extractPK(candidate);
@@ -997,6 +1042,8 @@ export class StoreTable extends VirtualTable {
 			for (const idx of constrainedCols) {
 				if (compareSqlValues(newRow[idx], candidate[idx]) !== 0) return null;
 			}
+			// Partial UNIQUE: candidate must also be in the predicate's scope to conflict.
+			if (predicate && predicate.evaluate(candidate) !== true) return null;
 			return { pk, row: candidate };
 		};
 

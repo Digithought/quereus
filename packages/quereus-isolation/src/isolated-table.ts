@@ -1,5 +1,5 @@
-import type { Database, DatabaseInternal, MaybePromise, Row, SqlValue, TableIndexSchema as IndexSchema, FilterInfo, SchemaChangeInfo, TableSchema, UpdateArgs, VirtualTableConnection, UpdateResult } from '@quereus/quereus';
-import { VirtualTable, compareSqlValues, isUpdateOk, IndexConstraintOp, ConflictResolution } from '@quereus/quereus';
+import type { Database, DatabaseInternal, MaybePromise, Row, SqlValue, TableIndexSchema as IndexSchema, FilterInfo, SchemaChangeInfo, TableSchema, UniqueConstraintSchema, CompiledPredicate, UpdateArgs, VirtualTableConnection, UpdateResult } from '@quereus/quereus';
+import { VirtualTable, compareSqlValues, isUpdateOk, IndexConstraintOp, ConflictResolution, compilePredicate } from '@quereus/quereus';
 import type { IsolationModule, ConnectionOverlayState } from './isolation-module.js';
 import { IsolatedConnection, type IsolatedTableCallback } from './isolated-connection.js';
 import { mergeStreams, createMergeEntry, createTombstone } from './merge-iterator.js';
@@ -33,6 +33,14 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	private readonly readCommitted: boolean;
 
 	private registeredConnection: IsolatedConnection | null = null;
+
+	/**
+	 * Lazy cache of compiled partial-UNIQUE predicates. Keyed on the
+	 * UniqueConstraintSchema object identity — a new constraint object
+	 * after CREATE/DROP INDEX produces a fresh compile, and the WeakMap
+	 * lets the GC reclaim entries for retired constraints.
+	 */
+	private readonly predicateCache: WeakMap<UniqueConstraintSchema, CompiledPredicate> = new WeakMap();
 
 	/**
 	 * Returns the connection-scoped set of savepoint depths that pre-date the overlay.
@@ -910,6 +918,21 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 
 	// ==================== Merged-View Conflict Detection ====================
 
+	/**
+	 * Returns the compiled predicate for a partial-UNIQUE constraint, or undefined
+	 * when the constraint covers the full table. Compilation is memoized per
+	 * UniqueConstraintSchema instance so the hot UNIQUE-check path doesn't recompile.
+	 */
+	private compileFor(uc: UniqueConstraintSchema): CompiledPredicate | undefined {
+		if (!uc.predicate) return undefined;
+		let compiled = this.predicateCache.get(uc);
+		if (!compiled) {
+			compiled = compilePredicate(uc.predicate, this.tableSchema!.columns);
+			this.predicateCache.set(uc, compiled);
+		}
+		return compiled;
+	}
+
 	private keysEqual(a: SqlValue[], b: SqlValue[]): boolean {
 		if (a.length !== b.length) return false;
 		for (let i = 0; i < a.length; i++) {
@@ -970,18 +993,21 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	}
 
 	/**
-	 * Scans the underlying table for a row conflicting with newRow on constrainedCols,
-	 * excluding selfPks and rows tombstoned in the overlay.
+	 * Scans the underlying table for a row conflicting with newRow on `uc.columns`,
+	 * excluding selfPks and rows tombstoned in the overlay. For partial UNIQUE,
+	 * candidates whose row does not satisfy the predicate are skipped.
 	 */
 	private async findMergedUniqueConflict(
 		overlay: VirtualTable,
-		constrainedCols: ReadonlyArray<number>,
+		uc: UniqueConstraintSchema,
+		predicate: CompiledPredicate | undefined,
 		newRow: Row,
 		selfPks: SqlValue[][],
 		tombstoneIndex: number,
 	): Promise<{ pk: SqlValue[]; row: Row } | null> {
 		if (!this.underlyingTable.query) return null;
 		const pkIndices = this.getPrimaryKeyIndices();
+		const constrainedCols = uc.columns;
 
 		for await (const underlyingRow of this.underlyingTable.query(this.createFullScanFilterInfo())) {
 			const pk = pkIndices.map(i => underlyingRow[i]);
@@ -994,7 +1020,10 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 				if (newRow[idx] === null || underlyingRow[idx] === null) return false;
 				return compareSqlValues(newRow[idx], underlyingRow[idx]) === 0;
 			});
-			if (matches) return { pk, row: underlyingRow };
+			if (!matches) continue;
+			// Partial UNIQUE: candidate must also be in the predicate's scope to conflict.
+			if (predicate && predicate.evaluate(underlyingRow) !== true) continue;
+			return { pk, row: underlyingRow };
 		}
 		return null;
 	}
@@ -1017,7 +1046,12 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 		for (const uc of uniqueConstraints) {
 			if (uc.columns.some(idx => newRow[idx] === null)) continue;
 
-			const conflict = await this.findMergedUniqueConflict(overlay, uc.columns, newRow, selfPks, tombstoneIndex);
+			// Partial UNIQUE: a row whose predicate is not unambiguously TRUE is
+			// outside the index's scope and contributes nothing to uniqueness.
+			const predicate = this.compileFor(uc);
+			if (predicate && predicate.evaluate(newRow) !== true) continue;
+
+			const conflict = await this.findMergedUniqueConflict(overlay, uc, predicate, newRow, selfPks, tombstoneIndex);
 			if (!conflict) continue;
 
 			// Statement OR > per-UC defaultConflict > ABORT.
