@@ -1110,5 +1110,22 @@ describe('IsolationModule', () => {
 			const rows = await asyncIterableToArray(db.eval(`SELECT a, b FROM iso_dut ORDER BY a`));
 			expect(rows.map((r: any) => [r.a, r.b])).to.deep.equal([[1, 100], [2, 100]]);
 		});
+
+		it('preserves staged tombstones across DROP INDEX inside an active transaction', async () => {
+			// Verifies the overlay rebuild copies tombstone rows verbatim, so a
+			// DELETE staged before DROP INDEX still results in the row being
+			// removed at COMMIT.
+			await db.exec(`CREATE TABLE iso_dtb (a INTEGER PRIMARY KEY, b INTEGER) USING isolated`);
+			await db.exec(`INSERT INTO iso_dtb VALUES (1, 100), (2, 200)`);
+			await db.exec(`CREATE UNIQUE INDEX iso_dtb_b ON iso_dtb (b)`);
+
+			await db.exec(`BEGIN`);
+			await db.exec(`DELETE FROM iso_dtb WHERE a = 1`);
+			await db.exec(`DROP INDEX iso_dtb_b`);
+			await db.exec(`COMMIT`);
+
+			const rows = await asyncIterableToArray(db.eval(`SELECT a, b FROM iso_dtb ORDER BY a`));
+			expect(rows.map((r: any) => [r.a, r.b])).to.deep.equal([[2, 200]]);
+		});
 	});
 });
