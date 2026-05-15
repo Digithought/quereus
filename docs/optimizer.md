@@ -1258,7 +1258,7 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 - When equi-join pairs align with a foreign key→primary key relationship, the PK side's key is guaranteed covered (each FK row matches ≤1 PK row)
 - `CatalogStatsProvider.joinSelectivity()` uses FK→PK detection to produce tighter selectivity (`1/ndv_pk`) instead of the general `1/max(ndv_left, ndv_right)`
 - FK constraints stored in `TableSchema.foreignKeys`, extracted from AST during CREATE TABLE
-- Unique constraints stored in `TableSchema.uniqueConstraints`, surfaced as additional `RelationType.keys`
+- Unique constraints stored in `TableSchema.uniqueConstraints`, surfaced as additional `RelationType.keys` (only when **all constrained columns are NOT NULL** and the constraint is **not partial** — partial UNIQUE constraints, i.e. those carrying a `predicate` from `CREATE UNIQUE INDEX ... WHERE ...`, only guarantee uniqueness within their scope and would derive an unsound `K → all-other-cols` FD over the whole table; see `relationTypeFromTableSchema` in `src/planner/type-utils.ts`)
 
 **DISTINCT elimination** (`rule-distinct-elimination.ts`):
 - When a `DistinctNode`'s source already has a key (from logical `RelationType.keys`, or an FD-encoded key in `physical.fds` via `hasAnyKey` / `hasSingletonFd`), the DISTINCT is redundant and removed
