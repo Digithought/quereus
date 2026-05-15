@@ -203,6 +203,29 @@ describe('extractCheckConstraints (unit)', () => {
 		expect(result.fds).to.have.length(0);
 	});
 
+	it('check (0 < qty) — column on RHS of inequality is normalized via flipComparison', () => {
+		const result = extractCheckConstraints(
+			[check(bin('<', lit(0), col('qty')))],
+			colMap,
+			allDeterministic,
+		);
+		expect(result.domainConstraints).to.have.length(1);
+		const d = result.domainConstraints[0];
+		expect(d.kind).to.equal('range');
+		if (d.kind !== 'range') return;
+		expect(d.column).to.equal(6);
+		// `0 < qty` flips to `qty > 0` → strict lower bound at 0, no upper.
+		expect(d.min).to.equal(0);
+		expect(d.minInclusive).to.equal(false);
+		expect(d.max).to.equal(undefined);
+	});
+
+	it('check (a == b) — the `==` operator alias is recognized as equality', () => {
+		const result = extractCheckConstraints([check(bin('==', col('a'), col('b')))], colMap, allDeterministic);
+		expect(result.fds).to.have.length(2);
+		expect(result.equivPairs).to.deep.equal([[0, 1]]);
+	});
+
 	it('check (b = some_nondeterministic_fn(a)) — non-deterministic call drops the whole check', () => {
 		const isDeterministic = (fnName: string) => fnName !== 'random_fn';
 		const result = extractCheckConstraints(
@@ -310,6 +333,26 @@ describe('CHECK-derived FDs/domains: end-to-end propagation', () => {
 		// Left's two columns at indices 0 and 1; right's status at index 3.
 		const survived = props!.domainConstraints?.find(d => d.column === 3);
 		expect(survived, 'right-side domain must not survive a left outer').to.equal(undefined);
+	});
+
+	it("EC closure: check (status = 'a') AND (status = alt_status) pins both columns to 'a'", async () => {
+		await db.exec(
+			"CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, alt_status TEXT, " +
+			"CHECK (status = 'a'), CHECK (status = alt_status)) USING memory"
+		);
+		const rows = await planRows(db, 'SELECT id, status, alt_status FROM t');
+		// Find the leaf where bindings should surface (table ref or scan).
+		const candidate = rows
+			.map(r => r.physical ? JSON.parse(r.physical) as PhysicalProps : undefined)
+			.find(p => p?.constantBindings && p.constantBindings.length > 0);
+		expect(candidate, 'expected at least one constant binding').to.not.equal(undefined);
+		// status=col1, alt_status=col2 — both should appear in some binding's attrs.
+		const allAttrs = new Set<number>();
+		for (const cb of candidate!.constantBindings ?? []) {
+			for (const a of cb.attrs) allAttrs.add(a);
+		}
+		expect(allAttrs.has(1), "binding should cover 'status' (col 1)").to.equal(true);
+		expect(allAttrs.has(2), "binding should cover 'alt_status' (col 2) via EC closure").to.equal(true);
 	});
 
 	it('Project drops domains on columns it does not project', async () => {
