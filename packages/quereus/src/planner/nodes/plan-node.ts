@@ -49,6 +49,23 @@ export interface FunctionalDependency {
   readonly dependents: readonly number[];
   /** When defined, the FD only activates if a surrounding predicate entails every clause. */
   readonly guard?: GuardPredicate;
+  /** Optional provenance tag — informational for diagnostics, ignored by dedup. */
+  readonly source?: ConstraintProvenance;
+}
+
+/**
+ * Origin of an inferred constraint (FD / binding / domain). Optional and
+ * informational — dedup helpers in `fd-utils.ts` compare structural fields
+ * only, so identical constraints from different sources collapse to one and
+ * the kept entry's provenance is whichever was merged first. When a declared
+ * CHECK and a hoisted assertion produce structurally-identical contributions,
+ * the table reference merges declared-check facts first, so `declared-check`
+ * wins.
+ */
+export interface ConstraintProvenance {
+  readonly kind: 'declared-check' | 'assertion';
+  /** Lowercased assertion name when kind === 'assertion'. */
+  readonly name?: string;
 }
 
 /**
@@ -113,6 +130,8 @@ export interface ConstantBinding {
   /** Output column indices pinned to `value`. */
   readonly attrs: readonly number[];
   readonly value: ConstantValue;
+  /** Optional provenance tag — informational, ignored by dedup. */
+  readonly source?: ConstraintProvenance;
 }
 
 /**
@@ -142,12 +161,16 @@ export type DomainConstraint =
 		readonly minInclusive: boolean;
 		/** Upper bound is inclusive. Ignored when `max` is absent. */
 		readonly maxInclusive: boolean;
+		/** Optional provenance tag — informational, ignored by dedup. */
+		readonly source?: ConstraintProvenance;
 	}
 	| {
 		readonly kind: 'enum';
 		/** Output column index. */
 		readonly column: number;
 		readonly values: ReadonlyArray<SqlValue>;
+		/** Optional provenance tag — informational, ignored by dedup. */
+		readonly source?: ConstraintProvenance;
 	};
 
 /**

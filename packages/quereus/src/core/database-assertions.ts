@@ -236,6 +236,19 @@ export class AssertionEvaluator {
 			);
 		}
 
+		// Suppress optimizer-side assertion-hoisting throughout assertion plan
+		// compilation. Otherwise the hoist would let the optimizer fold this
+		// assertion's own violation query to empty (the assertion would prove
+		// its own non-violation), defeating commit-time enforcement.
+		// See `planner/analysis/assertion-hoist-cache.ts`.
+		return this.ctx.schemaManager.withSuppressedAssertionHoist(() => this.compileUnderSuppression(assertion, ast, key));
+	}
+
+	private compileUnderSuppression(
+		assertion: { name: string; violationSql: string },
+		ast: AST.Statement,
+		key: string,
+	): CachedAssertionPlan {
 		const { plan } = this.ctx._buildPlan([ast]);
 		const analyzed = this.ctx.optimizer.optimizeForAnalysis(plan, this.ctx as unknown as Database) as BlockNode;
 
@@ -367,7 +380,11 @@ export class AssertionEvaluator {
 	}
 
 	private async executeViolationOnce(assertionName: string, sql: string): Promise<void> {
+		// `prepare()` defers planning; force compile under hoist-suppression so
+		// the optimizer can't fold this assertion's own violation query to
+		// empty. See `getOrCompilePlan`.
 		const stmt = this.ctx.prepare(sql);
+		this.ctx.schemaManager.withSuppressedAssertionHoist(() => { stmt.compile(); });
 		try {
 			const violatingRows: SqlValue[][] = [];
 			// Use _iterateRowsRaw() to avoid transaction management - we're already inside

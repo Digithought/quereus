@@ -1299,6 +1299,58 @@ If **any** conjunct fails to map, the whole FD is dropped — a partial guard wo
 
 Extraction is cached per `TableSchema` via `getPartialUniqueGuardedFds`. The downstream activation path is identical to the implication-form CHECK case: a Filter whose predicate entails `P` strips the guard and the FD becomes an ordinary key downstream, unlocking DISTINCT elimination, GROUP BY simplification, ORDER BY pruning, and FK→PK join elimination for queries inside the partial scope.
 
+#### Assertion-derived premises
+
+`CREATE ASSERTION` whose CHECK matches the canonical *trivially universal* shape
+
+```
+not exists (select 1 from T [where P])
+```
+
+is treated as if `T` carried a per-row `check (not P)`. The classifier
+(`planner/analysis/assertion-classifier.ts`) recognizes the shape syntactically
+— a top-level `NOT` over an `EXISTS` subquery whose SELECT has exactly one
+base-table FROM, no joins / GROUP BY / HAVING / ORDER BY / LIMIT / OFFSET /
+set ops, and an optional `where` clause that references only columns of `T`
+(no correlated refs, no subqueries, no aggregates, no non-deterministic
+calls). When all gates pass, the negated inner predicate `NOT P` is pushed
+through De Morgan / comparison-flip rules (`negateAst`) and fed into the
+existing `extractCheckConstraints` pipeline, producing FDs / EC pairs /
+constant bindings / domain constraints exactly as a declared CHECK would.
+
+Out of scope (silently falls through to commit-time enforcement):
+
+- Existential assertions (`check (exists (...))`).
+- Multi-table assertions / joined subqueries.
+- Aggregate-form assertions (`(select count(*) from t) = 0`, `sum(qty) >= 0`).
+- Unconditional-empty assertions (`not exists (select 1 from t)`) — would
+  synthesize `check (false)`; deferred as too aggressive for the pilot.
+- View-targeted assertions (only base `TableSchema` targets qualify).
+- Non-deterministic calls inside the inner predicate.
+
+Wiring lives in `TableReferenceNode.computePhysical`, which calls
+`getAssertionHoistedConstraints(schemaManager, tableSchema)` from
+`planner/analysis/assertion-hoist-cache.ts`. Results are cached per
+`(SchemaManager, TableSchema)` via a `WeakMap`-backed registry and a
+generation counter the registry bumps on every `assertion_added` /
+`assertion_removed` / `assertion_modified` event from `SchemaChangeNotifier`
+(see `schema/change-events.ts`). The cache compares generations on lookup
+and recomputes on mismatch — so `DROP ASSERTION` invalidates the hoisted
+view automatically.
+
+Hoisted contributions tag each emitted FD / `ConstantBinding` /
+`DomainConstraint` with `source = { kind: 'assertion', name }` (see
+`ConstraintProvenance` in `plan-node.ts`). The dedup helpers in
+`fd-utils.ts` compare structural fields only and ignore `source`, so when a
+declared CHECK and a hoisted assertion produce structurally identical facts
+the table reference (which merges declared first) keeps the
+`declared-check`-flavored entry. Provenance is informational; downstream
+rules ignore it.
+
+**Soundness:** hoisted facts are an additive optimizer signal only.
+`AssertionEvaluator` in `core/database-assertions.ts` continues to run the
+violation query at COMMIT and remains the source of truth.
+
 **Activation lives at `FilterNode.computePhysical`.** Before extracting predicate-derived FDs, the filter walks inherited FDs and asks `predicateImpliesGuard(predicate, fd.guard, ecs, bindings, attrIdToIndex, isColumnNonNullable, isColumnNumeric)` — a conservative implication check that flattens the predicate's `AND` conjunction and matches each guard clause against direct conjuncts, equivalence classes, constant bindings, and (for `is-null negated:true`) the source column's nullability. `isColumnNumeric` gates the `NOT col → col = 0` rewrite (numeric columns only — see above). When entailed, the guard is stripped and the FD becomes an ordinary unconditional FD downstream; otherwise the guarded FD passes through unchanged so a later Filter / Join can still activate it once additional facts land.
 
 **Propagation rules:**

@@ -36,7 +36,8 @@ export function emitCreateAssertion(plan: CreateAssertionNode, _ctx: EmissionCon
 			violationSql,
 			deferrable: true, // Auto-deferred for multi-table constraints
 			initiallyDeferred: true,
-			dependentTables: []
+			dependentTables: [],
+			checkExpression: plan.checkExpression,
 		};
 
 		// Discover dependent base tables (best-effort; conservative if any failure)
@@ -77,7 +78,7 @@ export function emitCreateAssertion(plan: CreateAssertionNode, _ctx: EmissionCon
 			);
 		}
 
-		schema.addAssertion(assertionSchema);
+		schemaManager.addAssertion(schema.name, assertionSchema);
 
 		log('Created assertion %s with violationSql: %s', plan.name, violationSql);
 		return null;

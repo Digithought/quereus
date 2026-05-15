@@ -118,6 +118,12 @@ export function minimalCover(
 	return result;
 }
 
+// Structural-only equality: compares determinants/dependents/guard. The
+// optional `source` provenance tag (`declared-check` vs `assertion`) is NOT
+// compared here, so two structurally-identical FDs from different sources
+// collapse to one in `addFd` / `mergeFds`. The first-merged source wins —
+// table references merge declared-check contributions before hoisted
+// assertion contributions, so `declared-check` is preferred on collisions.
 function fdsEqual(a: FunctionalDependency, b: FunctionalDependency): boolean {
 	if (a.determinants.length !== b.determinants.length) return false;
 	if (a.dependents.length !== b.dependents.length) return false;
@@ -1300,6 +1306,9 @@ function constantValueOf(n: ScalarPlanNode): ConstantValue | undefined {
 // ConstantBinding helpers
 // ---------------------------------------------------------------------------
 
+// Structural value-equality used by `mergeConstantBindings` to coalesce
+// bindings on identical values. ConstantBinding.source is NOT compared at
+// merge time — see `fdsEqual` for the dedup-precedence rule.
 function constantValueEquals(a: ConstantValue, b: ConstantValue): boolean {
 	if (a.kind !== b.kind) return false;
 	if (a.kind === 'literal' && b.kind === 'literal') {
@@ -1452,6 +1461,8 @@ function sqlValueEquals(a: import('../../common/types.js').SqlValue, b: import('
 	return false;
 }
 
+// Structural-only equality. The optional `source` provenance tag is NOT
+// compared — see `fdsEqual` above for the dedup-precedence rule.
 function domainConstraintEquals(a: DomainConstraint, b: DomainConstraint): boolean {
 	if (a.column !== b.column || a.kind !== b.kind) return false;
 	if (a.kind === 'range' && b.kind === 'range') {

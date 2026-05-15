@@ -1,8 +1,10 @@
 import type { BaseType, ScalarType, RelationType } from '../../common/datatype.js';
-import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute, type InjectivityResult, type MonotonicityResult, type PhysicalProperties, type FunctionalDependency, type ConstantBinding } from './plan-node.js';
-import { addFd, closeConstantBindingsOverEcs, mergeConstantBindings, mergeEquivClasses } from '../util/fd-utils.js';
+import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute, type InjectivityResult, type MonotonicityResult, type PhysicalProperties, type FunctionalDependency, type ConstantBinding, type DomainConstraint } from './plan-node.js';
+import { addFd, closeConstantBindingsOverEcs, mergeConstantBindings, mergeDomainConstraints, mergeEquivClasses } from '../util/fd-utils.js';
 import { getCheckExtraction } from '../analysis/check-extraction.js';
 import { getPartialUniqueGuardedFds } from '../analysis/partial-unique-extraction.js';
+import { getAssertionHoistedConstraints } from '../analysis/assertion-hoist-cache.js';
+import type { SchemaManager } from '../../schema/manager.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { Scope } from '../scopes/scope.js';
@@ -31,7 +33,17 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 		public readonly vtabModule: AnyVirtualTableModule,
 		public readonly vtabAuxData?: unknown,
 		estimatedCostOverride?: number,
-		public readonly readCommitted: boolean = false
+		public readonly readCommitted: boolean = false,
+		/**
+		 * Optional reference to the schema manager that owns `tableSchema`.
+		 * Threaded through so `computePhysical` can hoist qualifying CREATE
+		 * ASSERTION predicates into FD / EC / binding / domain contributions
+		 * via `assertion-hoist-cache`. When undefined (e.g. tests that
+		 * construct a TableReferenceNode in isolation), assertion-hoisting is
+		 * skipped — declared CHECK / partial-unique contributions are
+		 * unaffected.
+		 */
+		public readonly schemaManager?: SchemaManager,
 	) {
 		super(scope, estimatedCostOverride ?? 1);
 		this.typeCache = new Cached(() => relationTypeFromTableSchema(tableSchema));
@@ -115,24 +127,49 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 			fds = addFd(fds, fd);
 		}
 
+		// Assertion-hoist contributions. CREATE ASSERTION predicates in canonical
+		// `not exists (select 1 from T [where P])` shape are folded onto T as
+		// if they were per-row CHECKs — see `assertion-hoist-cache.ts`. Merged
+		// AFTER declared-check / partial-unique so structurally-identical
+		// dedup'd entries keep the declared-check provenance.
+		const hoisted = this.schemaManager !== undefined
+			? getAssertionHoistedConstraints(this.schemaManager, this.tableSchema)
+			: undefined;
+		if (hoisted) {
+			for (const fd of hoisted.fds) fds = addFd(fds, fd);
+		}
+
 		let equivClasses: ReadonlyArray<ReadonlyArray<number>> = [];
-		if (checkExt.equivPairs.length > 0) {
-			equivClasses = mergeEquivClasses([], checkExt.equivPairs.map(p => [p[0], p[1]]));
+		const allEquivPairs: Array<[number, number]> = [];
+		for (const p of checkExt.equivPairs) allEquivPairs.push([p[0], p[1]]);
+		if (hoisted) for (const p of hoisted.equivPairs) allEquivPairs.push([p[0], p[1]]);
+		if (allEquivPairs.length > 0) {
+			equivClasses = mergeEquivClasses([], allEquivPairs);
 		}
 
 		let constantBindings: ReadonlyArray<ConstantBinding> = [];
-		if (checkExt.constantBindings.length > 0) {
+		const hasBindings = checkExt.constantBindings.length > 0
+			|| (hoisted?.constantBindings.length ?? 0) > 0;
+		if (hasBindings) {
 			constantBindings = mergeConstantBindings([], checkExt.constantBindings);
+			if (hoisted && hoisted.constantBindings.length > 0) {
+				constantBindings = mergeConstantBindings(constantBindings, hoisted.constantBindings);
+			}
 			if (equivClasses.length > 0) {
 				constantBindings = closeConstantBindingsOverEcs(constantBindings, equivClasses);
 			}
+		}
+
+		let domainConstraints: ReadonlyArray<DomainConstraint> = checkExt.domainConstraints;
+		if (hoisted && hoisted.domainConstraints.length > 0) {
+			domainConstraints = mergeDomainConstraints(domainConstraints, hoisted.domainConstraints);
 		}
 
 		const out: Partial<PhysicalProperties> = {};
 		if (fds.length > 0) out.fds = fds;
 		if (equivClasses.length > 0) out.equivClasses = equivClasses;
 		if (constantBindings.length > 0) out.constantBindings = constantBindings;
-		if (checkExt.domainConstraints.length > 0) out.domainConstraints = checkExt.domainConstraints;
+		if (domainConstraints.length > 0) out.domainConstraints = domainConstraints;
 		return out;
 	}
 

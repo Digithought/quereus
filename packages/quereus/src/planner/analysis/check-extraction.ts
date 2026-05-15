@@ -444,7 +444,7 @@ function recognizeGuardedBody(
  * returns false, or contains a subquery. Used to skip whole CHECK expressions
  * that we cannot reason about safely.
  */
-function containsNonDeterministicCall(
+export function containsNonDeterministicCall(
 	expr: AST.Expression,
 	isDeterministic: (fnName: string, argc: number) => boolean,
 ): boolean {

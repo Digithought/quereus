@@ -54,6 +54,15 @@ export class SchemaManager {
 	private defaultVTabModuleArgs: Record<string, SqlValue> = {};
 	private db: Database;
 	private changeNotifier = new SchemaChangeNotifier();
+	/**
+	 * Re-entrancy guard: when truthy, optimizer-side assertion hoisting is
+	 * suppressed. Set by `AssertionEvaluator` while compiling an assertion's
+	 * own violation query — without this guard, the hoist would make the
+	 * violation query plan to empty (the optimizer would trust the assertion
+	 * to prove its own non-violation), defeating commit-time enforcement.
+	 * See `assertion-hoist-cache.ts` and `core/database-assertions.ts`.
+	 */
+	private assertionHoistSuppressed: number = 0;
 
 	/**
 	 * Creates a new schema manager
@@ -240,10 +249,85 @@ export class SchemaManager {
 	}
 
 	/**
+	 * Adds (or replaces) an assertion in the named schema, firing
+	 * `assertion_added` or `assertion_modified` events as appropriate.
+	 * The Schema object itself does not hold a notifier; this wrapper exists
+	 * so optimizer caches (e.g. assertion-hoist) can invalidate on change.
+	 */
+	addAssertion(schemaName: string, assertion: IntegrityAssertionSchema): void {
+		const schema = this.schemas.get(schemaName.toLowerCase());
+		if (!schema) {
+			throw new QuereusError(`Schema not found: ${schemaName}`, StatusCode.ERROR);
+		}
+		const existing = schema.getAssertion(assertion.name);
+		schema.addAssertion(assertion);
+		if (existing) {
+			this.changeNotifier.notifyChange({
+				type: 'assertion_modified',
+				schemaName: schemaName,
+				objectName: assertion.name,
+				oldObject: existing,
+				newObject: assertion,
+			});
+		} else {
+			this.changeNotifier.notifyChange({
+				type: 'assertion_added',
+				schemaName: schemaName,
+				objectName: assertion.name,
+				newObject: assertion,
+			});
+		}
+	}
+
+	/**
+	 * Removes an assertion from the named schema, firing `assertion_removed`
+	 * on success. Returns true iff the assertion existed and was removed.
+	 */
+	removeAssertion(schemaName: string, name: string): boolean {
+		const schema = this.schemas.get(schemaName.toLowerCase());
+		if (!schema) return false;
+		const existing = schema.getAssertion(name);
+		if (!existing) return false;
+		const removed = schema.removeAssertion(name);
+		if (removed) {
+			this.changeNotifier.notifyChange({
+				type: 'assertion_removed',
+				schemaName: schemaName,
+				objectName: name,
+				oldObject: existing,
+			});
+		}
+		return removed;
+	}
+
+	/**
 	 * Gets the schema change notifier for listening to schema changes
 	 */
 	getChangeNotifier(): SchemaChangeNotifier {
 		return this.changeNotifier;
+	}
+
+	/**
+	 * True when assertion-hoisting must be suppressed (the caller is currently
+	 * planning an assertion's own violation query). Read by
+	 * `getAssertionHoistedConstraints`.
+	 */
+	isAssertionHoistSuppressed(): boolean {
+		return this.assertionHoistSuppressed > 0;
+	}
+
+	/**
+	 * Run `fn` with assertion-hoisting suppressed. Re-entrant via a depth
+	 * counter so nested suppressions compose. Always restores the previous
+	 * state, even when `fn` throws.
+	 */
+	withSuppressedAssertionHoist<T>(fn: () => T): T {
+		this.assertionHoistSuppressed++;
+		try {
+			return fn();
+		} finally {
+			this.assertionHoistSuppressed--;
+		}
 	}
 
 	/**
