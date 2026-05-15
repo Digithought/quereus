@@ -1087,5 +1087,28 @@ describe('IsolationModule', () => {
 			const rows = await asyncIterableToArray(db.eval(`SELECT a, b FROM iso_du ORDER BY a`));
 			expect(rows.map((r: any) => [r.a, r.b])).to.deep.equal([[1, 100], [2, 100]]);
 		});
+
+		it('clears the synthesized UNIQUE constraint after DROP INDEX inside an active transaction', async () => {
+			// Regression: with an open overlay (a write inside BEGIN..COMMIT), the
+			// overlay's MemoryTable holds a pending TransactionLayer whose
+			// tableSchemaAtCreation captured the synthesized UC. A bare
+			// overlay.dropIndex() forward refreshes the manager but not that frozen
+			// per-layer schema, so the next overlay write still fires UNIQUE inside
+			// MemoryTable.update against `_overlay_<table>_<id>`. The fix rebuilds
+			// the overlay against the post-drop schema.
+			await db.exec(`CREATE TABLE iso_dut (a INTEGER PRIMARY KEY, b INTEGER) USING isolated`);
+			await db.exec(`CREATE UNIQUE INDEX iso_dut_b ON iso_dut (b)`);
+
+			await db.exec(`BEGIN`);
+			await db.exec(`INSERT INTO iso_dut VALUES (1, 100)`);
+			await db.exec(`DROP INDEX iso_dut_b`);
+			// Should succeed now — the UC is gone from both the underlying schema
+			// and the overlay's effective schema.
+			await db.exec(`INSERT INTO iso_dut VALUES (2, 100)`);
+			await db.exec(`COMMIT`);
+
+			const rows = await asyncIterableToArray(db.eval(`SELECT a, b FROM iso_dut ORDER BY a`));
+			expect(rows.map((r: any) => [r.a, r.b])).to.deep.equal([[1, 100], [2, 100]]);
+		});
 	});
 });

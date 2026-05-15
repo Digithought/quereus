@@ -327,9 +327,15 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 	 * to the module-level dropIndex (e.g. StoreModule, which refreshes the
 	 * StoreTable's cached tableSchema and tears down the index store).
 	 *
-	 * Any per-connection overlay that already exists for this table also gets
-	 * the drop forwarded so its cached schema and any synthesized UNIQUE
-	 * constraint stop firing inside checkMergedUniqueConstraints. Overlays
+	 * Any per-connection overlay that already exists for this table is
+	 * rebuilt under the post-drop schema, preserving staged rows. A bare
+	 * forward to `overlay.dropIndex` is insufficient: when the overlay's
+	 * MemoryTable has an active write `TransactionLayer`, its
+	 * `tableSchemaAtCreation` is frozen at layer-creation time, so the
+	 * synthesized UNIQUE constraint keeps firing inside the overlay's
+	 * own UC check on the next write even after the manager's schema is
+	 * refreshed. Rebuilding gives the new MemoryTable a fresh
+	 * transaction layer that captures the post-drop schema. Overlays
 	 * created AFTER this point inherit the post-drop schema from the
 	 * underlying at ensureOverlay time.
 	 */
@@ -346,12 +352,43 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 			await this.underlying.dropIndex(db, schemaName, tableName, indexName);
 		}
 
+		// After the underlying drop, state.underlyingTable.tableSchema reflects the
+		// post-drop schema. Rebuild every affected overlay against that schema so
+		// the synthesized UC is fully gone from the overlay's transaction layer.
+		const updatedSchema = state?.underlyingTable.tableSchema;
+		if (!updatedSchema) return;
+
 		const suffix = `:${schemaName}.${tableName}`.toLowerCase();
 		for (const [key, overlayState] of this.connectionOverlays.entries()) {
 			if (key.endsWith(suffix)) {
-				await overlayState.overlayTable.dropIndex?.(indexName);
+				const newState = await this.migrateOverlayForDropIndex(db, overlayState, updatedSchema);
+				this.connectionOverlays.set(key, newState);
 			}
 		}
+	}
+
+	/**
+	 * Rebuilds an overlay table under the post-drop-index schema, preserving
+	 * staged rows (including tombstones). Column layout is unchanged by
+	 * DROP INDEX, so rows can be copied verbatim.
+	 */
+	private async migrateOverlayForDropIndex(
+		db: Database,
+		oldState: ConnectionOverlayState,
+		updatedSchema: TableSchema,
+	): Promise<ConnectionOverlayState> {
+		const oldOverlay = oldState.overlayTable;
+
+		const newOverlaySchema = this.createOverlaySchema(updatedSchema);
+		const newOverlayTable = await this.overlayModule.create(db, newOverlaySchema);
+
+		if (oldState.hasChanges && oldOverlay.query) {
+			for await (const oldRow of oldOverlay.query(this.makeFullScanFilterInfo())) {
+				await newOverlayTable.update({ operation: 'insert', values: oldRow as SqlValue[], preCoerced: true });
+			}
+		}
+
+		return { overlayTable: newOverlayTable, hasChanges: oldState.hasChanges };
 	}
 
 	/**
