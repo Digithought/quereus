@@ -552,6 +552,59 @@ describe('extractPartialUniqueGuardedFds', () => {
 		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
 	});
 
+	it('admits nullable UC column when predicate has matching IS NOT NULL', () => {
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('email', false, TEXT_TYPE)],
+			[{ columns: [1], predicate: un('IS NOT NULL', colExpr('email')) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		expect(fds[0].determinants).to.deep.equal([1]);
+		expect(fds[0].dependents).to.deep.equal([0]);
+	});
+
+	it('admits composite UC when every nullable UC column has its own IS NOT NULL conjunct', () => {
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('a', false), makeColumn('b', false)],
+			[{
+				columns: [1, 2],
+				predicate: bin('AND',
+					un('IS NOT NULL', colExpr('a')),
+					un('IS NOT NULL', colExpr('b'))),
+			}],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		expect([...fds[0].determinants].sort()).to.deep.equal([1, 2]);
+	});
+
+	it('rejects nullable UC column when IS NOT NULL names a different column', () => {
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('email', false, TEXT_TYPE), makeColumn('status', true, TEXT_TYPE)],
+			[{ columns: [1], predicate: un('IS NOT NULL', colExpr('status')) }],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it('rejects composite UC when only one nullable UC column has IS NOT NULL', () => {
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('a', false), makeColumn('b', false)],
+			[{
+				columns: [1, 2],
+				predicate: un('IS NOT NULL', colExpr('a')),
+			}],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it('rejects nullable UC column when conjunct is IS NULL, not IS NOT NULL', () => {
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('email', false, TEXT_TYPE)],
+			[{ columns: [1], predicate: un('IS NULL', colExpr('email')) }],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
 	it('rejects the whole predicate if one conjunct is unrecognized (soundness)', () => {
 		const schema = makeSchema(
 			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE), makeColumn('age', true)],

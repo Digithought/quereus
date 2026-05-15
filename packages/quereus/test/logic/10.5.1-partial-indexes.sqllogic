@@ -251,3 +251,25 @@ select count(*) as n from (select distinct c from p7n where status = 'active');
 → [{"n":3}]
 
 drop table p7n;
+
+-- 7h. Nullable UC column with IS NOT NULL guard: the partial predicate itself
+-- forces the column non-NULL inside scope, so the guarded FD is sound and
+-- DISTINCT should be eliminable when the filter discharges it.
+create table p7h (id integer primary key, email text null);
+create unique index ix_p7h on p7h(email) where email is not null;
+insert into p7h values (1, 'a@x');
+insert into p7h values (2, 'b@x');
+insert into p7h values (3, null);
+
+-- Inside scope: every email is unique; DISTINCT must yield the same count
+-- as without (correctness must hold whether or not the optimizer eliminated
+-- DISTINCT). Two non-null rows.
+select count(*) as n from (select distinct email from p7h where email is not null);
+→ [{"n":2}]
+
+-- Negative: without the IS NOT NULL filter, NULL is part of the result set;
+-- correctness must remain — three distinct values including NULL.
+select count(*) as n from (select distinct email from p7h);
+→ [{"n":3}]
+
+drop table p7h;

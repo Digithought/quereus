@@ -15,14 +15,20 @@
  * a weaker partial predicate would falsely activate the FD for rows the
  * unrecognized conjunct excludes.
  *
- * NOT-NULL gate: every UC column must be declared NOT NULL on the table.
- * A nullable UC column allows multiple NULLs within the partial scope, so
- * `K → others` does not hold even there. Mirrors the relation-level rule
- * in `relationTypeFromTableSchema` (type-utils.ts).
+ * NOT-NULL gate: every UC column must be effectively non-NULL inside the
+ * partial scope. A column qualifies if either (a) it is declared NOT NULL on
+ * the table, or (b) the partial predicate has a matching `col IS NOT NULL`
+ * conjunct. Case (b) is sound because the FD only activates when a
+ * surrounding predicate entails every guard clause, including that
+ * `IS NOT NULL` clause — so discharge cannot falsely activate the FD over
+ * rows where the UC column could be NULL. A nullable UC column whose
+ * `IS NOT NULL` is not in the predicate would allow multiple NULLs inside
+ * scope, so `K → others` would not hold; those are rejected. Mirrors the
+ * relation-level rule in `relationTypeFromTableSchema` (type-utils.ts),
+ * relaxed for partial scopes that establish non-nullness themselves.
  *
  * Out-of-scope shapes (filed as backlog tickets in the implement ticket):
  *   - range subsumption (`age >= 21` discharges `age >= 18`)
- *   - IS-NOT-NULL discharge for nominally-nullable UC columns
  *   - OR / IN / NOT discharge
  */
 
@@ -56,12 +62,22 @@ export function extractPartialUniqueGuardedFds(
 	for (const uc of ucs) {
 		if (uc.predicate === undefined) continue;
 
-		// NOT-NULL gate: every UC column must be declared NOT NULL.
-		if (!uc.columns.every(idx => tableSchema.columns[idx]?.notNull)) continue;
-
 		const clauses = recognizeGuardClauses(uc.predicate, tableSchema.columnIndexMap);
 		if (!clauses) continue;
 		if (clauses.length === 0) continue;
+
+		// NOT-NULL gate: each UC column must be effectively non-NULL inside the
+		// partial scope — either declared NOT NULL, or forced so by an
+		// `IS NOT NULL` conjunct of the partial predicate (which is one of the
+		// guard clauses, so discharge will require it).
+		const nonNullByPredicate = new Set<number>();
+		for (const c of clauses) {
+			if (c.kind === 'is-null' && c.negated === true) nonNullByPredicate.add(c.column);
+		}
+		const allUcColumnsNonNullable = uc.columns.every(idx =>
+			tableSchema.columns[idx]?.notNull === true || nonNullByPredicate.has(idx),
+		);
+		if (!allUcColumnsNonNullable) continue;
 
 		const det = Array.from(uc.columns);
 		const detSet = new Set(det);
