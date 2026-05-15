@@ -340,6 +340,14 @@ describe('getEventEmitter API', () => {
 		assert.equal(db.getTable('main', 'NoSuchTable'), undefined);
 	});
 
+	it('resolves via default schema when schemaName is undefined', async () => {
+		await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY)');
+		const handle = db.getTable(undefined, 'users');
+		assert.ok(handle);
+		assert.equal(handle!.tableName, 'users');
+		assert.equal(handle!.schemaName, 'main');
+	});
+
 	it('unsubscribe stops further events', async () => {
 		await db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)');
 		const handle = db.getTable('main', 'users');

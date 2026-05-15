@@ -1,4 +1,3 @@
-import type { Database } from './database.js';
 import type { TableSchema } from '../schema/table.js';
 import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { tryGetEventEmitter, type VTableEventEmitter } from '../vtab/events.js';
@@ -25,12 +24,10 @@ export class Table {
 	/** Module name that owns this table (e.g. `'memory'`, `'memory_events'`). */
 	readonly moduleName: string;
 
-	private readonly db: Database;
 	private readonly module: AnyVirtualTableModule;
 
 	/** @internal */
-	constructor(db: Database, schema: TableSchema, moduleName: string, module: AnyVirtualTableModule) {
-		this.db = db;
+	constructor(schema: TableSchema, moduleName: string, module: AnyVirtualTableModule) {
 		this.schema = schema;
 		this.schemaName = schema.schemaName;
 		this.tableName = schema.name;

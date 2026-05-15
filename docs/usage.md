@@ -449,6 +449,9 @@ A high-level async generator for executing a query and iterating over its result
 ### `db.beginTransaction()`, `db.commit()`, `db.rollback()`
 Standard transaction control methods.
 
+### `db.getTable(schemaName: string | undefined, tableName: string): Table | undefined`
+Returns a public handle to a table for inspection and per-table event subscription, or `undefined` if the table does not exist or its owning module is not registered. The handle exposes `schemaName`, `tableName`, `schema`, `moduleName`, and `getEventEmitter()`. See the [Event System / Per-Table Subscription](#per-table-subscription-via-dbgettable) section for details and lifecycle caveats.
+
 ### `db.registerModule(...)`, `db.createScalarFunction(...)`, `db.createAggregateFunction(...)`, `db.registerCollation(...)`
 Methods for extending database functionality.
 

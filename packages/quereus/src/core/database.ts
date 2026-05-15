@@ -1417,7 +1417,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		if (!moduleName) return undefined;
 		const moduleInfo = this.schemaManager.getModule(moduleName);
 		if (!moduleInfo) return undefined;
-		return new Table(this, tableSchema, moduleName, moduleInfo.module);
+		return new Table(tableSchema, moduleName, moduleInfo.module);
 	}
 
 	/** @internal */
