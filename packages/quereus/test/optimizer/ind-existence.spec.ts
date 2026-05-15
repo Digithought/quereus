@@ -170,8 +170,9 @@ describe('IND-driven existence folding', () => {
 
 		const q = 'SELECT id FROM children c WHERE NOT EXISTS (SELECT 1 FROM parents p WHERE p.id = c.parent_id)';
 		const plan = await planRows(db, q);
-		// Without an FK, the semi/anti join (or whatever decorrelation produces)
-		// must survive — assert result correctness, not strictly plan shape.
+		// Without an FK the IND rule must abstain — decorrelation's anti-join
+		// must survive in the plan.
+		expect(joinCount(plan), `plan ops=${plan.map(r => r.op).join(',')}`).to.be.greaterThan(0);
 		const out = await results(db, q + ' ORDER BY id');
 		expect(out.map(r => r.id)).to.deep.equal([11]);
 	});
