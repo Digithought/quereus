@@ -319,6 +319,42 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 	}
 
 	/**
+	 * Drops an index on the underlying table.
+	 *
+	 * Mirrors createIndex: when the underlying VirtualTable exposes an
+	 * instance-level dropIndex (e.g. MemoryTable, which forwards to its manager
+	 * so MemoryTable.tableSchema stays fresh), prefer that. Otherwise fall back
+	 * to the module-level dropIndex (e.g. StoreModule, which refreshes the
+	 * StoreTable's cached tableSchema and tears down the index store).
+	 *
+	 * Any per-connection overlay that already exists for this table also gets
+	 * the drop forwarded so its cached schema and any synthesized UNIQUE
+	 * constraint stop firing inside checkMergedUniqueConstraints. Overlays
+	 * created AFTER this point inherit the post-drop schema from the
+	 * underlying at ensureOverlay time.
+	 */
+	async dropIndex(
+		db: Database,
+		schemaName: string,
+		tableName: string,
+		indexName: string
+	): Promise<void> {
+		const state = this.getUnderlyingState(schemaName, tableName);
+		if (state?.underlyingTable.dropIndex) {
+			await state.underlyingTable.dropIndex(indexName);
+		} else if (this.underlying.dropIndex) {
+			await this.underlying.dropIndex(db, schemaName, tableName, indexName);
+		}
+
+		const suffix = `:${schemaName}.${tableName}`.toLowerCase();
+		for (const [key, overlayState] of this.connectionOverlays.entries()) {
+			if (key.endsWith(suffix)) {
+				await overlayState.overlayTable.dropIndex?.(indexName);
+			}
+		}
+	}
+
+	/**
 	 * Delegates ALTER TABLE to the underlying module and migrates any per-connection
 	 * overlays to the post-alter schema without discarding staged rows.
 	 *

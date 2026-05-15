@@ -1051,4 +1051,41 @@ describe('IsolationModule', () => {
 			expect(rows.map((r: any) => r.id)).to.deep.equal([1, 2]);
 		});
 	});
+
+	describe('DROP INDEX forwards through the isolation layer', () => {
+		// Regression: SchemaManager.dropIndex only invokes the registered module's
+		// dropIndex hook. Without IsolationModule.dropIndex, the underlying
+		// module never sees the drop and any synthesized UNIQUE constraint on
+		// the IsolatedTable's cached schema keeps firing on subsequent inserts.
+		let isolatedModule: IsolationModule;
+
+		beforeEach(() => {
+			isolatedModule = new IsolationModule({
+				underlying: new MemoryTableModule(),
+			});
+			db.registerModule('isolated', isolatedModule);
+		});
+
+		it('clears the synthesized UNIQUE constraint after DROP UNIQUE INDEX', async () => {
+			await db.exec(`CREATE TABLE iso_du (a INTEGER PRIMARY KEY, b INTEGER) USING isolated`);
+			await db.exec(`CREATE UNIQUE INDEX iso_du_b ON iso_du (b)`);
+			await db.exec(`INSERT INTO iso_du VALUES (1, 100)`);
+
+			let threwBeforeDrop = false;
+			try {
+				await db.exec(`INSERT INTO iso_du VALUES (2, 100)`);
+			} catch (e) {
+				threwBeforeDrop = true;
+				expect(String(e)).to.match(/unique/i);
+			}
+			expect(threwBeforeDrop, 'duplicate must violate UNIQUE while the index exists').to.equal(true);
+
+			await db.exec(`DROP INDEX iso_du_b`);
+			// After drop the duplicate is allowed — the synthesized UC is gone.
+			await db.exec(`INSERT INTO iso_du VALUES (2, 100)`);
+
+			const rows = await asyncIterableToArray(db.eval(`SELECT a, b FROM iso_du ORDER BY a`));
+			expect(rows.map((r: any) => [r.a, r.b])).to.deep.equal([[1, 100], [2, 100]]);
+		});
+	});
 });
