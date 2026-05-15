@@ -51,9 +51,10 @@ export function literalValue(expr: AST.Expression): SqlValue | undefined {
  * `a flipComparison(op) b`, the truth value is preserved. Unrecognized
  * operators (including `=`/`==`) round-trip unchanged.
  *
- * Used by both `partial-unique-extraction.ts` and `check-extraction.ts` to
- * normalize `lit op col` into `col flipped lit`. This is distinct from
- * predicate negation (`invertComparison` in `predicate-normalizer.ts`).
+ * Used by `partial-unique-extraction.ts`, `check-extraction.ts`, and
+ * `fd-utils.ts` to normalize `lit op col` into `col flipped lit`. Distinct
+ * from predicate negation (the same-named `flipComparison` in
+ * `predicate-normalizer.ts` returns `NOT op` instead of `swap-operands op`).
  */
 export function flipComparison(op: string): string {
 	switch (op) {

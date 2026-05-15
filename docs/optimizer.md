@@ -1168,6 +1168,9 @@ export type GuardClause =
   | { readonly kind: 'eq-literal'; readonly column: number; readonly value: SqlValue }
   | { readonly kind: 'eq-column'; readonly left: number; readonly right: number }
   | { readonly kind: 'is-null'; readonly column: number; readonly negated: boolean }
+  | { readonly kind: 'range'; readonly column: number;
+      readonly min?: SqlValue; readonly max?: SqlValue;
+      readonly minInclusive: boolean; readonly maxInclusive: boolean }
   | { readonly kind: 'or-of'; readonly clauses: readonly GuardClause[] };
 
 export type ConstantValue =
@@ -1261,6 +1264,12 @@ A *guarded FD* `K → D | guard` activates only when a surrounding predicate ent
 | `col1 <> col2`                | `eq-column { left, right }`                                   |
 | `col IS NOT NULL`             | `is-null { column, negated: false }` (guard = `col is null`)  |
 | `col IS NULL`                 | `is-null { column, negated: true }`  (guard = `col is not null`) |
+| `col <  literal`              | `range { col, min: lit, minInclusive: true,  maxInclusive: false }` (guard = `col >= lit`) |
+| `col <= literal`              | `range { col, min: lit, minInclusive: false, maxInclusive: false }` (guard = `col > lit`)  |
+| `col >  literal`              | `range { col, max: lit, maxInclusive: true,  minInclusive: false }` (guard = `col <= lit`) |
+| `col >= literal`              | `range { col, max: lit, maxInclusive: false, minInclusive: false }` (guard = `col < lit`)  |
+
+`lit op col` shapes are operand-flipped (`flipComparison` in `predicate-shape.ts`) so the column ends up on the left before the negation table above is applied. NULL literal bounds are rejected.
 
 The body is recognized only as a guarded **equality** (bi-directional FDs for `col1 = col2`, `∅ → col` for `col = literal`, one-way for single-column expressions). No equivalence pairs, constant bindings, or domain constraints are lifted from a guarded body — those are unconditional facts and a guarded source cannot guarantee them.
 
@@ -1275,6 +1284,11 @@ The body is recognized only as a guarded **equality** (bi-directional FDs for `c
 | `col IS NOT NULL`                    | `is-null { column, negated: true }`                     |
 | `NOT col`  (declared NOT NULL only)  | `eq-literal { column, value: 0 }`  (SQL boolean FALSE)  |
 | `col IN (lit, lit, …)`               | `or-of [eq-literal { col, lit_i } …]` (singleton collapses) |
+| `col >  literal` / `literal <  col`  | `range { col, min: lit, minInclusive: false, maxInclusive: false }` |
+| `col >= literal` / `literal <= col`  | `range { col, min: lit, minInclusive: true,  maxInclusive: false }` |
+| `col <  literal` / `literal >  col`  | `range { col, max: lit, maxInclusive: false, minInclusive: false }` |
+| `col <= literal` / `literal >= col`  | `range { col, max: lit, maxInclusive: true,  minInclusive: false }` |
+| `col BETWEEN lit AND lit`            | `range { col, min, max, minInclusive: true, maxInclusive: true }` (`NOT BETWEEN` is rejected) |
 | `a OR b OR …`                        | `or-of [recognize(a), recognize(b), …]` (flattens nested OR) |
 
 The `or-of` variant is a flat disjunction — sub-clauses are themselves guard clauses from the first five rows, never another `or-of` (the recognizer flattens nested OR chains at construction time). Singleton OR / IN lists collapse to the underlying clause.
@@ -1295,7 +1309,7 @@ Extraction is cached per `TableSchema` via `getPartialUniqueGuardedFds`. The dow
 - `projectFds` drops a guarded FD whose guard references any column missing from the mapping — the guard would become unobservable and the FD could never re-activate downstream.
 - Outer joins drop guarded FDs that sit on the NULL-padded side (along with that side's unconditional FDs), because NULL-padding can flip guard satisfaction.
 
-Predicates `predicateImpliesGuard` recognizes today: `col = literal` / `col = col2` (and via EC closure), `col is null`, `col is not null`, column non-nullability from the type system, `col IN (lit, …)` (literal-only), and `NOT col` (rewritten to `col = 0`, paired with the same NOT-NULL claim). It can discharge an `or-of` guard either by entailing any single sub-clause directly, or — when every sub-clause is `eq-literal` on the same column — by checking that the filter pins that column (via `=`, IN-list, EC peer, or `ConstantBinding`) to a *subset* of the OR-set. Inequality and arithmetic-shape guards remain out of scope — extending the vocabulary is mechanical when consumers need it.
+Predicates `predicateImpliesGuard` recognizes today: `col = literal` / `col = col2` (and via EC closure), `col is null`, `col is not null`, column non-nullability from the type system, `col IN (lit, …)` (literal-only), `NOT col` (rewritten to `col = 0`, paired with the same NOT-NULL claim), and per-column literal-bounded `<`/`<=`/`>`/`>=` plus `BETWEEN` — these accumulate into an intersected per-column filter range that discharges a `range` guard when the filter's range is a subset of the guard's (per-side comparison via `compareSqlValues` with BINARY collation). The range path checks the guard's column, every EC peer, and every binding-shared column. It can discharge an `or-of` guard either by entailing any single sub-clause directly, or — when every sub-clause is `eq-literal` on the same column — by checking that the filter pins that column (via `=`, IN-list, EC peer, or `ConstantBinding`) to a *subset* of the OR-set. `eq-literal` does not piggyback onto `range` (filter `col = 25` does not discharge a `range` guard); collation-aware text bound comparison, symbolic/parameter bounds, and `NOT BETWEEN` remain out of scope.
 
 **Helper surface** (`planner/util/fd-utils.ts`):
 

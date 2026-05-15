@@ -12,6 +12,7 @@ import { BetweenNode, BinaryOpNode, CastNode, CollateNode, LiteralNode, UnaryOpN
 import { InNode } from '../nodes/subquery.js';
 import type { SqlValue } from '../../common/types.js';
 import { compareSqlValues } from '../../util/comparison.js';
+import { flipComparison } from '../analysis/predicate-shape.js';
 
 const log = createLogger('planner:fd');
 
@@ -896,16 +897,6 @@ function buildPredicateFacts(
 		}
 	};
 
-	const flipOp = (op: string): string => {
-		switch (op) {
-			case '<': return '>';
-			case '<=': return '>=';
-			case '>': return '<';
-			case '>=': return '<=';
-			default: return op;
-		}
-	};
-
 	const stack: ScalarPlanNode[] = [predicate];
 	while (stack.length > 0) {
 		const n = stack.pop()!;
@@ -953,7 +944,7 @@ function buildPredicateFacts(
 				} else if (rIdx !== undefined && lIdx === undefined) {
 					const lit = literalSqlValueOf(n.left);
 					if (lit === undefined || lit === null) continue;
-					recordComparison(rIdx, flipOp(op), lit);
+					recordComparison(rIdx, flipComparison(op), lit);
 				}
 				continue;
 			}
