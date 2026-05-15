@@ -133,3 +133,47 @@ select id from p_move where kind = 'A' order by id;
 → [{"id":2},{"id":3}]
 
 drop table p_move;
+
+-- =====================================================
+-- 6. Partial UNIQUE index must NOT register as a relation key
+-- (FD-layer soundness — partial UNIQUE only guarantees uniqueness
+--  inside the WHERE scope, so it cannot be promoted to an
+--  unconditional key. Otherwise the FD layer derives
+--  K → all-other-cols over the whole table and silently breaks
+--  DISTINCT elimination, GROUP BY simplification, ORDER BY pruning,
+--  and FK→PK join elimination.)
+-- =====================================================
+create table p_fdkey (id integer primary key, c text not null, status text not null);
+create unique index ix_p_fdkey on p_fdkey(c) where status = 'active';
+insert into p_fdkey values (1, 'A', 'active');
+insert into p_fdkey values (2, 'A', 'inactive');
+insert into p_fdkey values (3, 'B', 'active');
+
+-- DISTINCT must not be eliminated: c is only unique among status='active' rows.
+select c from (select distinct c from p_fdkey) order by c;
+→ [{"c":"A"},{"c":"B"}]
+
+-- Same query, count form — must equal the true distinct count across all rows.
+select count(distinct c) as n from p_fdkey;
+→ [{"n":2}]
+
+-- LEFT JOIN whose right side is the partial-UNIQUE column: join elimination must
+-- not fire — t.c is not an unconditional key, so the join can change row count
+-- (the driver row 'A' matches two p_fdkey rows, not one).
+create table p_fdkey_drv (x integer primary key, c text);
+insert into p_fdkey_drv values (10, 'A');
+select count(*) as n from p_fdkey_drv d left join p_fdkey t on d.c = t.c;
+→ [{"n":2}]
+
+drop table p_fdkey_drv;
+drop table p_fdkey;
+
+-- Positive control: a *full* UNIQUE index on a NOT NULL column on the same
+-- shape still registers as a key and DISTINCT/etc. may safely be eliminated.
+create table p_fdkey_full (id integer primary key, c text not null);
+create unique index ix_p_fdkey_full on p_fdkey_full(c);
+insert into p_fdkey_full values (1, 'A');
+insert into p_fdkey_full values (2, 'B');
+select count(*) as n from (select distinct c from p_fdkey_full);
+→ [{"n":2}]
+drop table p_fdkey_full;
