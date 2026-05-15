@@ -183,6 +183,14 @@ export class StoreTable extends VirtualTable {
 		this.pkDirections = newSchema.primaryKeyDefinition.map(pk => !!pk.desc);
 	}
 
+	/** Close and forget a cached index-store handle, if any. */
+	async releaseIndexStore(indexName: string): Promise<void> {
+		const cached = this.indexStores.get(indexName);
+		if (!cached) return;
+		this.indexStores.delete(indexName);
+		try { await cached.close(); } catch { /* close is best-effort */ }
+	}
+
 	/**
 	 * Returns true if the table has at least one stored row. Stops after the first hit.
 	 */

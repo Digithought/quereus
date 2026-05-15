@@ -12,8 +12,10 @@ import { expect } from 'chai';
 import { Database, type SqlValue } from '@quereus/quereus';
 import {
 	StoreModule,
+	StoreEventEmitter,
 	InMemoryKVStore,
 	type KVStoreProvider,
+	type SchemaChangeEvent,
 } from '../src/index.js';
 import { buildFullScanBounds } from '../src/common/key-builder.js';
 
@@ -29,13 +31,20 @@ function createInMemoryProvider(): KVStoreProvider {
 		if (!stores.has(key)) stores.set(key, new InMemoryKVStore());
 		return stores.get(key)!;
 	};
+	const evictIndex = (s: string, t: string, i: string) => {
+		// Drop the cached handle so a subsequent getIndexStore returns a fresh
+		// InMemoryKVStore — mirrors how the LevelDB provider's closeIndexStore /
+		// deleteIndexStore remove their cache entry.
+		stores.delete(`${s}.${t}_idx_${i}`);
+	};
 	return {
 		async getStore(s, t) { return get(`${s}.${t}`); },
 		async getIndexStore(s, t, i) { return get(`${s}.${t}_idx_${i}`); },
 		async getStatsStore(s, t) { return get(`${s}.${t}.__stats__`); },
 		async getCatalogStore() { return get('__catalog__'); },
 		async closeStore() {},
-		async closeIndexStore() {},
+		async closeIndexStore(s, t, i) { evictIndex(s, t, i); },
+		async deleteIndexStore(s, t, i) { evictIndex(s, t, i); },
 		async closeAll() {
 			for (const store of stores.values()) await store.close();
 			stores.clear();
@@ -311,6 +320,89 @@ describe('StoreTable column-level ON CONFLICT defaults', () => {
 			}
 			expect(err, 'expected partial UNIQUE seed pass to fail on in-scope duplicates').to.not.be.null;
 			expect(err!.message).to.match(/UNIQUE/i);
+		});
+	});
+
+	describe('DROP INDEX refreshes cached tableSchema and releases index store', () => {
+		it('drops the UNIQUE constraint synthesized by CREATE UNIQUE INDEX', async () => {
+			await db.exec(`CREATE TABLE du (id INTEGER PRIMARY KEY, b INTEGER) USING store`);
+			await db.exec(`INSERT INTO du VALUES (1, 100)`);
+			await db.exec(`CREATE UNIQUE INDEX du_b ON du (b)`);
+
+			// While the UNIQUE index exists, the duplicate is rejected.
+			let threw = false;
+			try {
+				await db.exec(`INSERT INTO du VALUES (2, 100)`);
+			} catch (e) {
+				threw = true;
+				expect(String(e)).to.match(/unique/i);
+			}
+			expect(threw, 'duplicate must violate UNIQUE while the index exists').to.equal(true);
+
+			// After DROP INDEX, the synthesized UNIQUE constraint must be gone
+			// from the cached StoreTable schema — the previously-rejected insert
+			// now succeeds.
+			await db.exec(`DROP INDEX du_b`);
+			await db.exec(`INSERT INTO du VALUES (2, 100)`);
+
+			const rows = await collect(db, `SELECT id, b FROM du ORDER BY id`);
+			expect(rows).to.deep.equal([
+				{ id: 1, b: 100 },
+				{ id: 2, b: 100 },
+			]);
+		});
+
+		it('stops maintaining the dropped non-UNIQUE index store on subsequent inserts', async () => {
+			await db.exec(`CREATE TABLE dn (id INTEGER PRIMARY KEY, b INTEGER) USING store`);
+			await db.exec(`CREATE INDEX dn_b ON dn (b)`);
+			await db.exec(`INSERT INTO dn VALUES (1, 100)`);
+
+			const countEntries = async (): Promise<number> => {
+				const store = await provider.getIndexStore('main', 'dn', 'dn_b');
+				let n = 0;
+				for await (const _entry of store.iterate(buildFullScanBounds())) n++;
+				return n;
+			};
+
+			// Sanity: the live index has one entry.
+			expect(await countEntries()).to.equal(1);
+
+			await db.exec(`DROP INDEX dn_b`);
+
+			// After drop: any subsequent INSERT must not write into the dropped
+			// index store. The fixture's closeIndexStore evicts the cached entry,
+			// so getIndexStore returns a fresh empty store; if StoreTable kept
+			// maintaining the index (i.e. still found it on tableSchema.indexes),
+			// a new key would land here.
+			await db.exec(`INSERT INTO dn VALUES (2, 200)`);
+			expect(await countEntries()).to.equal(0);
+		});
+
+		it('emits a schemaChange event with type=drop, objectType=index', async () => {
+			const emitter = new StoreEventEmitter();
+			const localProvider = createInMemoryProvider();
+			const localDb = new Database();
+			try {
+				localDb.registerModule('store', new StoreModule(localProvider, emitter));
+				await localDb.exec(`CREATE TABLE de (id INTEGER PRIMARY KEY, b INTEGER) USING store`);
+				await localDb.exec(`CREATE INDEX de_b ON de (b)`);
+
+				const events: SchemaChangeEvent[] = [];
+				const off = emitter.onSchemaChange(e => events.push(e));
+				try {
+					await localDb.exec(`DROP INDEX de_b`);
+				} finally {
+					off();
+				}
+
+				const dropEvents = events.filter(
+					e => e.type === 'drop' && e.objectType === 'index' && e.objectName === 'de_b',
+				);
+				expect(dropEvents).to.have.lengthOf(1);
+				expect(dropEvents[0].schemaName.toLowerCase()).to.equal('main');
+			} finally {
+				await localProvider.closeAll();
+			}
 		});
 	});
 

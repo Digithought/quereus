@@ -368,6 +368,76 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 	}
 
 	/**
+	 * Drops an index on a store-backed table.
+	 *
+	 * Mirrors createIndex: refreshes the connected StoreTable's cached
+	 * tableSchema (removing the index entry and any UNIQUE constraint
+	 * synthesized from it, tagged with `derivedFromIndex`), releases the
+	 * cached index-store handle, and tears down the underlying index store.
+	 */
+	async dropIndex(
+		_db: Database,
+		schemaName: string,
+		tableName: string,
+		indexName: string,
+	): Promise<void> {
+		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
+		const table = this.tables.get(tableKey);
+
+		if (!table) {
+			throw new QuereusError(
+				`Store table '${tableName}' not found in schema '${schemaName}'`,
+				StatusCode.NOTFOUND,
+			);
+		}
+
+		const tableSchema = table.getSchema();
+		const lowerIndexName = indexName.toLowerCase();
+
+		// Mirror SchemaManager.dropIndex: strip the index AND any UNIQUE
+		// constraint synthesized from it (tagged with `derivedFromIndex` by
+		// StoreModule.createIndex). Collapse uniqueConstraints to undefined
+		// when empty.
+		const updatedIndexes = Object.freeze(
+			(tableSchema.indexes ?? []).filter(
+				idx => idx.name.toLowerCase() !== lowerIndexName,
+			),
+		);
+		const remainingUniqueConstraints = (tableSchema.uniqueConstraints ?? []).filter(
+			uc => uc.derivedFromIndex?.toLowerCase() !== lowerIndexName,
+		);
+		const updatedSchema: TableSchema = {
+			...tableSchema,
+			indexes: updatedIndexes,
+			uniqueConstraints: remainingUniqueConstraints.length > 0
+				? Object.freeze(remainingUniqueConstraints)
+				: undefined,
+		};
+		// Update the cached schema BEFORE tearing down the store so that a
+		// failure of the physical drop doesn't leave the schema enforcing an
+		// index whose backing store has already been mutated.
+		table.updateSchema(updatedSchema);
+
+		// Drop the cached handle on the table side and tear down the
+		// underlying KVStore. `deleteIndexStore` (if the provider implements
+		// it) closes the handle before removing the directory; otherwise we
+		// just close it.
+		await table.releaseIndexStore(indexName);
+		if (this.provider.deleteIndexStore) {
+			await this.provider.deleteIndexStore(schemaName, tableName, indexName);
+		} else {
+			await this.provider.closeIndexStore(schemaName, tableName, indexName);
+		}
+
+		this.eventEmitter?.emitSchemaChange({
+			type: 'drop',
+			objectType: 'index',
+			schemaName,
+			objectName: indexName,
+		});
+	}
+
+	/**
 	 * Build index entries for all existing rows in a table.
 	 *
 	 * For UNIQUE indexes, performs an in-pass duplicate check (honoring partial
