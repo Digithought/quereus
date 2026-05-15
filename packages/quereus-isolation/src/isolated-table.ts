@@ -851,7 +851,13 @@ export class IsolatedTable extends VirtualTable implements IsolatedTableCallback
 	 */
 	private stripTombstoneFromResult(result: UpdateResult, tombstoneIndex: number): UpdateResult {
 		if (isUpdateOk(result) && result.row) {
-			return { status: 'ok', row: result.row.slice(0, tombstoneIndex), replacedRow: result.replacedRow };
+			// `replacedRow` from the overlay's memory module also carries the trailing
+			// tombstone column (overlay schema appends it).  Slice it off so consumers
+			// see rows that match the user-facing schema.
+			const replacedRow = result.replacedRow
+				? (result.replacedRow.slice(0, tombstoneIndex) as Row)
+				: undefined;
+			return { status: 'ok', row: result.row.slice(0, tombstoneIndex), replacedRow };
 		}
 		return result;
 	}
