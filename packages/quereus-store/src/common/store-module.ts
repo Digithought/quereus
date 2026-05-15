@@ -26,7 +26,8 @@ import type {
 	SchemaChangeInfo,
 	ColumnSchema,
 } from '@quereus/quereus';
-import { AccessPlanBuilder, QuereusError, StatusCode, buildColumnIndexMap, columnDefToSchema, inferType, validateAndParse } from '@quereus/quereus';
+import { AccessPlanBuilder, QuereusError, StatusCode, buildColumnIndexMap, columnDefToSchema, compilePredicate, inferType, validateAndParse } from '@quereus/quereus';
+import type { CompiledPredicate } from '@quereus/quereus';
 
 import type { KVStore, KVStoreProvider } from './kv-store.js';
 import type { StoreEventEmitter } from './events.js';
@@ -368,6 +369,12 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 
 	/**
 	 * Build index entries for all existing rows in a table.
+	 *
+	 * For UNIQUE indexes, performs an in-pass duplicate check (honoring partial
+	 * predicates and SQL NULL semantics: multiple NULLs are allowed) and throws
+	 * CONSTRAINT before any entries are written. Mirrors the memory module's
+	 * populateNewIndex so `CREATE UNIQUE INDEX` over duplicated data fails
+	 * atomically.
 	 */
 	private async buildIndexEntries(
 		dataStore: KVStore,
@@ -379,6 +386,11 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		const pkDirections = tableSchema.primaryKeyDefinition.map(pk => !!pk.desc);
 		const indexDirections = indexSchema.columns.map(col => !!col.desc);
 
+		const predicate: CompiledPredicate | undefined = indexSchema.predicate
+			? compilePredicate(indexSchema.predicate, tableSchema.columns)
+			: undefined;
+		const seen: Set<string> | undefined = indexSchema.unique ? new Set() : undefined;
+
 		// Scan all data rows
 		const bounds = buildFullScanBounds();
 		const batch = indexStore.batch();
@@ -386,11 +398,33 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		for await (const entry of dataStore.iterate(bounds)) {
 			const row = deserializeRow(entry.value);
 
+			// Partial index: skip rows whose predicate is not unambiguously TRUE.
+			if (predicate && predicate.evaluate(row) !== true) continue;
+
 			// Extract PK values
 			const pkValues = tableSchema.primaryKeyDefinition.map(pk => row[pk.index]);
 
 			// Extract index column values
 			const indexValues = indexSchema.columns.map(col => row[col.index]);
+
+			if (seen) {
+				// SQL UNIQUE allows multiple NULLs: skip dup detection when any
+				// indexed column is NULL for this row.
+				const hasNull = indexValues.some(v => v === null);
+				if (!hasNull) {
+					const keySig = JSON.stringify(indexValues);
+					if (seen.has(keySig)) {
+						const colNames = indexSchema.columns
+							.map(c => tableSchema.columns[c.index]?.name ?? String(c.index))
+							.join(', ');
+						throw new QuereusError(
+							`UNIQUE constraint failed: ${tableSchema.name} (${colNames})`,
+							StatusCode.CONSTRAINT,
+						);
+					}
+					seen.add(keySig);
+				}
+			}
 
 			// Build and store index key
 			const indexKey = buildIndexKey(

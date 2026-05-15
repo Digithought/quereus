@@ -249,6 +249,43 @@ describe('StoreTable column-level ON CONFLICT defaults', () => {
 				{ id: 3, b: 200 },
 			]);
 		});
+
+		it('rejects CREATE UNIQUE INDEX over duplicated data and leaves the index store empty', async () => {
+			await db.exec(`CREATE TABLE u_dup (k TEXT PRIMARY KEY, x TEXT NOT NULL) USING store`);
+			await db.exec(`INSERT INTO u_dup VALUES ('r1', 'dup'), ('r2', 'dup')`);
+
+			let err: Error | null = null;
+			try {
+				await db.exec(`CREATE UNIQUE INDEX u_dup_x ON u_dup (x)`);
+			} catch (e) {
+				err = e as Error;
+			}
+			expect(err, 'expected CREATE UNIQUE INDEX to fail').to.not.be.null;
+			expect(err!.message).to.match(/UNIQUE/i);
+
+			// The index-store directory is allocated by getIndexStore(), but no
+			// entries must have been written — the seed pass throws before
+			// batch.write().
+			const idxStore = await provider.getIndexStore('main', 'u_dup', 'u_dup_x');
+			let entries = 0;
+			for await (const _e of idxStore.iterate(buildFullScanBounds())) entries++;
+			expect(entries, 'no partial index entries should be written').to.equal(0);
+
+			// After deduplicating, the index creates fine.
+			await db.exec(`DELETE FROM u_dup WHERE k = 'r2'`);
+			await db.exec(`CREATE UNIQUE INDEX u_dup_x ON u_dup (x)`);
+		});
+
+		it('allows CREATE UNIQUE INDEX over multiple NULLs in composite indexed columns', async () => {
+			await db.exec(`CREATE TABLE u_null (k INTEGER PRIMARY KEY, y TEXT NULL, z TEXT NULL) USING store`);
+			await db.exec(`INSERT INTO u_null VALUES (1, NULL, NULL), (2, NULL, NULL)`);
+
+			// SQL UNIQUE allows multiple NULLs — seed pass must not flag these.
+			await db.exec(`CREATE UNIQUE INDEX u_null_yz ON u_null (y, z)`);
+
+			const rows = await collect(db, `SELECT count(*) AS cnt FROM u_null`);
+			expect(rows).to.deep.equal([{ cnt: 2 }]);
+		});
 	});
 
 	describe('UPDATE PK-change REPLACE cascades ON DELETE for evicted row', () => {
