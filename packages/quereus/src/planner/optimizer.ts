@@ -45,6 +45,14 @@ import { ruleInSubqueryCache } from './rules/cache/rule-in-subquery-cache.js';
 import { ruleSubqueryDecorrelation } from './rules/subquery/rule-subquery-decorrelation.js';
 import { ruleAntiJoinFkEmpty } from './rules/subquery/rule-anti-join-fk-empty.js';
 import { ruleSemiJoinFkTrivial } from './rules/subquery/rule-semi-join-fk-trivial.js';
+import {
+	ruleFilterFoldEmpty,
+	ruleProjectFoldEmpty,
+	ruleSortFoldEmpty,
+	ruleLimitOffsetFoldEmpty,
+	ruleDistinctFoldEmpty,
+	ruleJoinFoldEmpty,
+} from './rules/predicate/rule-empty-relation-folding.js';
 import { ruleDistinctElimination } from './rules/distinct/rule-distinct-elimination.js';
 import { ruleProjectionPruning } from './rules/retrieve/rule-projection-pruning.js';
 import { ruleScalarCSE } from './rules/cache/rule-scalar-cse.js';
@@ -290,6 +298,54 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleOrderByFdPruning,
 			priority: 26
+		});
+
+		// Empty-relation folding (priority 27 — after IND rules at 26): recognize
+		// provably-empty subtrees (Filter on lit-false, or any host with an
+		// EmptyRelation source under appropriate join semantics) and replace them
+		// with EmptyRelationNode carrying the host's attribute IDs. Cascades to a
+		// fixed point via the Structural pass loop.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-filter-empty',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleFilterFoldEmpty,
+			priority: 27,
+		});
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-project-empty',
+			nodeType: PlanNodeType.Project,
+			phase: 'rewrite',
+			fn: ruleProjectFoldEmpty,
+			priority: 27,
+		});
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-sort-empty',
+			nodeType: PlanNodeType.Sort,
+			phase: 'rewrite',
+			fn: ruleSortFoldEmpty,
+			priority: 27,
+		});
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-limit-empty',
+			nodeType: PlanNodeType.LimitOffset,
+			phase: 'rewrite',
+			fn: ruleLimitOffsetFoldEmpty,
+			priority: 27,
+		});
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-distinct-empty',
+			nodeType: PlanNodeType.Distinct,
+			phase: 'rewrite',
+			fn: ruleDistinctFoldEmpty,
+			priority: 27,
+		});
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-join-empty',
+			nodeType: PlanNodeType.Join,
+			phase: 'rewrite',
+			fn: ruleJoinFoldEmpty,
+			priority: 27,
 		});
 
 		// Physical pass rules (bottom-up) - for logical to physical transformations

@@ -93,6 +93,11 @@ describe('IND-driven existence folding', () => {
 		const plan = await planRows(db, q);
 		expect(joinCount(plan), `plan ops=${plan.map(r => r.op).join(',')}`).to.equal(0);
 		expect(referencesParent(plan, 'parent'), 'parent must not be referenced in the plan').to.equal(false);
+		// Canonical shape: anti-join-fk-empty emits EmptyRelationNode; the
+		// const-fold pass cascades through Project so the final plan contains
+		// an EMPTYRELATION op (no SeqScan of child either).
+		expect(plan.some(r => r.op === 'EMPTYRELATION'), `plan ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+		expect(plan.some(r => r.op === 'SEQSCAN'), `plan ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
 
 		const out = await results(db, q);
 		expect(out).to.have.lengthOf(0);
@@ -310,6 +315,9 @@ describe('IND-driven existence folding', () => {
 		)`;
 		const plan = await planRows(db, q);
 		expect(joinCount(plan), `plan ops=${plan.map(r => r.op).join(',')}`).to.equal(0);
+		// Fold pass cascades through the outer Project so the plan reduces to
+		// a single EmptyRelation node.
+		expect(plan.some(r => r.op === 'EMPTYRELATION'), `plan ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
 
 		const out = await results(db, q);
 		expect(out).to.have.lengthOf(0);

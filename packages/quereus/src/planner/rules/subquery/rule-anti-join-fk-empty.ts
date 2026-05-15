@@ -14,7 +14,7 @@
  *     between the anti-join and the parent table).
  *
  * Rewrite:
- *   Filter(L, false)
+ *   EmptyRelationNode(L's attributes, L's RelationType)
  *
  * Why correct: under the FK inclusion `L.fk ⊆ R.pk`, every non-null FK row in L
  * has a matching parent in R, so the anti-join contains no rows. With nullable
@@ -23,19 +23,18 @@
  * required because the IND only guarantees the parent row exists in the table
  * — a filter on the R side could remove it.
  *
- * Why not a dedicated EmptyRelationNode: the codebase has no generic empty
- * relation for arbitrary schemas. `Filter(L, false)` preserves L's attribute
- * IDs and relies on the runtime's predicate-evaluation short-circuit. Plan
- * shape is the same as any `where false` query; downstream readers see the
- * literal-false predicate and can short-circuit if they choose.
+ * The output schema of an anti-join is its left side (SEMI/ANTI take left
+ * columns only — see `buildJoinAttributes`), so we hand `EmptyRelationNode`
+ * L's attribute IDs and RelationType directly. The const-fold pass
+ * (Structural priority 27) then cascades that emptiness up through Filter /
+ * Project / Sort / LimitOffset / Distinct / inner-or-cross-or-semi joins.
  */
 
 import { createLogger } from '../../../common/logger.js';
 import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { JoinNode, extractEquiPairsFromCondition } from '../../nodes/join-node.js';
-import { FilterNode } from '../../nodes/filter.js';
-import { LiteralNode } from '../../nodes/scalar.js';
+import { EmptyRelationNode } from '../../nodes/empty-relation-node.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { lookupCoveringFK, isRowPreservingPathToTable, tableSchemaOf } from '../../util/ind-utils.js';
 import { isAndOfColumnEqualities } from '../join/rule-join-elimination.js';
@@ -78,6 +77,5 @@ export function ruleAntiJoinFkEmpty(node: PlanNode, _context: OptContext): PlanN
 		rightSchema.name,
 	);
 
-	const literalFalse = new LiteralNode(node.scope, { type: 'literal', value: false });
-	return new FilterNode(node.scope, node.left, literalFalse);
+	return new EmptyRelationNode(node.scope, node.left.getAttributes(), node.left.getType());
 }

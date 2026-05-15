@@ -1366,13 +1366,34 @@ Predicates `predicateImpliesGuard` recognizes today: `col = literal` / `col = co
 
 Foreign keys are inclusion dependencies — `child.fk ⊆ parent.pk` — and three optimizer rules exploit them to remove parent-side access entirely. All three run in the Structural pass at priority 26, after `rule-subquery-decorrelation` (priority 25) has materialized `EXISTS / NOT EXISTS / IN` as semi/anti joins. The shared util `lookupCoveringFK` walks `TableSchema.foreignKeys`, matches the equi-pairs against the FK's declared *positional* pairing (`fk.columns[i] → referencedColumns[i]` — a permuted equi-pair set on a composite FK such as `(fa = b AND fb = a)` against `FOREIGN KEY (fa, fb) REFERENCES p(a, b)` is **not** covered and the rule abstains), and reports the matched FK plus whether any child column is nullable; `isRowPreservingPathToTable` guards against parent-side filters/limits/distincts that would invalidate the IND under filtering.
 
-- **`rule-anti-join-fk-empty`**: `AntiJoin(L, R, p)` where `p` is AND-of-column-equalities, the equi-pairs cover a non-null FK on L referencing R's PK, and R is a row-preserving path to its base table → rewrite to `Filter(L, false)`. Correct because the IND guarantees every (non-null) L row has a matching parent in R, so the anti-join is empty.
+- **`rule-anti-join-fk-empty`**: `AntiJoin(L, R, p)` where `p` is AND-of-column-equalities, the equi-pairs cover a non-null FK on L referencing R's PK, and R is a row-preserving path to its base table → rewrite to `EmptyRelationNode` carrying L's attribute IDs and `RelationType`. Correct because the IND guarantees every (non-null) L row has a matching parent in R, so the anti-join is empty.
 - **`rule-semi-join-fk-trivial`**: `SemiJoin(L, R, p)` with the same preconditions → rewrite to `L` (every L row matches) if every FK column is NOT NULL, otherwise to `Filter(L, fk_col IS NOT NULL AND …)` (rows with NULL in any FK column never match the equi-condition).
 - **`rule-join-elimination` (Aggregate entrypoint)**: `Aggregate(group, aggs, source = chain → Join(L, R))` where the inner join is FK-covered (non-null FK, row-preserving R) and neither the group keys nor any aggregate expression reference R → drop the join, keep the wrapper chain. Covers `count(*) from child join parent on …` since `|L ⋈ R| == |L|` under the FK/non-null guarantee.
 
 The federated-vtab payoff: each fold removes a remote round-trip to the parent table. Rules abstain conservatively when: the FK is undeclared, equi-pairs don't cover all FK columns, the parent side has a row-reducing wrapper (Filter, LimitOffset, Distinct, Project, non-trivial Retrieve pipeline), or — for the anti-join and inner-join cases — any FK column is nullable.
 
-The anti-join-to-empty rewrite emits `Filter(L, LiteralNode(false))` rather than a generic `EmptyRelationNode`; the codebase has no schema-polymorphic empty-relation primitive, and `Filter(L, false)` preserves L's attribute IDs so callers above the join keep working. A dedicated `EmptyRelationNode` is parked in backlog as a follow-up if profiling shows the literal-false pattern is opaque to downstream passes.
+The anti-join-to-empty rewrite emits `EmptyRelationNode` carrying L's attribute IDs and `RelationType`. Downstream the const-fold pass (`rule-empty-relation-folding`, Structural priority 27) cascades that emptiness up through immediate Filter / Project / Sort / LimitOffset / Distinct / inner-or-cross-or-semi-anti joins; see "Empty-relation folding" below.
+
+### Empty-relation folding
+
+`EmptyRelationNode` (`planner/nodes/empty-relation-node.ts`) is a schema-polymorphic zero-row relation. Its constructor takes the exact `Attribute[]` and `RelationType` that the surrounding node would have produced, so attribute IDs above the fold site remain stable. It is distinct from `EmptyResultNode` (a `TableAccessNode` tied to a `TableReferenceNode` — the table-access-bound empty result for impossible predicates inferred during access-path planning); `EmptyRelationNode` is unmoored from any specific source.
+
+`rule-empty-relation-folding.ts` runs in the Structural pass at priority 27 — after the IND rules at 26 — and rewrites the following shapes (`E = EmptyRelationNode`):
+
+| Host shape                                  | Rewrite                                                          | Note |
+|---------------------------------------------|------------------------------------------------------------------|------|
+| `Filter(x, lit-false / null / 0)`           | `EmptyRelationNode(x.getAttributes(), x.getType())`              | WHERE-clause truthiness — `false`, `NULL`, `0`, `0n` all reject. |
+| `Filter(E, _)`                              | `E` (schema unchanged)                                            | Pass-through. |
+| `Project(E, projections)`                   | `EmptyRelationNode(project.getAttributes(), project.getType())`  | Lifts Project's own attribute IDs. |
+| `Sort(E, _)`, `LimitOffset(E, _)`, `Distinct(E)` | `E`                                                              | Schema unchanged. |
+| `Join(E, R, inner \| cross \| semi)` or `Join(L, E, inner \| cross \| semi)` | `EmptyRelationNode(join.getAttributes(), join.getType())`     | |
+| `Join(E, R, left)` or `Join(L, E, right)`   | `EmptyRelationNode(join.getAttributes(), join.getType())`        | Empty driving side. |
+| `Join(E, _, anti)`                          | `EmptyRelationNode(join.getAttributes(), join.getType())`        | Anti drives from left only. |
+| `Join(E, E, full)` (both empty)             | `EmptyRelationNode(join.getAttributes(), join.getType())`        | A single empty side under FULL still null-pads — don't fold. |
+
+The fold rule's `isEmpty` helper looks through `AliasNode` wrappers (FROM-clause subquery aliases produce these). This is sound for the fold itself because the host node (Join, Filter, Project, …) supplies its own attribute IDs when constructing the new `EmptyRelationNode`; the Alias's rename is discarded along with the Alias.
+
+Cascade limits: the Structural pass traverses top-down, so a parent's rules fire BEFORE its children are visited. When an inner Filter folds to `EmptyRelation` mid-traversal, the residual operators above it (Sort, LimitOffset, Project, Join, …) have already been rule-visited and won't re-fire automatically. The runtime is unaffected — `EmptyRelation` yields no rows, so output is correct — but the plan may still show residual operators above the `EmptyRelation`. The IND rules and the fold rules co-located in the Structural pass mean that whenever the IND rule rewrites an anti-join to `EmptyRelation` *within the same node visit*, the JoinFoldEmpty rule can still fire via the per-node fixed-point loop in `applyPassRules`.
 
 **DISTINCT elimination** (`rule-distinct-elimination.ts`):
 - When a `DistinctNode`'s source already has a key (from logical `RelationType.keys`, or an FD-encoded key in `physical.fds` via `hasAnyKey` / `hasSingletonFd`), the DISTINCT is redundant and removed
@@ -1689,7 +1710,7 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 - `SeqScanNode`: Full table scan
 - `IndexScanNode`: Index-based scan with filters
 - `IndexSeekNode`: Index-based point/range lookups
-- `EmptyResultNode`: Zero-row short-circuit (e.g., `IS NULL` on NOT NULL column)
+- `EmptyResultNode`: Zero-row short-circuit at the access boundary (e.g., `IS NULL` on NOT NULL column). Sibling node `EmptyRelationNode` (`planner/nodes/empty-relation-node.ts`) covers the schema-polymorphic empty case for general fold rules — `EmptyResultNode` stays bound to a `TableReferenceNode` (for EXPLAIN), while `EmptyRelationNode` is detached from any specific source. See § Empty-relation folding.
 
 ### Parameterization hand-off
 
