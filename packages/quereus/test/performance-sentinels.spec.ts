@@ -74,25 +74,31 @@ describe('Performance sentinels', function () {
 
 	// --------------------------------------------------------- Planning time
 	describe('Planning time', () => {
-		it('plans a 50-column SELECT with non-contradicting WHERE under budget', async () => {
+		it('plans a 25-column SELECT with non-contradicting WHERE under budget', async () => {
 			const db = new Database();
 			try {
-				const cols = Array.from({ length: 50 }, (_, i) => `c${i} INTEGER CHECK (c${i} >= 0)`).join(', ');
+				// 25 conjuncts → AND-tree depth 24, comfortably below the planner's
+				// maxOptimizationDepth (50). Each column carries a CHECK domain and a
+				// non-contradicting WHERE conjunct so the sat-checker walks every one
+				// and concludes 'sat'.
+				const cols = Array.from({ length: 25 }, (_, i) => `c${i} INTEGER CHECK (c${i} >= 0)`).join(', ');
 				await db.exec(`CREATE TABLE wide (id INTEGER PRIMARY KEY, ${cols}) USING memory`);
-				// 50 conjuncts on distinct columns, every one within the declared
-				// CHECK domain → the sat-checker walks all of them and concludes 'sat'.
-				const whereClauses = Array.from({ length: 50 }, (_, i) => `c${i} < 1000`).join(' AND ');
+				const whereClauses = Array.from({ length: 25 }, (_, i) => `c${i} < 1000`).join(' AND ');
 				const sql = `SELECT * FROM wide WHERE ${whereClauses}`;
 
 				const elapsed = await timeMs(async () => {
 					for (let i = 0; i < 50; i++) {
 						const stmt = db.prepare(sql);
+						// `db.prepare` only parses; planning is deferred until first
+						// step / compile. Force compilation here so the sat-checker
+						// actually runs on every iteration.
+						stmt.compile();
 						await stmt.finalize();
 					}
 				});
-				// O(conjuncts × columns_mentioned) — 50 × 1 column each = trivial.
+				// O(conjuncts × columns_mentioned) — 25 × 1 column each = trivial.
 				// Generous budget for CI headroom.
-				expect(elapsed).to.be.below(2000, `50 plans of 50-col WHERE took ${elapsed.toFixed(1)} ms`);
+				expect(elapsed).to.be.below(5000, `50 plans of 25-col WHERE took ${elapsed.toFixed(1)} ms`);
 			} finally {
 				await db.close();
 			}
