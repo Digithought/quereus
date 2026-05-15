@@ -303,7 +303,7 @@ class MyTable extends VirtualTable {
 
 | Method | Description |
 |--------|-------------|
-| `registerConnection(conn)` | Registers a connection for transaction management. If a transaction is already active, `begin()` is called on the connection. |
+| `registerConnection(conn)` | Registers a connection for transaction management. If a transaction is already active, `begin()` is called on the connection and the active savepoint stack is replayed by calling `createSavepoint(depth)` for each open depth, so subsequent `releaseSavepoint` / `rollbackToSavepoint` broadcasts targeting earlier depths are in-range on the new connection. |
 | `unregisterConnection(id)` | Unregisters a connection. May be deferred during implicit transactions. |
 | `getConnection(id)` | Gets a connection by ID. |
 | `getConnectionsForTable(name)` | Gets all connections for a table. Useful for connection reuse. |
