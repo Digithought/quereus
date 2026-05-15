@@ -1,8 +1,8 @@
 import { PlanNodeType } from './plan-node-type.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, type PhysicalProperties } from './plan-node.js';
 import { ColumnReferenceNode } from './reference.js';
-import { addFd, projectConstantBindings, projectFds, singletonFd, superkeyToFd } from '../util/fd-utils.js';
-import type { ConstantBinding, FunctionalDependency } from './plan-node.js';
+import { addFd, projectConstantBindings, projectDomainConstraints, projectFds, singletonFd, superkeyToFd } from '../util/fd-utils.js';
+import type { ConstantBinding, DomainConstraint, FunctionalDependency } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
@@ -43,6 +43,7 @@ export function propagateAggregateFds(
   fds?: ReadonlyArray<FunctionalDependency>;
   equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
   constantBindings?: ReadonlyArray<ConstantBinding>;
+  domainConstraints?: ReadonlyArray<DomainConstraint>;
 } {
   const groupCount = groupBy.length;
 
@@ -88,11 +89,13 @@ export function propagateAggregateFds(
   // Constant bindings on GROUP BY columns survive; aggregate-output columns get
   // none (they are computed expressions, not in the column-mapping).
   const projectedBindings = projectConstantBindings(sourcePhysical?.constantBindings ?? [], map);
+  const projectedDomains = projectDomainConstraints(sourcePhysical?.domainConstraints ?? [], map);
 
   return {
     fds: fds.length > 0 ? fds : undefined,
     equivClasses: projectedEquiv.length > 0 ? projectedEquiv : undefined,
     constantBindings: projectedBindings.length > 0 ? projectedBindings : undefined,
+    domainConstraints: projectedDomains.length > 0 ? projectedDomains : undefined,
   };
 }
 
@@ -271,7 +274,7 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
 
   computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
     const sourcePhysical = childrenPhysical[0];
-    const { fds, equivClasses, constantBindings } = propagateAggregateFds(
+    const { fds, equivClasses, constantBindings, domainConstraints } = propagateAggregateFds(
       this.source.getAttributes(),
       this.groupBy,
       sourcePhysical,
@@ -284,6 +287,7 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
       fds,
       equivClasses,
       constantBindings,
+      domainConstraints,
     };
   }
 

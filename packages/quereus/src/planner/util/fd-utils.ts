@@ -6,7 +6,7 @@
  */
 
 import { createLogger } from '../../common/logger.js';
-import type { ConstantBinding, ConstantValue, FunctionalDependency, ScalarPlanNode } from '../nodes/plan-node.js';
+import type { ConstantBinding, ConstantValue, DomainConstraint, FunctionalDependency, ScalarPlanNode } from '../nodes/plan-node.js';
 import { ColumnReferenceNode, ParameterReferenceNode } from '../nodes/reference.js';
 import { BinaryOpNode, CastNode, CollateNode, LiteralNode } from '../nodes/scalar.js';
 
@@ -746,4 +746,96 @@ export function shiftConstantBindings(
 		attrs: binding.attrs.map(c => c + offset).sort((x, y) => x - y),
 		value: binding.value,
 	}));
+}
+
+// ---------------------------------------------------------------------------
+// DomainConstraint helpers
+// ---------------------------------------------------------------------------
+
+export type { DomainConstraint };
+
+function sqlValueEquals(a: import('../../common/types.js').SqlValue, b: import('../../common/types.js').SqlValue): boolean {
+	if (a === b) return true;
+	if (a instanceof Uint8Array && b instanceof Uint8Array) {
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+		return true;
+	}
+	return false;
+}
+
+function domainConstraintEquals(a: DomainConstraint, b: DomainConstraint): boolean {
+	if (a.column !== b.column || a.kind !== b.kind) return false;
+	if (a.kind === 'range' && b.kind === 'range') {
+		const aHasMin = a.min !== undefined;
+		const bHasMin = b.min !== undefined;
+		if (aHasMin !== bHasMin) return false;
+		if (aHasMin && !sqlValueEquals(a.min!, b.min!)) return false;
+		if (aHasMin && a.minInclusive !== b.minInclusive) return false;
+		const aHasMax = a.max !== undefined;
+		const bHasMax = b.max !== undefined;
+		if (aHasMax !== bHasMax) return false;
+		if (aHasMax && !sqlValueEquals(a.max!, b.max!)) return false;
+		if (aHasMax && a.maxInclusive !== b.maxInclusive) return false;
+		return true;
+	}
+	if (a.kind === 'enum' && b.kind === 'enum') {
+		if (a.values.length !== b.values.length) return false;
+		for (let i = 0; i < a.values.length; i++) {
+			if (!sqlValueEquals(a.values[i], b.values[i])) return false;
+		}
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Concatenate two domain-constraint lists, dropping structurally equal
+ * duplicates. We deliberately do NOT intersect overlapping range/enum
+ * constraints on the same column — that's deferred to the
+ * predicate-contradiction-detection ticket. Caps at `MAX_FDS_PER_NODE`.
+ */
+export function mergeDomainConstraints(
+	a: ReadonlyArray<DomainConstraint>,
+	b: ReadonlyArray<DomainConstraint>,
+): DomainConstraint[] {
+	const result: DomainConstraint[] = a.slice();
+	for (const next of b) {
+		if (result.some(existing => domainConstraintEquals(existing, next))) continue;
+		result.push(next);
+	}
+	return enforceDomainCap(result);
+}
+
+function enforceDomainCap(domains: DomainConstraint[]): DomainConstraint[] {
+	if (domains.length <= MAX_FDS_PER_NODE) return domains;
+	const kept = domains.slice(0, MAX_FDS_PER_NODE);
+	log('DomainConstraint cap reached: dropped %d domain(s) from %d', domains.length - kept.length, domains.length);
+	return kept;
+}
+
+/**
+ * Project domain constraints through `mapping` (oldCol → newCol). Drops any
+ * constraint whose column is not in the mapping; remaps the rest.
+ */
+export function projectDomainConstraints(
+	domains: ReadonlyArray<DomainConstraint>,
+	mapping: ReadonlyMap<number, number>,
+): DomainConstraint[] {
+	const out: DomainConstraint[] = [];
+	for (const domain of domains) {
+		const mapped = mapping.get(domain.column);
+		if (mapped === undefined) continue;
+		out.push({ ...domain, column: mapped });
+	}
+	return mergeDomainConstraints(out, []);
+}
+
+/** Shift every domain constraint's `column` by `offset` (join translation). */
+export function shiftDomainConstraints(
+	domains: ReadonlyArray<DomainConstraint>,
+	offset: number,
+): DomainConstraint[] {
+	if (offset === 0) return domains.slice();
+	return domains.map(domain => ({ ...domain, column: domain.column + offset }));
 }

@@ -197,7 +197,7 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
 
   computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
     const sourcePhysical = childrenPhysical[0];
-    const { fds, equivClasses, constantBindings } = propagateAggregateFds(
+    const { fds, equivClasses, constantBindings, domainConstraints } = propagateAggregateFds(
       this.source.getAttributes(),
       this.groupBy,
       sourcePhysical,
@@ -215,6 +215,7 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
       fds,
       equivClasses,
       constantBindings,
+      domainConstraints,
     };
   }
 

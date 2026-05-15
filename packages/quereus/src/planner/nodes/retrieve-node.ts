@@ -74,6 +74,7 @@ export class RetrieveNode extends PlanNode implements UnaryRelationalNode {
 			fds: src.fds,
 			equivClasses: src.equivClasses,
 			constantBindings: src.constantBindings,
+			domainConstraints: src.domainConstraints,
 		};
 	}
 

@@ -164,6 +164,7 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 		const fds = leftPhys?.fds;
 		const equivClasses = leftPhys?.equivClasses;
 		const constantBindings = leftPhys?.constantBindings;
+		const domainConstraints = leftPhys?.domainConstraints;
 
 		return {
 			ordering,
@@ -176,6 +177,7 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 			fds,
 			equivClasses,
 			constantBindings,
+			domainConstraints,
 		};
 	}
 

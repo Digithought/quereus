@@ -78,6 +78,7 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode, Li
 			fds: sourcePhysical?.fds,
 			equivClasses: sourcePhysical?.equivClasses,
 			constantBindings: sourcePhysical?.constantBindings,
+			domainConstraints: sourcePhysical?.domainConstraints,
 			// LIMIT/OFFSET preserves monotonicOn — slicing a sorted prefix preserves ordering.
 			monotonicOn: sourcePhysical?.monotonicOn,
 		};

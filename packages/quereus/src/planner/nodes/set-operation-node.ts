@@ -71,6 +71,9 @@ export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
       fds: undefined,
       equivClasses: undefined,
       constantBindings: undefined,
+      // Domains can't be assumed across set operations either: a UNION of
+      // [a in (1,2)] with [a in (3)] would land outside both source domains.
+      domainConstraints: undefined,
     };
   }
 

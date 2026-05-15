@@ -109,6 +109,9 @@ export class FilterNode extends PlanNode implements UnaryRelationalNode, Predica
 			fds: fds.length > 0 ? fds : undefined,
 			equivClasses: equivClasses.length > 0 ? equivClasses : undefined,
 			constantBindings: constantBindings.length > 0 ? constantBindings : undefined,
+			// Domains pass through unchanged. Intersecting with the filter predicate
+			// is deferred to the predicate-contradiction-detection ticket.
+			domainConstraints: sourcePhysical?.domainConstraints,
 		};
 	}
 

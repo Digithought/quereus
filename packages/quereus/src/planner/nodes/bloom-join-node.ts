@@ -102,6 +102,7 @@ export class BloomJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			fds: fdResult.fds,
 			equivClasses: fdResult.equivClasses,
 			constantBindings: fdResult.constantBindings,
+			domainConstraints: fdResult.domainConstraints,
 		};
 	}
 

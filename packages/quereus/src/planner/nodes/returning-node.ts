@@ -8,7 +8,7 @@ import { expressionToString } from '../../emit/ast-stringify.js';
 import { Cached } from '../../util/cached.js';
 import { deriveProjectionColumnMap, projectKeys } from '../util/key-utils.js';
 import { projectOrdering } from '../framework/physical-utils.js';
-import { addFd, projectConstantBindings, projectFds, superkeyToFd } from '../util/fd-utils.js';
+import { addFd, projectConstantBindings, projectDomainConstraints, projectFds, superkeyToFd } from '../util/fd-utils.js';
 
 export interface ReturningProjection {
   node: ScalarPlanNode;
@@ -270,6 +270,7 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
       if (mapped.length >= 2) projectedEquiv.push(mapped.sort((a, b) => a - b));
     }
     const projectedBindings = projectConstantBindings(sourcePhysical?.constantBindings ?? [], map);
+    const projectedDomains = projectDomainConstraints(sourcePhysical?.domainConstraints ?? [], map);
 
     return {
       estimatedRows: this.estimatedRows,
@@ -277,6 +278,7 @@ export class ReturningNode extends PlanNode implements RelationalPlanNode {
       fds: fds.length > 0 ? fds : undefined,
       equivClasses: projectedEquiv.length > 0 ? projectedEquiv : undefined,
       constantBindings: projectedBindings.length > 0 ? projectedBindings : undefined,
+      domainConstraints: projectedDomains.length > 0 ? projectedDomains : undefined,
     };
   }
 

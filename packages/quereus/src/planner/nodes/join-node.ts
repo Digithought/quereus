@@ -130,6 +130,7 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 			fds: fdResult.fds,
 			equivClasses: fdResult.equivClasses,
 			constantBindings: fdResult.constantBindings,
+			domainConstraints: fdResult.domainConstraints,
 		};
 	}
 

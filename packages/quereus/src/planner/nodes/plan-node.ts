@@ -68,6 +68,41 @@ export interface ConstantBinding {
 }
 
 /**
+ * A bound on the values a single output column can take across every row of one
+ * execution. Sourced from declared CHECK constraints at the table reference and
+ * propagated like FDs/ECs/bindings — see `planner/util/fd-utils.ts` for the
+ * merge/project/shift helpers.
+ *
+ * - `range`: an open or closed interval. `min`/`max` are absent for unbounded
+ *   sides; `minInclusive`/`maxInclusive` are ignored when the corresponding
+ *   bound is absent.
+ * - `enum`: a finite set of allowed values.
+ *
+ * Multiple constraints may exist on the same column (and even on the same kind)
+ * — intersection is deferred to the predicate-contradiction-detection ticket.
+ */
+export type DomainConstraint =
+	| {
+		readonly kind: 'range';
+		/** Output column index. */
+		readonly column: number;
+		/** Lower bound, when known. */
+		readonly min?: SqlValue;
+		/** Upper bound, when known. */
+		readonly max?: SqlValue;
+		/** Lower bound is inclusive. Ignored when `min` is absent. */
+		readonly minInclusive: boolean;
+		/** Upper bound is inclusive. Ignored when `max` is absent. */
+		readonly maxInclusive: boolean;
+	}
+	| {
+		readonly kind: 'enum';
+		/** Output column index. */
+		readonly column: number;
+		readonly values: ReadonlyArray<SqlValue>;
+	};
+
+/**
  * Physical properties that execution nodes can provide or require
  */
 export interface PhysicalProperties {
@@ -101,6 +136,15 @@ export interface PhysicalProperties {
    * constants here because they are bound once before iteration.
    */
   constantBindings?: ReadonlyArray<ConstantBinding>;
+
+  /**
+   * Per-column value bounds (range or enum) provable for every row in the
+   * stream. Sourced from declared CHECK constraints at the table reference and
+   * propagated through unary/binary operators using the same projection rules
+   * as FDs/ECs/bindings. Multiple constraints on the same column may coexist;
+   * intersection across constraints is deferred to a follow-up ticket.
+   */
+  domainConstraints?: ReadonlyArray<DomainConstraint>;
 
   /**
    * Attributes the relation is monotonically ordered on. Stronger than `ordering`:

@@ -105,6 +105,7 @@ export class SortNode extends PlanNode implements UnaryRelationalNode, SortCapab
 			fds: sourcePhysical?.fds,
 			equivClasses: sourcePhysical?.equivClasses,
 			constantBindings: sourcePhysical?.constantBindings,
+			domainConstraints: sourcePhysical?.domainConstraints,
 			monotonicOn,
 		};
 	}

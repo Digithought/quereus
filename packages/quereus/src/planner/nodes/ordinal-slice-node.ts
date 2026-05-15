@@ -77,6 +77,7 @@ export class OrdinalSliceNode extends PlanNode implements UnaryRelationalNode {
 			fds: sourcePhysical?.fds,
 			equivClasses: sourcePhysical?.equivClasses,
 			constantBindings: sourcePhysical?.constantBindings,
+			domainConstraints: sourcePhysical?.domainConstraints,
 			monotonicOn: sourcePhysical?.monotonicOn,
 		};
 	}

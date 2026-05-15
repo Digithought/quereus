@@ -1,12 +1,14 @@
-import type { Attribute, ConstantBinding, FunctionalDependency, MonotonicOnInfo, PhysicalProperties } from './plan-node.js';
+import type { Attribute, ConstantBinding, DomainConstraint, FunctionalDependency, MonotonicOnInfo, PhysicalProperties } from './plan-node.js';
 import type { JoinType } from './join-node.js';
 import type { RelationType, ColRef } from '../../common/datatype.js';
 import {
 	addEquivalence, addFd,
 	closeConstantBindingsOverEcs,
 	mergeConstantBindings,
+	mergeDomainConstraints,
 	mergeEquivClasses, mergeFds,
 	shiftConstantBindings,
+	shiftDomainConstraints,
 	shiftEquivClasses, shiftFds,
 	superkeyToFd,
 } from '../util/fd-utils.js';
@@ -172,6 +174,7 @@ export function propagateJoinFds(
 	fds?: ReadonlyArray<FunctionalDependency>;
 	equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
 	constantBindings?: ReadonlyArray<ConstantBinding>;
+	domainConstraints?: ReadonlyArray<DomainConstraint>;
 } {
 	const leftFds = leftPhys?.fds ?? [];
 	const rightFds = rightPhys?.fds ?? [];
@@ -179,6 +182,8 @@ export function propagateJoinFds(
 	const rightEC = rightPhys?.equivClasses ?? [];
 	const leftBindings = leftPhys?.constantBindings ?? [];
 	const rightBindings = rightPhys?.constantBindings ?? [];
+	const leftDomains = leftPhys?.domainConstraints ?? [];
+	const rightDomains = rightPhys?.domainConstraints ?? [];
 
 	const opts = { keyHints: preservedKeys };
 
@@ -196,10 +201,12 @@ export function propagateJoinFds(
 		fds: ReadonlyArray<FunctionalDependency>,
 		equiv: ReadonlyArray<ReadonlyArray<number>>,
 		bindings: ReadonlyArray<ConstantBinding>,
+		domains: ReadonlyArray<DomainConstraint>,
 	) => ({
 		fds: fds.length > 0 ? fds : undefined,
 		equivClasses: equiv.length > 0 ? equiv : undefined,
 		constantBindings: bindings.length > 0 ? bindings : undefined,
+		domainConstraints: domains.length > 0 ? domains : undefined,
 	});
 
 	switch (joinType) {
@@ -222,27 +229,32 @@ export function propagateJoinFds(
 				shiftConstantBindings(rightBindings, leftColumnCount),
 			);
 			const bindings = closeConstantBindingsOverEcs(mergedBindings, equiv);
-			return wrap(fds, equiv, bindings);
+			const domains = mergeDomainConstraints(
+				leftDomains,
+				shiftDomainConstraints(rightDomains, leftColumnCount),
+			);
+			return wrap(fds, equiv, bindings, domains);
 		}
 		case 'left': {
 			// Left's bindings survive on left's columns; right's are dropped (the
 			// NULL-padding from unmatched left rows breaks any right-side pin).
 			const fds = withKeyFds(leftFds.slice());
-			return wrap(fds, leftEC.map(c => c.slice()), leftBindings.map(b => ({ ...b })));
+			return wrap(fds, leftEC.map(c => c.slice()), leftBindings.map(b => ({ ...b })), leftDomains.slice());
 		}
 		case 'right': {
 			let fds: ReadonlyArray<FunctionalDependency> = shiftFds(rightFds, leftColumnCount);
 			fds = withKeyFds(fds);
 			const equiv = shiftEquivClasses(rightEC, leftColumnCount);
 			const bindings = shiftConstantBindings(rightBindings, leftColumnCount);
-			return wrap(fds, equiv, bindings);
+			const domains = shiftDomainConstraints(rightDomains, leftColumnCount);
+			return wrap(fds, equiv, bindings, domains);
 		}
 		case 'full':
 			return {};
 		case 'semi':
 		case 'anti': {
 			const fds = withKeyFds(leftFds.slice());
-			return wrap(fds, leftEC.map(c => c.slice()), leftBindings.map(b => ({ ...b })));
+			return wrap(fds, leftEC.map(c => c.slice()), leftBindings.map(b => ({ ...b })), leftDomains.slice());
 		}
 		default:
 			return {};

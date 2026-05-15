@@ -1,6 +1,7 @@
 import type { BaseType, ScalarType, RelationType } from '../../common/datatype.js';
-import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute, type InjectivityResult, type MonotonicityResult, type PhysicalProperties, type FunctionalDependency } from './plan-node.js';
-import { addFd } from '../util/fd-utils.js';
+import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute, type InjectivityResult, type MonotonicityResult, type PhysicalProperties, type FunctionalDependency, type ConstantBinding } from './plan-node.js';
+import { addFd, closeConstantBindingsOverEcs, mergeConstantBindings, mergeEquivClasses } from '../util/fd-utils.js';
+import { getCheckExtraction } from '../analysis/check-extraction.js';
 import { PlanNodeType } from './plan-node-type.js';
 import type { TableSchema } from '../../schema/table.js';
 import type { Scope } from '../scopes/scope.js';
@@ -97,7 +98,32 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 			if (dep.length === 0) continue;
 			fds = addFd(fds, { determinants: det, dependents: dep });
 		}
-		return fds.length > 0 ? { fds } : {};
+
+		// Merge in CHECK-derived FDs/ECs/bindings/domains. Cached per-schema.
+		const checkExt = getCheckExtraction(this.tableSchema);
+		for (const fd of checkExt.fds) {
+			fds = addFd(fds, fd);
+		}
+
+		let equivClasses: ReadonlyArray<ReadonlyArray<number>> = [];
+		if (checkExt.equivPairs.length > 0) {
+			equivClasses = mergeEquivClasses([], checkExt.equivPairs.map(p => [p[0], p[1]]));
+		}
+
+		let constantBindings: ReadonlyArray<ConstantBinding> = [];
+		if (checkExt.constantBindings.length > 0) {
+			constantBindings = mergeConstantBindings([], checkExt.constantBindings);
+			if (equivClasses.length > 0) {
+				constantBindings = closeConstantBindingsOverEcs(constantBindings, equivClasses);
+			}
+		}
+
+		const out: Partial<PhysicalProperties> = {};
+		if (fds.length > 0) out.fds = fds;
+		if (equivClasses.length > 0) out.equivClasses = equivClasses;
+		if (constantBindings.length > 0) out.constantBindings = constantBindings;
+		if (checkExt.domainConstraints.length > 0) out.domainConstraints = checkExt.domainConstraints;
+		return out;
 	}
 
 	override toString(): string {

@@ -1168,11 +1168,19 @@ export interface ConstantBinding {
   readonly value: ConstantValue;
 }
 
+export type DomainConstraint =
+  | { readonly kind: 'range'; readonly column: number;
+      readonly min?: SqlValue; readonly max?: SqlValue;
+      readonly minInclusive: boolean; readonly maxInclusive: boolean }
+  | { readonly kind: 'enum'; readonly column: number;
+      readonly values: ReadonlyArray<SqlValue> };
+
 interface PhysicalProperties {
   // ... ordering, estimatedRows, monotonicOn ...
   fds?: ReadonlyArray<FunctionalDependency>;
   equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
   constantBindings?: ReadonlyArray<ConstantBinding>;
+  domainConstraints?: ReadonlyArray<DomainConstraint>;
 }
 ```
 
@@ -1196,7 +1204,7 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 
 | Operator                                  | FDs / ECs added or transformed                                                                                                              |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TableReferenceNode`                      | Seed `key → others` for each declared key (PK + UNIQUE).                                                                                    |
+| `TableReferenceNode`                      | Seed `key → others` for each declared key (PK + UNIQUE). Additionally seed FDs / EC pairs / constant bindings / `domainConstraints` from declared CHECK constraints (cached per `TableSchema`); see *Check-derived contributions* below. Bindings are then closed over the resulting EC list. |
 | `SeqScanNode` / `IndexScanNode` / `IndexSeekNode` | Pass child FDs/ECs through unchanged.                                                                                                |
 | `RetrieveNode`                            | Pass source pipeline's FDs / ECs / constant bindings / ordering through unchanged. Retrieve is a marker for the module/Quereus execution boundary; its output is the source pipeline's output. |
 | `FilterNode`                              | Inherit child. For each equality conjunct: `col = literal` or `col = ?` ⇒ `∅ → col` FD plus a `ConstantBinding`; `col1 = col2` ⇒ bi-directional FDs and EC merge. Bindings are then closed over the resulting EC list. |
@@ -1212,6 +1220,25 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 | `AsofScanNode`                            | Inherit left's FDs/ECs. Right's FDs are dropped (asof = at-most-one match, NULL-padded in outer mode). The asof condition is not an equality, so no equi-pair FDs. |
 | `SetOperationNode`                        | Conservative: drop all FDs/ECs.                                                                                                             |
 | `WindowNode`                              | Pass source FDs/ECs through unchanged (window output columns are not in any new FDs — deferred).                                            |
+
+`domainConstraints` propagate alongside `constantBindings` using the same projection / shift / drop rules: pass-through nodes (Filter, Distinct, Alias, Window, Sort, Limit, scan family) inherit them unchanged; Project/Returning/Aggregate keep only constraints whose column maps to an output column; inner/cross joins concat with shift; LEFT/RIGHT outer keep only the preserved side; FULL outer and SetOperation drop everything. Filter does **not** intersect domains with the filter predicate yet — that intersection is deferred to the predicate-contradiction-detection ticket. Multiple constraints on the same column may coexist (no implicit intersection at this layer).
+
+#### Check-derived contributions
+
+Declared `CHECK` constraints contribute to the table reference's physical properties in addition to declared keys. The walker (`planner/analysis/check-extraction.ts`, cached per `TableSchema` via `WeakMap`) recognizes a small set of syntactic shapes per check and decomposes through `AND`:
+
+| Shape                            | Contribution                                                                       |
+| -------------------------------- | ---------------------------------------------------------------------------------- |
+| `col1 = col2`                    | bi-directional FDs `{col1 ↔ col2}` plus EC pair `[col1, col2]`                     |
+| `col = <literal>`                | FD `∅ → col` plus a literal `ConstantBinding`                                      |
+| `col = <expr>` (single-col RHS)  | one-way FD `<other-col> → col` (no EC, no binding)                                 |
+| `col >= lit` / `col > lit`       | range domain with `min` (inclusive on `>=`, exclusive on `>`)                      |
+| `col <= lit` / `col < lit`       | range domain with `max`                                                            |
+| `col BETWEEN lit AND lit`        | range domain with both bounds inclusive                                            |
+| `col IN (lit, lit, ...)`         | enum domain                                                                        |
+| `<expr-a> AND <expr-b>`          | recurse into both                                                                  |
+
+Disjunctions (`OR`), `NOT`, subqueries, and any function call the schema marks non-deterministic skip the whole CHECK. Schema validation already rejects non-deterministic functions in CHECK at CREATE TABLE time, so the in-cache extraction passes a `() => true` callback; the function-level callback exists for tests and future external callers.
 
 **Helper surface** (`planner/util/fd-utils.ts`):
 
@@ -1231,7 +1258,9 @@ Bindings are closed over equivalence classes: at every node that contributes bin
 - `mergeConstantBindings(a, b)` — coalesce bindings sharing a `ConstantValue` by unioning `attrs`.
 - `closeConstantBindingsOverEcs(bindings, ecs)` — extend each binding's `attrs` over every overlapping EC member (the predicate-inference surface).
 - `projectConstantBindings(bindings, mapping)` / `shiftConstantBindings(bindings, offset)` — projection/translation mirrors of the FD/EC variants.
+- `mergeDomainConstraints(a, b)` / `projectDomainConstraints(domains, mapping)` / `shiftDomainConstraints(domains, offset)` — analogous helpers for the new `domainConstraints` surface. `merge` concatenates dropping structural duplicates; intersection of overlapping ranges/enums is **not** done here (deferred to `optimizer-predicate-contradiction-detection`).
 - `extractEqualityFds(predicate, attrIdToIndex)` — predicate walker used by `FilterNode`; returns FDs, EC pairs, and constant bindings (literals and parameters both contribute bindings).
+- `extractCheckConstraints(checks, columnIndexMap, isDeterministic)` (in `planner/analysis/check-extraction.ts`) — schema-time AST walker used by `TableReferenceNode` to lift declared CHECK constraints into FDs / EC pairs / `ConstantBinding`s / `DomainConstraint`s. Cached per `TableSchema` via `getCheckExtraction`.
 
 **De-dup / cap behavior:** `addFd` performs subsumption (drop existing FDs with the same determinants whose dependent set is a subset of the new one, and skip adding a new FD already subsumed). When the resulting list exceeds the cap, FDs whose determinants are not a subset of any `keyHints` entry passed by the caller are dropped first; truncations are logged at debug under `quereus:planner:fd`. `mergeConstantBindings` enforces the same cap and logs the same way.
 
