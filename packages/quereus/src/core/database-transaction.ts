@@ -154,6 +154,16 @@ export class TransactionManager {
 		return this.inCoordinatedCommit;
 	}
 
+	/**
+	 * Current savepoint stack depth (number of active savepoints). Used by
+	 * `Database.registerConnection` to replay the active stack onto connections
+	 * registered mid-transaction so that subsequent rollback-to / release calls
+	 * targeting earlier depths are in-range on the new connection.
+	 */
+	getActiveSavepointDepth(): number {
+		return this.savepointStack.length;
+	}
+
 	// ============================================================================
 	// Transaction Control
 	// ============================================================================

@@ -37,7 +37,6 @@ const USE_STORE_MODULE = process.env.QUEREUS_TEST_STORE === 'true' || process.en
 
 // Files that are explicitly memory-module-specific and should be skipped in store mode
 const MEMORY_ONLY_FILES = new Set([
-  '04-transactions.sqllogic',  // savepoint rollback in overlay does not undo writes when overlay was created after the savepoint (isolation-layer limitation)
   '05-vtab_memory.sqllogic',  // Explicitly tests memory table indexing behavior
   // '40-constraints.sqllogic' was excluded here; now fixed by IsolatedConnection.isCovering tiebreak
   // '41-foreign-keys.sqllogic' was excluded here; now fixed by IsolatedTable surfacing replacedRow for OR REPLACE store-side displacements

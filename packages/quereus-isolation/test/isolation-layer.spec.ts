@@ -761,6 +761,26 @@ describe('IsolationModule', () => {
 			expect(afterRollback[0].id).to.equal(1);
 		});
 
+		it('savepoint before any access: rollback to savepoint undoes lazy-registered connection writes', async () => {
+			// IsolatedConnection is registered lazily on first read/write. When
+			// SAVEPOINT runs before any access to the table, the connection does
+			// not yet exist, so the DB's savepoint broadcast skips it. The first
+			// INSERT then registers the connection — which must inherit the
+			// active savepoint stack so a subsequent ROLLBACK TO targets a real
+			// entry, not an out-of-range index.
+			await db.exec(`CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT) USING isolated`);
+
+			await db.exec('BEGIN');
+			await db.exec('SAVEPOINT sp');                                // no IsolatedConnection registered yet
+			await db.exec(`INSERT INTO test VALUES (1, 'will-vanish')`); // registers connection NOW
+			await db.exec('ROLLBACK TO SAVEPOINT sp');
+
+			const rows = await asyncIterableToArray(db.eval('SELECT * FROM test'));
+			expect(rows.length).to.equal(0);
+
+			await db.exec('ROLLBACK');
+		});
+
 		it('mixed pre/post-overlay savepoints: rollback to post-overlay sp2 keeps first write, rollback to pre-overlay sp1 wipes all', async () => {
 			// sp1 is pre-overlay, sp2 is post-overlay (created after first INSERT).
 			// ROLLBACK TO sp2 should keep the INSERT before sp2.

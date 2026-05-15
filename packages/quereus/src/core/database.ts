@@ -1448,6 +1448,21 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 				errorLog(`Error starting transaction on newly registered connection ${connection.connectionId}: %O`, error);
 				// Don't throw here - just log the error to avoid breaking connection registration
 			}
+
+			// Replay the active savepoint stack onto this connection so subsequent
+			// release/rollback-to broadcasts targeting earlier depths are in-range.
+			// Without this, modules that register connections lazily (memory, isolation,
+			// any vtab whose connection appears on first read/write) see an empty stack
+			// while the DB broadcasts depths > 0 — silently no-op'ing on a real depth.
+			const activeDepth = this.transactionManager.getActiveSavepointDepth();
+			for (let depth = 0; depth < activeDepth; depth++) {
+				try {
+					await connection.createSavepoint(depth);
+				} catch (error) {
+					errorLog(`Error replaying savepoint depth ${depth} on newly registered connection ${connection.connectionId}: %O`, error);
+					// Continue replaying remaining depths — see comment above on registration robustness.
+				}
+			}
 		} else if (this.transactionManager.isEvaluatingDeferredConstraints()) {
 			log(`Skipped transaction begin on connection ${connection.connectionId} (evaluating deferred constraints)`);
 		}
