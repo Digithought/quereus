@@ -23,8 +23,11 @@
  *   - Join(L, E, anti)     — anti with empty right returns all of L
  *   - Single-side-empty FULL — still emits null-padded rows for non-empty side
  *
- * Runs in the Structural pass at priority 27 — after the IND rules at 26 —
- * and cascades to a fixed point via the pass loop.
+ * Runs in the Structural pass (TopDown) after the IND rules. Cascade is
+ * bounded: rules chain within a single node visit via the per-node fixed-
+ * point loop in `applyPassRules`, but the Structural pass itself is one
+ * top-down traversal — a parent already visited won't re-fire when an inner
+ * Filter folds. See "Cascade limits" in `docs/optimizer.md`.
  */
 
 import { createLogger } from '../../../common/logger.js';
