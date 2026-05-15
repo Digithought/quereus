@@ -55,7 +55,8 @@ import { TransactionManager, type TransactionManagerContext } from './database-t
 import { AssertionEvaluator, type AssertionEvaluatorContext } from './database-assertions.js';
 import { WatcherManager, type WatcherManagerContext } from './database-watchers.js';
 import type { ChangeScope, Subscription, WatchHandler } from '../planner/analysis/change-scope.js';
-import type { VTableEventEmitter } from '../vtab/events.js';
+import { tryGetEventEmitter } from '../vtab/events.js';
+import { Table } from './table-handle.js';
 
 const log = createLogger('core:database');
 const errorLog = log.extend('error');
@@ -71,17 +72,6 @@ function parseSchemaPath(pathString: string): string[] | undefined {
 	if (!pathString) return undefined;
 	const parts = pathString.split(',').map(s => s.trim()).filter(s => s.length > 0);
 	return parts.length > 0 ? parts : undefined;
-}
-
-/** Extract a VTableEventEmitter from a module if it supports one. */
-function tryGetEventEmitter(module: AnyVirtualTableModule): VTableEventEmitter | undefined {
-	const asSource = module as { getEventEmitter?: () => unknown };
-	if (typeof asSource.getEventEmitter !== 'function') return undefined;
-	const emitter = asSource.getEventEmitter();
-	if (!emitter || typeof emitter !== 'object') return undefined;
-	const typed = emitter as { onDataChange?: unknown; onSchemaChange?: unknown };
-	if (typeof typed.onDataChange !== 'function' && typeof typed.onSchemaChange !== 'function') return undefined;
-	return emitter as VTableEventEmitter;
 }
 
 /**
@@ -1388,6 +1378,46 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	/** @internal */
 	_findTable(tableName: string, dbName?: string): TableSchema | undefined {
 		return this.schemaManager.findTable(tableName, dbName);
+	}
+
+	/**
+	 * Returns a public handle to a table for inspection and per-table event
+	 * subscription. Returns `undefined` if the table does not exist or its
+	 * owning module is not registered.
+	 *
+	 * The returned {@link Table} is a snapshot: its `schema` reference is
+	 * frozen at acquisition time. If the table is dropped or recreated, the
+	 * handle keeps the original schema, but no further events for that name
+	 * will arrive. Re-acquire after schema changes if you need fresh state.
+	 *
+	 * After {@link Database.close}, the handle's event emitter reference
+	 * remains valid (the module instance outlives the database) but the
+	 * database-level aggregator is unhooked, so local subscriptions on the
+	 * module emitter still fire only as long as the module itself remains
+	 * active.
+	 *
+	 * @param schemaName The schema name ('main', 'temp', or an attached
+	 *   schema). Pass `undefined` to use the current default schema.
+	 * @param tableName  The table name (case-insensitive resolution).
+	 *
+	 * @example
+	 * ```typescript
+	 * const table = db.getTable('main', 'users');
+	 * const tableEmitter = table?.getEventEmitter();
+	 * const off = tableEmitter?.onDataChange?.((event) => {
+	 *   if (event.tableName === 'users') console.log(event);
+	 * });
+	 * ```
+	 */
+	getTable(schemaName: string | undefined, tableName: string): Table | undefined {
+		this.checkOpen();
+		const tableSchema = this.schemaManager.getTable(schemaName, tableName);
+		if (!tableSchema) return undefined;
+		const moduleName = tableSchema.vtabModuleName;
+		if (!moduleName) return undefined;
+		const moduleInfo = this.schemaManager.getModule(moduleName);
+		if (!moduleInfo) return undefined;
+		return new Table(this, tableSchema, moduleName, moduleInfo.module);
 	}
 
 	/** @internal */

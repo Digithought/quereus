@@ -323,6 +323,31 @@ The `DatabaseSchemaChangeEvent` interface:
 | `ddl` | `string` | DDL statement if available |
 | `remote` | `boolean` | `true` if the change originated from a remote source |
 
+### Per-Table Subscription via `db.getTable(...)`
+
+`Database.getTable(schemaName, tableName)` returns a public `Table` handle (or `undefined` if the table does not exist). The handle exposes the underlying module's event emitter:
+
+```typescript
+const table = db.getTable('main', 'users');
+const tableEmitter = table?.getEventEmitter();
+
+const off = tableEmitter?.onDataChange?.((event) => {
+  // event.tableName is the source table — filter when you only care about one
+  if (event.tableName === 'users') {
+    console.log('users changed:', event);
+  }
+});
+
+// Later
+off?.();
+```
+
+Notes:
+
+- The emitter is **module-scoped**: it is the same instance shared by every table that lives under the same virtual table module. Callbacks fire for changes to any table in that module, so consumers must filter by `schemaName`/`tableName` if they only care about a single table.
+- When the module does not provide an event emitter, `getEventEmitter()` returns `undefined`. Fall back to the database-level `db.onDataChange()` / `db.onSchemaChange()` listeners — the engine populates those automatically for modules without native event support.
+- The handle is a snapshot taken at `db.getTable()` time. If the table is dropped or replaced, the emitter reference remains valid (the module outlives individual tables) but no further events for that specific table will be produced. Re-acquire the handle after schema changes if you need a fresh view.
+
 ### Transaction Batching
 
 Events are batched within transactions and delivered only after a successful commit. On rollback, batched events are discarded. This ensures listeners see a consistent view of committed data.

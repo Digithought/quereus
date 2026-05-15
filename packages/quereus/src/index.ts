@@ -9,6 +9,7 @@
 export { Database } from './core/database.js';
 export type { DatabaseInternal } from './core/database-internal.js';
 export { Statement } from './core/statement.js';
+export { Table } from './core/table-handle.js';
 
 // Common data types and constants
 export { StatusCode, SqlDataType } from './common/types.js';
