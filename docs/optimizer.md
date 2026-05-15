@@ -1167,7 +1167,8 @@ export interface GuardPredicate {
 export type GuardClause =
   | { readonly kind: 'eq-literal'; readonly column: number; readonly value: SqlValue }
   | { readonly kind: 'eq-column'; readonly left: number; readonly right: number }
-  | { readonly kind: 'is-null'; readonly column: number; readonly negated: boolean };
+  | { readonly kind: 'is-null'; readonly column: number; readonly negated: boolean }
+  | { readonly kind: 'or-of'; readonly clauses: readonly GuardClause[] };
 
 export type ConstantValue =
   | { readonly kind: 'literal'; readonly value: SqlValue }
@@ -1265,13 +1266,20 @@ The body is recognized only as a guarded **equality** (bi-directional FDs for `c
 
 **Partial UNIQUE indexes** are the second producer of guarded FDs. `CREATE UNIQUE INDEX (K) WHERE P` records a `predicate` on the synthesized `UniqueConstraintSchema`; `relationTypeFromTableSchema` skips it (the constraint isn't a relation-level key — see § Unique constraints above), and `planner/analysis/partial-unique-extraction.ts` instead emits a guarded FD `K → (all_cols \ K) | P` per partial UC. The recognizer flattens `P`'s top-level `AND` and maps each conjunct to a guard clause:
 
-| Conjunct shape       | Guard clause                                |
-| -------------------- | ------------------------------------------- |
-| `col = literal`      | `eq-literal { column, value }`              |
-| `literal = col`      | same (normalized)                           |
-| `col1 = col2`        | `eq-column { left, right }`                 |
-| `col IS NULL`        | `is-null { column, negated: false }`        |
-| `col IS NOT NULL`    | `is-null { column, negated: true }`         |
+| Conjunct shape                       | Guard clause                                            |
+| ------------------------------------ | ------------------------------------------------------- |
+| `col = literal`                      | `eq-literal { column, value }`                          |
+| `literal = col`                      | same (normalized)                                       |
+| `col1 = col2`                        | `eq-column { left, right }`                             |
+| `col IS NULL`                        | `is-null { column, negated: false }`                    |
+| `col IS NOT NULL`                    | `is-null { column, negated: true }`                     |
+| `NOT col`  (declared NOT NULL only)  | `eq-literal { column, value: 0 }`  (SQL boolean FALSE)  |
+| `col IN (lit, lit, …)`               | `or-of [eq-literal { col, lit_i } …]` (singleton collapses) |
+| `a OR b OR …`                        | `or-of [recognize(a), recognize(b), …]` (flattens nested OR) |
+
+The `or-of` variant is a flat disjunction — sub-clauses are themselves guard clauses from the first five rows, never another `or-of` (the recognizer flattens nested OR chains at construction time). Singleton OR / IN lists collapse to the underlying clause.
+
+The `NOT col` rewrite to `col = 0` is sound under three-valued logic: SQLite encodes boolean FALSE as integer 0, and `WHERE NOT col` excludes both `col IS NULL` and `col = 0` rows. The producer rejects `NOT col` on nominally-nullable columns because the NOT-NULL gate (below) is syntactic — it doesn't recognize `NOT col` as a NULL-excluding witness. Re-stating the partial predicate as `col IS NOT NULL AND col = 0` would work for a nullable column, but in practice the simpler-and-sound choice is to require the column be declared NOT NULL.
 
 If **any** conjunct fails to map, the whole FD is dropped — a partial guard would falsely activate over rows the unrecognized conjunct excludes. The NOT-NULL gate requires each UC column to be effectively non-NULL inside the partial scope: it qualifies if either (a) it is declared NOT NULL on the table, or (b) the partial predicate has a matching `col IS NOT NULL` conjunct — sound because that conjunct is itself one of the guard clauses, so discharge cannot activate the FD over rows where the column might be NULL. A nullable UC column whose `IS NOT NULL` is not in the predicate would admit multiple NULLs inside scope and is rejected.
 
@@ -1287,7 +1295,7 @@ Extraction is cached per `TableSchema` via `getPartialUniqueGuardedFds`. The dow
 - `projectFds` drops a guarded FD whose guard references any column missing from the mapping — the guard would become unobservable and the FD could never re-activate downstream.
 - Outer joins drop guarded FDs that sit on the NULL-padded side (along with that side's unconditional FDs), because NULL-padding can flip guard satisfaction.
 
-Predicates `predicateImpliesGuard` recognizes today: `col = literal` / `col = col2` (and via EC closure), `col is null`, `col is not null`, and column non-nullability from the type system. Inequality, IN-list, and arithmetic-shape guards are intentionally out of scope — extending the vocabulary is mechanical when consumers need it.
+Predicates `predicateImpliesGuard` recognizes today: `col = literal` / `col = col2` (and via EC closure), `col is null`, `col is not null`, column non-nullability from the type system, `col IN (lit, …)` (literal-only), and `NOT col` (rewritten to `col = 0`, paired with the same NOT-NULL claim). It can discharge an `or-of` guard either by entailing any single sub-clause directly, or — when every sub-clause is `eq-literal` on the same column — by checking that the filter pins that column (via `=`, IN-list, EC peer, or `ConstantBinding`) to a *subset* of the OR-set. Inequality and arithmetic-shape guards remain out of scope — extending the vocabulary is mechanical when consumers need it.
 
 **Helper surface** (`planner/util/fd-utils.ts`):
 

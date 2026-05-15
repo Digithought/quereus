@@ -47,6 +47,29 @@ export function literalValue(expr: AST.Expression): SqlValue | undefined {
 }
 
 /**
+ * Flatten a top-level `OR` chain into an array of disjunct expressions.
+ * Non-OR roots return as a single-element array. Textual order is preserved.
+ *
+ * Shared by `check-extraction.ts` (implication-form CHECK recognition) and
+ * `partial-unique-extraction.ts` (top-level OR guard recognition).
+ */
+export function flattenDisjunction(expr: AST.Expression): AST.Expression[] {
+	const out: AST.Expression[] = [];
+	const stack: AST.Expression[] = [expr];
+	while (stack.length > 0) {
+		const cur = stack.pop()!;
+		if (cur.type === 'binary' && (cur as AST.BinaryExpr).operator === 'OR') {
+			const b = cur as AST.BinaryExpr;
+			// Preserve textual order: push right then left so left is popped first.
+			stack.push(b.right, b.left);
+			continue;
+		}
+		out.push(cur);
+	}
+	return out;
+}
+
+/**
  * Collect the set of column indices referenced by `expr`. Only column /
  * identifier nodes naming columns in `columnIndexMap` count. Returns an empty
  * set when the expression references zero recognized columns; the caller can

@@ -24,7 +24,8 @@ type Evaluator = (row: Row) => SqlValue;
 /**
  * Compile a partial-index predicate AST into a row evaluator. Supports the
  * expression forms ordinarily found in partial-index WHERE clauses: literals,
- * column references, comparison operators, AND/OR/NOT, and IS [NOT] NULL.
+ * column references, comparison operators, AND/OR/NOT, IS [NOT] NULL, and
+ * literal-only IN-lists.
  *
  * Throws QuereusError on unsupported expression forms or unknown column
  * references so failures surface at index-creation time rather than producing
@@ -96,12 +97,45 @@ function compileExpression(
 			return compileUnary(expr, columnIndexMap, referencedColumns);
 		case 'binary':
 			return compileBinary(expr, columnIndexMap, referencedColumns);
+		case 'in':
+			return compileIn(expr, columnIndexMap, referencedColumns);
 		default:
 			throw new QuereusError(
 				`Unsupported expression in partial-index predicate: ${expr.type}`,
 				StatusCode.ERROR,
 			);
 	}
+}
+
+function compileIn(
+	expr: Extract<Expression, { type: 'in' }>,
+	columnIndexMap: ReadonlyMap<string, number>,
+	referencedColumns: Set<number>,
+): Evaluator {
+	if (expr.subquery) {
+		throw new QuereusError(
+			'Partial-index predicate may not contain IN subqueries',
+			StatusCode.ERROR,
+		);
+	}
+	if (!expr.values || expr.values.length === 0) {
+		// `col IN ()` is always false (SQLite semantics).
+		return () => false;
+	}
+	const inputEval = compileExpression(expr.expr, columnIndexMap, referencedColumns);
+	const valueEvals = expr.values.map(v => compileExpression(v, columnIndexMap, referencedColumns));
+	return (row) => {
+		const a = inputEval(row);
+		if (a === null) return null;
+		let sawNull = false;
+		for (const ve of valueEvals) {
+			const b = ve(row);
+			if (b === null) { sawNull = true; continue; }
+			if (compareSqlValues(a, b) === 0) return true;
+		}
+		// Three-valued IN: no match plus a NULL ⇒ unknown; otherwise false.
+		return sawNull ? null : false;
+	};
 }
 
 function compileUnary(

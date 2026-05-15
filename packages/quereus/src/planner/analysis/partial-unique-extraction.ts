@@ -15,6 +15,21 @@
  * a weaker partial predicate would falsely activate the FD for rows the
  * unrecognized conjunct excludes.
  *
+ * Recognized conjunct shapes:
+ *   col = literal              ⇒ eq-literal
+ *   literal = col              ⇒ eq-literal (normalized)
+ *   col1 = col2                ⇒ eq-column
+ *   col IS NULL                ⇒ is-null (negated:false)
+ *   col IS NOT NULL            ⇒ is-null (negated:true)
+ *   NOT col  (NOT-NULL col)    ⇒ eq-literal { col, value: 0 }    (SQL false)
+ *   col IN (lit, lit, …)       ⇒ or-of [eq-literal …] (singleton collapses)
+ *   a OR b OR …                ⇒ or-of [recognize(a), recognize(b), …]
+ *
+ * `NOT col` is rewritten to `col = 0` (SQLite encodes boolean FALSE as 0).
+ * This excludes NULL rows semantically — but the NOT-NULL gate below is
+ * syntactic, so `NOT col` on a nominally-nullable UC column is rejected to
+ * avoid double-counting that exclusion across producer and consumer.
+ *
  * NOT-NULL gate: every UC column must be effectively non-NULL inside the
  * partial scope. A column qualifies if either (a) it is declared NOT NULL on
  * the table, or (b) the partial predicate has a matching `col IS NOT NULL`
@@ -29,13 +44,15 @@
  *
  * Out-of-scope shapes (filed as backlog tickets in the implement ticket):
  *   - range subsumption (`age >= 21` discharges `age >= 18`)
- *   - OR / IN / NOT discharge
+ *   - function-call / cast-wrapped column references in IN / NOT shapes
+ *   - standalone `col` (truthy test) — only `NOT col` is recognized
+ *   - IN / NOT / OR inside CHECK implication disjuncts
  */
 
 import type { FunctionalDependency, GuardClause, GuardPredicate } from '../nodes/plan-node.js';
 import type { TableSchema } from '../../schema/table.js';
 import type * as AST from '../../parser/ast.js';
-import { columnIndexFromExpr, literalValue } from './predicate-shape.js';
+import { columnIndexFromExpr, flattenDisjunction, literalValue } from './predicate-shape.js';
 
 const cache = new WeakMap<TableSchema, ReadonlyArray<FunctionalDependency>>();
 
@@ -59,10 +76,13 @@ export function extractPartialUniqueGuardedFds(
 
 	const colCount = tableSchema.columns.length;
 
+	const isColumnNotNullDeclared = (col: number): boolean =>
+		tableSchema.columns[col]?.notNull === true;
+
 	for (const uc of ucs) {
 		if (uc.predicate === undefined) continue;
 
-		const clauses = recognizeGuardClauses(uc.predicate, tableSchema.columnIndexMap);
+		const clauses = recognizeGuardClauses(uc.predicate, tableSchema.columnIndexMap, isColumnNotNullDeclared);
 		if (!clauses) continue;
 		if (clauses.length === 0) continue;
 
@@ -104,6 +124,7 @@ export function extractPartialUniqueGuardedFds(
 function recognizeGuardClauses(
 	expr: AST.Expression,
 	columnIndexMap: ReadonlyMap<string, number>,
+	isColumnNotNullDeclared: (col: number) => boolean,
 ): GuardClause[] | undefined {
 	const conjuncts: AST.Expression[] = [];
 	const stack: AST.Expression[] = [expr];
@@ -120,7 +141,7 @@ function recognizeGuardClauses(
 
 	const clauses: GuardClause[] = [];
 	for (const conjunct of conjuncts) {
-		const clause = recognizeClause(conjunct, columnIndexMap);
+		const clause = recognizeClause(conjunct, columnIndexMap, isColumnNotNullDeclared);
 		if (!clause) return undefined;
 		clauses.push(clause);
 	}
@@ -128,50 +149,126 @@ function recognizeGuardClauses(
 }
 
 /**
- * Recognize one conjunct as a guard clause.
+ * Recognize one conjunct (or disjunct, when called recursively from
+ * `recognizeOr`) as a guard clause.
  *
  * Accepted shapes:
- *   col = literal      ⇒ eq-literal { column, value }
- *   literal = col      ⇒ eq-literal { column, value }     (normalized)
- *   col1 = col2        ⇒ eq-column  { left, right }
- *   col IS NULL        ⇒ is-null    { column, negated:false }
- *   col IS NOT NULL    ⇒ is-null    { column, negated:true }
+ *   col = literal       ⇒ eq-literal { column, value }
+ *   literal = col       ⇒ eq-literal { column, value }     (normalized)
+ *   col1 = col2         ⇒ eq-column  { left, right }
+ *   col IS NULL         ⇒ is-null    { column, negated:false }
+ *   col IS NOT NULL     ⇒ is-null    { column, negated:true }
+ *   NOT col             ⇒ eq-literal { column, value: 0 }   (declared NOT NULL only)
+ *   col IN (lit, …)     ⇒ or-of [eq-literal { col, lit_i } …]
+ *   a OR b OR …         ⇒ or-of [recognize(a), recognize(b), …]
  *
- * `=` and `==` are interchangeable. Anything else (`>`, `<>`, `IN`, function
- * calls, OR sub-trees, etc.) returns undefined — the whole predicate is then
- * dropped on the floor by the caller.
+ * `=` and `==` are interchangeable. Anything else returns undefined — the
+ * whole predicate is then dropped on the floor by the caller.
+ *
+ * For `NOT col`, only declared-NOT-NULL columns are accepted: the rewrite to
+ * `col = 0` implicitly excludes NULL rows, but the NOT-NULL gate for the UC
+ * is syntactic. Rather than teach the gate about `NOT col`, the simpler/sound
+ * choice is to reject `NOT col` on nominally-nullable columns at the
+ * producer.
  */
 function recognizeClause(
 	expr: AST.Expression,
 	columnIndexMap: ReadonlyMap<string, number>,
+	isColumnNotNullDeclared: (col: number) => boolean,
 ): GuardClause | undefined {
 	if (expr.type === 'unary') {
 		const u = expr as AST.UnaryExpr;
-		if (u.operator !== 'IS NULL' && u.operator !== 'IS NOT NULL') return undefined;
-		const col = columnIndexFromExpr(u.expr, columnIndexMap);
-		if (col === undefined) return undefined;
-		return { kind: 'is-null', column: col, negated: u.operator === 'IS NOT NULL' };
+		if (u.operator === 'IS NULL' || u.operator === 'IS NOT NULL') {
+			const col = columnIndexFromExpr(u.expr, columnIndexMap);
+			if (col === undefined) return undefined;
+			return { kind: 'is-null', column: col, negated: u.operator === 'IS NOT NULL' };
+		}
+		if (u.operator === 'NOT') {
+			const col = columnIndexFromExpr(u.expr, columnIndexMap);
+			if (col === undefined) return undefined;
+			if (!isColumnNotNullDeclared(col)) return undefined;
+			return { kind: 'eq-literal', column: col, value: 0 };
+		}
+		return undefined;
 	}
-	if (expr.type !== 'binary') return undefined;
-	const b = expr as AST.BinaryExpr;
-	if (b.operator !== '=' && b.operator !== '==') return undefined;
+	if (expr.type === 'in') {
+		return recognizeIn(expr as AST.InExpr, columnIndexMap);
+	}
+	if (expr.type === 'binary') {
+		const b = expr as AST.BinaryExpr;
+		if (b.operator === 'OR') {
+			return recognizeOr(b, columnIndexMap, isColumnNotNullDeclared);
+		}
+		if (b.operator !== '=' && b.operator !== '==') return undefined;
 
-	const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
-	const rIdx = columnIndexFromExpr(b.right, columnIndexMap);
+		const lIdx = columnIndexFromExpr(b.left, columnIndexMap);
+		const rIdx = columnIndexFromExpr(b.right, columnIndexMap);
 
-	if (lIdx !== undefined && rIdx !== undefined) {
-		if (lIdx === rIdx) return undefined;
-		return { kind: 'eq-column', left: lIdx, right: rIdx };
-	}
-	if (lIdx !== undefined) {
-		const lit = literalValue(b.right);
-		if (lit === undefined) return undefined;
-		return { kind: 'eq-literal', column: lIdx, value: lit };
-	}
-	if (rIdx !== undefined) {
-		const lit = literalValue(b.left);
-		if (lit === undefined) return undefined;
-		return { kind: 'eq-literal', column: rIdx, value: lit };
+		if (lIdx !== undefined && rIdx !== undefined) {
+			if (lIdx === rIdx) return undefined;
+			return { kind: 'eq-column', left: lIdx, right: rIdx };
+		}
+		if (lIdx !== undefined) {
+			const lit = literalValue(b.right);
+			if (lit === undefined) return undefined;
+			return { kind: 'eq-literal', column: lIdx, value: lit };
+		}
+		if (rIdx !== undefined) {
+			const lit = literalValue(b.left);
+			if (lit === undefined) return undefined;
+			return { kind: 'eq-literal', column: rIdx, value: lit };
+		}
+		return undefined;
 	}
 	return undefined;
+}
+
+/**
+ * Recognize `col IN (lit, lit, …)` as an `or-of` of `eq-literal` clauses.
+ * IN-with-subquery, non-literal values, or any other shape returns undefined.
+ * A singleton list collapses to a bare `eq-literal`.
+ */
+function recognizeIn(
+	expr: AST.InExpr,
+	columnIndexMap: ReadonlyMap<string, number>,
+): GuardClause | undefined {
+	if (expr.subquery !== undefined) return undefined;
+	if (!expr.values || expr.values.length === 0) return undefined;
+	const col = columnIndexFromExpr(expr.expr, columnIndexMap);
+	if (col === undefined) return undefined;
+	const subs: GuardClause[] = [];
+	for (const v of expr.values) {
+		const lit = literalValue(v);
+		if (lit === undefined) return undefined;
+		subs.push({ kind: 'eq-literal', column: col, value: lit });
+	}
+	if (subs.length === 1) return subs[0];
+	return { kind: 'or-of', clauses: subs };
+}
+
+/**
+ * Recognize a top-level `OR` chain as a flat `or-of`. Each disjunct must
+ * itself be a recognized clause. Nested `or-of` clauses are inlined so the
+ * result is single-level. A singleton (degenerate) collapses to the
+ * underlying clause.
+ */
+function recognizeOr(
+	expr: AST.BinaryExpr,
+	columnIndexMap: ReadonlyMap<string, number>,
+	isColumnNotNullDeclared: (col: number) => boolean,
+): GuardClause | undefined {
+	const disjuncts = flattenDisjunction(expr);
+	if (disjuncts.length === 0) return undefined;
+	const subs: GuardClause[] = [];
+	for (const d of disjuncts) {
+		const sub = recognizeClause(d, columnIndexMap, isColumnNotNullDeclared);
+		if (!sub) return undefined;
+		if (sub.kind === 'or-of') {
+			for (const s of sub.clauses) subs.push(s);
+		} else {
+			subs.push(sub);
+		}
+	}
+	if (subs.length === 1) return subs[0];
+	return { kind: 'or-of', clauses: subs };
 }

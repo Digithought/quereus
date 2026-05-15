@@ -14,7 +14,7 @@ import type { ConstantBinding, DomainConstraint, FunctionalDependency, GuardClau
 import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
 import type * as AST from '../../parser/ast.js';
 import type { SqlValue } from '../../common/types.js';
-import { columnIndexFromExpr, literalValue, collectColumnNames } from './predicate-shape.js';
+import { columnIndexFromExpr, literalValue, collectColumnNames, flattenDisjunction } from './predicate-shape.js';
 
 export interface CheckExtraction {
 	readonly fds: ReadonlyArray<FunctionalDependency>;
@@ -285,22 +285,6 @@ function handleImplication(
 	const body = disjuncts[disjuncts.length - 1];
 	const guard: GuardPredicate = { clauses: guardClauses };
 	recognizeGuardedBody(body, guard, columnIndexMap, fds);
-}
-
-function flattenDisjunction(expr: AST.Expression): AST.Expression[] {
-	const out: AST.Expression[] = [];
-	const stack: AST.Expression[] = [expr];
-	while (stack.length > 0) {
-		const cur = stack.pop()!;
-		if (cur.type === 'binary' && (cur as AST.BinaryExpr).operator === 'OR') {
-			const b = cur as AST.BinaryExpr;
-			// Preserve textual order: push right then left so left is popped first.
-			stack.push(b.right, b.left);
-			continue;
-		}
-		out.push(cur);
-	}
-	return out;
 }
 
 /**

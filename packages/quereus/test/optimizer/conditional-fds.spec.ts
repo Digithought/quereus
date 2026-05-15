@@ -13,6 +13,7 @@ import {
 } from '../../src/planner/util/fd-utils.js';
 import { EmptyScope } from '../../src/planner/scopes/empty.js';
 import { BinaryOpNode, LiteralNode, UnaryOpNode } from '../../src/planner/nodes/scalar.js';
+import { InNode } from '../../src/planner/nodes/subquery.js';
 import { ColumnReferenceNode } from '../../src/planner/nodes/reference.js';
 import type {
 	ConstantBinding,
@@ -111,6 +112,34 @@ function isNullUnary(operand: ScalarPlanNode, negated: boolean): UnaryOpNode {
 		expr: (operand as unknown as { expression: AST.Expression }).expression,
 	};
 	return new UnaryOpNode(scope, ast, operand);
+}
+
+function notUnary(operand: ScalarPlanNode): UnaryOpNode {
+	const ast: AST.UnaryExpr = {
+		type: 'unary',
+		operator: 'NOT',
+		expr: (operand as unknown as { expression: AST.Expression }).expression,
+	};
+	return new UnaryOpNode(scope, ast, operand);
+}
+
+function inNode(condition: ScalarPlanNode, values: ScalarPlanNode[]): InNode {
+	const ast: AST.InExpr = {
+		type: 'in',
+		expr: (condition as unknown as { expression: AST.Expression }).expression,
+		values: values.map(v => (v as unknown as { expression: AST.Expression }).expression),
+	};
+	return new InNode(scope, ast, condition, undefined, values);
+}
+
+function orPlanNode(left: ScalarPlanNode, right: ScalarPlanNode): BinaryOpNode {
+	const ast: AST.BinaryExpr = {
+		type: 'binary',
+		operator: 'OR',
+		left: (left as unknown as { expression: AST.Expression }).expression,
+		right: (right as unknown as { expression: AST.Expression }).expression,
+	};
+	return new BinaryOpNode(scope, ast, left, right);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +250,149 @@ describe('predicateImpliesGuard', () => {
 			isNullUnary(colNode(101, 1, true), true),
 		);
 		expect(predicateImpliesGuard(pred2, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	// -----------------------------------------------------------------
+	// or-of clause discharge — IN, OR, NOT shapes
+	// -----------------------------------------------------------------
+
+	it("or-of: predicate c IN ('a','b') entails guard {col=a OR col=b}", () => {
+		const guard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+					{ kind: 'eq-literal', column: 0, value: 'b' },
+				],
+			}],
+		};
+		const pred = inNode(textColNode(100, 0), [litNode('a'), litNode('b')]);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("or-of: predicate c='a' entails guard {col=a OR col=b} (singleton subset of OR-set)", () => {
+		const guard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+					{ kind: 'eq-literal', column: 0, value: 'b' },
+				],
+			}],
+		};
+		const pred = eqNode(textColNode(100, 0), litNode('a'));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("or-of: predicate c='c' (literal outside OR-set) does NOT entail guard {col=a OR col=b}", () => {
+		const guard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+					{ kind: 'eq-literal', column: 0, value: 'b' },
+				],
+			}],
+		};
+		const pred = eqNode(textColNode(100, 0), litNode('c'));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+	});
+
+	it("or-of: predicate c IN ('a','c') (filter set ⊄ OR-set) does NOT entail guard", () => {
+		const guard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+					{ kind: 'eq-literal', column: 0, value: 'b' },
+				],
+			}],
+		};
+		const pred = inNode(textColNode(100, 0), [litNode('a'), litNode('c')]);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+	});
+
+	it("or-of mixed: predicate `deleted_at IS NULL` entails guard {deleted_at IS NULL OR status=archived}", () => {
+		// Guard column for the is-null clause uses col 0; eq-literal uses col 1.
+		const guard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'is-null', column: 0, negated: false },
+					{ kind: 'eq-literal', column: 1, value: 'archived' },
+				],
+			}],
+		};
+		const pred = isNullUnary(colNode(100, 0, true), false);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("or-of mixed: predicate `status='archived'` entails guard {deleted_at IS NULL OR status=archived}", () => {
+		const guard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'is-null', column: 0, negated: false },
+					{ kind: 'eq-literal', column: 1, value: 'archived' },
+				],
+			}],
+		};
+		const pred = eqNode(textColNode(101, 1), litNode('archived'));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("or-of mixed: unrelated predicate `id=1` does NOT entail guard {deleted_at IS NULL OR status=archived}", () => {
+		const guard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'is-null', column: 0, negated: false },
+					{ kind: 'eq-literal', column: 1, value: 'archived' },
+				],
+			}],
+		};
+		const pred = eqNode(colNode(102, 2), litNode(1));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
+	});
+
+	it("NOT col predicate pins col=0 (discharges eq-literal{col, 0} guard)", () => {
+		const guard: GuardPredicate = { clauses: [{ kind: 'eq-literal', column: 0, value: 0 }] };
+		const pred = notUnary(colNode(100, 0));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("predicate col=0 also discharges eq-literal{col, 0} guard (NOT col rewritten the same)", () => {
+		const guard: GuardPredicate = { clauses: [{ kind: 'eq-literal', column: 0, value: 0 }] };
+		const pred = eqNode(colNode(100, 0), litNode(0));
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("or-of via EC peer: c1 pinned to literal in OR-set, guard on c2 (c1 ≡ c2)", () => {
+		const guard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 1, value: 'a' },
+					{ kind: 'eq-literal', column: 1, value: 'b' },
+				],
+			}],
+		};
+		const pred = eqNode(textColNode(100, 0), litNode('a'));
+		const ecs: ReadonlyArray<ReadonlyArray<number>> = [[0, 1]];
+		expect(predicateImpliesGuard(pred, guard, ecs, noBindings, attrMap, allNullable)).to.equal(true);
+	});
+
+	it("top-level OR predicate (status=a OR status=b) does NOT discharge guard col=a (AND-only walker)", () => {
+		// The PredicateFacts walker only inspects AND-conjunctions of the
+		// predicate, so a top-level OR predicate contributes no facts —
+		// even when each disjunct individually would discharge the guard.
+		// This pins the conservative behavior.
+		const guard: GuardPredicate = { clauses: [{ kind: 'eq-literal', column: 0, value: 'a' }] };
+		const pred = orPlanNode(
+			eqNode(textColNode(100, 0), litNode('a')),
+			eqNode(textColNode(100, 0), litNode('b')),
+		);
+		expect(predicateImpliesGuard(pred, guard, noEcs, noBindings, attrMap, allNullable)).to.equal(false);
 	});
 });
 
@@ -368,6 +540,120 @@ describe('fd-utils: guarded FD helpers', () => {
 	it('addFd dedupes structurally equal guarded FDs', () => {
 		const after = addFd([fd], { ...fd });
 		expect(after).to.have.length(1);
+	});
+
+	// -----------------------------------------------------------------
+	// or-of: equality, projection
+	// -----------------------------------------------------------------
+
+	it("addFd treats two or-of clauses with same sub-clauses in different orders as equal", () => {
+		const a: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+					{ kind: 'eq-literal', column: 0, value: 'b' },
+				],
+			}],
+		};
+		const b: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'b' },
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+				],
+			}],
+		};
+		const fdA: FunctionalDependency = { determinants: [1], dependents: [2], guard: a };
+		const fdB: FunctionalDependency = { determinants: [1], dependents: [2], guard: b };
+		const after = addFd([fdA], fdB);
+		expect(after).to.have.length(1);
+	});
+
+	it("addFd keeps or-of guards with different sub-clauses side by side", () => {
+		const a: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+					{ kind: 'eq-literal', column: 0, value: 'b' },
+				],
+			}],
+		};
+		const b: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+					{ kind: 'eq-literal', column: 0, value: 'c' },
+				],
+			}],
+		};
+		const fdA: FunctionalDependency = { determinants: [1], dependents: [2], guard: a };
+		const fdB: FunctionalDependency = { determinants: [1], dependents: [2], guard: b };
+		const after = addFd([fdA], fdB);
+		expect(after).to.have.length(2);
+	});
+
+	it("projectFds drops an or-of guarded FD when any nested column drops from the mapping", () => {
+		const orGuard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+					{ kind: 'eq-literal', column: 5, value: 'b' },
+				],
+			}],
+		};
+		const fdOr: FunctionalDependency = { determinants: [1], dependents: [2], guard: orGuard };
+		// Mapping omits column 5 (a nested sub-clause column).
+		const mapping = new Map<number, number>([[0, 50], [1, 100], [2, 200]]);
+		const out = projectFds([fdOr], mapping);
+		expect(out).to.have.length(0);
+	});
+
+	it("projectFds remaps an or-of guarded FD when all columns survive", () => {
+		const orGuard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+					{ kind: 'eq-literal', column: 5, value: 'b' },
+				],
+			}],
+		};
+		const fdOr: FunctionalDependency = { determinants: [1], dependents: [2], guard: orGuard };
+		const mapping = new Map<number, number>([[0, 50], [1, 100], [2, 200], [5, 500]]);
+		const out = projectFds([fdOr], mapping);
+		expect(out).to.have.length(1);
+		const c = out[0].guard!.clauses[0];
+		expect(c.kind).to.equal('or-of');
+		if (c.kind !== 'or-of') return;
+		const cols = c.clauses.map(s => (s as { kind: 'eq-literal'; column: number }).column).sort((a, b) => a - b);
+		expect(cols).to.deep.equal([50, 500]);
+	});
+
+	it("shiftFds shifts or-of sub-clause columns", () => {
+		const orGuard: GuardPredicate = {
+			clauses: [{
+				kind: 'or-of',
+				clauses: [
+					{ kind: 'eq-literal', column: 0, value: 'a' },
+					{ kind: 'is-null', column: 1, negated: false },
+				],
+			}],
+		};
+		const fdOr: FunctionalDependency = { determinants: [2], dependents: [3], guard: orGuard };
+		const out = shiftFds([fdOr], 10);
+		expect(out[0].determinants).to.deep.equal([12]);
+		const c = out[0].guard!.clauses[0];
+		expect(c.kind).to.equal('or-of');
+		if (c.kind !== 'or-of') return;
+		const cols = c.clauses.map(s =>
+			s.kind === 'eq-literal' ? s.column : s.kind === 'is-null' ? s.column : -1,
+		).sort((a, b) => a - b);
+		expect(cols).to.deep.equal([10, 11]);
 	});
 });
 
@@ -518,7 +804,7 @@ describe('extractPartialUniqueGuardedFds', () => {
 		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
 	});
 
-	it('rejects col IN (...)', () => {
+	it("recognizes col IN (lit, lit, …) as an or-of of eq-literal clauses", () => {
 		const inExpr: AST.InExpr = {
 			type: 'in',
 			expr: colExpr('status'),
@@ -528,10 +814,48 @@ describe('extractPartialUniqueGuardedFds', () => {
 			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE)],
 			[{ columns: [0], predicate: inExpr }],
 		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const clauses = fds[0].guard!.clauses;
+		expect(clauses).to.have.length(1);
+		const c = clauses[0];
+		expect(c.kind).to.equal('or-of');
+		if (c.kind !== 'or-of') return;
+		expect(c.clauses).to.have.length(2);
+		const vals = c.clauses.map(s => (s as { kind: 'eq-literal'; column: number; value: AST.LiteralExpr['value'] }).value).sort();
+		expect(vals).to.deep.equal(['a', 'b']);
+	});
+
+	it('collapses col IN (single-literal) to a bare eq-literal', () => {
+		const inExpr: AST.InExpr = {
+			type: 'in',
+			expr: colExpr('status'),
+			values: [lit('a')],
+		};
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE)],
+			[{ columns: [0], predicate: inExpr }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('eq-literal');
+	});
+
+	it('rejects col IN (?) (parameter, not literal)', () => {
+		const inExpr: AST.InExpr = {
+			type: 'in',
+			expr: colExpr('status'),
+			values: [{ type: 'parameter', index: 1 } as AST.Expression],
+		};
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE)],
+			[{ columns: [0], predicate: inExpr }],
+		);
 		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
 	});
 
-	it('rejects top-level OR', () => {
+	it("recognizes top-level OR as an or-of", () => {
 		const schema = makeSchema(
 			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE), makeColumn('region', true, TEXT_TYPE)],
 			[{
@@ -539,6 +863,67 @@ describe('extractPartialUniqueGuardedFds', () => {
 				predicate: or(
 					bin('=', colExpr('status'), lit('a')),
 					bin('=', colExpr('region'), lit('b'))),
+			}],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('or-of');
+		if (c.kind !== 'or-of') return;
+		expect(c.clauses).to.have.length(2);
+	});
+
+	it("flattens 3-way OR into a single or-of with three sub-clauses", () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('a', true, TEXT_TYPE), makeColumn('b', true, TEXT_TYPE), makeColumn('d', true, TEXT_TYPE)],
+			[{
+				columns: [0],
+				predicate: or(
+					or(bin('=', colExpr('a'), lit('x')), bin('=', colExpr('b'), lit('y'))),
+					bin('=', colExpr('d'), lit('z'))),
+			}],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('or-of');
+		if (c.kind !== 'or-of') return;
+		expect(c.clauses).to.have.length(3);
+		for (const sub of c.clauses) {
+			expect(sub.kind).to.equal('eq-literal');
+		}
+	});
+
+	it('recognizes NOT col on declared-NOT-NULL column as eq-literal { col, 0 }', () => {
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('archived', true)],
+			[{ columns: [0], predicate: un('NOT', colExpr('archived')) }],
+		);
+		const fds = extractPartialUniqueGuardedFds(schema);
+		expect(fds).to.have.length(1);
+		const c = fds[0].guard!.clauses[0];
+		expect(c.kind).to.equal('eq-literal');
+		if (c.kind !== 'eq-literal') return;
+		expect(c.column).to.equal(1);
+		expect(c.value).to.equal(0);
+	});
+
+	it('rejects NOT col on nominally-nullable column (NOT-NULL gate is syntactic)', () => {
+		const schema = makeSchema(
+			[makeColumn('id', true), makeColumn('archived', false)],
+			[{ columns: [0], predicate: un('NOT', colExpr('archived')) }],
+		);
+		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
+	});
+
+	it('rejects OR with one unrecognized disjunct (whole predicate dropped)', () => {
+		const schema = makeSchema(
+			[makeColumn('c', true), makeColumn('status', true, TEXT_TYPE), makeColumn('age', true)],
+			[{
+				columns: [0],
+				predicate: or(
+					bin('=', colExpr('status'), lit('a')),
+					bin('>', colExpr('age'), lit(18))),
 			}],
 		);
 		expect(extractPartialUniqueGuardedFds(schema)).to.have.length(0);
@@ -917,6 +1302,176 @@ describe('Conditional FDs: end-to-end propagation', () => {
 				fd.determinants[0] === 1,
 			);
 			expect(partialFd, 'NOT-NULL gate must suppress the partial-UC FD').to.equal(undefined);
+		});
+
+		// -----------------------------------------------------------------
+		// IN-list partial UNIQUE (or-of guard discharge)
+		// -----------------------------------------------------------------
+
+		const setupInListUnique = async (): Promise<void> => {
+			await db.exec(
+				"CREATE TABLE pin (" +
+				" id INTEGER PRIMARY KEY," +
+				" c TEXT NOT NULL," +
+				" status TEXT NOT NULL" +
+				") USING memory"
+			);
+			await db.exec("CREATE UNIQUE INDEX ix_pin ON pin(c) WHERE status IN ('active', 'pending')");
+		};
+
+		it("partial UNIQUE WHERE status IN (...): filter status IN (subset) activates the guard", async () => {
+			await setupInListUnique();
+			const rows = await planRows(db, "SELECT * FROM pin WHERE status IN ('active', 'pending')");
+			const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+			expect(filterProps, 'expected Filter physical props').to.not.equal(undefined);
+			// Columns: id=0, c=1, status=2.
+			const activated = filterProps!.fds?.some(fd =>
+				fd.guard === undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.dependents.includes(0),
+			);
+			expect(activated, 'matching IN-list filter activates partial-UC FD').to.equal(true);
+		});
+
+		it("partial UNIQUE WHERE status IN (...): filter status='active' (singleton subset) activates", async () => {
+			await setupInListUnique();
+			const rows = await planRows(db, "SELECT * FROM pin WHERE status = 'active'");
+			const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+			expect(filterProps, 'expected Filter physical props').to.not.equal(undefined);
+			const activated = filterProps!.fds?.some(fd =>
+				fd.guard === undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.dependents.includes(0),
+			);
+			expect(activated, 'singleton subset of IN-list activates').to.equal(true);
+		});
+
+		it("partial UNIQUE WHERE status IN (...): wrong-literal filter status='inactive' does NOT activate", async () => {
+			await setupInListUnique();
+			const rows = await planRows(db, "SELECT * FROM pin WHERE status = 'inactive'");
+			const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+			expect(filterProps, 'expected Filter physical props').to.not.equal(undefined);
+			const wronglyActivated = filterProps!.fds?.some(fd =>
+				fd.guard === undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.dependents.includes(0),
+			);
+			expect(wronglyActivated ?? false, 'literal outside IN-set must not activate').to.equal(false);
+		});
+
+		it("partial UNIQUE WHERE status IN (...): filter IN (mixed superset) does NOT activate", async () => {
+			await setupInListUnique();
+			const rows = await planRows(db, "SELECT * FROM pin WHERE status IN ('active', 'expired')");
+			const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+			expect(filterProps, 'expected Filter physical props').to.not.equal(undefined);
+			const wronglyActivated = filterProps!.fds?.some(fd =>
+				fd.guard === undefined &&
+				fd.determinants.length === 1 &&
+				fd.determinants[0] === 1 &&
+				fd.dependents.includes(0),
+			);
+			expect(wronglyActivated ?? false, "filter's IN-set must be a subset of the partial's IN-set").to.equal(false);
+		});
+
+		// -----------------------------------------------------------------
+		// OR partial UNIQUE (or-of mixed-shape guard discharge)
+		// -----------------------------------------------------------------
+
+		it("partial UNIQUE WHERE deleted_at IS NULL OR status='archived': either disjunct activates", async () => {
+			await db.exec(
+				"CREATE TABLE por (" +
+				" id INTEGER PRIMARY KEY," +
+				" c TEXT NOT NULL," +
+				" status TEXT NOT NULL," +
+				" deleted_at TEXT NULL" +
+				") USING memory"
+			);
+			await db.exec("CREATE UNIQUE INDEX ix_por ON por(c) WHERE deleted_at IS NULL OR status = 'archived'");
+
+			const anyNodeHasActivatedCKey = (rs: readonly PlanRow[]): boolean =>
+				rs.some(r => {
+					if (!r.physical) return false;
+					const props = JSON.parse(r.physical) as PhysicalProps;
+					return fdHas(props.fds, [1], [0]);
+				});
+
+			// Filter deleted_at IS NULL: activates (sub-clause directly entailed).
+			{
+				const rows = await planRows(db, "SELECT * FROM por WHERE deleted_at IS NULL");
+				expect(anyNodeHasActivatedCKey(rows), 'IS NULL disjunct activates OR-guard').to.equal(true);
+			}
+
+			// Filter status='archived': activates (the other sub-clause).
+			{
+				const rows = await planRows(db, "SELECT * FROM por WHERE status = 'archived'");
+				expect(anyNodeHasActivatedCKey(rows), 'eq-literal disjunct activates OR-guard').to.equal(true);
+			}
+
+			// Filter id=1 — matches neither disjunct: no activation.
+			{
+				const rows = await planRows(db, "SELECT * FROM por WHERE id = 1");
+				expect(anyNodeHasActivatedCKey(rows), 'unrelated filter must not activate').to.equal(false);
+			}
+		});
+
+		// -----------------------------------------------------------------
+		// NOT col partial UNIQUE (rewritten to col=0)
+		// -----------------------------------------------------------------
+
+		it("partial UNIQUE WHERE NOT archived (declared NOT NULL int): filter archived=0 or NOT archived activates", async () => {
+			await db.exec(
+				"CREATE TABLE pnot (" +
+				" id INTEGER PRIMARY KEY," +
+				" c TEXT NOT NULL," +
+				" archived INTEGER NOT NULL" +
+				") USING memory"
+			);
+			await db.exec("CREATE UNIQUE INDEX ix_pnot ON pnot(c) WHERE NOT archived");
+
+			// Filter archived=0: should activate (same eq-literal{archived, 0}).
+			{
+				const rows = await planRows(db, "SELECT * FROM pnot WHERE archived = 0");
+				const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+				expect(filterProps).to.not.equal(undefined);
+				const activated = filterProps!.fds?.some(fd =>
+					fd.guard === undefined &&
+					fd.determinants.length === 1 &&
+					fd.determinants[0] === 1 &&
+					fd.dependents.includes(0),
+				);
+				expect(activated, 'archived=0 activates NOT-rewritten guard').to.equal(true);
+			}
+
+			// Filter NOT archived: should activate (rewritten to archived=0).
+			{
+				const rows = await planRows(db, "SELECT * FROM pnot WHERE NOT archived");
+				const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+				expect(filterProps).to.not.equal(undefined);
+				const activated = filterProps!.fds?.some(fd =>
+					fd.guard === undefined &&
+					fd.determinants.length === 1 &&
+					fd.determinants[0] === 1 &&
+					fd.dependents.includes(0),
+				);
+				expect(activated, 'NOT archived activates NOT-rewritten guard').to.equal(true);
+			}
+
+			// Filter archived=1: should NOT activate.
+			{
+				const rows = await planRows(db, "SELECT * FROM pnot WHERE archived = 1");
+				const filterProps = physicalOf(rows, r => r.op === 'FILTER');
+				expect(filterProps).to.not.equal(undefined);
+				const wronglyActivated = filterProps!.fds?.some(fd =>
+					fd.guard === undefined &&
+					fd.determinants.length === 1 &&
+					fd.determinants[0] === 1 &&
+					fd.dependents.includes(0),
+				);
+				expect(wronglyActivated ?? false, 'archived=1 must not activate').to.equal(false);
+			}
 		});
 	});
 

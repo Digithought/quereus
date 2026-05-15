@@ -9,6 +9,7 @@ import { createLogger } from '../../common/logger.js';
 import type { ConstantBinding, ConstantValue, DomainConstraint, FunctionalDependency, GuardClause, GuardPredicate, ScalarPlanNode } from '../nodes/plan-node.js';
 import { ColumnReferenceNode, ParameterReferenceNode } from '../nodes/reference.js';
 import { BinaryOpNode, CastNode, CollateNode, LiteralNode, UnaryOpNode } from '../nodes/scalar.js';
+import { InNode } from '../nodes/subquery.js';
 import type { SqlValue } from '../../common/types.js';
 
 const log = createLogger('planner:fd');
@@ -158,6 +159,24 @@ function guardClauseEquals(a: GuardClause, b: GuardClause): boolean {
 	}
 	if (a.kind === 'is-null' && b.kind === 'is-null') {
 		return a.column === b.column && a.negated === b.negated;
+	}
+	if (a.kind === 'or-of' && b.kind === 'or-of') {
+		if (a.clauses.length !== b.clauses.length) return false;
+		// Order-insensitive sub-clause comparison.
+		const used = new Array<boolean>(b.clauses.length).fill(false);
+		for (const ac of a.clauses) {
+			let matched = false;
+			for (let i = 0; i < b.clauses.length; i++) {
+				if (used[i]) continue;
+				if (guardClauseEquals(ac, b.clauses[i])) {
+					used[i] = true;
+					matched = true;
+					break;
+				}
+			}
+			if (!matched) return false;
+		}
+		return true;
 	}
 	return false;
 }
@@ -329,29 +348,46 @@ function projectGuard(
 ): GuardPredicate | undefined {
 	const clauses: GuardClause[] = [];
 	for (const clause of guard.clauses) {
-		switch (clause.kind) {
-			case 'eq-literal': {
-				const m = mapping.get(clause.column);
-				if (m === undefined) return undefined;
-				clauses.push({ kind: 'eq-literal', column: m, value: clause.value });
-				break;
-			}
-			case 'eq-column': {
-				const ml = mapping.get(clause.left);
-				const mr = mapping.get(clause.right);
-				if (ml === undefined || mr === undefined) return undefined;
-				clauses.push({ kind: 'eq-column', left: ml, right: mr });
-				break;
-			}
-			case 'is-null': {
-				const m = mapping.get(clause.column);
-				if (m === undefined) return undefined;
-				clauses.push({ kind: 'is-null', column: m, negated: clause.negated });
-				break;
-			}
-		}
+		const mapped = projectClause(clause, mapping);
+		if (mapped === undefined) return undefined;
+		clauses.push(mapped);
 	}
 	return { clauses };
+}
+
+function projectClause(
+	clause: GuardClause,
+	mapping: ReadonlyMap<number, number>,
+): GuardClause | undefined {
+	switch (clause.kind) {
+		case 'eq-literal': {
+			const m = mapping.get(clause.column);
+			if (m === undefined) return undefined;
+			return { kind: 'eq-literal', column: m, value: clause.value };
+		}
+		case 'eq-column': {
+			const ml = mapping.get(clause.left);
+			const mr = mapping.get(clause.right);
+			if (ml === undefined || mr === undefined) return undefined;
+			return { kind: 'eq-column', left: ml, right: mr };
+		}
+		case 'is-null': {
+			const m = mapping.get(clause.column);
+			if (m === undefined) return undefined;
+			return { kind: 'is-null', column: m, negated: clause.negated };
+		}
+		case 'or-of': {
+			const sub: GuardClause[] = [];
+			for (const c of clause.clauses) {
+				const mapped = projectClause(c, mapping);
+				// Same conservative rule as the rest of projectGuard: if any nested
+				// column drops out the whole clause is unrecoverable.
+				if (mapped === undefined) return undefined;
+				sub.push(mapped);
+			}
+			return { kind: 'or-of', clauses: sub };
+		}
+	}
 }
 
 /** Shift all column indices in `fds` (including any `guard` columns) by `offset`. */
@@ -373,18 +409,20 @@ export function shiftFds(
 }
 
 function shiftGuard(guard: GuardPredicate, offset: number): GuardPredicate {
-	return {
-		clauses: guard.clauses.map(c => {
-			switch (c.kind) {
-				case 'eq-literal':
-					return { kind: 'eq-literal', column: c.column + offset, value: c.value };
-				case 'eq-column':
-					return { kind: 'eq-column', left: c.left + offset, right: c.right + offset };
-				case 'is-null':
-					return { kind: 'is-null', column: c.column + offset, negated: c.negated };
-			}
-		}),
-	};
+	return { clauses: guard.clauses.map(c => shiftClause(c, offset)) };
+}
+
+function shiftClause(clause: GuardClause, offset: number): GuardClause {
+	switch (clause.kind) {
+		case 'eq-literal':
+			return { kind: 'eq-literal', column: clause.column + offset, value: clause.value };
+		case 'eq-column':
+			return { kind: 'eq-column', left: clause.left + offset, right: clause.right + offset };
+		case 'is-null':
+			return { kind: 'is-null', column: clause.column + offset, negated: clause.negated };
+		case 'or-of':
+			return { kind: 'or-of', clauses: clause.clauses.map(c => shiftClause(c, offset)) };
+	}
 }
 
 /**
@@ -724,6 +762,12 @@ interface PredicateFacts {
 	readonly isNullCols: ReadonlySet<number>;
 	/** column indices known to be NOT NULL via `col IS NOT NULL`. */
 	readonly isNotNullCols: ReadonlySet<number>;
+	/**
+	 * column index → set of literal values from `col IN (lit, lit, …)`.
+	 * Only populated for literal-only IN-lists (no subqueries, no parameters,
+	 * no function calls). Used to discharge `or-of [eq-literal …]` guards.
+	 */
+	readonly inListEqs: ReadonlyMap<number, ReadonlySet<SqlValue>>;
 }
 
 function buildPredicateFacts(
@@ -734,6 +778,7 @@ function buildPredicateFacts(
 	const columnEqs = new Map<number, Set<number>>();
 	const isNullCols = new Set<number>();
 	const isNotNullCols = new Set<number>();
+	const inListEqs = new Map<number, Set<SqlValue>>();
 
 	const addColumnEq = (a: number, b: number): void => {
 		if (a === b) return;
@@ -796,10 +841,52 @@ function buildPredicateFacts(
 			if (cIdx === undefined) continue;
 			if (op === 'IS NULL') isNullCols.add(cIdx);
 			else if (op === 'IS NOT NULL') isNotNullCols.add(cIdx);
+			// `WHERE NOT col` excludes both NULL and zero rows. Pin `col = 0` so
+			// it discharges partial-UC guards rewritten the same way at production.
+			else if (op === 'NOT') {
+				literalEqs.set(cIdx, 0);
+				isNotNullCols.add(cIdx);
+			}
+			continue;
+		}
+		if (n instanceof InNode) {
+			// Literal-only IN-list with a column-reference condition: capture
+			// the OR-set so `or-of [eq-literal …]` guards can discharge.
+			if (n.source !== undefined) continue;
+			if (!n.values || n.values.length === 0) continue;
+			const cIdx = columnIndexOf(n.condition);
+			if (cIdx === undefined) continue;
+			const set = new Set<SqlValue>();
+			let allLiterals = true;
+			for (const v of n.values) {
+				const lit = literalSqlValueOf(v);
+				if (lit === undefined) { allLiterals = false; break; }
+				set.add(lit);
+			}
+			if (!allLiterals) continue;
+			// If a previous IN on the same column was captured, intersect to keep
+			// the strongest set (`col IN (a,b) AND col IN (b,c)` ⇒ {b}).
+			const prev = inListEqs.get(cIdx);
+			if (prev) {
+				const intersected = new Set<SqlValue>();
+				for (const x of set) {
+					for (const y of prev) {
+						if (sqlValueEquals(x, y)) intersected.add(x);
+					}
+				}
+				inListEqs.set(cIdx, intersected);
+			} else {
+				inListEqs.set(cIdx, set);
+			}
+			// A singleton IN also pins the literal.
+			if (set.size === 1) {
+				const only = set.values().next().value as SqlValue;
+				literalEqs.set(cIdx, only);
+			}
 		}
 	}
 
-	return { literalEqs, columnEqs, isNullCols, isNotNullCols };
+	return { literalEqs, columnEqs, isNullCols, isNotNullCols, inListEqs };
 }
 
 function literalSqlValueOf(n: ScalarPlanNode): SqlValue | undefined {
@@ -915,7 +1002,92 @@ function clauseEntailed(
 			// "col IS NULL" guard.
 			return facts.isNullCols.has(column);
 		}
+		case 'or-of': {
+			// (a) Any sub-clause directly entailed by facts ⇒ OR entailed.
+			for (const sub of clause.clauses) {
+				if (clauseEntailed(sub, facts, ecs, bindings, isColumnNonNullable)) return true;
+			}
+			// (b) Pure-IN specialization: every sub-clause is eq-literal on the
+			//     same column. Entailed when the filter pins that column to a
+			//     subset of the OR-set.
+			return inListEntailed(clause, facts, ecs, bindings);
+		}
 	}
+}
+
+/**
+ * Specialized discharge for `or-of` clauses whose sub-clauses are all
+ * `eq-literal` on the same column (the IN-list shape). Entailed when the
+ * filter pins that column — via direct literal, IN-list, EC peer, or constant
+ * binding — to a subset of the OR-set. Returns false for any other `or-of`
+ * shape.
+ */
+function inListEntailed(
+	clause: GuardClause & { kind: 'or-of' },
+	facts: PredicateFacts,
+	ecs: ReadonlyArray<ReadonlyArray<number>>,
+	bindings: ReadonlyArray<ConstantBinding>,
+): boolean {
+	if (clause.clauses.length === 0) return false;
+	let column: number | undefined;
+	const orSet: SqlValue[] = [];
+	for (const sub of clause.clauses) {
+		if (sub.kind !== 'eq-literal') return false;
+		if (column === undefined) column = sub.column;
+		else if (column !== sub.column) return false;
+		orSet.push(sub.value);
+	}
+	if (column === undefined) return false;
+
+	const inOrSet = (v: SqlValue): boolean => {
+		for (const x of orSet) if (sqlValueEquals(x, v)) return true;
+		return false;
+	};
+
+	// Try the column itself and every EC peer plus columns bound to the same
+	// ConstantValue (those are pinned to the same literal).
+	const cands = candidateColumns(column, ecs, bindings);
+
+	for (const c of cands) {
+		const direct = facts.literalEqs.get(c);
+		if (direct !== undefined && inOrSet(direct)) return true;
+
+		const inList = facts.inListEqs.get(c);
+		if (inList !== undefined && inList.size > 0) {
+			let allIn = true;
+			for (const v of inList) {
+				if (!inOrSet(v)) { allIn = false; break; }
+			}
+			if (allIn) return true;
+		}
+
+		// Source binding pins this candidate to a literal in the OR-set.
+		const binding = bindingForColumn(c, bindings);
+		if (binding && binding.value.kind === 'literal' && inOrSet(binding.value.value)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function candidateColumns(
+	column: number,
+	ecs: ReadonlyArray<ReadonlyArray<number>>,
+	bindings: ReadonlyArray<ConstantBinding>,
+): number[] {
+	const out = new Set<number>();
+	out.add(column);
+	const ecIdx = ecIndexOf(column, ecs);
+	if (ecIdx !== undefined) {
+		for (const c of ecs[ecIdx]) out.add(c);
+	}
+	// Columns sharing a ConstantBinding with `column` are also pinned to the
+	// same value.
+	const ownBinding = bindingForColumn(column, bindings);
+	if (ownBinding) {
+		for (const c of ownBinding.attrs) out.add(c);
+	}
+	return Array.from(out);
 }
 
 /**

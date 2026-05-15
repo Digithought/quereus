@@ -273,3 +273,91 @@ select count(*) as n from (select distinct email from p7h);
 → [{"n":3}]
 
 drop table p7h;
+
+-- =====================================================
+-- 7i. Partial UNIQUE with IN-list predicate: producer recognizes
+--     `col IN (lit, …)` as an `or-of [eq-literal …]` guard; the
+--     consumer discharges it when the filter pins the column to a
+--     subset of the OR-set.
+-- =====================================================
+create table p7i (id integer primary key, c text not null, status text not null);
+create unique index ix_p7i on p7i(c) where status in ('active', 'pending');
+
+-- Direct match: c must be unique inside the partial scope.
+insert into p7i values (1, 'A', 'active');
+insert into p7i values (2, 'B', 'pending');
+insert into p7i values (3, 'A', 'inactive');
+-- Different status, same c: allowed (partial UC excludes the row).
+
+select id, c, status from p7i order by id;
+→ [{"id":1,"c":"A","status":"active"},{"id":2,"c":"B","status":"pending"},{"id":3,"c":"A","status":"inactive"}]
+
+-- Duplicate inside scope: rejected.
+insert into p7i values (4, 'A', 'pending');
+-- error: UNIQUE
+
+-- DISTINCT inside scope: c is unique, so the result count equals the
+-- in-scope row count regardless of FD discharge.
+select count(*) as n from (select distinct c from p7i where status in ('active', 'pending'));
+→ [{"n":2}]
+
+-- Negative: a filter outside the scope (status not in OR-set) must still
+-- dedupe correctly when c repeats across scopes.
+select count(*) as n from (select distinct c from p7i);
+→ [{"n":2}]
+
+drop table p7i;
+
+-- =====================================================
+-- 7j. Partial UNIQUE with `NOT col` predicate (declared NOT NULL int):
+--     the producer rewrites `NOT col` to `col = 0` and the consumer
+--     discharges from a filter that pins `col` to 0.
+-- =====================================================
+create table p7j (id integer primary key, c text not null, archived integer not null);
+create unique index ix_p7j on p7j(c) where not archived;
+
+insert into p7j values (1, 'A', 0);
+insert into p7j values (2, 'B', 0);
+insert into p7j values (3, 'A', 1);   -- archived: outside partial scope, dupes allowed.
+
+select id, c, archived from p7j order by id;
+→ [{"id":1,"c":"A","archived":0},{"id":2,"c":"B","archived":0},{"id":3,"c":"A","archived":1}]
+
+-- Duplicate inside the scope (archived=0): rejected.
+insert into p7j values (4, 'A', 0);
+-- error: UNIQUE
+
+-- Correctness: distinct c across the whole table.
+select count(*) as n from (select distinct c from p7j);
+→ [{"n":2}]
+
+-- Inside scope: still distinct (no duplicates among archived=0 rows).
+select count(*) as n from (select distinct c from p7j where archived = 0);
+→ [{"n":2}]
+
+drop table p7j;
+
+-- =====================================================
+-- 7k. Partial UNIQUE with top-level OR predicate: producer recognizes
+--     `a OR b` as an `or-of` guard. Either disjunct in a filter
+--     discharges it; an unrelated filter does not.
+-- =====================================================
+create table p7k (id integer primary key, c text not null, status text not null, deleted_at text null);
+create unique index ix_p7k on p7k(c) where deleted_at is null or status = 'archived';
+
+insert into p7k values (1, 'A', 'active', null);
+insert into p7k values (2, 'B', 'archived', '2024-01-01');
+-- Both rows match the partial predicate (different disjuncts) — different c's are fine.
+
+-- Duplicate c when both fall under the partial scope (different disjuncts): rejected.
+insert into p7k values (3, 'A', 'archived', '2025-01-01');
+-- error: UNIQUE
+
+-- A row that satisfies neither disjunct (deleted_at not null AND status != 'archived')
+-- is outside the partial scope and may dupe.
+insert into p7k values (4, 'A', 'active', '2025-06-01');
+
+select id, c, status from p7k order by id;
+→ [{"id":1,"c":"A","status":"active"},{"id":2,"c":"B","status":"archived"},{"id":4,"c":"A","status":"active"}]
+
+drop table p7k;

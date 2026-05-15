@@ -64,11 +64,18 @@ export interface GuardPredicate {
  * Narrow guard-clause vocabulary recognized by predicate-implies-guard
  * checking. Each shape is something `extractEqualityFds` / EC / binding layers
  * can already reason about, so activation is a structural check.
+ *
+ * `or-of` is a flat disjunction of the other three shapes; recognizers flatten
+ * nested `or-of` clauses at construction time so a sub-clause is never itself
+ * an `or-of`. `IN (lit, ...)` and `NOT col` shapes are pre-normalized at
+ * recognition time into the same vocabulary (IN-list → `or-of [eq-literal]`,
+ * `NOT col` → `eq-literal { col, value: 0 }`).
  */
 export type GuardClause =
   | { readonly kind: 'eq-literal'; readonly column: number; readonly value: SqlValue }
   | { readonly kind: 'eq-column'; readonly left: number; readonly right: number }
-  | { readonly kind: 'is-null'; readonly column: number; readonly negated: boolean };
+  | { readonly kind: 'is-null'; readonly column: number; readonly negated: boolean }
+  | { readonly kind: 'or-of'; readonly clauses: readonly GuardClause[] };
 
 /**
  * A pinned-constant value associated with a `ConstantBinding`. Either a
