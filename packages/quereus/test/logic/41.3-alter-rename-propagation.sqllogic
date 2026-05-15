@@ -206,6 +206,23 @@ drop view v_star;
 drop table t_star;
 
 -- ===================================
+-- 6f. Qualified outer reference to an exposing CTE
+-- ===================================
+
+create table t_q (id integer primary key, k integer not null);
+insert into t_q values (1, 5);
+
+create view v_q as with c as (select k from t_q) select c.k from c;
+
+alter table t_q rename column k to kk;
+
+select * from v_q;
+→ [{"kk":5}]
+
+drop view v_q;
+drop table t_q;
+
+-- ===================================
 -- 7. RENAME COLUMN referenced inside an index expression
 -- ===================================
 
