@@ -246,6 +246,48 @@ describe('IND-driven existence folding', () => {
 		expect(out.map(r => r.id)).to.deep.equal([100, 101]);
 	});
 
+	it('three-column composite FK: only the canonical pairing folds; all 5 permutations abstain', async () => {
+		await db.exec(
+			"CREATE TABLE p3 (a INTEGER NOT NULL, b INTEGER NOT NULL, c INTEGER NOT NULL, label TEXT, PRIMARY KEY (a, b, c)) USING memory",
+		);
+		await db.exec(
+			"CREATE TABLE c3 (id INTEGER PRIMARY KEY, fa INTEGER NOT NULL, fb INTEGER NOT NULL, fc INTEGER NOT NULL, FOREIGN KEY (fa, fb, fc) REFERENCES p3(a, b, c)) USING memory",
+		);
+		await db.exec("INSERT INTO p3 VALUES (1, 10, 100, 'p1'), (2, 20, 200, 'p2')");
+		await db.exec("INSERT INTO c3 VALUES (1000, 1, 10, 100), (1001, 2, 20, 200)");
+
+		// Canonical pairing fa→a, fb→b, fc→c: must fold, returns all child rows.
+		const qCanon =
+			'SELECT id FROM c3 c WHERE EXISTS (SELECT 1 FROM p3 p WHERE p.a = c.fa AND p.b = c.fb AND p.c = c.fc)';
+		const planCanon = await planRows(db, qCanon);
+		expect(joinCount(planCanon), `canon ops=${planCanon.map(r => r.op).join(',')}`).to.equal(0);
+		expect(referencesParent(planCanon, 'p3')).to.equal(false);
+		const outCanon = await results(db, qCanon + ' ORDER BY id');
+		expect(outCanon.map(r => r.id)).to.deep.equal([1000, 1001]);
+
+		// All five non-canonical permutations of (fa,fb,fc) ↔ (a,b,c) must NOT
+		// fold and (with the seeded data) must return zero rows.
+		const permutations: Array<[string, string, string]> = [
+			// (fa→a, fb→c, fc→b)
+			['p.a = c.fa', 'p.c = c.fb', 'p.b = c.fc'],
+			// (fa→b, fb→a, fc→c)
+			['p.b = c.fa', 'p.a = c.fb', 'p.c = c.fc'],
+			// (fa→b, fb→c, fc→a)
+			['p.b = c.fa', 'p.c = c.fb', 'p.a = c.fc'],
+			// (fa→c, fb→a, fc→b)
+			['p.c = c.fa', 'p.a = c.fb', 'p.b = c.fc'],
+			// (fa→c, fb→b, fc→a)
+			['p.c = c.fa', 'p.b = c.fb', 'p.a = c.fc'],
+		];
+		for (const [e1, e2, e3] of permutations) {
+			const q = `SELECT id FROM c3 c WHERE EXISTS (SELECT 1 FROM p3 p WHERE ${e1} AND ${e2} AND ${e3})`;
+			const plan = await planRows(db, q);
+			expect(joinCount(plan), `perm ${e1}/${e2}/${e3} ops=${plan.map(r => r.op).join(',')}`).to.be.greaterThan(0);
+			const out = await results(db, q + ' ORDER BY id');
+			expect(out.map(r => r.id), `perm ${e1}/${e2}/${e3} result`).to.deep.equal([]);
+		}
+	});
+
 	it('chained NOT EXISTS folds at every level when each FK covers', async () => {
 		await db.exec(
 			"CREATE TABLE grandparent (id INTEGER PRIMARY KEY, label TEXT) USING memory",
