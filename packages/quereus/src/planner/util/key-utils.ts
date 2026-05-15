@@ -2,6 +2,7 @@ import type { ColRef, RelationType } from '../../common/datatype.js';
 import type { Attribute, PhysicalProperties, RelationalPlanNode, ScalarPlanNode } from '../nodes/plan-node.js';
 import type { JoinType } from '../nodes/join-node.js';
 import type { TableSchema } from '../../schema/table.js';
+import { resolveReferencedColumns } from '../../schema/table.js';
 import { ColumnReferenceNode, ParameterReferenceNode } from '../nodes/reference.js';
 import { LiteralNode } from '../nodes/scalar.js';
 import { isSuperkey } from './fd-utils.js';
@@ -365,9 +366,14 @@ export function extractTableSchema(node: RelationalPlanNode): TableSchema | unde
 /**
  * Check if an FK→PK relationship aligns with equi-join pairs.
  *
- * Given FK constraints on one side and the other side's table, checks if
- * the equi-join pairs align with an FK referencing the other side's PK.
- * Returns true if the FK side's columns map to the PK side through equi-pairs.
+ * Alignment is *positional*: for each declared FK column at index `i`, the
+ * equi-pair partner must equal the FK's declared `referencedColumns[i]`. A
+ * composite FK `(fa, fb) REFERENCES p(a, b)` only covers the pairing
+ * `fa = a AND fb = b`; a permuted equi-pair set (`fa = b AND fb = a`) is NOT
+ * guaranteed by the FK and must not be reported as aligned. A defensive
+ * cross-check additionally requires every `fk.referencedColumns[i]` to be a
+ * PK column so a malformed FK referencing non-PK columns is never reported as
+ * an IND on the PK.
  */
 export function checkFkPkAlignment(
 	fkTable: TableSchema,
@@ -380,10 +386,18 @@ export function checkFkPkAlignment(
 	for (const fk of fkTable.foreignKeys) {
 		if (fk.referencedTable.toLowerCase() !== pkTable.name.toLowerCase()) continue;
 
-		// Check if the FK columns are all present as equi-join columns
-		// and the corresponding PK columns on the other side match the PK definition
 		const pkDef = pkTable.primaryKeyDefinition;
 		if (pkDef.length === 0 || fk.columns.length !== pkDef.length) continue;
+
+		// FK schemas store an empty referencedColumns at CREATE TABLE time; the
+		// real indices are resolved against the parent here.
+		let refCols: ReadonlyArray<number>;
+		try {
+			refCols = resolveReferencedColumns(fk, pkTable);
+		} catch {
+			continue;
+		}
+		if (refCols.length !== fk.columns.length) continue;
 
 		// Build mapping: for each equi-pair, fk column index -> pk column index
 		const equiMap = new Map<number, number>();
@@ -391,13 +405,19 @@ export function checkFkPkAlignment(
 			equiMap.set(fkEquiIndices[i], pkEquiIndices[i]);
 		}
 
-		// Check: every FK column is in equi-pairs, and the corresponding PK column
-		// is part of the primary key
 		const pkColSet = new Set(pkDef.map(pk => pk.index));
 		let allAligned = true;
-		for (const fkColIdx of fk.columns) {
-			const pkColIdx = equiMap.get(fkColIdx);
-			if (pkColIdx === undefined || !pkColSet.has(pkColIdx)) {
+		for (let i = 0; i < fk.columns.length; i++) {
+			// Defensive: a malformed FK referencing a non-PK column must never be
+			// reported as an IND on the parent PK.
+			if (!pkColSet.has(refCols[i])) {
+				allAligned = false;
+				break;
+			}
+			// Positional match: the equi-partner of fk.columns[i] must equal the
+			// parent column the FK declares at position i.
+			const partner = equiMap.get(fk.columns[i]);
+			if (partner !== refCols[i]) {
 				allAligned = false;
 				break;
 			}

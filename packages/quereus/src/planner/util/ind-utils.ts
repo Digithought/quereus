@@ -21,6 +21,7 @@
  */
 
 import type { TableSchema, ForeignKeyConstraintSchema } from '../../schema/table.js';
+import { resolveReferencedColumns } from '../../schema/table.js';
 import type { RelationalPlanNode } from '../nodes/plan-node.js';
 import { TableReferenceNode } from '../nodes/reference.js';
 import { RetrieveNode } from '../nodes/retrieve-node.js';
@@ -43,16 +44,19 @@ export interface CoveringFKMatch {
 /**
  * Look up a foreign key on `childSchema` that references `parentSchema` whose
  * `(fk_columns → referenced_pk_columns)` mapping equals the requested equi-pairs
- * — in some permutation — and where every referenced column is a primary-key
- * column of the parent.
+ * — preserving the FK's declared column pairing — and where every referenced
+ * column is a primary-key column of the parent.
  *
  * Returns the matched FK plus a nullability bit (true iff any FK child column
  * is nullable).
  *
- * The matching mirrors `checkFkPkAlignment` (`key-utils.ts`): an equi-pair list
- * is valid if there is some FK whose `columns` set equals the child's
- * equi-side and whose corresponding referenced PK columns are all in
- * `parentSchema.primaryKeyDefinition`.
+ * Alignment is *positional*: for each `i`, the equi-pair partner of
+ * `fk.columns[i]` must equal `fk.referencedColumns[i]`. A composite FK
+ * `(fa, fb) REFERENCES p(a, b)` guarantees `fa → a` and `fb → b` in that
+ * pairing only; a permuted equi-pair set (e.g. `fa = b AND fb = a`) is NOT
+ * covered by the FK and must not fold. A defensive cross-check additionally
+ * requires every `fk.referencedColumns[i]` to be a PK column so a malformed FK
+ * referencing non-PK columns never produces an IND on the PK.
  */
 export function lookupCoveringFK(
 	childSchema: TableSchema,
@@ -77,10 +81,29 @@ export function lookupCoveringFK(
 		if (fk.columns.length !== parentSchema.primaryKeyDefinition.length) continue;
 		if (fk.columns.length !== childEquiCols.length) continue;
 
+		// FK schemas store an empty referencedColumns at CREATE TABLE time;
+		// indices are resolved against the parent via resolveReferencedColumns.
+		let refCols: ReadonlyArray<number>;
+		try {
+			refCols = resolveReferencedColumns(fk, parentSchema);
+		} catch {
+			continue;
+		}
+		if (refCols.length !== fk.columns.length) continue;
+
 		let aligned = true;
-		for (const fkColIdx of fk.columns) {
-			const pkColIdx = equiMap.get(fkColIdx);
-			if (pkColIdx === undefined || !pkColSet.has(pkColIdx)) {
+		for (let i = 0; i < fk.columns.length; i++) {
+			// Defensive: a malformed FK referencing a non-PK column must never be
+			// treated as an IND on the parent PK.
+			if (!pkColSet.has(refCols[i])) {
+				aligned = false;
+				break;
+			}
+			// Positional match: the equi-partner of fk.columns[i] must be exactly
+			// the parent column the FK declares at position i. A permuted equi-pair
+			// set on a composite FK is NOT covered by the FK.
+			const partner = equiMap.get(fk.columns[i]);
+			if (partner !== refCols[i]) {
 				aligned = false;
 				break;
 			}

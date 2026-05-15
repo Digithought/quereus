@@ -206,6 +206,46 @@ describe('IND-driven existence folding', () => {
 		expect(out2.map(r => r.id)).to.deep.equal([100, 101, 102]);
 	});
 
+	it('does NOT fold composite-FK EXISTS when equi-pairs are misaligned with the FK pairing', async () => {
+		await db.exec(
+			"CREATE TABLE pcomp (a INTEGER NOT NULL, b INTEGER NOT NULL, label TEXT, PRIMARY KEY (a, b)) USING memory",
+		);
+		await db.exec(
+			"CREATE TABLE ccomp (id INTEGER PRIMARY KEY, fa INTEGER NOT NULL, fb INTEGER NOT NULL, FOREIGN KEY (fa, fb) REFERENCES pcomp(a, b)) USING memory",
+		);
+		await db.exec("INSERT INTO pcomp VALUES (1, 10, 'p1'), (2, 20, 'p2')");
+		await db.exec("INSERT INTO ccomp VALUES (100, 1, 10), (101, 2, 20)");
+
+		// Predicate pairs fa with b and fb with a — a permuted set NOT covered by
+		// the FK declaration (fa, fb) REFERENCES pcomp(a, b). No pcomp row has
+		// (a, b) = (10, 1) or (20, 2), so the correct answer is empty.
+		const q = 'SELECT id FROM ccomp c WHERE EXISTS (SELECT 1 FROM pcomp p WHERE p.a = c.fb AND p.b = c.fa)';
+
+		const plan = await planRows(db, q);
+		expect(joinCount(plan), `plan ops=${plan.map(r => r.op).join(',')}`).to.be.greaterThan(0);
+
+		const out = await results(db, q + ' ORDER BY id');
+		expect(out.map(r => r.id)).to.deep.equal([]);
+	});
+
+	it('does NOT fold composite-FK NOT EXISTS when equi-pairs are misaligned with the FK pairing', async () => {
+		await db.exec(
+			"CREATE TABLE pcomp (a INTEGER NOT NULL, b INTEGER NOT NULL, label TEXT, PRIMARY KEY (a, b)) USING memory",
+		);
+		await db.exec(
+			"CREATE TABLE ccomp (id INTEGER PRIMARY KEY, fa INTEGER NOT NULL, fb INTEGER NOT NULL, FOREIGN KEY (fa, fb) REFERENCES pcomp(a, b)) USING memory",
+		);
+		await db.exec("INSERT INTO pcomp VALUES (1, 10, 'p1'), (2, 20, 'p2')");
+		await db.exec("INSERT INTO ccomp VALUES (100, 1, 10), (101, 2, 20)");
+
+		// Permuted equi-pair set — the FK does NOT guarantee this inclusion, so
+		// NOT EXISTS must return every child row.
+		const q = 'SELECT id FROM ccomp c WHERE NOT EXISTS (SELECT 1 FROM pcomp p WHERE p.a = c.fb AND p.b = c.fa)';
+
+		const out = await results(db, q + ' ORDER BY id');
+		expect(out.map(r => r.id)).to.deep.equal([100, 101]);
+	});
+
 	it('chained NOT EXISTS folds at every level when each FK covers', async () => {
 		await db.exec(
 			"CREATE TABLE grandparent (id INTEGER PRIMARY KEY, label TEXT) USING memory",

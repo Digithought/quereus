@@ -119,6 +119,28 @@ describe('ruleJoinElimination', () => {
 		expect(out.map(r => r.order_id)).to.deep.equal([10, 11, 12]);
 	});
 
+	it('does NOT eliminate INNER JOIN when composite FK equi-pairs are misaligned with the FK pairing', async () => {
+		await db.exec(
+			"CREATE TABLE pcomp (a INTEGER NOT NULL, b INTEGER NOT NULL, label TEXT, PRIMARY KEY (a, b)) USING memory",
+		);
+		await db.exec(
+			"CREATE TABLE ccomp (id INTEGER PRIMARY KEY, fa INTEGER NOT NULL, fb INTEGER NOT NULL, FOREIGN KEY (fa, fb) REFERENCES pcomp(a, b)) USING memory",
+		);
+		await db.exec("INSERT INTO pcomp VALUES (1, 10, 'p1'), (2, 20, 'p2')");
+		await db.exec("INSERT INTO ccomp VALUES (100, 1, 10), (101, 2, 20)");
+
+		// ON clause pairs fa with b and fb with a — a permuted set NOT covered by
+		// the FK declaration (fa, fb) REFERENCES pcomp(a, b). The join must
+		// survive in the plan and the result is the unfolded answer (empty).
+		const q = 'SELECT id FROM ccomp c JOIN pcomp p ON p.a = c.fb AND p.b = c.fa';
+
+		const rows = await planRows(db, q);
+		expect(joinCount(rows), `plan ops=${rows.map(r => r.op).join(',')}`).to.be.greaterThan(0);
+
+		const out = await results(db, q + ' ORDER BY id');
+		expect(out.map(r => r.id)).to.deep.equal([]);
+	});
+
 	it('does NOT eliminate INNER JOIN when the FK column is nullable', async () => {
 		await db.exec(
 			"CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT) USING memory",
