@@ -242,6 +242,44 @@ drop view v_shadow;
 drop table t_shadow;
 
 -- ===================================
+-- 6h. Aliased shadowing CTE — qualified ref resolves to CTE column
+-- ===================================
+-- `from t_shadow2 as a` where `t_shadow2` is a non-exposing shadowing CTE:
+-- the qualified `a.k` resolves to the CTE column and must NOT be rewritten.
+
+create table t_shadow2 (id integer primary key, k integer not null);
+insert into t_shadow2 values (1, 100);
+
+create view v_shadow2 as with t_shadow2 as (select 0 as k) select a.k from t_shadow2 as a;
+
+alter table t_shadow2 rename column k to kk;
+
+select * from v_shadow2;
+→ [{"k":0}]
+
+drop view v_shadow2;
+drop table t_shadow2;
+
+-- ===================================
+-- 6i. Sibling-CTE shadowing inside a multi-WITH
+-- ===================================
+-- The second sibling shadows the renamed table by name; its body sees the
+-- first sibling (also a CTE). Outer ref must NOT rewrite to `kk`.
+
+create table t_sib (id integer primary key, k integer not null);
+insert into t_sib values (1, 999);
+
+create view v_sib as with a as (select 0 as k), t_sib as (select k from a) select k from t_sib;
+
+alter table t_sib rename column k to kk;
+
+select * from v_sib;
+→ [{"k":0}]
+
+drop view v_sib;
+drop table t_sib;
+
+-- ===================================
 -- 7. RENAME COLUMN referenced inside an index expression
 -- ===================================
 
