@@ -64,7 +64,7 @@ function isEmpty(node: PlanNode): boolean {
  * Conservatively cover only the canonical "no rows" literals. Other coercions
  * (e.g. empty string, 0.0) are left out; if needed, expand here.
  */
-function isLiteralFalsy(node: PlanNode): boolean {
+export function isLiteralFalsy(node: PlanNode): boolean {
 	if (!(node instanceof LiteralNode)) return false;
 	const v = node.expression.value;
 	return v === false || v === null || v === 0 || v === 0n;

@@ -29,19 +29,20 @@ import { createLogger } from '../../../common/logger.js';
 import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { FilterNode } from '../../nodes/filter.js';
-import { LiteralNode } from '../../nodes/scalar.js';
 import { EmptyRelationNode } from '../../nodes/empty-relation-node.js';
 import { splitConjuncts } from '../../analysis/predicate-conjuncts.js';
 import { checkSatisfiability } from '../../analysis/sat-checker.js';
+import { isLiteralFalsy } from './rule-empty-relation-folding.js';
 
 const log = createLogger('optimizer:rule:filter-contradiction');
 
 export function ruleFilterContradiction(node: PlanNode, _ctx: OptContext): PlanNode | null {
 	if (!(node instanceof FilterNode)) return null;
 
-	// `Filter(_, lit-false)` is the empty-folding rule's job; bail out so this
-	// rule doesn't re-trigger on its own output.
-	if (node.predicate instanceof LiteralNode && node.predicate.expression.value === false) {
+	// `Filter(_, lit-false|null|0|0n)` is the empty-folding rule's job; bail out
+	// so this rule doesn't dispatch to the sat-checker for predicates the
+	// sibling rule will collapse anyway.
+	if (isLiteralFalsy(node.predicate)) {
 		return null;
 	}
 

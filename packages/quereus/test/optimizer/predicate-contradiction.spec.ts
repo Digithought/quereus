@@ -222,6 +222,24 @@ describe('checkSatisfiability (unit)', () => {
 		expect(checkSatisfiability(conjuncts, [], [], identity)).to.equal('unknown');
 	});
 
+	it('detects empty IN-list: x IN () → unsat', () => {
+		const x = intCol(0, 'x', 0);
+		const conjuncts: ScalarPlanNode[] = [
+			inListNode(x, []),
+		];
+		expect(checkSatisfiability(conjuncts, [], [], identity)).to.equal('unsat');
+	});
+
+	it('NULL members do not rescue contradiction: x = 2 ∧ x IN (1, NULL) → unsat', () => {
+		// intersectAllowed strips NULLs before intersecting, so {1, NULL} ∩ x=2 = ∅.
+		const x = intCol(0, 'x', 0);
+		const conjuncts: ScalarPlanNode[] = [
+			bin('=', x, lit(2)),
+			inListNode(x, [lit(1), lit(null)]),
+		];
+		expect(checkSatisfiability(conjuncts, [], [], identity)).to.equal('unsat');
+	});
+
 	it('NOT (...) is out of scope (does not over-conclude)', () => {
 		const x = intCol(0, 'x', 0);
 		const conjuncts: ScalarPlanNode[] = [
@@ -317,6 +335,19 @@ describe('Predicate contradiction folding (end-to-end)', () => {
 		await db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, qty INTEGER, name TEXT, CHECK (qty >= 0)) USING memory");
 		await db.exec("INSERT INTO t VALUES (1, 5, 'abc')");
 		const sql = "SELECT * FROM t WHERE qty < 0 AND name LIKE '%foo'";
+		const plan = await planRows(db, sql);
+		expect(hasOp(plan, 'EMPTYRELATION'), `plan ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+		const rows = await results(db, sql);
+		expect(rows).to.have.lengthOf(0);
+	});
+
+	it("WHERE NULL folds to empty (lit-null short-circuit)", async () => {
+		// Pins the cascade for the contradiction-rule path: with the lit-null
+		// short-circuit it bails to ruleFilterFoldEmpty, which collapses to
+		// EmptyRelationNode.
+		await db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER) USING memory");
+		await db.exec("INSERT INTO t VALUES (1, 1), (2, 2)");
+		const sql = "SELECT * FROM t WHERE NULL";
 		const plan = await planRows(db, sql);
 		expect(hasOp(plan, 'EMPTYRELATION'), `plan ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
 		const rows = await results(db, sql);

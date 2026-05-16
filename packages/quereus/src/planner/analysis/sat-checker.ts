@@ -377,15 +377,16 @@ function absorb(
 			markUnknownForColumns(conj, accs, attrIndex);
 			return;
 		}
-		if (!conj.values || conj.values.length === 0) {
-			// `x IN ()` is always false → unsat trivially, but the parser usually
-			// rejects this; treat conservatively.
+		const col = columnOf(conj.condition, attrIndex);
+		if (col === undefined) {
+			// Non-column LHS (e.g. `(a + b) IN (...)`) — out of scope.
 			markUnknownForColumns(conj, accs, attrIndex);
 			return;
 		}
-		const col = columnOf(conj.condition, attrIndex);
-		if (col === undefined) {
-			markUnknownForColumns(conj, accs, attrIndex);
+		if (!conj.values || conj.values.length === 0) {
+			// `x IN ()` is always false → empty allowedValues forces the decision
+			// loop's `filtered.length === 0` step to return `unsat`.
+			intersectAllowed(getOrCreate(accs, col), [], col, cmp);
 			return;
 		}
 		const values: SqlValue[] = [];
