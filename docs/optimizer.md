@@ -118,7 +118,7 @@ interface OptimizationPass {
 - **Proper Sequencing**: Structural transformations happen before physical selection
 - **Flexible Traversal**: Each pass can choose its optimal traversal order
 - **Clean Debugging**: Clear pass boundaries make optimization easier to understand
-- **Depth safety**: Traversal enforces `tuning.maxOptimizationDepth` to prevent pathological recursion
+- **Depth safety**: Each pass enforces a per-pass depth budget of `max(tuning.maxOptimizationDepth, planInputDepth + tuning.optimizationDepthHeadroom)` so wide input shapes (deep AND chains, deep CASE) plan without tripping the guard, while a separate `tuning.maxRulesFired` budget catches runaway rule rewrites independent of input shape.
 
 ### Core Components
 

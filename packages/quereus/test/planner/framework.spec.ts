@@ -222,7 +222,9 @@ describe('Planner Framework', () => {
 
 			const pass = createPass('deep', 'Deep', '', 10, TraversalOrder.BottomUp);
 			const pm = new PassManager([pass]);
-			const ctx = makeContext({ maxOptimizationDepth: 3 });
+			// headroom: 0 keeps the budget capped by maxOptimizationDepth so the
+			// guard fires on this deliberately-too-deep tree.
+			const ctx = makeContext({ maxOptimizationDepth: 3, optimizationDepthHeadroom: 0 });
 
 			expect(() => pm.execute(node, ctx)).to.throw(/Maximum optimization depth/);
 		});

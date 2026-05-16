@@ -161,6 +161,34 @@ export const STANDARD_PASSES: OptimizationPass[] = [
 ];
 
 /**
+ * Compute the maximum depth (number of edges from root to any leaf) of a plan.
+ * Iterative so we cannot stack-overflow on the very inputs we are trying to plan.
+ */
+function planInputDepth(plan: PlanNode): number {
+	let maxDepth = 0;
+	const stack: Array<{ node: PlanNode; depth: number }> = [{ node: plan, depth: 0 }];
+	while (stack.length > 0) {
+		const top = stack.pop()!;
+		if (top.depth > maxDepth) maxDepth = top.depth;
+		const children = top.node.getChildren();
+		for (const child of children) {
+			stack.push({ node: child, depth: top.depth + 1 });
+		}
+	}
+	return maxDepth;
+}
+
+/**
+ * Per-pass scratch state. Carried alongside OptContext so the rule-firing
+ * counter and effective depth budget are reset between passes.
+ */
+interface PassState {
+	depthBudget: number;
+	rulesFired: number;
+	readonly maxRulesFired: number;
+}
+
+/**
  * Pass manager for coordinating multi-pass optimization
  */
 export class PassManager {
@@ -270,19 +298,30 @@ export class PassManager {
 		context: OptContext,
 		pass: OptimizationPass
 	): PlanNode {
-		// This will be implemented to traverse the tree in the specified order
-		// and apply the pass's rules at each node
+		// Depth budget scales with the input plan so wide ANDs / deep CASEs
+		// don't trip on a shape-only descent. The floor keeps shallow inputs
+		// at the historical default.
+		const inputDepth = planInputDepth(plan);
+		const depthBudget = Math.max(
+			context.tuning.maxOptimizationDepth,
+			inputDepth + context.tuning.optimizationDepthHeadroom
+		);
+		const state: PassState = {
+			depthBudget,
+			rulesFired: 0,
+			maxRulesFired: context.tuning.maxRulesFired,
+		};
 
 		if (pass.traversalOrder === TraversalOrder.TopDown) {
-			return this.traverseTopDown(plan, context, pass, 0);
+			return this.traverseTopDown(plan, context, pass, state, 0);
 		} else {
-			return this.traverseBottomUp(plan, context, pass, 0);
+			return this.traverseBottomUp(plan, context, pass, state, 0);
 		}
 	}
 
-	private assertOptimizationDepth(context: OptContext, depth: number): void {
-		if (depth >= context.tuning.maxOptimizationDepth) {
-			quereusError(`Maximum optimization depth exceeded: ${depth}`, StatusCode.ERROR);
+	private assertOptimizationDepth(state: PassState, depth: number): void {
+		if (depth >= state.depthBudget) {
+			quereusError(`Maximum optimization depth exceeded: ${depth} (budget ${state.depthBudget})`, StatusCode.ERROR);
 		}
 	}
 
@@ -293,9 +332,10 @@ export class PassManager {
 		node: PlanNode,
 		context: OptContext,
 		pass: OptimizationPass,
+		state: PassState,
 		depth: number
 	): PlanNode {
-		this.assertOptimizationDepth(context, depth);
+		this.assertOptimizationDepth(state, depth);
 
 		const cached = context.optimizedNodes.get(node.id);
 		if (cached) {
@@ -303,13 +343,13 @@ export class PassManager {
 		}
 
 		// Apply rules to this node first
-		let currentNode = this.applyPassRules(node, context, pass);
+		let currentNode = this.applyPassRules(node, context, pass, state);
 
 		// Then traverse children
 		const children = currentNode.getChildren();
 		if (children.length > 0) {
 			const newChildren = children.map(child =>
-				this.traverseTopDown(child, context, pass, depth + 1)
+				this.traverseTopDown(child, context, pass, state, depth + 1)
 			);
 
 			// Only create new node if children changed
@@ -330,9 +370,10 @@ export class PassManager {
 		node: PlanNode,
 		context: OptContext,
 		pass: OptimizationPass,
+		state: PassState,
 		depth: number
 	): PlanNode {
-		this.assertOptimizationDepth(context, depth);
+		this.assertOptimizationDepth(state, depth);
 
 		const cached = context.optimizedNodes.get(node.id);
 		if (cached) {
@@ -345,7 +386,7 @@ export class PassManager {
 
 		if (children.length > 0) {
 			const newChildren = children.map(child =>
-				this.traverseBottomUp(child, context, pass, depth + 1)
+				this.traverseBottomUp(child, context, pass, state, depth + 1)
 			);
 
 			// Only create new node if children changed
@@ -356,7 +397,7 @@ export class PassManager {
 		}
 
 		// Then apply rules to this node
-		const result = this.applyPassRules(currentNode, context, pass);
+		const result = this.applyPassRules(currentNode, context, pass, state);
 		context.optimizedNodes.set(node.id, result);
 		return result;
 	}
@@ -367,7 +408,8 @@ export class PassManager {
 	private applyPassRules(
 		node: PlanNode,
 		context: OptContext,
-		pass: OptimizationPass
+		pass: OptimizationPass,
+		state: PassState
 	): PlanNode {
 		let currentNode = node;
 		let changed = true;
@@ -384,6 +426,13 @@ export class PassManager {
 				if (result && result !== currentNode) {
 					markRuleApplied(currentNode.id, rule.id, context);
 					this.inheritVisitedRules(currentNode.id, result.id, context);
+					state.rulesFired++;
+					if (state.rulesFired > state.maxRulesFired) {
+						quereusError(
+							`Optimization pass ${pass.id} exceeded maxRulesFired (${state.maxRulesFired}); likely a non-converging rule`,
+							StatusCode.ERROR
+						);
+					}
 					log('Rule %s transformed node in pass %s', rule.id, pass.id);
 					currentNode = result;
 					changed = true;

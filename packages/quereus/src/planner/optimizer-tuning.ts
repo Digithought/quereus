@@ -5,8 +5,28 @@ export interface OptimizerTuning {
 	/** Row estimation defaults */
 	readonly defaultRowEstimate: number;
 
-	/** Maximum optimization depth to prevent infinite recursion */
+	/**
+	 * Floor for the per-pass depth budget. The effective budget is
+	 * `max(maxOptimizationDepth, planInputDepth + optimizationDepthHeadroom)`,
+	 * so this only matters for shallow inputs — wide-input plans scale up
+	 * automatically via the headroom term.
+	 */
 	readonly maxOptimizationDepth: number;
+
+	/**
+	 * Extra depth allowance added on top of the input plan's measured depth
+	 * when computing the per-pass depth budget. Absorbs rule-introduced
+	 * wrapping; the depth guard is meant to catch pathological recursion,
+	 * not punish naturally deep input shapes (wide AND trees, deep CASE, …).
+	 */
+	readonly optimizationDepthHeadroom: number;
+
+	/**
+	 * Maximum number of rule firings within a single pass before the pass
+	 * aborts. Catches genuinely runaway rewrites independent of input shape;
+	 * generously sized so it only trips on stuck rules.
+	 */
+	readonly maxRulesFired: number;
 
 	/** Join optimization */
 	readonly join: {
@@ -97,6 +117,8 @@ export interface OptimizerTuning {
 export const DEFAULT_TUNING: OptimizerTuning = {
 	defaultRowEstimate: 1000,
 	maxOptimizationDepth: 50,
+	optimizationDepthHeadroom: 16,
+	maxRulesFired: 100000,
 	join: {
 		minLeftRowsForCaching: 1,
 		maxRightRowsForCaching: 50000,
