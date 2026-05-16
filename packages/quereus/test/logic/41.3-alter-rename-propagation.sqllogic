@@ -332,6 +332,34 @@ drop view v_rec_cl;
 drop table t_rec_cl;
 
 -- ===================================
+-- 6l. Sibling recursive CTEs where one sibling shadows the renamed table
+-- ===================================
+-- Two siblings inside a `with recursive`: the first is a regular CTE, the
+-- second has the same name as the renamed table and self-references in its
+-- recursive step. Pre-registration must happen per-iteration so the second
+-- sibling's body sees itself (not the renamed real table).
+
+create table t_rsib (id integer primary key, k integer not null);
+insert into t_rsib values (1, 0);
+
+create view v_rsib as
+  with recursive a as (select 0 as k),
+                  t_rsib as (
+                    select k from a
+                    union all
+                    select k+1 from t_rsib where k < 2
+                  )
+  select k from t_rsib;
+
+alter table t_rsib rename column k to kk;
+
+select k from v_rsib order by k;
+→ [{"k":0},{"k":1},{"k":2}]
+
+drop view v_rsib;
+drop table t_rsib;
+
+-- ===================================
 -- 7. RENAME COLUMN referenced inside an index expression
 -- ===================================
 
