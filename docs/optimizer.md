@@ -301,7 +301,25 @@ The base class returns conservative defaults (`{ injective: false }` / `{ monoto
 
 The function-call traits compose with the operand's own `monotonicityIn` / `isInjectiveIn`, so `f(g(x))` is treated correctly when both layers are annotated. `rangeRewriteIn` is intentionally tighter: it only rewrites the `f(x) op c` case, requiring the operand to be a bare `ColumnReferenceNode` for the queried attribute (anything else would conflate value spaces).
 
-Consumers (key propagation through non-trivial projections, sargable predicate rewrites for `date(ts) = D`, etc.) will arrive in separate tickets.
+Consumers (key propagation through non-trivial projections, sargable predicate rewrites for `date(ts) = D`, etc.) build on this surface — see [Sargable range rewrites](#sargable-range-rewrites) below.
+
+### Sargable range rewrites
+
+Rule `rule-sargable-range-rewrite` (Structural pass, priority 18 — runs before `aggregate-predicate-pushdown` / `predicate-pushdown`) turns predicates of the form `f(col) = c` into the equivalent half-open range on `col`:
+
+```
+f(col) = c    →    col >= lower(c)  AND  col < upper(c)
+```
+
+This converts a function-of-column equality (which the constraint extractor cannot push down) into a bare `col op literal` shape that `rule-predicate-pushdown` carries through the Retrieve pipeline and `rule-select-access-path` can convert to an `IndexSeek` or range scan.
+
+**Wiring.** The rule consults the per-function trait `FunctionSchema.rangeRewriteOnArg` (see [Scalar Expression Properties](#scalar-expression-properties-per-attribute)) which names a bucketing **kind**; the actual boundary computation lives on the column's `LogicalType.bucketBounds(kind, value)`. Bounds are wrapped in `LiteralNode`s typed with the column's logical type, so the result rides the same coercion-free path the constraint extractor already knows.
+
+**Initial coverage.** Only `=` is rewritten; `<`/`<=`/`>`/`>=` require direction analysis on `monotonicityIn` and are deferred. Built-in trait wiring covers the unary `date(x)` form (`func/builtins/conversion.ts`) and `DATE_TYPE` / `DATETIME_TYPE` `bucketBounds`. The variadic `dateFunc` (`func/builtins/datetime.ts`, `numArgs: -1`) is intentionally **not** annotated — its trailing modifiers can shift or re-bucket the result. Build-time dispatch picks the unary `numArgs: 1` form when an SQL `date(col)` call has exactly one argument.
+
+**Identity / null constraints.** The rule never rewrites `f(g(col)) = c` — `bucketBounds` answers in `col`'s value space, not `g(col)`'s, so only a bare column reference is safe. A `null` constant is left alone (`f(col) = null` is already null-rejecting). A null column row continues to be rejected because `col >= L` and `col < U` both evaluate to null.
+
+**Parameter-bound RHS** (`where date(ts) = :p`) is out of scope here — the rule needs a literal RHS at plan time. A follow-up will introduce scalar bound functions (`bucket_lower(:p)` / `bucket_upper(:p)`) backed by the same `bucketBounds`.
 
 ### TVF Property Declarations
 

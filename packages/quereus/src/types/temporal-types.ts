@@ -43,6 +43,18 @@ export const DATE_TYPE: LogicalType = {
 	compare: (a, b) => compareNulls(a, b) ?? BINARY_COLLATION(a as string, b as string),
 
 	supportedCollations: [],
+
+	bucketBounds: (kind, value) => {
+		if (kind !== 'date_bucket') return undefined;
+		if (typeof value !== 'string') return undefined;
+		try {
+			const date = Temporal.PlainDate.from(value);
+			const next = date.add({ days: 1 });
+			return { lowerInclusive: date.toString(), upperExclusive: next.toString() };
+		} catch {
+			return undefined;
+		}
+	},
 };
 
 /**
@@ -151,6 +163,22 @@ export const DATETIME_TYPE: LogicalType = {
 	compare: (a, b) => compareNulls(a, b) ?? BINARY_COLLATION(a as string, b as string),
 
 	supportedCollations: [],
+
+	bucketBounds: (kind, value) => {
+		if (kind !== 'date_bucket') return undefined;
+		if (typeof value !== 'string') return undefined;
+		try {
+			const date = Temporal.PlainDate.from(value);
+			const next = date.add({ days: 1 });
+			// Express bounds in the column's value space (ISO datetime strings, midnight UTC).
+			return {
+				lowerInclusive: `${date.toString()}T00:00:00`,
+				upperExclusive: `${next.toString()}T00:00:00`,
+			};
+		} catch {
+			return undefined;
+		}
+	},
 };
 
 /**

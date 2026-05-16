@@ -32,6 +32,16 @@ interface ScalarFuncOptions {
 	 * that the argument types are acceptable for this function.
 	 */
 	validateArgTypes?: (argTypes: ReadonlyArray<DeepReadonly<LogicalType>>) => boolean;
+	/** Argument indices on which this function is injective when all other arguments are held constant. */
+	injectiveOnArgs?: readonly number[];
+	/** Per-argument monotonicity when all other arguments are held constant. */
+	monotoneOnArgs?: { readonly [argIndex: number]: 'increasing' | 'decreasing' };
+	/**
+	 * Per-argument range-rewrite kind for monotone-but-lossy functions. The
+	 * actual boundary computation lives on the argument's logical type
+	 * (`LogicalType.bucketBounds(kind, value)`).
+	 */
+	rangeRewriteOnArg?: { readonly [argIndex: number]: { readonly kind: string } };
 }
 
 /**
@@ -109,7 +119,10 @@ export function createScalarFunction(options: ScalarFuncOptions, jsFunc: ScalarF
 		returnType,
 		implementation: jsFunc,
 		inferReturnType: options.inferReturnType,
-		validateArgTypes: options.validateArgTypes
+		validateArgTypes: options.validateArgTypes,
+		injectiveOnArgs: options.injectiveOnArgs,
+		monotoneOnArgs: options.monotoneOnArgs,
+		rangeRewriteOnArg: options.rangeRewriteOnArg,
 	};
 }
 

@@ -25,6 +25,7 @@ import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown
 import { ruleAggregatePredicatePushdown } from './rules/predicate/rule-aggregate-predicate-pushdown.js';
 import { ruleFilterMerge } from './rules/predicate/rule-filter-merge.js';
 import { rulePredicateInferenceEquivalence } from './rules/predicate/rule-predicate-inference-equivalence.js';
+import { ruleSargableRangeRewrite } from './rules/predicate/rule-sargable-range-rewrite.js';
 import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
 import { ruleJoinElimination, ruleJoinEliminationUnderAggregate } from './rules/join/rule-join-elimination.js';
@@ -157,6 +158,20 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleProjectionPruning,
 			priority: 19
+		});
+
+		// Sargable range rewrite: turn `f(col) = c` (for monotone-lossy `f` with
+		// a bucketBounds-aware logical type) into `col >= L AND col < U` so the
+		// subsequent pushdown wave can carry the bare `col op literal` shape into
+		// Retrieve / access-path selection. Runs before aggregate-predicate-pushdown
+		// (priority 19) and predicate-pushdown (priority 20) so the rewritten
+		// conjuncts ride the same pushdown pass.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'sargable-range-rewrite',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleSargableRangeRewrite,
+			priority: 18
 		});
 
 		// Aggregate-aware predicate pushdown: splits a Filter above an aggregate so
