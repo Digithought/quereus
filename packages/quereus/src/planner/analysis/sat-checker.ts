@@ -9,6 +9,7 @@
  *   - Single-column comparisons against literals (= / == / != / < / <= / > / >=).
  *   - Single-column BETWEEN literal AND literal (positive form).
  *   - Single-column IN (lit, lit, ...) and intersection across IN-lists.
+ *     The empty form `x IN ()` is also recognized as trivially `unsat`.
  *   - Range from `DomainConstraint { kind: 'range' }`.
  *   - Enum from `DomainConstraint { kind: 'enum' }`.
  *   - Literal `ConstantBinding`.

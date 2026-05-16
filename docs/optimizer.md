@@ -1478,7 +1478,7 @@ The reasoning is implemented by `planner/analysis/sat-checker.ts` — a single-p
 - **In-scope** (can prove `unsat`):
   - Single-column comparisons against literals: `= / == / != / <> / < / <= / > / >=`.
   - Single-column positive `BETWEEN literal AND literal`.
-  - Single-column `IN (lit, lit, ...)` and intersection across multiple IN-lists.
+  - Single-column `IN (lit, lit, ...)` and intersection across multiple IN-lists; the empty form `x IN ()` is recognized as trivially `unsat`.
   - Range intersection across multiple bounds, with inclusive/exclusive arithmetic.
   - Domain-vs-predicate intersection (CHECK-derived `range` and `enum`).
   - Literal `ConstantBinding` from the source (treated as a degenerate point range plus singleton enum).
