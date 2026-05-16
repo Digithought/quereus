@@ -360,6 +360,72 @@ drop view v_rsib;
 drop table t_rsib;
 
 -- ===================================
+-- 6m. Non-exposing shadowing CTE — unaliased qualified ref
+-- ===================================
+-- `from t_shadow3` is a non-exposing shadowing CTE; the qualified
+-- `t_shadow3.k` resolves to the CTE column and must NOT be rewritten,
+-- even though the qualifier textually matches the renamed table.
+
+create table t_shadow3 (id integer primary key, k integer not null);
+insert into t_shadow3 values (1, 100);
+
+create view v_shadow3 as
+  with t_shadow3 as (select 0 as k) select t_shadow3.k from t_shadow3;
+
+alter table t_shadow3 rename column k to kk;
+
+select * from v_shadow3;
+→ [{"k":0}]
+
+drop view v_shadow3;
+drop table t_shadow3;
+
+-- ===================================
+-- 6n. Sibling shadowing CTE — qualified ref
+-- ===================================
+-- A sibling CTE with the renamed table's name shadows the real table;
+-- a qualified ref against the shadowing source name must not rewrite.
+
+create table t_sib2 (id integer primary key, k integer not null);
+insert into t_sib2 values (1, 999);
+
+create view v_sib2 as
+  with a as (select 0 as k), t_sib2 as (select k from a)
+  select t_sib2.k from t_sib2;
+
+alter table t_sib2 rename column k to kk;
+
+select * from v_sib2;
+→ [{"k":0}]
+
+drop view v_sib2;
+drop table t_sib2;
+
+-- ===================================
+-- 6o. Recursive shadowing CTE — qualified ref in recursive step
+-- ===================================
+-- Inside the recursive step, qualified `t_rec2.k` refers to the CTE
+-- (pre-registered for `with recursive`), not the renamed real table.
+
+create table t_rec2 (id integer primary key, k integer not null);
+insert into t_rec2 values (1, 0);
+
+create view v_rec2 as
+  with recursive t_rec2 as (
+    select 0 as k
+    union all
+    select t_rec2.k+1 from t_rec2 where t_rec2.k < 3
+  ) select k from t_rec2;
+
+alter table t_rec2 rename column k to kk;
+
+select k from v_rec2 order by k;
+→ [{"k":0},{"k":1},{"k":2},{"k":3}]
+
+drop view v_rec2;
+drop table t_rec2;
+
+-- ===================================
 -- 7. RENAME COLUMN referenced inside an index expression
 -- ===================================
 

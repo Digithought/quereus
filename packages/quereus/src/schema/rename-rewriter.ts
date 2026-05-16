@@ -19,6 +19,13 @@ interface ScopeFrame {
 	ctesExposingRenamed: Set<string>;
 	/** Lowercase CTE names declared in this WITH (regardless of whether they re-expose). */
 	ctesInScope: Set<string>;
+	/**
+	 * Lowercase unaliased source names in this frame that resolve to a
+	 * non-exposing CTE (the source name is shadowed by a CTE row source and
+	 * therefore must NOT be treated as a direct reference to the renamed
+	 * real table for qualified column refs).
+	 */
+	ctesShadowingSource: Set<string>;
 }
 
 const eq = (a: string | undefined, b: string | undefined): boolean =>
@@ -273,6 +280,7 @@ function emptyFrame(): ScopeFrame {
 		aliasMap: new Map(),
 		ctesExposingRenamed: new Set(),
 		ctesInScope: new Set(),
+		ctesShadowingSource: new Set(),
 	};
 }
 
@@ -306,6 +314,12 @@ function collectFromBindings(
 						// The CTE name acts as an implicit qualifier for refs like "a.k".
 						frame.aliasMap.set(name, state.tableName);
 					}
+				} else if (!ts.alias) {
+					// Shadowing-but-not-exposing: the unaliased source name binds
+					// to the CTE row source, not the renamed real table. Record
+					// it so qualified column refs against this name don't
+					// short-circuit to the renamed table.
+					frame.ctesShadowingSource.add(name);
 				}
 				// Shadowing-but-not-exposing: do not bind as the renamed table.
 				break;
@@ -359,6 +373,23 @@ function aliasResolvesToTable(state: ColumnRewriteState, alias: string): boolean
 	for (const frame of state.scopeStack) {
 		const target = frame.aliasMap.get(aliasLower);
 		if (target !== undefined) return target === state.tableName;
+	}
+	return false;
+}
+
+/**
+ * Walk the scope stack innermost-first to decide whether a qualifier
+ * resolves to a non-exposing shadowing CTE rather than the renamed real
+ * table. A closer rebind to the real table (via unaliased binding or alias)
+ * wins over an outer shadowing entry.
+ */
+function isQualifierShadowedInScope(state: ColumnRewriteState, qualifier: string): boolean {
+	for (let i = state.scopeStack.length - 1; i >= 0; i--) {
+		const frame = state.scopeStack[i];
+		if (frame.ctesShadowingSource.has(qualifier)) return true;
+		// Closer rebind to the real table wins → not shadowed at this point.
+		if (frame.aliasMap.get(qualifier) === state.tableName) return false;
+		if (qualifier === state.tableName && frame.unaliased.has(state.tableName)) return false;
 	}
 	return false;
 }
@@ -592,7 +623,8 @@ function visitColumnRename(node: AST.AstNode | undefined, state: ColumnRewriteSt
 			if (col.table) {
 				const qualifierLower = col.table.toLowerCase();
 				const directHit = qualifierLower === state.tableName &&
-					(col.schema === undefined || eq(col.schema, state.defaultSchema));
+					(col.schema === undefined || eq(col.schema, state.defaultSchema)) &&
+					!isQualifierShadowedInScope(state, qualifierLower);
 				const viaAlias = aliasResolvesToTable(state, col.table);
 				if (directHit || viaAlias) {
 					col.name = state.newCol;
