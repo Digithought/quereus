@@ -426,6 +426,27 @@ drop view v_rec2;
 drop table t_rec2;
 
 -- ===================================
+-- 6p. Non-exposing shadowing CTE — alias equals the table name
+-- ===================================
+-- `from t_self as t_self` with a non-exposing shadowing CTE: the alias
+-- text matches the renamed table name. The qualifier resolves to the
+-- CTE row source via the alias, so `t_self.k` must NOT be rewritten.
+
+create table t_self (id integer primary key, k integer not null);
+insert into t_self values (1, 100);
+
+create view v_self as
+  with t_self as (select 0 as k) select t_self.k from t_self as t_self;
+
+alter table t_self rename column k to kk;
+
+select * from v_self;
+→ [{"k":0}]
+
+drop view v_self;
+drop table t_self;
+
+-- ===================================
 -- 7. RENAME COLUMN referenced inside an index expression
 -- ===================================
 

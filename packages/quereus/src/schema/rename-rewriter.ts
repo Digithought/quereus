@@ -20,10 +20,10 @@ interface ScopeFrame {
 	/** Lowercase CTE names declared in this WITH (regardless of whether they re-expose). */
 	ctesInScope: Set<string>;
 	/**
-	 * Lowercase unaliased source names in this frame that resolve to a
-	 * non-exposing CTE (the source name is shadowed by a CTE row source and
-	 * therefore must NOT be treated as a direct reference to the renamed
-	 * real table for qualified column refs).
+	 * Lowercase qualifier names in this frame (alias if the source is
+	 * aliased, otherwise the source name) that resolve to a non-exposing
+	 * shadowing CTE and therefore must NOT be treated as a direct reference
+	 * to the renamed real table for qualified column refs.
 	 */
 	ctesShadowingSource: Set<string>;
 }
@@ -314,12 +314,13 @@ function collectFromBindings(
 						// The CTE name acts as an implicit qualifier for refs like "a.k".
 						frame.aliasMap.set(name, state.tableName);
 					}
-				} else if (!ts.alias) {
-					// Shadowing-but-not-exposing: the unaliased source name binds
-					// to the CTE row source, not the renamed real table. Record
-					// it so qualified column refs against this name don't
-					// short-circuit to the renamed table.
-					frame.ctesShadowingSource.add(name);
+				} else {
+					// Shadowing-but-not-exposing: the source binds to the CTE
+					// row source, not the renamed real table. Record the
+					// qualifier (alias if present, otherwise the source name)
+					// so qualified column refs against it don't short-circuit
+					// to the renamed table.
+					frame.ctesShadowingSource.add(ts.alias ? ts.alias.toLowerCase() : name);
 				}
 				// Shadowing-but-not-exposing: do not bind as the renamed table.
 				break;
