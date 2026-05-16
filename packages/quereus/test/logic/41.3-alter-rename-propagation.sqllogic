@@ -223,6 +223,25 @@ drop view v_q;
 drop table t_q;
 
 -- ===================================
+-- 6g. CTE shadowing the renamed table by name (non-exposing)
+-- ===================================
+-- The outer FROM refers to the CTE, not the real table; the rename must NOT
+-- rewrite the unqualified `k` in the outer SELECT into `kk`.
+
+create table t_shadow (id integer primary key, k integer not null);
+insert into t_shadow values (1, 100);
+
+create view v_shadow as with t_shadow as (select 0 as k) select k from t_shadow;
+
+alter table t_shadow rename column k to kk;
+
+select * from v_shadow;
+→ [{"k":0}]
+
+drop view v_shadow;
+drop table t_shadow;
+
+-- ===================================
 -- 7. RENAME COLUMN referenced inside an index expression
 -- ===================================
 

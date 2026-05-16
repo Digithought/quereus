@@ -17,6 +17,8 @@ interface ScopeFrame {
 	aliasMap: Map<string, string>;
 	/** Lowercase CTE names declared in this WITH that re-expose the renamed column. */
 	ctesExposingRenamed: Set<string>;
+	/** Lowercase CTE names declared in this WITH (regardless of whether they re-expose). */
+	ctesInScope: Set<string>;
 }
 
 const eq = (a: string | undefined, b: string | undefined): boolean =>
@@ -266,7 +268,12 @@ interface ColumnRewriteState {
 }
 
 function emptyFrame(): ScopeFrame {
-	return { unaliased: new Set(), aliasMap: new Map(), ctesExposingRenamed: new Set() };
+	return {
+		unaliased: new Set(),
+		aliasMap: new Map(),
+		ctesExposingRenamed: new Set(),
+		ctesInScope: new Set(),
+	};
 }
 
 function buildScopeFrame(from: AST.FromClause[] | undefined, state: ColumnRewriteState): ScopeFrame {
@@ -287,15 +294,20 @@ function collectFromBindings(
 		case 'table': {
 			const ts = item as AST.TableSource;
 			const name = ts.table.name.toLowerCase();
-			// Unqualified reference to an exposing CTE — bind as if it were the renamed table.
-			if (ts.table.schema === undefined && isCteExposingInScope(state, name)) {
-				if (ts.alias) {
-					frame.aliasMap.set(ts.alias.toLowerCase(), state.tableName);
-				} else {
-					frame.unaliased.add(state.tableName);
-					// The CTE name acts as an implicit qualifier for refs like "a.k".
-					frame.aliasMap.set(name, state.tableName);
+			// Unqualified reference to a CTE in scope — the CTE shadows any
+			// same-named real table. Whether it re-exposes the renamed column
+			// determines whether unqualified refs against this source rewrite.
+			if (ts.table.schema === undefined && isCteInScope(state, name)) {
+				if (isCteExposingInScope(state, name)) {
+					if (ts.alias) {
+						frame.aliasMap.set(ts.alias.toLowerCase(), state.tableName);
+					} else {
+						frame.unaliased.add(state.tableName);
+						// The CTE name acts as an implicit qualifier for refs like "a.k".
+						frame.aliasMap.set(name, state.tableName);
+					}
 				}
+				// Shadowing-but-not-exposing: do not bind as the renamed table.
 				break;
 			}
 			const schemaLower = (ts.table.schema ?? state.defaultSchema).toLowerCase();
@@ -324,6 +336,13 @@ function collectFromBindings(
 function isCteExposingInScope(state: ColumnRewriteState, name: string): boolean {
 	for (const frame of state.scopeStack) {
 		if (frame.ctesExposingRenamed.has(name)) return true;
+	}
+	return false;
+}
+
+function isCteInScope(state: ColumnRewriteState, name: string): boolean {
+	for (const frame of state.scopeStack) {
+		if (frame.ctesInScope.has(name)) return true;
 	}
 	return false;
 }
@@ -614,6 +633,7 @@ function pushWithFrame(
 			if (cteExposesRenamedColumn(cte, state)) {
 				frame.ctesExposingRenamed.add(cte.name.toLowerCase());
 			}
+			frame.ctesInScope.add(cte.name.toLowerCase());
 		}
 	}
 	return frame;
@@ -635,6 +655,7 @@ function analyzeWithFrame(
 			if (cteExposesRenamedColumn(cte, state)) {
 				frame.ctesExposingRenamed.add(cte.name.toLowerCase());
 			}
+			frame.ctesInScope.add(cte.name.toLowerCase());
 		}
 	} finally {
 		state.scopeStack.pop();
