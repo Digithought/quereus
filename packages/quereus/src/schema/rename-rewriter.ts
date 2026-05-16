@@ -619,6 +619,12 @@ function visitColumnRename(node: AST.AstNode | undefined, state: ColumnRewriteSt
  * re-expose the renamed column. CTEs are visited in declaration order so
  * later CTEs see earlier ones in the same WITH.
  *
+ * For `with recursive`, each CTE's name is registered in `ctesInScope`
+ * *before* its body is visited so self-references inside the recursive step
+ * resolve to the CTE (not to a same-named renamed table). For non-recursive
+ * WITH, the name is registered only after the body — a non-recursive body
+ * must not see itself.
+ *
  * Caller is responsible for popping the frame via `state.scopeStack.pop()`.
  */
 function pushWithFrame(
@@ -629,11 +635,15 @@ function pushWithFrame(
 	state.scopeStack.push(frame);
 	if (withClause) {
 		for (const cte of withClause.ctes) {
+			const nameLower = cte.name.toLowerCase();
+			if (withClause.recursive) {
+				frame.ctesInScope.add(nameLower);
+			}
 			visitColumnRename(cte.query, state);
 			if (cteExposesRenamedColumn(cte, state)) {
-				frame.ctesExposingRenamed.add(cte.name.toLowerCase());
+				frame.ctesExposingRenamed.add(nameLower);
 			}
-			frame.ctesInScope.add(cte.name.toLowerCase());
+			frame.ctesInScope.add(nameLower);
 		}
 	}
 	return frame;

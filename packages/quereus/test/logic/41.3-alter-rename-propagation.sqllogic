@@ -280,6 +280,58 @@ drop view v_sib;
 drop table t_sib;
 
 -- ===================================
+-- 6j. Recursive CTE shadowing the renamed table — no column list
+-- ===================================
+-- The recursive step's `from t_rec` is a self-reference to the CTE, not
+-- the renamed real table. Without pre-registering the CTE name for
+-- `with recursive`, the inner `select k+1 from t_rec where k < 3` would
+-- mis-bind `t_rec` as the renamed table and rewrite the unqualified `k`s
+-- to `kk`, corrupting the recursive step.
+
+create table t_rec (id integer primary key, k integer not null);
+insert into t_rec values (1, 0);
+
+create view v_rec as
+  with recursive t_rec as (
+    select 0 as k
+    union all
+    select k+1 from t_rec where k < 3
+  ) select k from t_rec;
+
+alter table t_rec rename column k to kk;
+
+select k from v_rec order by k;
+→ [{"k":0},{"k":1},{"k":2},{"k":3}]
+
+drop view v_rec;
+drop table t_rec;
+
+-- ===================================
+-- 6k. Recursive CTE shadowing the renamed table — explicit column list
+-- ===================================
+-- Same shape as 6j with an explicit column list `t_rec_cl(k)`. The
+-- column-list short-circuits exposure analysis; the recursive
+-- self-reference inside the body must still resolve to the CTE.
+
+create table t_rec_cl (id integer primary key, k integer not null);
+insert into t_rec_cl values (1, 0);
+
+create view v_rec_cl as
+  with recursive t_rec_cl(k) as (
+    select 0
+    union all
+    select k+1 from t_rec_cl where k < 3
+  ) select k from t_rec_cl;
+
+alter table t_rec_cl rename column k to kk;
+
+select k from v_rec_cl order by k;
+→ [{"k":0},{"k":1},{"k":2},{"k":3}]
+
+drop view v_rec_cl;
+drop table t_rec_cl;
+
+-- ===================================
 -- 7. RENAME COLUMN referenced inside an index expression
 -- ===================================
 
