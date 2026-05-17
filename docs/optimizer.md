@@ -1144,17 +1144,13 @@ class OptimizationContext {
     this.copyTrackingState(newContext); // Preserve learned optimizations
     return newContext;
   }
-  
-  // Contexts can be forked for parallel exploration.
-  // NOTE: this is a legacy single-knob check tied to `tuning.maxOptimizationDepth`;
-  // pass-driven traversal in `framework/pass.ts` uses the input-scaled budget
-  // (`max(maxOptimizationDepth, planInputDepth + optimizationDepthHeadroom)`)
-  // plus the `maxRulesFired` budget instead — see "Pass Framework" above.
-  withIncrementedDepth(): OptimizationContext {
-    // Inherits tracking state but can diverge independently
-  }
 }
 ```
+
+Per-traversal depth is tracked by the pass framework itself rather than on the
+context — see "Pass Framework" above for the input-scaled budget
+(`max(maxOptimizationDepth, planInputDepth + optimizationDepthHeadroom)`) and
+the `maxRulesFired` cap.
 
 ### Performance Characteristics
 
