@@ -181,6 +181,153 @@ describe('PassManager', () => {
 		}
 	});
 
+	it('does not stack-overflow on deep plans (50,000-deep chain, both orders)', async () => {
+		const db = new Database();
+		try {
+			let nextId = 1;
+			const makeChain = (length: number): TestNode => {
+				let current: TestNode | null = null;
+				for (let i = 0; i < length; i++) {
+					const child = current;
+					const self: TestNode = {
+						id: String(nextId++),
+						nodeType: PlanNodeType.Filter,
+						getChildren: () => (child ? [child as unknown as PlanNode] : []),
+						withChildren: () => self as unknown as PlanNode,
+						getLogicalAttributes: () => ({}),
+					};
+					current = self;
+				}
+				return current!;
+			};
+
+			const deepPlan = makeChain(50_000);
+
+			for (const order of [TraversalOrder.TopDown, TraversalOrder.BottomUp]) {
+				const pass = createPass(
+					`test-deep-${order}`,
+					`Test deep ${order}`,
+					'No-op pass — only the traversal scaffolding is exercised',
+					0,
+					order
+				);
+				const pm = new PassManager([]);
+				pm.registerPass(pass);
+
+				const context = createTestContext(db, {
+					tuning: {
+						...DEFAULT_TUNING,
+						maxOptimizationDepth: 100,
+						optimizationDepthHeadroom: 100_000,
+					},
+				});
+
+				let optimized: PlanNode | undefined;
+				expect(() => {
+					optimized = pm.execute(deepPlan as unknown as PlanNode, context);
+				}).to.not.throw();
+
+				// No rules fired, so the root reference is unchanged.
+				expect(optimized).to.equal(deepPlan as unknown as PlanNode);
+			}
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('preserves child ordering and rule semantics across a fan-out tree (sanity)', async () => {
+		const db = new Database();
+		try {
+			let nextId = 1;
+			const makeNode = (nodeType: PlanNodeType, children: PlanNode[]): TestNode => {
+				const self: TestNode = {
+					id: String(nextId++),
+					nodeType,
+					getChildren: () => children,
+					withChildren: (newChildren) => makeNode(nodeType, [...newChildren]) as unknown as PlanNode,
+					getLogicalAttributes: () => ({}),
+				};
+				return self;
+			};
+
+			// Depth-3 binary tree of Filter nodes (15 nodes total).
+			const buildTree = (depth: number): TestNode => {
+				if (depth === 0) return makeNode(PlanNodeType.Filter, []);
+				const left = buildTree(depth - 1) as unknown as PlanNode;
+				const right = buildTree(depth - 1) as unknown as PlanNode;
+				return makeNode(PlanNodeType.Filter, [left, right]);
+			};
+			const root = buildTree(3);
+
+			// Top-down: Filter -> Project (preserve children).
+			const topDownPass = createPass(
+				'sanity-top',
+				'Sanity top-down',
+				'Rewrite Filter to Project preserving children',
+				0,
+				TraversalOrder.TopDown
+			);
+			topDownPass.rules.push({
+				id: 'filter-to-project',
+				nodeType: PlanNodeType.Filter,
+				phase: 'rewrite',
+				fn: (node) => makeNode(PlanNodeType.Project, [...node.getChildren()]) as unknown as PlanNode,
+				priority: 10,
+			});
+
+			// Bottom-up: Project (leaf) -> SingleRow.
+			const bottomUpPass = createPass(
+				'sanity-bot',
+				'Sanity bottom-up',
+				'Rewrite leaf Project to ConstantRow',
+				10,
+				TraversalOrder.BottomUp
+			);
+			bottomUpPass.rules.push({
+				id: 'leaf-project-to-single-row',
+				nodeType: PlanNodeType.Project,
+				phase: 'rewrite',
+				fn: (node) => {
+					if (node.getChildren().length === 0) {
+						return makeNode(PlanNodeType.SingleRow, []) as unknown as PlanNode;
+					}
+					return node;
+				},
+				priority: 10,
+			});
+
+			const pm = new PassManager([]);
+			pm.registerPass(topDownPass);
+			pm.registerPass(bottomUpPass);
+
+			const context = createTestContext(db, { tuning: DEFAULT_TUNING });
+			const optimized = pm.execute(root as unknown as PlanNode, context);
+
+			// Root is now a Project, leaves are ConstantRow, internal nodes are Project.
+			expect(optimized.nodeType).to.equal(PlanNodeType.Project);
+
+			let leafCount = 0;
+			let internalProjectCount = 0;
+			const walk = (n: PlanNode): void => {
+				const children = n.getChildren();
+				if (children.length === 0) {
+					expect(n.nodeType).to.equal(PlanNodeType.SingleRow);
+					leafCount++;
+				} else {
+					expect(n.nodeType).to.equal(PlanNodeType.Project);
+					internalProjectCount++;
+					for (const c of children) walk(c);
+				}
+			};
+			walk(optimized);
+			// Binary tree of depth 3 → 8 leaves, 7 internal nodes.
+			expect(leafCount).to.equal(8);
+			expect(internalProjectCount).to.equal(7);
+		} finally {
+			await db.close();
+		}
+	});
+
 	it('maxRulesFired trips when total rule firings exceed the budget', async () => {
 		const db = new Database();
 		try {

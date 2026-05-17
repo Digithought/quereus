@@ -189,6 +189,28 @@ interface PassState {
 }
 
 /**
+ * Worklist frame for the iterative pass traversals. A 'visit' frame schedules
+ * a node for first-time processing; a 'finalize' frame splices completed child
+ * results back into its parent and (for bottom-up) applies rules afterward.
+ *
+ * `origNodeId` is the ORIGINAL pre-rule node id — the optimizedNodes cache is
+ * keyed on it so cache hits short-circuit before any rule application.
+ */
+interface VisitFrame {
+	kind: 'visit';
+	node: PlanNode;
+	depth: number;
+}
+interface FinalizeFrame {
+	kind: 'finalize';
+	origNodeId: string;
+	currentNode: PlanNode;
+	originalChildren: readonly PlanNode[];
+	depth: number;
+}
+type Frame = VisitFrame | FinalizeFrame;
+
+/**
  * Pass manager for coordinating multi-pass optimization
  */
 export class PassManager {
@@ -313,9 +335,9 @@ export class PassManager {
 		};
 
 		if (pass.traversalOrder === TraversalOrder.TopDown) {
-			return this.traverseTopDown(plan, context, pass, state, 0);
+			return this.traverseTopDown(plan, context, pass, state);
 		} else {
-			return this.traverseBottomUp(plan, context, pass, state, 0);
+			return this.traverseBottomUp(plan, context, pass, state);
 		}
 	}
 
@@ -326,80 +348,156 @@ export class PassManager {
 	}
 
 	/**
-	 * Top-down traversal with rule application
+	 * Finalize a parent frame: collect post-traversal child results, rewire if any
+	 * child reference changed, memoize against the original node id, and push the
+	 * finalized node back onto the result stack.
+	 *
+	 * Children were pushed in reverse on the work stack, so their finalized results
+	 * land on `resultStack` in original left-to-right order — a tail slice of length
+	 * `frame.originalChildren.length` is the correctly-ordered child array.
 	 */
-	private traverseTopDown(
-		node: PlanNode,
+	private finalizeNode(
+		frame: FinalizeFrame,
+		resultStack: PlanNode[],
 		context: OptContext,
-		pass: OptimizationPass,
-		state: PassState,
-		depth: number
+		applyRulesAfter: { context: OptContext; pass: OptimizationPass; state: PassState } | null,
 	): PlanNode {
-		this.assertOptimizationDepth(state, depth);
+		const n = frame.originalChildren.length;
+		const newChildren = resultStack.splice(resultStack.length - n, n);
 
-		const cached = context.optimizedNodes.get(node.id);
-		if (cached) {
-			return cached;
-		}
-
-		// Apply rules to this node first
-		let currentNode = this.applyPassRules(node, context, pass, state);
-
-		// Then traverse children
-		const children = currentNode.getChildren();
-		if (children.length > 0) {
-			const newChildren = children.map(child =>
-				this.traverseTopDown(child, context, pass, state, depth + 1)
-			);
-
-			// Only create new node if children changed
-			const childrenChanged = children.some((child, i) => child !== newChildren[i]);
-			if (childrenChanged) {
-				currentNode = currentNode.withChildren(newChildren);
+		let node = frame.currentNode;
+		let childrenChanged = false;
+		for (let i = 0; i < n; i++) {
+			if (newChildren[i] !== frame.originalChildren[i]) {
+				childrenChanged = true;
+				break;
 			}
 		}
+		if (childrenChanged) {
+			node = node.withChildren(newChildren);
+		}
 
-		context.optimizedNodes.set(node.id, currentNode);
-		return currentNode;
+		const finalized = applyRulesAfter
+			? this.applyPassRules(node, applyRulesAfter.context, applyRulesAfter.pass, applyRulesAfter.state)
+			: node;
+
+		context.optimizedNodes.set(frame.origNodeId, finalized);
+		return finalized;
 	}
 
 	/**
-	 * Bottom-up traversal with rule application
+	 * Top-down traversal with rule application (iterative worklist).
+	 *
+	 * Rules fire on a node BEFORE descending; the post-rule node's children are
+	 * what gets walked.
 	 */
-	private traverseBottomUp(
-		node: PlanNode,
+	private traverseTopDown(
+		plan: PlanNode,
 		context: OptContext,
 		pass: OptimizationPass,
 		state: PassState,
-		depth: number
 	): PlanNode {
-		this.assertOptimizationDepth(state, depth);
+		const workStack: Frame[] = [{ kind: 'visit', node: plan, depth: 0 }];
+		const resultStack: PlanNode[] = [];
 
-		const cached = context.optimizedNodes.get(node.id);
-		if (cached) {
-			return cached;
-		}
+		while (workStack.length > 0) {
+			const frame = workStack.pop()!;
 
-		// Traverse children first
-		const children = node.getChildren();
-		let currentNode = node;
+			if (frame.kind === 'visit') {
+				const cached = context.optimizedNodes.get(frame.node.id);
+				if (cached) {
+					resultStack.push(cached);
+					continue;
+				}
 
-		if (children.length > 0) {
-			const newChildren = children.map(child =>
-				this.traverseBottomUp(child, context, pass, state, depth + 1)
-			);
+				this.assertOptimizationDepth(state, frame.depth);
 
-			// Only create new node if children changed
-			const childrenChanged = children.some((child, i) => child !== newChildren[i]);
-			if (childrenChanged) {
-				currentNode = currentNode.withChildren(newChildren);
+				// Top-down: rules fire BEFORE descending.
+				const postRule = this.applyPassRules(frame.node, context, pass, state);
+				const children = postRule.getChildren();
+
+				if (children.length === 0) {
+					context.optimizedNodes.set(frame.node.id, postRule);
+					resultStack.push(postRule);
+					continue;
+				}
+
+				workStack.push({
+					kind: 'finalize',
+					origNodeId: frame.node.id,
+					currentNode: postRule,
+					originalChildren: children,
+					depth: frame.depth,
+				});
+
+				for (let i = children.length - 1; i >= 0; i--) {
+					workStack.push({ kind: 'visit', node: children[i], depth: frame.depth + 1 });
+				}
+			} else {
+				// Top-down: rules already fired on entry — finalize without re-applying.
+				const finalized = this.finalizeNode(frame, resultStack, context, null);
+				resultStack.push(finalized);
 			}
 		}
 
-		// Then apply rules to this node
-		const result = this.applyPassRules(currentNode, context, pass, state);
-		context.optimizedNodes.set(node.id, result);
-		return result;
+		return resultStack[0];
+	}
+
+	/**
+	 * Bottom-up traversal with rule application (iterative worklist).
+	 *
+	 * Children are processed first; rules fire on a node AFTER its rewritten
+	 * children are spliced back in.
+	 */
+	private traverseBottomUp(
+		plan: PlanNode,
+		context: OptContext,
+		pass: OptimizationPass,
+		state: PassState,
+	): PlanNode {
+		const workStack: Frame[] = [{ kind: 'visit', node: plan, depth: 0 }];
+		const resultStack: PlanNode[] = [];
+
+		while (workStack.length > 0) {
+			const frame = workStack.pop()!;
+
+			if (frame.kind === 'visit') {
+				const cached = context.optimizedNodes.get(frame.node.id);
+				if (cached) {
+					resultStack.push(cached);
+					continue;
+				}
+
+				this.assertOptimizationDepth(state, frame.depth);
+
+				const children = frame.node.getChildren();
+
+				if (children.length === 0) {
+					const result = this.applyPassRules(frame.node, context, pass, state);
+					context.optimizedNodes.set(frame.node.id, result);
+					resultStack.push(result);
+					continue;
+				}
+
+				workStack.push({
+					kind: 'finalize',
+					origNodeId: frame.node.id,
+					currentNode: frame.node,
+					originalChildren: children,
+					depth: frame.depth,
+				});
+
+				for (let i = children.length - 1; i >= 0; i--) {
+					workStack.push({ kind: 'visit', node: children[i], depth: frame.depth + 1 });
+				}
+			} else {
+				// Bottom-up: rules fire AFTER children are finalized.
+				const finalized = this.finalizeNode(frame, resultStack, context, { context, pass, state });
+				resultStack.push(finalized);
+			}
+		}
+
+		return resultStack[0];
 	}
 
 	/**
