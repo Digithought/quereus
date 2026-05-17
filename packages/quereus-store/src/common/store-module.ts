@@ -21,12 +21,13 @@ import type {
 	BaseModuleConfig,
 	BestAccessPlanRequest,
 	BestAccessPlanResult,
+	OrderingSpec,
 	SqlValue,
 	ModuleCapabilities,
 	SchemaChangeInfo,
 	ColumnSchema,
 } from '@quereus/quereus';
-import { AccessPlanBuilder, QuereusError, StatusCode, buildColumnIndexMap, columnDefToSchema, compilePredicate, inferType, validateAndParse } from '@quereus/quereus';
+import { AccessPlanBuilder, QuereusError, StatusCode, buildColumnIndexMap, columnDefToSchema, compilePredicate, inferType, tryFoldLiteral, validateAndParse } from '@quereus/quereus';
 import type { CompiledPredicate } from '@quereus/quereus';
 
 import type { KVStore, KVStoreProvider } from './kv-store.js';
@@ -522,7 +523,26 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		change: SchemaChangeInfo,
 	): Promise<TableSchema> {
 		const tableKey = `${schemaName}.${tableName}`.toLowerCase();
-		const table = this.tables.get(tableKey);
+		// Lazy-connect: `renameTable` evicts the old key from `this.tables` and
+		// expects the next `connect()` to repopulate under the new name, but
+		// `apply schema` can call `alterTable` immediately after a rename without
+		// an intervening connect. Mirror connect()'s schemaManager lookup so the
+		// follow-up ALTER finds the moved table.
+		let table = this.tables.get(tableKey);
+		if (!table) {
+			const registeredSchema = db.schemaManager.getTable(schemaName, tableName);
+			if (registeredSchema) {
+				table = new StoreTable(
+					db,
+					this,
+					registeredSchema,
+					this.parseConfig(registeredSchema.vtabArgs ?? {}),
+					this.eventEmitter,
+					true, // isConnected - DDL already exists in storage
+				);
+				this.tables.set(tableKey, table);
+			}
+		}
 
 		if (!table) {
 			throw new QuereusError(
@@ -538,11 +558,17 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 			case 'addColumn': {
 				const newColSchema = columnDefToSchema(change.columnDef, defaultNotNull);
 
-				// Extract default value from column def constraints
+				// Extract default value from column def constraints. Use the shared
+				// `tryFoldLiteral` helper so signed numerics like `-123.0`
+				// (a UnaryExpr in the AST) are recognized — matching the
+				// memory-mode path and the engine-level ALTER validation.
 				let defaultValue: SqlValue = null;
 				const defaultConstraint = change.columnDef.constraints?.find(c => c.type === 'default');
-				if (defaultConstraint && defaultConstraint.expr && defaultConstraint.expr.type === 'literal') {
-					defaultValue = (defaultConstraint.expr as { value: SqlValue }).value;
+				if (defaultConstraint?.expr) {
+					const folded = tryFoldLiteral(defaultConstraint.expr);
+					if (folded !== undefined) {
+						defaultValue = folded;
+					}
 				}
 
 				// Refuse NOT NULL without a literal DEFAULT on a non-empty table (SQLite-compatible).
@@ -914,7 +940,7 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 		);
 
 		if (pkFilters.length === pkColumns.length && pkColumns.length > 0) {
-			// Full PK match - point lookup
+			// Full PK match - point lookup (single row; no monotonic advertisement)
 			const handledFilters = request.filters.map(f =>
 				pkFilters.some(pf => pf.columnIndex === f.columnIndex && pf.op === f.op)
 			);
@@ -922,6 +948,7 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 				.eqMatch(1, 0.1)
 				.setHandledFilters(handledFilters)
 				.setIsSet(true)
+				.setIndexName('_primary_')
 				.setExplanation('Store primary key lookup')
 				.build();
 		}
@@ -940,16 +967,23 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 			: [];
 
 		if (rangeFilters.length > 0) {
-			// Range scan on first PK column
+			// Range scan on first PK column. Iteration is by PK key order (see
+			// StoreTable.scanPKRange), so we can advertise monotonic emission on
+			// the leading PK column. The scan still visits the entire data store
+			// today (TODO in scanPKRange to refine bounds), but the order
+			// guarantee already holds.
 			const handledFilters = request.filters.map(f =>
 				rangeFilters.some(rf => rf.columnIndex === f.columnIndex && rf.op === f.op)
 			);
 			const rangeRows = Math.max(1, Math.floor(estimatedRows * 0.3));
-			return AccessPlanBuilder
+			const plan = AccessPlanBuilder
 				.rangeScan(rangeRows, 0.2)
 				.setHandledFilters(handledFilters)
+				.setIndexName('_primary_')
+				.setSeekColumns([firstPkColumn!])
 				.setExplanation('Store primary key range scan')
 				.build();
+			return { ...plan, ...this.buildPkOrderingAdvertisement(tableInfo, request) };
 		}
 
 		// Check for secondary index usage
@@ -977,12 +1011,88 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 			}
 		}
 
-		// Fallback to full scan
-		return AccessPlanBuilder
+		// Fallback to full scan. The store iterates rows in PK key order
+		// (see StoreTable.query / store.iterate over buildFullScanBounds), so
+		// the scan is monotonic on the leading PK column. Advertise that so
+		// downstream rules (merge-join, asof-scan) can fire on store-backed
+		// tables, matching memory-mode behavior.
+		const plan = AccessPlanBuilder
 			.fullScan(estimatedRows)
 			.setHandledFilters(new Array(request.filters.length).fill(false))
 			.setExplanation('Store full table scan')
 			.build();
+		return { ...plan, ...this.buildPkOrderingAdvertisement(tableInfo, request) };
+	}
+
+	/**
+	 * Compute the PK-ordering advertisement for a scan-style plan. Returns the
+	 * `providesOrdering` / `monotonicOn` / `supportsAsofRight` fields for a plan
+	 * whose iteration is driven by the primary-key key order (full scan or PK
+	 * range scan).
+	 *
+	 * `providesOrdering` is set only when it actually matches what the caller
+	 * needs:
+	 *   - When the request carries `requiredOrdering`, claim it only if the
+	 *     requested keys form a prefix of the PK with matching directions.
+	 *     Claiming PK order against an `ORDER BY <other column>` would cause
+	 *     the absorb-Sort rule to drop the Sort and yield wrong-order rows.
+	 *   - When no `requiredOrdering` is present, advertise the full PK
+	 *     ordering so downstream rules (merge-join, sort elision after a
+	 *     filter) can opportunistically use it.
+	 *
+	 * `monotonicOn` reflects the access path itself and is independent of any
+	 * `requiredOrdering`; it always advertises the leading PK column. Strict
+	 * monotonicity is claimed iff the PK is single-column — composite PKs can
+	 * repeat values on the leading column.
+	 *
+	 * Returns an empty object when there is no PK (heap-only table) — without a
+	 * leading key column there is no natural emit order.
+	 */
+	private buildPkOrderingAdvertisement(
+		tableInfo: TableSchema,
+		request: BestAccessPlanRequest,
+	): Pick<BestAccessPlanResult, 'providesOrdering' | 'orderingIndexName' | 'monotonicOn' | 'supportsAsofRight'> {
+		const pk = tableInfo.primaryKeyDefinition;
+		if (pk.length === 0) return {};
+
+		const leading = pk[0];
+		const monotonicOn = {
+			columnIndex: leading.index,
+			direction: leading.desc ? 'desc' as const : 'asc' as const,
+			strict: pk.length === 1,
+		};
+
+		const pkOrdering: OrderingSpec[] = pk.map(col => ({
+			columnIndex: col.index,
+			desc: !!col.desc,
+		}));
+
+		// Pick the providesOrdering to advertise based on requiredOrdering.
+		const required = request.requiredOrdering;
+		let providesOrdering: readonly OrderingSpec[] | undefined;
+		if (required && required.length > 0) {
+			// Only claim ordering when the requested keys form a prefix of the
+			// PK with matching directions. nullsFirst is intentionally not
+			// matched here — if the request specifies an explicit NULLS
+			// FIRST/LAST, leave the Sort in place rather than assume the PK
+			// scan's natural NULL placement matches.
+			if (required.length > pk.length) return { monotonicOn, supportsAsofRight: true };
+			for (let i = 0; i < required.length; i++) {
+				if (required[i].columnIndex !== pkOrdering[i].columnIndex) return { monotonicOn, supportsAsofRight: true };
+				if (required[i].desc !== pkOrdering[i].desc) return { monotonicOn, supportsAsofRight: true };
+				if (required[i].nullsFirst !== undefined) return { monotonicOn, supportsAsofRight: true };
+			}
+			providesOrdering = required;
+		} else {
+			providesOrdering = pkOrdering;
+		}
+
+		return {
+			providesOrdering,
+			orderingIndexName: '_primary_',
+			monotonicOn,
+			supportsAsofRight: true,
+		};
 	}
 
 	// --- StoreTableModule interface implementation ---

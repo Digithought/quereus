@@ -127,6 +127,7 @@ export {
 export { Parser } from './parser/parser.js';
 export { Lexer, TokenType, KEYWORDS } from './parser/lexer.js';
 export { ParseError } from './parser/parser.js';
+export { tryFoldLiteral } from './parser/utils.js';
 export { quoteIdentifier } from './emit/ast-stringify.js';
 
 // Schema management
