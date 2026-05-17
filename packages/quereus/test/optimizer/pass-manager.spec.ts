@@ -328,6 +328,64 @@ describe('PassManager', () => {
 		}
 	});
 
+	it('reuses cached results for shared subtrees within a single pass', async () => {
+		const db = new Database();
+		try {
+			let nextId = 1;
+			const makeNode = (nodeType: PlanNodeType, children: PlanNode[]): TestNode => {
+				const self: TestNode = {
+					id: String(nextId++),
+					nodeType,
+					getChildren: () => children,
+					withChildren: (newChildren) => makeNode(nodeType, [...newChildren]) as unknown as PlanNode,
+					getLogicalAttributes: () => ({}),
+				};
+				return self;
+			};
+
+			// Build a DAG: a single shared leaf reached via two parent paths.
+			const sharedLeaf = makeNode(PlanNodeType.Filter, []);
+			const left = makeNode(PlanNodeType.Filter, [sharedLeaf as unknown as PlanNode]);
+			const right = makeNode(PlanNodeType.Filter, [sharedLeaf as unknown as PlanNode]);
+			const root = makeNode(PlanNodeType.Filter, [
+				left as unknown as PlanNode,
+				right as unknown as PlanNode,
+			]);
+
+			// Rule fires once per distinct original node id. If the cache short-circuits
+			// the second visit of `sharedLeaf`, the rule fires 4 times (root, left,
+			// right, sharedLeaf), not 5.
+			let firings = 0;
+			const pass = createPass(
+				'dag-sharing',
+				'DAG sharing',
+				'Confirm within-pass cache hits on shared subtrees',
+				0,
+				TraversalOrder.BottomUp
+			);
+			pass.rules.push({
+				id: 'count-firings',
+				nodeType: PlanNodeType.Filter,
+				phase: 'rewrite',
+				fn: (node) => {
+					firings++;
+					return makeNode(PlanNodeType.Project, [...node.getChildren()]) as unknown as PlanNode;
+				},
+				priority: 10,
+			});
+
+			const pm = new PassManager([]);
+			pm.registerPass(pass);
+
+			const context = createTestContext(db, { tuning: DEFAULT_TUNING });
+			pm.execute(root as unknown as PlanNode, context);
+
+			expect(firings).to.equal(4);
+		} finally {
+			await db.close();
+		}
+	});
+
 	it('maxRulesFired trips when total rule firings exceed the budget', async () => {
 		const db = new Database();
 		try {
