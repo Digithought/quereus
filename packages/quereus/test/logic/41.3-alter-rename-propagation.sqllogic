@@ -544,3 +544,81 @@ select count(*) as cnt from c_fk;
 
 drop table c_fk;
 drop table p_fk;
+
+-- ===================================
+-- 12. Inner non-exposing CTE shadows an outer exposing CTE (precedence)
+-- ===================================
+-- The outer WITH declares an exposing same-name CTE (its body projects
+-- the renamed column). A nested subquery has its own WITH that declares
+-- a non-exposing same-name CTE. The subquery's `from t_nest` must bind
+-- to the inner non-exposing CTE (innermost wins), and its `t_nest.k`
+-- must NOT rewrite to `t_nest.kk`.
+
+create table t_nest (id integer primary key, k integer not null);
+insert into t_nest values (1, 100);
+
+create view v_nest as
+  with t_nest as (select t_nest.k from t_nest)
+  select x from (
+    with t_nest as (select 0 as k)
+    select t_nest.k as x from t_nest
+  ) s;
+
+alter table t_nest rename column k to kk;
+
+select * from v_nest;
+→ [{"x":0}]
+
+drop view v_nest;
+drop table t_nest;
+
+-- ===================================
+-- 13. Shadowing CTE inside a derived-table subquery — unqualified ref
+-- ===================================
+-- Outer FROM has the renamed real table (so the outer frame's `unaliased`
+-- has it). A nested derived-table subquery introduces a same-name
+-- non-exposing CTE; the inner unqualified `k` must resolve to the inner
+-- CTE row source, not to the outer real-table binding, and therefore
+-- must NOT rewrite.
+
+create table t_exb (id integer primary key, k integer not null);
+insert into t_exb values (1, 50);
+
+create view v_exb as
+  select t_exb.k as outer_k, s.inner_k
+  from t_exb
+  cross join (with t_exb as (select 0 as k) select k as inner_k from t_exb) s;
+
+alter table t_exb rename column k to kk;
+
+select * from v_exb;
+→ [{"outer_k":50,"inner_k":0}]
+
+drop view v_exb;
+drop table t_exb;
+
+-- ===================================
+-- 14. Nested alias rebinding — inner alias shadows outer same-letter alias
+-- ===================================
+-- Outer `from t_alia as a` binds `a` to the renamed table. A subquery
+-- has `from t_alia_other as a` — its inner `a` rebinds to a different
+-- table. The qualified `a.k` inside the subquery refers to t_alia_other,
+-- so it must NOT rewrite to `a.kk`.
+
+create table t_alia (id integer primary key, k integer not null);
+create table t_alia_other (id integer primary key, k integer not null);
+insert into t_alia values (1, 10);
+insert into t_alia_other values (2, 20);
+
+create view v_alia as
+  select (select a.k from t_alia_other as a where a.id = 2) as inner_k
+  from t_alia as a;
+
+alter table t_alia rename column k to kk;
+
+select * from v_alia;
+→ [{"inner_k":20}]
+
+drop view v_alia;
+drop table t_alia;
+drop table t_alia_other;

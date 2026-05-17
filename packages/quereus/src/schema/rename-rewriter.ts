@@ -348,9 +348,18 @@ function collectFromBindings(
 	}
 }
 
+/**
+ * Innermost-first walk: an inner non-exposing same-name CTE shadows an
+ * outer exposing one, so a `ctesInScope` hit without a matching
+ * `ctesExposingRenamed` entry wins. `isCteInScope` (below) intentionally
+ * stays OR-shaped — it only gates "is this source a CTE rather than a
+ * real table?", a question for which any enclosing CTE suffices.
+ */
 function isCteExposingInScope(state: ColumnRewriteState, name: string): boolean {
-	for (const frame of state.scopeStack) {
+	for (let i = state.scopeStack.length - 1; i >= 0; i--) {
+		const frame = state.scopeStack[i];
 		if (frame.ctesExposingRenamed.has(name)) return true;
+		if (frame.ctesInScope.has(name)) return false;
 	}
 	return false;
 }
@@ -362,17 +371,27 @@ function isCteInScope(state: ColumnRewriteState, name: string): boolean {
 	return false;
 }
 
+/**
+ * Innermost-first walk: a closer same-name CTE shadows an outer unaliased
+ * binding to the renamed real table.
+ */
 function isTableInUnaliasedScope(state: ColumnRewriteState): boolean {
-	for (const frame of state.scopeStack) {
+	for (let i = state.scopeStack.length - 1; i >= 0; i--) {
+		const frame = state.scopeStack[i];
+		if (frame.ctesInScope.has(state.tableName)) return false;
 		if (frame.unaliased.has(state.tableName)) return true;
 	}
 	return false;
 }
 
+/**
+ * Innermost-first walk: a closer alias binding wins over an outer one
+ * (standard SQL alias shadowing).
+ */
 function aliasResolvesToTable(state: ColumnRewriteState, alias: string): boolean {
 	const aliasLower = alias.toLowerCase();
-	for (const frame of state.scopeStack) {
-		const target = frame.aliasMap.get(aliasLower);
+	for (let i = state.scopeStack.length - 1; i >= 0; i--) {
+		const target = state.scopeStack[i].aliasMap.get(aliasLower);
 		if (target !== undefined) return target === state.tableName;
 	}
 	return false;
