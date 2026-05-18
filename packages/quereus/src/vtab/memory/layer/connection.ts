@@ -167,6 +167,15 @@ export class MemoryTableConnection {
 		// Don't short-circuit on missing pendingTransactionLayer: a statement
 		// savepoint may have pushed a null marker, and the matching release
 		// must still pop it.
+		if (targetDepth > this.savepointStack.length) {
+			// Setting `Array.length` to a value larger than the current length
+			// pads with undefined slots, corrupting subsequent rollback-to /
+			// release lookups. Skip with a warning — the most likely cause is a
+			// failed savepoint replay during `Database.registerConnection`.
+			warnLog(`Connection %d: Release savepoint depth %d out of range (stack size: %d)`,
+				this.connectionId, targetDepth, this.savepointStack.length);
+			return;
+		}
 		this.savepointStack.length = targetDepth;
 		debugLog(`Connection %d: Released savepoints to depth %d`, this.connectionId, targetDepth);
 	}
