@@ -265,6 +265,52 @@ export function renameColumnInAst(
 	return state.changed;
 }
 
+/**
+ * Rewrite a column reference inside a CHECK expression. Unlike
+ * `renameColumnInAst`, this entry point seeds the scope stack with an
+ * implicit unaliased binding to `tableName` so top-level unqualified
+ * `ColumnExpr` nodes resolve to the owning table. CHECK expressions
+ * cannot reference other tables at top level, so the implicit binding
+ * is safe there.
+ *
+ * Subtlety: nested subqueries push their own FROM frame, but
+ * `isTableInUnaliasedScope` walks innermost-first and falls through to
+ * the seed whenever the inner frame has neither the renamed table in
+ * its `unaliased` nor a same-named CTE in `ctesInScope`. That means an
+ * unqualified column ref inside `(select … from u)` that happens to
+ * match the renamed column's name will be rewritten, even when SQL
+ * semantics would bind it to a like-named column on `u`. The rewriter
+ * cannot disambiguate without schema info. See the backlog ticket
+ * `rename-rewriter-check-subquery-shadowing` for the open design
+ * question.
+ */
+export function renameColumnInCheckExpression(
+	expr: AST.AstNode | undefined,
+	tableName: string,
+	oldColName: string,
+	newColName: string,
+	defaultSchemaName: string,
+): boolean {
+	if (!expr) return false;
+	const state: ColumnRewriteState = {
+		tableName: tableName.toLowerCase(),
+		oldCol: oldColName.toLowerCase(),
+		newCol: newColName,
+		defaultSchema: defaultSchemaName.toLowerCase(),
+		scopeStack: [],
+		changed: false,
+	};
+	const frame = emptyFrame();
+	frame.unaliased.add(state.tableName);
+	state.scopeStack.push(frame);
+	try {
+		visitColumnRename(expr, state);
+	} finally {
+		state.scopeStack.pop();
+	}
+	return state.changed;
+}
+
 interface ColumnRewriteState {
 	tableName: string;
 	oldCol: string;

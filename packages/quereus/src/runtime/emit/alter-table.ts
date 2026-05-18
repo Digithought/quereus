@@ -9,7 +9,7 @@ import { buildColumnIndexMap, opsToMask, withGeneratedColumnGraph } from '../../
 import type { ColumnDef } from '../../parser/ast.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
 import { quoteIdentifier, expressionToString, selectToString } from '../../emit/ast-stringify.js';
-import { renameTableInAst, renameColumnInAst } from '../../schema/rename-rewriter.js';
+import { renameTableInAst, renameColumnInAst, renameColumnInCheckExpression } from '../../schema/rename-rewriter.js';
 import type { Schema } from '../../schema/schema.js';
 import { tryFoldLiteral } from '../../parser/utils.js';
 
@@ -970,10 +970,15 @@ function rewriteTableForColumnRename(
 ): TableSchema {
 	const oldColLower = oldCol.toLowerCase();
 	const tableLower = tableName.toLowerCase();
+	const isRenamedTable =
+		table.schemaName.toLowerCase() === renamedSchemaLower &&
+		table.name.toLowerCase() === tableLower;
 	let changed = false;
 
 	const newChecks = table.checkConstraints.map(cc => {
-		const rewrote = renameColumnInAst(cc.expr, tableName, oldCol, newCol, renamedSchemaLower);
+		const rewrote = isRenamedTable
+			? renameColumnInCheckExpression(cc.expr, tableName, oldCol, newCol, renamedSchemaLower)
+			: renameColumnInAst(cc.expr, tableName, oldCol, newCol, renamedSchemaLower);
 		if (!rewrote) return cc;
 		changed = true;
 		return { ...cc };

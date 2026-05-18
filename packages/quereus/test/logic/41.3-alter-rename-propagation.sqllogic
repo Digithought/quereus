@@ -514,6 +514,44 @@ drop table c_col;
 drop table p_col;
 
 -- ===================================
+-- 10b. Renaming a column referenced by the same table's column-level CHECK
+-- ===================================
+
+create table t_cchk (id integer primary key, v integer check (v > 0));
+
+alter table t_cchk rename column v to vv;
+
+-- The CHECK must still enforce after the rename. Pre-fix this trips
+-- "Column not found: v" at plan time; post-fix the CHECK rewrites to
+-- (vv > 0) and the negative insert is rejected as a CHECK violation.
+insert into t_cchk values (1, -5);
+-- error: CHECK constraint failed
+
+-- Valid insert succeeds against the renamed column.
+insert into t_cchk values (2, 7);
+
+select count(*) as cnt from t_cchk;
+→ [{"cnt":1}]
+
+drop table t_cchk;
+
+-- Same shape, but the CHECK is table-level *and unqualified*:
+-- the AST is still produced with col.table === undefined.
+create table t_tchk (id integer primary key, v integer, check (v > 0));
+
+alter table t_tchk rename column v to vv;
+
+insert into t_tchk values (1, -5);
+-- error: CHECK constraint failed
+
+insert into t_tchk values (2, 7);
+
+select count(*) as cnt from t_tchk;
+→ [{"cnt":1}]
+
+drop table t_tchk;
+
+-- ===================================
 -- 11. Renaming a column propagates into another table's FK referencedColumnNames
 -- ===================================
 
