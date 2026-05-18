@@ -21,8 +21,15 @@ export class MemoryTableConnection {
 	public pendingTransactionLayer: TransactionLayer | null = null;
 	public explicitTransaction: boolean = false; // Track if transaction was explicitly started
 
-	/** Stack of savepoint snapshots, indexed by depth from TransactionManager */
-	private savepointStack: TransactionLayer[] = [];
+	/**
+	 * Stack of savepoint snapshots, indexed by depth from TransactionManager.
+	 * A `null` entry marks a savepoint taken when no pending layer existed
+	 * yet (lazy-snapshot): rolling back to it restores the connection to the
+	 * no-pending-layer state instead of cloning an eagerly-created empty
+	 * layer. Avoiding the eager creation is essential to keep self-referential
+	 * INSERT...SELECT iterators reading from the immutable committed layer.
+	 */
+	private savepointStack: Array<TransactionLayer | null> = [];
 
 	constructor(manager: MemoryTableManager, initialReadLayer: Layer) {
 		this.connectionId = connectionCounter++;
@@ -89,13 +96,13 @@ export class MemoryTableConnection {
 			quereusError(`Invalid savepoint depth: ${depth}. Must be non-negative.`, StatusCode.INTERNAL);
 		}
 
-		if (!this.pendingTransactionLayer) {
-			// Start an implicit transaction and create a fresh layer immediately so the savepoint has something to snapshot
-			this.pendingTransactionLayer = new TransactionLayer(this.tableManager.currentCommittedLayer);
-		}
-
-		// Create a snapshot of the current transaction state and push onto the stack
-		const savepointLayer = this.createTransactionSnapshot(this.pendingTransactionLayer);
+		// Lazy-snapshot: if no pending layer exists yet, push a null marker
+		// instead of eagerly creating one. The pending layer will be created
+		// on first mutation; rolling back to a null marker restores the
+		// no-pending state. See the comment on `savepointStack`.
+		const savepointLayer = this.pendingTransactionLayer
+			? this.createTransactionSnapshot(this.pendingTransactionLayer)
+			: null;
 		this.savepointStack.push(savepointLayer);
 
 		// A SAVEPOINT implicitly puts the connection into explicit-transaction mode
@@ -157,7 +164,9 @@ export class MemoryTableConnection {
 
 	/** Releases savepoints from the top of the stack down to the target depth (exclusive) */
 	releaseSavepoint(targetDepth: number): void {
-		if (!this.pendingTransactionLayer) return;
+		// Don't short-circuit on missing pendingTransactionLayer: a statement
+		// savepoint may have pushed a null marker, and the matching release
+		// must still pop it.
 		this.savepointStack.length = targetDepth;
 		debugLog(`Connection %d: Released savepoints to depth %d`, this.connectionId, targetDepth);
 	}
@@ -167,8 +176,6 @@ export class MemoryTableConnection {
 	 * The savepoint is preserved (per SQL standard) so it can be rolled back to again.
 	 */
 	rollbackToSavepoint(targetDepth: number): void {
-		if (!this.pendingTransactionLayer) return;
-
 		if (targetDepth >= this.savepointStack.length) {
 			warnLog(`Connection %d: Savepoint depth %d out of range (stack size: %d)`,
 				this.connectionId, targetDepth, this.savepointStack.length);
@@ -177,13 +184,19 @@ export class MemoryTableConnection {
 
 		const savepoint = this.savepointStack[targetDepth];
 
-		// Create a fresh mutable layer that inherits from the savepoint's immutable snapshot.
-		// This allows further mutations after rollback.
-		this.pendingTransactionLayer = new TransactionLayer(savepoint);
+		if (savepoint === null) {
+			// Lazy-snapshot marker: at savepoint creation there was no pending
+			// layer, so rolling back restores that no-pending state.
+			this.pendingTransactionLayer = null;
+		} else {
+			// Create a fresh mutable layer that inherits from the savepoint's immutable snapshot.
+			// This allows further mutations after rollback.
+			this.pendingTransactionLayer = new TransactionLayer(savepoint);
 
-		// Enable change tracking if it was active on the snapshot
-		if (savepoint.isTrackingChanges()) {
-			this.pendingTransactionLayer.enableChangeTracking();
+			// Enable change tracking if it was active on the snapshot
+			if (savepoint.isTrackingChanges()) {
+				this.pendingTransactionLayer.enableChangeTracking();
+			}
 		}
 
 		// Remove savepoints above the target, but preserve the target itself

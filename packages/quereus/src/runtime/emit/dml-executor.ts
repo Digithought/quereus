@@ -17,6 +17,14 @@ import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
 import { executeForeignKeyActions, assertNoRestrictedChildrenForParentMutation } from '../foreign-key-actions.js';
 
 /**
+ * Module-scope counter producing unique statement-savepoint names across
+ * concurrent emissions. Names must be unique within the TransactionManager's
+ * savepoint stack; per-runInsert counters would collide for nested mutations
+ * (e.g. FK cascade during the parent insert).
+ */
+let stmtSavepointCounter = 0;
+
+/**
  * Runtime UPSERT clause with pre-resolved evaluator callbacks.
  * The callbacks are resolved by the scheduler from the params array.
  */
@@ -291,45 +299,87 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		const isFailMode = plan.onConflict === ConflictResolution.FAIL;
 		let failSavepointCounter = 0;
 
+		// For non-FAIL modes (ABORT default / IGNORE / REPLACE / ROLLBACK) we wrap
+		// the whole statement in a savepoint so a mid-statement constraint failure
+		// unwinds partial writes from earlier rows. Mirrors the broadcast pattern
+		// used in runtime/emit/transaction.ts — we must create/release/rollback
+		// on every active connection so per-connection savepoint stacks stay in
+		// lockstep with the TransactionManager's stack (otherwise an outer
+		// user-level SAVEPOINT could index into a stale placeholder).
+		const wrapStatementSavepoint = !isFailMode;
+		const stmtSavepointName = wrapStatementSavepoint
+			? `__or_abort_${stmtSavepointCounter++}`
+			: undefined;
+		if (stmtSavepointName) {
+			const depth = ctx.db._createSavepoint(stmtSavepointName);
+			for (const connection of ctx.db.getAllConnections()) {
+				await connection.createSavepoint(depth);
+			}
+		}
+
 		try {
-			for await (const flatRow of rows) {
-				let savepointName: string | undefined;
-				if (isFailMode) {
-					savepointName = `__or_fail_${failSavepointCounter++}`;
-					await ctx.db._createSavepoint(savepointName);
-				}
-
-				let rowToYield: Row | undefined;
-				let succeeded = false;
-				try {
-					rowToYield = await processInsertRow(
-						ctx,
-						vtab,
-						needsAutoEvents,
-						flatRow,
-						contextRow,
-						runtimeUpsertClauses,
-						upsertEvaluators,
-					);
-					succeeded = true;
-				} catch (e) {
-					if (savepointName) {
-						try { await ctx.db._rollbackToSavepoint(savepointName); } catch { /* swallow */ }
-						try { await ctx.db._releaseSavepoint(savepointName); } catch { /* swallow */ }
-						savepointName = undefined;
+			try {
+				for await (const flatRow of rows) {
+					let savepointName: string | undefined;
+					if (isFailMode) {
+						savepointName = `__or_fail_${failSavepointCounter++}`;
+						await ctx.db._createSavepoint(savepointName);
 					}
-					// Translate plain constraint violations to FAIL/ROLLBACK error subclasses
-					// so the iterator-level cleanup picks the right finalization branch.
-					throw translateConflictError(e, plan.onConflict);
-				}
 
-				if (succeeded && savepointName) {
-					await ctx.db._releaseSavepoint(savepointName);
-				}
+					let rowToYield: Row | undefined;
+					let succeeded = false;
+					try {
+						rowToYield = await processInsertRow(
+							ctx,
+							vtab,
+							needsAutoEvents,
+							flatRow,
+							contextRow,
+							runtimeUpsertClauses,
+							upsertEvaluators,
+						);
+						succeeded = true;
+					} catch (e) {
+						if (savepointName) {
+							try { await ctx.db._rollbackToSavepoint(savepointName); } catch { /* swallow */ }
+							try { await ctx.db._releaseSavepoint(savepointName); } catch { /* swallow */ }
+							savepointName = undefined;
+						}
+						// Translate plain constraint violations to FAIL/ROLLBACK error subclasses
+						// so the iterator-level cleanup picks the right finalization branch.
+						throw translateConflictError(e, plan.onConflict);
+					}
 
-				if (rowToYield !== undefined) {
-					yield rowToYield;
+					if (succeeded && savepointName) {
+						await ctx.db._releaseSavepoint(savepointName);
+					}
+
+					if (rowToYield !== undefined) {
+						yield rowToYield;
+					}
 				}
+				if (stmtSavepointName) {
+					const depth = ctx.db._releaseSavepoint(stmtSavepointName);
+					for (const connection of ctx.db.getAllConnections()) {
+						await connection.releaseSavepoint(depth);
+					}
+				}
+			} catch (e) {
+				if (stmtSavepointName) {
+					try {
+						const depth = ctx.db._rollbackToSavepoint(stmtSavepointName);
+						for (const connection of ctx.db.getAllConnections()) {
+							await connection.rollbackToSavepoint(depth);
+						}
+					} catch { /* swallow */ }
+					try {
+						const depth = ctx.db._releaseSavepoint(stmtSavepointName);
+						for (const connection of ctx.db.getAllConnections()) {
+							await connection.releaseSavepoint(depth);
+						}
+					} catch { /* swallow */ }
+				}
+				throw e;
 			}
 		} finally {
 			await disconnectVTable(ctx, vtab);
