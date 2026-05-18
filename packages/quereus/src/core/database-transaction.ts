@@ -739,6 +739,7 @@ export class TransactionManager {
 
 		// Re-create a fresh layer for the preserved savepoint
 		this.beginSavepointLayer();
+
 		return index;
 	}
 
