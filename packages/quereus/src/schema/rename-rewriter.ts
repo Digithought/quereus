@@ -26,7 +26,31 @@ interface ScopeFrame {
 	 * to the renamed real table for qualified column refs.
 	 */
 	ctesShadowingSource: Set<string>;
+	/**
+	 * Real-table sources in this frame's FROM, with their lowercase schema
+	 * and table names. Used by the unqualified-scope walk to ask whether
+	 * an inner FROM source exposes the renamed column — if it does, the
+	 * unqualified ref binds there and an outer seed binding to the renamed
+	 * table must not capture it. Aliased subquery / function-source /
+	 * CTE-shadowed sources are NOT recorded (the rewriter can't ask the
+	 * callback about those without recursive analysis).
+	 */
+	realSources: Array<{ schema: string; name: string }>;
 }
+
+/**
+ * Returns whether the named source table has a column matching the renamed
+ * column's old name. Implementation looks up the table in the catalog;
+ * `schemaName` is the lowercase schema name (already resolved to the
+ * default schema when the AST qualifier was undefined). Used by the scope
+ * walk to decide whether an inner FROM frame captures an unqualified column
+ * ref before the walk reaches an outer binding to the renamed table.
+ */
+export type ResolveColumnInSource = (
+	schemaName: string,
+	tableName: string,
+	columnName: string,
+) => boolean;
 
 const eq = (a: string | undefined, b: string | undefined): boolean =>
 	(a ?? '').toLowerCase() === (b ?? '').toLowerCase();
@@ -273,16 +297,19 @@ export function renameColumnInAst(
  * cannot reference other tables at top level, so the implicit binding
  * is safe there.
  *
- * Subtlety: nested subqueries push their own FROM frame, but
- * `isTableInUnaliasedScope` walks innermost-first and falls through to
- * the seed whenever the inner frame has neither the renamed table in
- * its `unaliased` nor a same-named CTE in `ctesInScope`. That means an
- * unqualified column ref inside `(select … from u)` that happens to
- * match the renamed column's name will be rewritten, even when SQL
- * semantics would bind it to a like-named column on `u`. The rewriter
- * cannot disambiguate without schema info. See the backlog ticket
- * `rename-rewriter-check-subquery-shadowing` for the open design
- * question.
+ * When `resolveColumnInSource` is supplied, the scope walk consults it at
+ * each inner FROM frame: if any real-table source in that frame exposes
+ * `oldColName`, the unqualified ref binds inside the subquery and the
+ * walk stops before reaching the seed. This stops the rewriter from
+ * false-positively rewriting an inner unqualified ref that legitimately
+ * binds to a like-named column on the subquery's FROM (e.g.
+ * `check ((select min(v) from u) > 0)` when `u` also has a `v` column).
+ *
+ * Limitation: aliased subquery / function-source / CTE-projection inner
+ * sources are not asked (the rewriter would need recursive column-set
+ * inference on their bodies). Same latent issue exists in
+ * `renameColumnInAst` for non-CHECK paths — file a follow-up if it
+ * surfaces; the callback infrastructure is already in place.
  */
 export function renameColumnInCheckExpression(
 	expr: AST.AstNode | undefined,
@@ -290,6 +317,7 @@ export function renameColumnInCheckExpression(
 	oldColName: string,
 	newColName: string,
 	defaultSchemaName: string,
+	resolveColumnInSource?: ResolveColumnInSource,
 ): boolean {
 	if (!expr) return false;
 	const state: ColumnRewriteState = {
@@ -299,6 +327,7 @@ export function renameColumnInCheckExpression(
 		defaultSchema: defaultSchemaName.toLowerCase(),
 		scopeStack: [],
 		changed: false,
+		resolveColumnInSource,
 	};
 	const frame = emptyFrame();
 	frame.unaliased.add(state.tableName);
@@ -318,6 +347,7 @@ interface ColumnRewriteState {
 	defaultSchema: string;
 	scopeStack: ScopeFrame[];
 	changed: boolean;
+	resolveColumnInSource?: ResolveColumnInSource;
 }
 
 function emptyFrame(): ScopeFrame {
@@ -327,6 +357,7 @@ function emptyFrame(): ScopeFrame {
 		ctesExposingRenamed: new Set(),
 		ctesInScope: new Set(),
 		ctesShadowingSource: new Set(),
+		realSources: [],
 	};
 }
 
@@ -377,6 +408,11 @@ function collectFromBindings(
 			} else if (schemaLower === state.defaultSchema || ts.table.schema === undefined) {
 				frame.unaliased.add(name);
 			}
+			// Record as a real-table source so the unqualified-scope walk can
+			// ask whether this source exposes the renamed column. Both aliased
+			// and unaliased real sources are recorded — asking "does u expose
+			// col v" is the same question regardless of any alias.
+			frame.realSources.push({ schema: schemaLower, name });
 			break;
 		}
 		case 'join': {
@@ -419,12 +455,24 @@ function isCteInScope(state: ColumnRewriteState, name: string): boolean {
 
 /**
  * Innermost-first walk: a closer same-name CTE shadows an outer unaliased
- * binding to the renamed real table.
+ * binding to the renamed real table. When a `resolveColumnInSource`
+ * callback is configured, also stop at any inner FROM frame whose real
+ * sources expose `oldCol` — the unqualified ref binds inside that frame
+ * and an outer seed binding must not capture it.
  */
 function isTableInUnaliasedScope(state: ColumnRewriteState): boolean {
 	for (let i = state.scopeStack.length - 1; i >= 0; i--) {
 		const frame = state.scopeStack[i];
 		if (frame.ctesInScope.has(state.tableName)) return false;
+		if (state.resolveColumnInSource && frame.realSources.length > 0) {
+			for (const src of frame.realSources) {
+				// The renamed table itself trivially exposes oldCol; defer to
+				// the existing `unaliased` check below so we don't
+				// double-capture.
+				if (src.name === state.tableName && src.schema === state.defaultSchema) continue;
+				if (state.resolveColumnInSource(src.schema, src.name, state.oldCol)) return false;
+			}
+		}
 		if (frame.unaliased.has(state.tableName)) return true;
 	}
 	return false;

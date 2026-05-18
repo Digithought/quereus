@@ -660,3 +660,57 @@ select * from v_alia;
 drop view v_alia;
 drop table t_alia;
 drop table t_alia_other;
+
+-- ===================================
+-- 15. CHECK subquery with like-named column on another table — unqualified
+-- ===================================
+-- The CHECK body has `(select min(v) from t_chksub_u) > 0`. The inner `v`
+-- legitimately binds to `t_chksub_u.v` — the inner FROM exposes a
+-- like-named column. Without the schema-aware shadowing check the
+-- CHECK-seed binding to `t_chksub.v` would capture the unqualified ref
+-- and rewrite it to `vv`, leaving the CHECK referencing a non-existent
+-- column on `t_chksub_u`.
+
+create table t_chksub_u (id integer primary key, v integer);
+insert into t_chksub_u values (1, 5);
+
+create table t_chksub (id integer primary key, v integer,
+                       check ((select min(v) from t_chksub_u) > 0));
+
+alter table t_chksub rename column v to vv;
+
+insert into t_chksub values (1, 10);
+
+select count(*) as cnt from t_chksub;
+→ [{"cnt":1}]
+
+drop table t_chksub;
+drop table t_chksub_u;
+
+-- ===================================
+-- 16. CHECK subquery with correlated outer ref — owner column legitimately captured
+-- ===================================
+-- The other table doesn't expose `v`, so the unqualified `v` inside the
+-- subquery is a correlated outer ref to `t_corr.v`. The walk falls past
+-- the inner frame (callback returns false for `t_corr_u`) and the seed
+-- captures the ref — so the rewrite to `vv` must happen.
+
+create table t_corr_u (id integer primary key);
+create table t_corr (id integer primary key, v integer,
+                     check ((select count(*) from t_corr_u where t_corr_u.id < v) >= 0));
+
+alter table t_corr rename column v to vv;
+
+insert into t_corr values (1, 10);
+
+select count(*) as cnt from t_corr;
+→ [{"cnt":1}]
+
+drop table t_corr;
+drop table t_corr_u;
+
+-- (Case 17 from the ticket — CTE-shadow inside a CHECK subquery — is
+-- impossible to construct: Quereus's parser only accepts `(SELECT ...)`
+-- as a scalar subquery, not `(WITH … SELECT …)`. The CTE-shadow path is
+-- already covered by cases 6f, 6g, 6m, 6n, 12, and 13 in the non-CHECK
+-- propagation path.)

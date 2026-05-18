@@ -920,9 +920,15 @@ function propagateColumnRename(
 	oldCol: string,
 	newCol: string,
 ): void {
-	const notifier = rctx.db.schemaManager.getChangeNotifier();
-	for (const schema of rctx.db.schemaManager._getAllSchemas()) {
-		propagateColumnRenameInSchema(schema, renamedSchemaName, tableName, oldCol, newCol, notifier);
+	const schemaManager = rctx.db.schemaManager;
+	const notifier = schemaManager.getChangeNotifier();
+	const resolveColumnInSource: import('../../schema/rename-rewriter.js').ResolveColumnInSource = (s, t, col) => {
+		const targetSchema = schemaManager.getSchema(s);
+		const targetTable = targetSchema?.getTable(t);
+		return targetTable?.columnIndexMap.has(col.toLowerCase()) ?? false;
+	};
+	for (const schema of schemaManager._getAllSchemas()) {
+		propagateColumnRenameInSchema(schema, renamedSchemaName, tableName, oldCol, newCol, notifier, resolveColumnInSource);
 	}
 }
 
@@ -933,11 +939,12 @@ function propagateColumnRenameInSchema(
 	oldCol: string,
 	newCol: string,
 	notifier: import('../../schema/change-events.js').SchemaChangeNotifier,
+	resolveColumnInSource: import('../../schema/rename-rewriter.js').ResolveColumnInSource,
 ): void {
 	const renamedSchemaLower = renamedSchemaName.toLowerCase();
 
 	for (const table of Array.from(schema.getAllTables())) {
-		const updated = rewriteTableForColumnRename(table, renamedSchemaLower, tableName, oldCol, newCol);
+		const updated = rewriteTableForColumnRename(table, renamedSchemaLower, tableName, oldCol, newCol, resolveColumnInSource);
 		if (updated !== table) {
 			schema.addTable(updated);
 			notifier.notifyChange({
@@ -967,6 +974,7 @@ function rewriteTableForColumnRename(
 	tableName: string,
 	oldCol: string,
 	newCol: string,
+	resolveColumnInSource: import('../../schema/rename-rewriter.js').ResolveColumnInSource,
 ): TableSchema {
 	const oldColLower = oldCol.toLowerCase();
 	const tableLower = tableName.toLowerCase();
@@ -977,7 +985,7 @@ function rewriteTableForColumnRename(
 
 	const newChecks = table.checkConstraints.map(cc => {
 		const rewrote = isRenamedTable
-			? renameColumnInCheckExpression(cc.expr, tableName, oldCol, newCol, renamedSchemaLower)
+			? renameColumnInCheckExpression(cc.expr, tableName, oldCol, newCol, renamedSchemaLower, resolveColumnInSource)
 			: renameColumnInAst(cc.expr, tableName, oldCol, newCol, renamedSchemaLower);
 		if (!rewrote) return cc;
 		changed = true;

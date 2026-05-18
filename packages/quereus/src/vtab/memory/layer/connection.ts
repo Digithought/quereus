@@ -102,6 +102,8 @@ export class MemoryTableConnection {
 		// so that subsequent statements do NOT auto-commit and invalidate the savepoint.
 		this.explicitTransaction = true;
 
+		// eslint-disable-next-line no-console
+		console.log(`[DBG MEM ${this.connectionId}] createSavepoint(depth=${depth}) table=${this.tableManager.tableName} stackSize=${this.savepointStack.length} pendingLayerId=${this.pendingTransactionLayer.getLayerId()} snapLayerId=${savepointLayer.getLayerId()}`);
 		debugLog(`Connection %d: Created savepoint at depth %d (stack size: %d)`,
 			this.connectionId, depth, this.savepointStack.length);
 	}
@@ -189,6 +191,8 @@ export class MemoryTableConnection {
 		// Remove savepoints above the target, but preserve the target itself
 		this.savepointStack.length = targetDepth + 1;
 
+		// eslint-disable-next-line no-console
+		console.log(`[DBG MEM ${this.connectionId}] rollbackToSavepoint(depth=${targetDepth}) table=${this.tableManager.tableName} stackSize=${this.savepointStack.length} newPendingLayerId=${this.pendingTransactionLayer.getLayerId()} parentSnapLayerId=${savepoint.getLayerId()}`);
 		debugLog(`Connection %d: Rolled back to savepoint depth %d (preserved)`,
 			this.connectionId, targetDepth);
 	}

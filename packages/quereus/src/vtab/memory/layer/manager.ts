@@ -283,6 +283,8 @@ export class MemoryTableManager {
 			pendingLayer.markCommitted();
 			this._currentCommittedLayer = pendingLayer;
 			logger.debugLog(`[Commit ${connection.connectionId}] CurrentCommittedLayer set to ${pendingLayer.getLayerId()} for ${this._tableName}`);
+			// eslint-disable-next-line no-console
+			console.log(`[DBG MEM ${connection.connectionId}] commitTransaction table=${this._tableName} pendingLayerId=${pendingLayer.getLayerId()} changesCount=${changes.length}`);
 			connection.readLayer = pendingLayer;
 			connection.pendingTransactionLayer = null;
 			connection.clearSavepoints();

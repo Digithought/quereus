@@ -299,18 +299,27 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		// Statement-scope savepoint for non-FAIL modes (ABORT default, IGNORE, REPLACE,
 		// ROLLBACK). ABORT semantics require that a mid-statement constraint rejection
 		// unwinds rows the statement already inserted, including in autocommit mode
-		// where no explicit BEGIN exists. The savepoint broadcast reaches all
-		// registered virtual-table connections (e.g. lamina's `LaminaVTabConnection`),
-		// which mark their staging buffers on create and rewind on rollback. IGNORE /
-		// REPLACE don't normally throw, so the savepoint is a no-op there; ROLLBACK
-		// throws past this layer to roll back the whole transaction, so the inner
-		// rollback is a harmless cleanup.
+		// where no explicit BEGIN exists. IGNORE / REPLACE don't normally throw, so
+		// the savepoint is a no-op there; ROLLBACK throws past this layer to roll back
+		// the whole transaction, so the inner rollback is a harmless cleanup.
+		//
+		// Broadcasts mirror the SQL-level SAVEPOINT pattern in `runtime/emit/transaction.ts`:
+		// update `TransactionManager` and then fan out to every active connection's
+		// `createSavepoint(depth)` / `releaseSavepoint(depth)` / `rollbackToSavepoint(depth)`.
+		// Without the fan-out, modules that snapshot per-connection state (memory's
+		// `MemoryTableConnection.savepointStack`, lamina's `LaminaVTabConnection.savepointMarks`)
+		// see the statement-scope savepoint only via `Database.registerConnection`'s replay
+		// (depth-indexed). That offsets sibling user-level SAVEPOINTs by one in the
+		// per-connection stack — a subsequent `ROLLBACK TO sp1` then restores the wrong layer.
 		const wrapStatementSavepoint = !isFailMode;
 		const stmtSavepointName = wrapStatementSavepoint
 			? `__or_abort_${stmtSavepointCounter++}`
 			: undefined;
 		if (stmtSavepointName) {
-			await ctx.db._createSavepoint(stmtSavepointName);
+			const depth = ctx.db._createSavepoint(stmtSavepointName);
+			for (const connection of ctx.db.getAllConnections()) {
+				await connection.createSavepoint(depth);
+			}
 		}
 
 		try {
@@ -355,12 +364,25 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					}
 				}
 				if (stmtSavepointName) {
-					await ctx.db._releaseSavepoint(stmtSavepointName);
+					const depth = ctx.db._releaseSavepoint(stmtSavepointName);
+					for (const connection of ctx.db.getAllConnections()) {
+						await connection.releaseSavepoint(depth);
+					}
 				}
 			} catch (e) {
 				if (stmtSavepointName) {
-					try { await ctx.db._rollbackToSavepoint(stmtSavepointName); } catch { /* swallow */ }
-					try { await ctx.db._releaseSavepoint(stmtSavepointName); } catch { /* swallow */ }
+					try {
+						const depth = ctx.db._rollbackToSavepoint(stmtSavepointName);
+						for (const connection of ctx.db.getAllConnections()) {
+							await connection.rollbackToSavepoint(depth);
+						}
+					} catch { /* swallow */ }
+					try {
+						const depth = ctx.db._releaseSavepoint(stmtSavepointName);
+						for (const connection of ctx.db.getAllConnections()) {
+							await connection.releaseSavepoint(depth);
+						}
+					} catch { /* swallow */ }
 				}
 				throw e;
 			}
