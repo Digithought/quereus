@@ -132,6 +132,29 @@ select id, val from doubler order by id;
 drop table doubler;
 
 -- ===================================
+-- 7b. INSERT ... SELECT self-referential, mid-transaction (after prior writes)
+-- ===================================
+-- Same shape as section 7, but wrapped in BEGIN ... COMMIT with a seeding
+-- INSERT VALUES so the connection's pendingTransactionLayer is non-null when
+-- the self-ref INSERT runs. This exercises the eager savepoint-snapshot
+-- branch in MemoryTableConnection.createSavepoint: without the readLayer
+-- swap, the SELECT iterator and the INSERT mutate the same BTree and the
+-- new rows feed back into the SELECT (halloween), causing val*2 to keep
+-- doubling row by row until Number.isSafeInteger rejects it.
+
+create table doubler_tx (id integer primary key, val integer);
+
+begin;
+insert into doubler_tx values (1, 10), (2, 20);
+insert into doubler_tx (id, val) select id + 100, val * 2 from doubler_tx;
+commit;
+
+select id, val from doubler_tx order by id;
+→ [{"id":1,"val":10},{"id":2,"val":20},{"id":101,"val":20},{"id":102,"val":40}]
+
+drop table doubler_tx;
+
+-- ===================================
 -- 8. INSERT ... SELECT through a view of the target table
 -- ===================================
 

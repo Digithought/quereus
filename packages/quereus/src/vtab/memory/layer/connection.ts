@@ -1,8 +1,8 @@
 import type { Layer } from './interface.js';
-import { TransactionLayer } from './transaction.js';
+import type { TransactionLayer } from './transaction.js';
 import type { MemoryTableManager } from './manager.js';
 import { createLogger } from '../../../common/logger.js';
-import { StatusCode, type Row } from '../../../common/types.js';
+import { StatusCode } from '../../../common/types.js';
 import { quereusError } from '../../../common/errors.js';
 
 let connectionCounter = 0;
@@ -22,14 +22,25 @@ export class MemoryTableConnection {
 	public explicitTransaction: boolean = false; // Track if transaction was explicitly started
 
 	/**
-	 * Stack of savepoint snapshots, indexed by depth from TransactionManager.
-	 * A `null` entry marks a savepoint taken when no pending layer existed
-	 * yet (lazy-snapshot): rolling back to it restores the connection to the
-	 * no-pending-layer state instead of cloning an eagerly-created empty
-	 * layer. Avoiding the eager creation is essential to keep self-referential
-	 * INSERT...SELECT iterators reading from the immutable committed layer.
+	 * Stack of savepoint entries, indexed by depth from TransactionManager.
+	 *
+	 * Each slot stores:
+	 *   - `snapshot`: the immutable savepoint snapshot when a pending layer
+	 *     existed at savepoint time (eager path), or `null` if pending was
+	 *     null (lazy marker — no eager copy needed).
+	 *   - `readLayer`: the connection's readLayer at savepoint creation time,
+	 *     used to restore the read view when rolling back to a lazy marker
+	 *     that follows an outer eager-swap (otherwise the rollback would
+	 *     leave readLayer pointing at the inner snapshot's data).
+	 *
+	 * Eager path (snapshot != null): `createSavepoint` swaps `readLayer` to
+	 * the snapshot and clears `pendingTransactionLayer`, so the next mutation
+	 * allocates a fresh pending layer parented on the snapshot. This
+	 * preserves the "SELECT iterates an immutable layer while INSERT writes
+	 * a fresh child BTree" invariant, fixing mid-transaction halloween in
+	 * self-referential INSERT...SELECT.
 	 */
-	private savepointStack: Array<TransactionLayer | null> = [];
+	private savepointStack: Array<{ snapshot: TransactionLayer | null; readLayer: Layer }> = [];
 
 	constructor(manager: MemoryTableManager, initialReadLayer: Layer) {
 		this.connectionId = connectionCounter++;
@@ -55,29 +66,35 @@ export class MemoryTableConnection {
 
 	/** Commits the current transaction */
 	async commit(): Promise<void> {
-		if (!this.pendingTransactionLayer) {
-			// Commit without an active transaction is a no-op
-			return;
+		// If readLayer is a swapped savepoint snapshot (eager path), its data
+		// must be promoted into the committed chain on commit even when no
+		// further mutations created a new pending layer afterwards.
+		// commitTransaction handles the lazy pending-layer creation in that
+		// case.
+		if (this.pendingTransactionLayer
+			|| this.readLayer !== this.tableManager.currentCommittedLayer) {
+			await this.tableManager.commitTransaction(this);
+			// commitTransaction handles updating connection state (readLayer, pendingTransactionLayer)
 		}
-
-		await this.tableManager.commitTransaction(this);
-		// commitTransaction handles updating connection state (readLayer, pendingTransactionLayer)
+		// Always clear transaction state: DB-level commit broadcasts hit every
+		// connection regardless of whether it had work to do, and the connection
+		// must come out of explicit-transaction mode so subsequent autocommit
+		// statements work correctly.
 		this.clearTransactionState();
 	}
 
 	/** Rolls back the current transaction */
 	rollback(): void {
-		if (!this.pendingTransactionLayer) {
-			// Rollback without an active transaction is a no-op
-			return;
-		}
-
-		// Reset readLayer to the current committed layer
-		// Important: We need to ensure we're reading from a clean state
+		// Reset readLayer to the current committed layer; readLayer may have
+		// been swapped to a savepoint snapshot by createSavepoint's eager path.
 		this.readLayer = this.tableManager.currentCommittedLayer;
 
-		// Simply discard the pending layer
+		// Discard any pending layer
 		this.pendingTransactionLayer = null;
+		// Always clear transaction state: DB-level rollback broadcasts hit every
+		// connection regardless of whether it had work to do, and the connection
+		// must come out of explicit-transaction mode so subsequent autocommit
+		// statements work correctly.
 		this.clearTransactionState();
 
 		debugLog(`Connection %d: Rolled back transaction, readLayer reset to ${this.readLayer.getLayerId()}`,
@@ -96,14 +113,40 @@ export class MemoryTableConnection {
 			quereusError(`Invalid savepoint depth: ${depth}. Must be non-negative.`, StatusCode.INTERNAL);
 		}
 
-		// Lazy-snapshot: if no pending layer exists yet, push a null marker
-		// instead of eagerly creating one. The pending layer will be created
-		// on first mutation; rolling back to a null marker restores the
-		// no-pending state. See the comment on `savepointStack`.
-		const savepointLayer = this.pendingTransactionLayer
-			? this.createTransactionSnapshot(this.pendingTransactionLayer)
-			: null;
-		this.savepointStack.push(savepointLayer);
+		// Capture readLayer BEFORE any swap so rollback to a later lazy marker
+		// can restore the pre-swap view (see the comment on `savepointStack`).
+		const savedReadLayer = this.readLayer;
+
+		// Lazy-snapshot: if no pending layer exists yet, store a null snapshot
+		// marker instead of eagerly promoting. The pending layer will be created
+		// on first mutation; rolling back to a lazy marker restores the
+		// no-pending state with the saved readLayer.
+		//
+		// Eager-snapshot: promote the existing pending layer to immutable
+		// (markCommitted) and reuse it as the snapshot. Data-copying via a
+		// fresh layer doesn't survive "delete of inherited row" — the copy
+		// iterates the post-delete view (which already excludes the row),
+		// so a fresh layer would re-inherit the original entry from the
+		// parent BTree. Promoting the layer keeps the BTree's
+		// copy-on-write structure (with the cloned-and-spliced leaf)
+		// intact.
+		let snapshot: TransactionLayer | null = null;
+		if (this.pendingTransactionLayer) {
+			snapshot = this.pendingTransactionLayer;
+			snapshot.markCommitted();
+		}
+		this.savepointStack.push({ snapshot, readLayer: savedReadLayer });
+
+		// Eager-snapshot path: swap the immutable snapshot in as readLayer and
+		// drop the now-stale pending layer reference, so the next mutation
+		// allocates a fresh pending layer parented on the snapshot. This keeps
+		// SELECT iterators reading the snapshot's BTree while INSERTs mutate a
+		// different BTree (the new pending's copy-on-write child), matching
+		// the autocommit invariant for self-referential INSERT...SELECT.
+		if (snapshot) {
+			this.readLayer = snapshot;
+			this.pendingTransactionLayer = null;
+		}
 
 		// A SAVEPOINT implicitly puts the connection into explicit-transaction mode
 		// so that subsequent statements do NOT auto-commit and invalidate the savepoint.
@@ -111,55 +154,6 @@ export class MemoryTableConnection {
 
 		debugLog(`Connection %d: Created savepoint at depth %d (stack size: %d)`,
 			this.connectionId, depth, this.savepointStack.length);
-	}
-
-	/**
-	 * Creates a snapshot of a transaction layer by copying its effective data to a new independent layer.
-	 * This is necessary because BTree inheritance can cause shared mutable state issues.
-	 * The snapshot becomes immutable and independent of the source layer.
-	 */
-	private createTransactionSnapshot(sourceLayer: TransactionLayer): TransactionLayer {
-		// Create a new transaction layer based on the source layer's parent
-		// This ensures the snapshot is independent of the source layer
-		const snapshotLayer = new TransactionLayer(sourceLayer.getParent());
-
-		// Copy change tracking state
-		if (sourceLayer.isTrackingChanges()) {
-			snapshotLayer.copyChangeTrackingFrom(sourceLayer);
-		}
-
-		// Copy all data from the source layer to the snapshot
-		const primaryTree = sourceLayer.getModificationTree('primary');
-		if (!primaryTree) {
-			// Empty transaction layer - just return the empty snapshot
-			snapshotLayer.markCommitted();
-			return snapshotLayer;
-		}
-
-		const firstPath = primaryTree.first();
-		if (!firstPath.on) {
-			// No data in the tree - return the empty snapshot
-			snapshotLayer.markCommitted();
-			return snapshotLayer;
-		}
-
-		// Copy all rows from the source layer
-		const { primaryKeyExtractorFromRow } = sourceLayer.getPkExtractorsAndComparators(sourceLayer.getSchema());
-		for (const path of primaryTree.ascending(firstPath)) {
-			const row = primaryTree.at(path)!;
-			try {
-				// Extract primary key and record the row in the snapshot
-				const primaryKey = primaryKeyExtractorFromRow(row as Row);
-				snapshotLayer.recordUpsert(primaryKey, row as Row, null);
-			} catch (error) {
-				warnLog(`Connection %d: Failed to copy row to savepoint snapshot: %o`, this.connectionId, error);
-			}
-		}
-
-		// Mark the snapshot as committed to make it immutable
-		snapshotLayer.markCommitted();
-
-		return snapshotLayer;
 	}
 
 	/** Releases savepoints from the top of the stack down to the target depth (exclusive) */
@@ -191,21 +185,21 @@ export class MemoryTableConnection {
 			return;
 		}
 
-		const savepoint = this.savepointStack[targetDepth];
+		const entry = this.savepointStack[targetDepth];
 
-		if (savepoint === null) {
+		if (entry.snapshot === null) {
 			// Lazy-snapshot marker: at savepoint creation there was no pending
-			// layer, so rolling back restores that no-pending state.
+			// layer. Restore both readLayer (in case an outer eager-swap
+			// happened since) and clear pending.
+			this.readLayer = entry.readLayer;
 			this.pendingTransactionLayer = null;
 		} else {
-			// Create a fresh mutable layer that inherits from the savepoint's immutable snapshot.
-			// This allows further mutations after rollback.
-			this.pendingTransactionLayer = new TransactionLayer(savepoint);
-
-			// Enable change tracking if it was active on the snapshot
-			if (savepoint.isTrackingChanges()) {
-				this.pendingTransactionLayer.enableChangeTracking();
-			}
+			// Eager-snapshot path: createSavepoint swapped readLayer to the
+			// snapshot and dropped pendingTransactionLayer. Restore that exact
+			// state on rollback — the next mutation will lazily create a new
+			// pending layer parented on the snapshot.
+			this.readLayer = entry.snapshot;
+			this.pendingTransactionLayer = null;
 		}
 
 		// Remove savepoints above the target, but preserve the target itself

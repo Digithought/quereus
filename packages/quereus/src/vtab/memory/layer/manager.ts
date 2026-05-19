@@ -233,11 +233,68 @@ export class MemoryTableManager {
 			connection.clearSavepoints();
 			return;
 		}
-		const pendingLayer = connection.pendingTransactionLayer;
-		if (!pendingLayer) return;
 
-		// Capture changes before marking committed
-		const changes = pendingLayer.getPendingChanges();
+		// If pending is null but readLayer is a swapped savepoint snapshot
+		// AHEAD of the committed chain, wrap an empty pending around it so
+		// the snapshot's data lands in the committed chain. "Ahead" means
+		// readLayer's parent chain leads back to `_currentCommittedLayer`
+		// (i.e., the snapshot was forked off the current committed head).
+		// If readLayer is instead a stale ancestor (e.g., the connection was
+		// last seeing a TransactionLayer that has since been consolidated into
+		// `baseLayer` by ALTER TABLE) or carries an out-of-date schema, leave
+		// it alone — committing such a layer would supplant the schema-aware
+		// committed head with stale data.
+		if (!connection.pendingTransactionLayer
+			&& connection.readLayer !== this._currentCommittedLayer
+			&& connection.readLayer instanceof TransactionLayer
+			&& connection.readLayer.getSchema() === this.tableSchema) {
+			let walker: Layer | null = connection.readLayer.getParent();
+			let isAhead = false;
+			while (walker) {
+				if (walker === this._currentCommittedLayer) {
+					isAhead = true;
+					break;
+				}
+				walker = walker.getParent();
+			}
+			if (isAhead) {
+				connection.pendingTransactionLayer = new TransactionLayer(connection.readLayer);
+				if (this.eventEmitter?.hasDataListeners?.()) {
+					connection.pendingTransactionLayer.enableChangeTracking();
+				}
+			}
+		}
+
+		const pendingLayer = connection.pendingTransactionLayer;
+		if (!pendingLayer) {
+			// No pending — refresh readLayer to the current committed head so a
+			// stale ancestor (post-schema-change) doesn't leak into the next
+			// statement's view.
+			connection.readLayer = this._currentCommittedLayer;
+			return;
+		}
+
+		// Capture changes from pendingLayer and any ancestor TransactionLayers
+		// up to (but not including) the currentCommittedLayer. Ancestor layers
+		// in the chain are typically savepoint-promoted in-transaction layers
+		// whose pendingChanges were never emitted (they were never directly
+		// committed). Walking the chain ensures events from earlier writes
+		// in the same transaction aren't dropped just because a SAVEPOINT
+		// promotion swapped the pending layer mid-transaction.
+		const eventChunks: ReturnType<TransactionLayer['getPendingChanges']>[] = [];
+		{
+			let layer: Layer | null = pendingLayer;
+			while (layer && layer !== this._currentCommittedLayer) {
+				if (layer instanceof TransactionLayer) {
+					const events = layer.getPendingChanges();
+					if (events.length > 0) eventChunks.push(events);
+				}
+				layer = layer.getParent();
+			}
+		}
+		// Chunks are newest-layer-first; reverse to chronological order while
+		// preserving intra-layer event order.
+		const changes = eventChunks.reverse().flat();
 
 		const lockKey = `MemoryTable.Commit:${this.schemaName}.${this._tableName}`;
 		const release = await Latches.acquire(lockKey);
@@ -518,8 +575,15 @@ export class MemoryTableManager {
 
 	private ensureTransactionLayer(connection: MemoryTableConnection): void {
 		if (!connection.pendingTransactionLayer) {
-			// Lazily create a new TransactionLayer based on the current committed layer
-			connection.pendingTransactionLayer = new TransactionLayer(this._currentCommittedLayer);
+			// Lazily create a new TransactionLayer parented on the connection's
+			// current readLayer (not the manager's _currentCommittedLayer).
+			// In the clean autocommit case the two are identical. After an
+			// eager-snapshot savepoint, readLayer is the immutable snapshot
+			// containing all in-transaction writes up to that point, so the
+			// new pending inherits those rows and reads-your-own-writes still
+			// works, while SELECTs iterating the snapshot don't see the new
+			// pending's mutations.
+			connection.pendingTransactionLayer = new TransactionLayer(connection.readLayer);
 
 			// Enable change tracking if there are data listeners
 			if (this.eventEmitter?.hasDataListeners?.()) {
