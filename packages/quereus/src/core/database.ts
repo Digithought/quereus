@@ -53,7 +53,10 @@ import {
 } from './database-events.js';
 import { TransactionManager, type TransactionManagerContext } from './database-transaction.js';
 import { AssertionEvaluator, type AssertionEvaluatorContext } from './database-assertions.js';
-import type { VTableEventEmitter } from '../vtab/events.js';
+import { WatcherManager, type WatcherManagerContext } from './database-watchers.js';
+import type { ChangeScope, Subscription, WatchHandler } from '../planner/analysis/change-scope.js';
+import { tryGetEventEmitter } from '../vtab/events.js';
+import { Table } from './table-handle.js';
 
 const log = createLogger('core:database');
 const errorLog = log.extend('error');
@@ -71,22 +74,11 @@ function parseSchemaPath(pathString: string): string[] | undefined {
 	return parts.length > 0 ? parts : undefined;
 }
 
-/** Extract a VTableEventEmitter from a module if it supports one. */
-function tryGetEventEmitter(module: AnyVirtualTableModule): VTableEventEmitter | undefined {
-	const asSource = module as { getEventEmitter?: () => unknown };
-	if (typeof asSource.getEventEmitter !== 'function') return undefined;
-	const emitter = asSource.getEventEmitter();
-	if (!emitter || typeof emitter !== 'object') return undefined;
-	const typed = emitter as { onDataChange?: unknown; onSchemaChange?: unknown };
-	if (typeof typed.onDataChange !== 'function' && typeof typed.onSchemaChange !== 'function') return undefined;
-	return emitter as VTableEventEmitter;
-}
-
 /**
  * Represents a connection to an Quereus database (in-memory in this port).
  * Manages schema, prepared statements, virtual tables, and functions.
  */
-export class Database implements TransactionManagerContext, AssertionEvaluatorContext {
+export class Database implements TransactionManagerContext, AssertionEvaluatorContext, WatcherManagerContext {
 	public readonly schemaManager: SchemaManager;
 	public readonly declaredSchemaManager: DeclaredSchemaManager;
 	private isOpen = true;
@@ -109,6 +101,8 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	private readonly transactionManager: TransactionManager;
 	/** Assertion evaluation */
 	private readonly assertionEvaluator: AssertionEvaluator;
+	/** Post-commit watcher dispatch */
+	private readonly watcherManager: WatcherManager;
 	/** Per-database collation registry — comparator + optional key normalizer.
 	 *  The normalizer is required for index participation; comparator-only
 	 *  collations may still be used in ORDER BY but cannot back a compound index. */
@@ -139,6 +133,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		// Initialize transaction manager and assertion evaluator
 		this.transactionManager = new TransactionManager(this);
 		this.assertionEvaluator = new AssertionEvaluator(this);
+		this.watcherManager = new WatcherManager(this);
 
 		// Set up option change listeners
 		this.setupOptionListeners();
@@ -170,6 +165,23 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	/** Get changed PK tuples for a specific base table */
 	getChangedKeyTuples(base: string): SqlValue[][] {
 		return this.transactionManager.getChangedKeyTuples(base);
+	}
+
+	/**
+	 * Get changed value tuples projected onto `columnIndices` for a specific
+	 * base table. The columns must have been registered for capture via
+	 * `registerCaptureSpec` (PK columns are always captured implicitly).
+	 */
+	getChangedTuples(base: string, columnIndices: readonly number[], pkIndices: readonly number[]): SqlValue[][] {
+		return this.transactionManager.getChangedTuples(base, columnIndices, pkIndices);
+	}
+
+	/**
+	 * Register projection capture demand for a base table. Returns a dispose
+	 * handle that removes the spec when called.
+	 */
+	registerCaptureSpec(baseTable: string, spec: { extraColumns: ReadonlySet<number> }): () => void {
+		return this.transactionManager.registerCaptureSpec(baseTable, spec);
 	}
 
 	/** @internal Set up listeners for option changes */
@@ -778,6 +790,9 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		// Clean up assertion evaluator (unsubscribe schema change listener, clear plan cache)
 		this.assertionEvaluator.dispose();
 
+		// Clean up watcher manager (dispose all subscriptions + schema listener)
+		this.watcherManager.dispose();
+
 		// Clear schemas, ensuring VTabs are potentially disconnected
 		// This will also call destroy on VTabs via SchemaManager.clearAll -> schema.clearTables -> schemaManager.dropTable
 		this.schemaManager.clearAll();
@@ -1170,17 +1185,20 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		return this.transactionManager.isInCoordinatedCommit();
 	}
 
-	/** Public API used by DML emitters to record changes */
-	public _recordInsert(baseTable: string, newKey: SqlValue[]): void {
-		this.transactionManager.recordInsert(baseTable, newKey);
+	/** Public API used by DML emitters to record changes. The full row plus
+	 *  PK column indices are passed so the change capture can project the
+	 *  columns that any active DeltaExecutor subscription has registered
+	 *  demand for. */
+	public _recordInsert(baseTable: string, newRow: Row, pkIndices: readonly number[]): void {
+		this.transactionManager.recordInsert(baseTable, newRow, pkIndices);
 	}
 
-	public _recordDelete(baseTable: string, oldKey: SqlValue[]): void {
-		this.transactionManager.recordDelete(baseTable, oldKey);
+	public _recordDelete(baseTable: string, oldRow: Row, pkIndices: readonly number[]): void {
+		this.transactionManager.recordDelete(baseTable, oldRow, pkIndices);
 	}
 
-	public _recordUpdate(baseTable: string, oldKey: SqlValue[], newKey: SqlValue[]): void {
-		this.transactionManager.recordUpdate(baseTable, oldKey, newKey);
+	public _recordUpdate(baseTable: string, oldRow: Row, newRow: Row, pkIndices: readonly number[]): void {
+		this.transactionManager.recordUpdate(baseTable, oldRow, newRow, pkIndices);
 	}
 
 	/** Create a named savepoint, returning its depth index */
@@ -1362,6 +1380,46 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		return this.schemaManager.findTable(tableName, dbName);
 	}
 
+	/**
+	 * Returns a public handle to a table for inspection and per-table event
+	 * subscription. Returns `undefined` if the table does not exist or its
+	 * owning module is not registered.
+	 *
+	 * The returned {@link Table} is a snapshot: its `schema` reference is
+	 * frozen at acquisition time. If the table is dropped or recreated, the
+	 * handle keeps the original schema, but no further events for that name
+	 * will arrive. Re-acquire after schema changes if you need fresh state.
+	 *
+	 * After {@link Database.close}, the handle's event emitter reference
+	 * remains valid (the module instance outlives the database) but the
+	 * database-level aggregator is unhooked, so local subscriptions on the
+	 * module emitter still fire only as long as the module itself remains
+	 * active.
+	 *
+	 * @param schemaName The schema name ('main', 'temp', or an attached
+	 *   schema). Pass `undefined` to use the current default schema.
+	 * @param tableName  The table name (case-insensitive resolution).
+	 *
+	 * @example
+	 * ```typescript
+	 * const table = db.getTable('main', 'users');
+	 * const tableEmitter = table?.getEventEmitter();
+	 * const off = tableEmitter?.onDataChange?.((event) => {
+	 *   if (event.tableName === 'users') console.log(event);
+	 * });
+	 * ```
+	 */
+	getTable(schemaName: string | undefined, tableName: string): Table | undefined {
+		this.checkOpen();
+		const tableSchema = this.schemaManager.getTable(schemaName, tableName);
+		if (!tableSchema) return undefined;
+		const moduleName = tableSchema.vtabModuleName;
+		if (!moduleName) return undefined;
+		const moduleInfo = this.schemaManager.getModule(moduleName);
+		if (!moduleInfo) return undefined;
+		return new Table(tableSchema, moduleName, moduleInfo.module);
+	}
+
 	/** @internal */
 	_findFunction(funcName: string, nArg: number): FunctionSchema | undefined {
 		return this.schemaManager.findFunction(funcName, nArg);
@@ -1419,6 +1477,21 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 			} catch (error) {
 				errorLog(`Error starting transaction on newly registered connection ${connection.connectionId}: %O`, error);
 				// Don't throw here - just log the error to avoid breaking connection registration
+			}
+
+			// Replay the active savepoint stack onto this connection so subsequent
+			// release/rollback-to broadcasts targeting earlier depths are in-range.
+			// Without this, modules that register connections lazily (memory, isolation,
+			// any vtab whose connection appears on first read/write) see an empty stack
+			// while the DB broadcasts depths > 0 — silently no-op'ing on a real depth.
+			const activeDepth = this.transactionManager.getActiveSavepointDepth();
+			for (let depth = 0; depth < activeDepth; depth++) {
+				try {
+					await connection.createSavepoint(depth);
+				} catch (error) {
+					errorLog(`Error replaying savepoint depth ${depth} on newly registered connection ${connection.connectionId}: %O`, error);
+					// Continue replaying remaining depths — see comment above on registration robustness.
+				}
 			}
 		} else if (this.transactionManager.isEvaluatingDeferredConstraints()) {
 			log(`Skipped transaction begin on connection ${connection.connectionId} (evaluating deferred constraints)`);
@@ -1516,6 +1589,38 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 
 	public async runGlobalAssertions(): Promise<void> {
 		await this.assertionEvaluator.runGlobalAssertions();
+	}
+
+	/**
+	 * Subscribe to changes described by a {@link ChangeScope}.
+	 *
+	 * The watcher fires its handler **after** a transaction commits (mirrors
+	 * assertion COMMIT eval), once per commit, with all matching watches in
+	 * a single {@link WatchEvent}. Handler errors are caught and logged —
+	 * they do not roll the commit back (assertions own that contract).
+	 *
+	 * Validation is synchronous:
+	 * - Throws if `scope.unboundParameters` is non-empty (caller must
+	 *   `bindParameters(scope, params)` first).
+	 * - Throws if any referenced table or column does not exist in the
+	 *   current schema.
+	 *
+	 * If the table or any column the scope mentions is later dropped or
+	 * altered, the subscription is **invalidated and disposed**; re-subscribe
+	 * to continue watching.
+	 *
+	 * @returns A {@link Subscription} handle whose `unsubscribe()` is
+	 *   idempotent and releases capture-spec demand.
+	 */
+	watch(scope: ChangeScope, handler: WatchHandler): Subscription {
+		this.checkOpen();
+		return this.watcherManager.watch(scope, handler);
+	}
+
+	/** @internal Invoked by the TransactionManager after a successful commit
+	 *  and before the change log is cleared. */
+	public async runPostCommitWatchers(): Promise<void> {
+		await this.watcherManager.runPostCommit();
 	}
 
 	/** @internal Invalidate cached assertion plan (called on DROP ASSERTION) */

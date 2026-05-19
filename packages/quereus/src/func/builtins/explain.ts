@@ -98,7 +98,13 @@ export const queryPlanFunc = createIntegratedTableValuedFunction(
 			],
 			keys: [],
 			rowConstraints: []
-		}
+		},
+		relationalAdvertisement: {
+			isSet: true,
+			// `id` (column 0) is the assigned nodeId and is unique per plan node.
+			keys: [[{ index: 0 }]],
+			deterministic: true,
+		},
 	},
 	async function* (db: Database, sql: SqlValue): AsyncIterable<Row> {
 		if (typeof sql !== 'string') {
@@ -769,20 +775,27 @@ export const explainAssertionFunc = createIntegratedTableValuedFunction(
 		const plan = buildBlock(ctx, [ast]);
 		const analyzed = db.optimizer.optimizeForAnalysis(plan, db) as unknown as RelationalPlanNode;
 
-		// Classify row/global per relationKey
-		const classifications = analyzeRowSpecific(analyzed);
+		// Classify each table reference as row/group/global.
+		const { classifications, groupKeys } = analyzeRowSpecific(analyzed);
 
 		for (const [relationKey, cls] of classifications) {
 			const base = `${relationKey.split('#')[0]}`;
 			let prepared: string | null = null;
-			if (cls === 'row' && base) {
-				// Prepared parameters are PK-based: ["pk0", "pk1", ...]
+			if (base) {
 				const [schemaName, tableName] = base.split('.');
 				const table = db._findTable(tableName, schemaName);
 				if (table) {
-					const pkCount = table.primaryKeyDefinition.length;
-					const names = Array.from({ length: pkCount }, (_, i) => `pk${i}`);
-					prepared = JSON.stringify(names);
+					if (cls === 'row') {
+						// Prepared parameters are PK-based: ["pk0", "pk1", ...]
+						const pkCount = table.primaryKeyDefinition.length;
+						const names = Array.from({ length: pkCount }, (_, i) => `pk${i}`);
+						prepared = JSON.stringify(names);
+					} else if (cls === 'group') {
+						// Prepared parameters are the group key column names on this table.
+						const cols = groupKeys.get(relationKey) ?? [];
+						const names = cols.map(idx => table.columns[idx]?.name ?? `col${idx}`);
+						prepared = JSON.stringify(names);
+					}
 				}
 			}
 

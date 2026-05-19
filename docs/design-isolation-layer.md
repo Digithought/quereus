@@ -380,9 +380,15 @@ entry at that key:
 For each declared non-PK UNIQUE constraint:
 
 - Skip if the new row is null on any constrained column (SQL NULL semantics).
+- For partial UNIQUE (`create unique index ... where <predicate>`), skip the
+  whole check when the new row's predicate does not unambiguously evaluate to
+  TRUE — the row is outside the index's scope and contributes nothing to
+  uniqueness. Predicate compilation is memoized per `UniqueConstraintSchema`
+  identity via a `WeakMap`, so the hot write path doesn't recompile.
 - Scan the underlying table for a row matching on all constrained columns,
   excluding the writer's own PK(s) and any PK currently tombstoned in the
-  overlay.
+  overlay. For partial UNIQUE, candidates whose row does not satisfy the
+  predicate are also skipped.
 - ABORT returns the constraint result; IGNORE no-ops; REPLACE writes a
   tombstone for the conflicting underlying PK so the row is evicted at flush,
   then continues.

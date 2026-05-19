@@ -14,7 +14,15 @@ import { hasNativeEventSupport } from '../../util/event-support.js';
 import { sqlValuesEqual } from '../../util/comparison.js';
 import { withAsyncRowContext } from '../context-helpers.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
-import { executeForeignKeyActions, assertNoRestrictedChildrenForParentMutation } from '../foreign-key-actions.js';
+import { executeForeignKeyActions, assertTransitiveRestrictsForParentMutation } from '../foreign-key-actions.js';
+
+/**
+ * Module-scope counter producing unique statement-savepoint names across
+ * concurrent emissions. Names must be unique within the TransactionManager's
+ * savepoint stack; per-runInsert counters would collide for nested mutations
+ * (e.g. FK cascade during the parent insert).
+ */
+let stmtSavepointCounter = 0;
 
 /**
  * Runtime UPSERT clause with pre-resolved evaluator callbacks.
@@ -291,45 +299,87 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		const isFailMode = plan.onConflict === ConflictResolution.FAIL;
 		let failSavepointCounter = 0;
 
+		// For non-FAIL modes (ABORT default / IGNORE / REPLACE / ROLLBACK) we wrap
+		// the whole statement in a savepoint so a mid-statement constraint failure
+		// unwinds partial writes from earlier rows. Mirrors the broadcast pattern
+		// used in runtime/emit/transaction.ts — we must create/release/rollback
+		// on every active connection so per-connection savepoint stacks stay in
+		// lockstep with the TransactionManager's stack (otherwise an outer
+		// user-level SAVEPOINT could index into a stale placeholder).
+		const wrapStatementSavepoint = !isFailMode;
+		const stmtSavepointName = wrapStatementSavepoint
+			? `__or_abort_${stmtSavepointCounter++}`
+			: undefined;
+		if (stmtSavepointName) {
+			const depth = ctx.db._createSavepoint(stmtSavepointName);
+			for (const connection of ctx.db.getAllConnections()) {
+				await connection.createSavepoint(depth);
+			}
+		}
+
 		try {
-			for await (const flatRow of rows) {
-				let savepointName: string | undefined;
-				if (isFailMode) {
-					savepointName = `__or_fail_${failSavepointCounter++}`;
-					await ctx.db._createSavepoint(savepointName);
-				}
-
-				let rowToYield: Row | undefined;
-				let succeeded = false;
-				try {
-					rowToYield = await processInsertRow(
-						ctx,
-						vtab,
-						needsAutoEvents,
-						flatRow,
-						contextRow,
-						runtimeUpsertClauses,
-						upsertEvaluators,
-					);
-					succeeded = true;
-				} catch (e) {
-					if (savepointName) {
-						try { await ctx.db._rollbackToSavepoint(savepointName); } catch { /* swallow */ }
-						try { await ctx.db._releaseSavepoint(savepointName); } catch { /* swallow */ }
-						savepointName = undefined;
+			try {
+				for await (const flatRow of rows) {
+					let savepointName: string | undefined;
+					if (isFailMode) {
+						savepointName = `__or_fail_${failSavepointCounter++}`;
+						await ctx.db._createSavepoint(savepointName);
 					}
-					// Translate plain constraint violations to FAIL/ROLLBACK error subclasses
-					// so the iterator-level cleanup picks the right finalization branch.
-					throw translateConflictError(e, plan.onConflict);
-				}
 
-				if (succeeded && savepointName) {
-					await ctx.db._releaseSavepoint(savepointName);
-				}
+					let rowToYield: Row | undefined;
+					let succeeded = false;
+					try {
+						rowToYield = await processInsertRow(
+							ctx,
+							vtab,
+							needsAutoEvents,
+							flatRow,
+							contextRow,
+							runtimeUpsertClauses,
+							upsertEvaluators,
+						);
+						succeeded = true;
+					} catch (e) {
+						if (savepointName) {
+							try { await ctx.db._rollbackToSavepoint(savepointName); } catch { /* swallow */ }
+							try { await ctx.db._releaseSavepoint(savepointName); } catch { /* swallow */ }
+							savepointName = undefined;
+						}
+						// Translate plain constraint violations to FAIL/ROLLBACK error subclasses
+						// so the iterator-level cleanup picks the right finalization branch.
+						throw translateConflictError(e, plan.onConflict);
+					}
 
-				if (rowToYield !== undefined) {
-					yield rowToYield;
+					if (succeeded && savepointName) {
+						await ctx.db._releaseSavepoint(savepointName);
+					}
+
+					if (rowToYield !== undefined) {
+						yield rowToYield;
+					}
 				}
+				if (stmtSavepointName) {
+					const depth = ctx.db._releaseSavepoint(stmtSavepointName);
+					for (const connection of ctx.db.getAllConnections()) {
+						await connection.releaseSavepoint(depth);
+					}
+				}
+			} catch (e) {
+				if (stmtSavepointName) {
+					try {
+						const depth = ctx.db._rollbackToSavepoint(stmtSavepointName);
+						for (const connection of ctx.db.getAllConnections()) {
+							await connection.rollbackToSavepoint(depth);
+						}
+					} catch { /* swallow */ }
+					try {
+						const depth = ctx.db._releaseSavepoint(stmtSavepointName);
+						for (const connection of ctx.db.getAllConnections()) {
+							await connection.releaseSavepoint(depth);
+						}
+					} catch { /* swallow */ }
+				}
+				throw e;
 			}
 		} finally {
 			await disconnectVTable(ctx, vtab);
@@ -385,11 +435,11 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					if (!updateResult) return undefined;
 
 					const existingKeyValues = pkColumnIndicesInSchema.map(idx => result.existingRow![idx]);
-					const newKeyValues = pkColumnIndicesInSchema.map(idx => updateResult.updatedRow[idx]);
 					ctx.db._recordUpdate(
 						`${tableSchema.schemaName}.${tableSchema.name}`,
-						existingKeyValues,
-						newKeyValues
+						result.existingRow!,
+						updateResult.updatedRow,
+						pkColumnIndicesInSchema,
 					);
 					await executeForeignKeyActions(ctx.db, tableSchema, 'update', result.existingRow!, updateResult.updatedRow);
 
@@ -423,9 +473,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		const replacedRow = result.replacedRow;
 
 		if (replacedRow) {
-			const existingKeyValues = pkColumnIndicesInSchema.map(idx => replacedRow[idx]);
 			const newKeyValues = pkColumnIndicesInSchema.map(idx => newRow[idx]);
-			ctx.db._recordUpdate(tableKey, existingKeyValues, newKeyValues);
+			ctx.db._recordUpdate(tableKey, replacedRow, newRow, pkColumnIndicesInSchema);
 			await executeForeignKeyActions(ctx.db, tableSchema, 'delete', replacedRow);
 
 			if (needsAutoEvents) {
@@ -438,8 +487,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 				emitAutoDataEvent(ctx, tableSchema, 'update', newKeyValues, [...replacedRow], [...newRow], changedColumns);
 			}
 		} else {
-			const pkValues = tableSchema.primaryKeyDefinition.map(def => newRow[def.index]);
-			ctx.db._recordInsert(tableKey, pkValues);
+			const pkValues = pkColumnIndicesInSchema.map(idx => newRow[idx]);
+			ctx.db._recordInsert(tableKey, newRow, pkColumnIndicesInSchema);
 
 			if (needsAutoEvents) {
 				emitAutoDataEvent(ctx, tableSchema, 'insert', pkValues, undefined, [...newRow]);
@@ -488,16 +537,21 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 
 				// Defense-in-depth RESTRICT enforcement: the plan-time `NOT EXISTS`
 				// check is the primary path, but some vtab modules evaluate the
-				// embedded subquery differently from a plain row scan. Re-run the
-				// check via a direct `select` so any backend sees a consistent
-				// enforcement path.
-				await assertNoRestrictedChildrenForParentMutation(ctx.db, tableSchema, 'update', oldRow, newRow);
+				// embedded subquery differently from a plain row scan. Pre-walk
+				// the transitive cascade closure so RESTRICTs at any depth fire
+				// BEFORE vtab.update — needed for rowid-mode backends (lamina)
+				// where post-mutation OLD-value scans dereference through the
+				// just-mutated parent and find zero rows.
+				await assertTransitiveRestrictsForParentMutation(ctx.db, tableSchema, 'update', oldRow, newRow);
 
 				const args: UpdateArgs = {
 					operation: 'update',
 					values: newRow,
 					oldKeyValues: keyValues,
-					onConflict: plan.onConflict ?? ConflictResolution.ABORT,
+					// Pass undefined when there's no statement-level OR clause so the vtab
+					// can fall back to per-constraint defaultConflict directives. The memory
+					// module treats undefined as ABORT when no constraint default is set.
+					onConflict: plan.onConflict,
 					mutationStatement
 				};
 
@@ -514,9 +568,35 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					continue;
 				}
 
-				// Track change (UPDATE): record OLD and NEW primary keys
-				const newKeyValues: SqlValue[] = tableSchema.primaryKeyDefinition.map(pkColDef => newRow[pkColDef.index]);
-				ctx.db._recordUpdate(`${tableSchema.schemaName}.${tableSchema.name}`, keyValues, newKeyValues);
+				// If the UPDATE moved this row onto an occupied PK under REPLACE,
+				// the vtab returns the displaced row. Surface its deletion BEFORE
+				// the move bookkeeping so change tracking, FK cascade, and auto-events
+				// see the same evict-then-move sequence the vtab journals (manager.ts
+				// records delete(newPk, evicted) before the move). Running the
+				// eviction's FK cascade first also avoids ON UPDATE CASCADE pulling
+				// children onto PK_new and then having an unrelated ON DELETE CASCADE
+				// for the evicted row wipe them out.
+				if (result.replacedRow) {
+					const evictedKeyValues = pkColumnIndicesInSchema.map(idx => result.replacedRow![idx]);
+					ctx.db._recordDelete(
+						`${tableSchema.schemaName}.${tableSchema.name}`,
+						result.replacedRow,
+						pkColumnIndicesInSchema,
+					);
+					await executeForeignKeyActions(ctx.db, tableSchema, 'delete', result.replacedRow);
+					if (needsAutoEvents) {
+						emitAutoDataEvent(ctx, tableSchema, 'delete', evictedKeyValues, [...result.replacedRow]);
+					}
+				}
+
+				// Track change (UPDATE): pass full rows so the change capture can
+				// project the columns any active subscription cares about.
+				ctx.db._recordUpdate(
+					`${tableSchema.schemaName}.${tableSchema.name}`,
+					oldRow,
+					newRow,
+					pkColumnIndicesInSchema,
+				);
 
 				// Execute FK cascading actions (CASCADE, SET NULL, SET DEFAULT)
 				await executeForeignKeyActions(ctx.db, tableSchema, 'update', oldRow, newRow);
@@ -579,7 +659,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 
 				// Defense-in-depth RESTRICT enforcement — see comment on the UPDATE
 				// path above.
-				await assertNoRestrictedChildrenForParentMutation(ctx.db, tableSchema, 'delete', oldRow);
+				await assertTransitiveRestrictsForParentMutation(ctx.db, tableSchema, 'delete', oldRow);
 
 				const args: UpdateArgs = {
 					operation: 'delete',
@@ -602,8 +682,13 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					continue;
 				}
 
-				// Track change (DELETE): record OLD primary key
-				ctx.db._recordDelete(`${tableSchema.schemaName}.${tableSchema.name}`, keyValues);
+				// Track change (DELETE): record OLD row + PK indices so capture
+				// can project the columns subscribers care about.
+				ctx.db._recordDelete(
+					`${tableSchema.schemaName}.${tableSchema.name}`,
+					oldRow,
+					pkColumnIndicesInSchema,
+				);
 
 				// Execute FK cascading actions (CASCADE, SET NULL, SET DEFAULT)
 				await executeForeignKeyActions(ctx.db, tableSchema, 'delete', oldRow);

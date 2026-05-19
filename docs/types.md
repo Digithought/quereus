@@ -70,6 +70,16 @@ export interface LogicalType {
   isNumeric?: boolean;
   isTextual?: boolean;
   isTemporal?: boolean;
+
+  // Sargable-range support (optional)
+  // For monotone-but-lossy transforms (e.g. `date(ts) = D`), compute the
+  // half-open range `[lowerInclusive, upperExclusive)` on the input value.
+  // `kind` is named by the function schema's `rangeRewriteOnArg` trait;
+  // see docs/optimizer.md § "Sargable range rewrites".
+  bucketBounds?(
+    kind: string,
+    value: SqlValue,
+  ): { lowerInclusive: SqlValue; upperExclusive: SqlValue } | undefined;
 }
 ```
 

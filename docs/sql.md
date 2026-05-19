@@ -1129,7 +1129,7 @@ Renames a table. The old name becomes invalid immediately. Fails if the new name
 ALTER TABLE table_name RENAME COLUMN old_col TO new_col;
 ```
 
-Renames a column. Data is preserved. Fails if the new name conflicts with an existing column or the old name doesn't exist. As with `RENAME TABLE`, references in CHECK expressions, FOREIGN KEY `referencedColumnNames`, and view bodies are propagated. Unqualified column references inside dependent SELECTs are rewritten when the renamed table is in the unaliased FROM scope.
+Renames a column. Data is preserved. Fails if the new name conflicts with an existing column or the old name doesn't exist. As with `RENAME TABLE`, references in CHECK expressions, FOREIGN KEY `referencedColumnNames`, and view bodies are propagated. Inside dependent SELECTs the rewrite follows scope: unqualified column references resolve when the renamed table (or a CTE that re-exposes the renamed column under the same name) is in the unaliased FROM scope; qualified references resolve via the alias map. A CTE re-exposes the renamed column when it has no explicit column list (`with c as ...` not `with c(x) as ...`) and at least one result column is a passthrough of the renamed column (an unaliased `select k`, `t.k`, or `select *` from the renamed table).
 
 **ADD COLUMN**
 

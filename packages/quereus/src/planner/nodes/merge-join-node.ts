@@ -8,8 +8,8 @@ import { quereusError } from '../../common/errors.js';
 import type { JoinCapable, PredicateSourceCapable } from '../framework/characteristics.js';
 import { mergeJoinCost } from '../cost/index.js';
 import type { JoinType } from './join-node.js';
-import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, propagateJoinMonotonicOn, type EquiJoinPair } from './join-utils.js';
-import { analyzeJoinKeyCoverage } from '../util/key-utils.js';
+import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, propagateJoinMonotonicOn, propagateJoinFds, type EquiJoinPair } from './join-utils.js';
+import { analyzeJoinKeyCoverage, combineJoinKeys } from '../util/key-utils.js';
 
 /**
  * Physical plan node implementing a merge join.
@@ -60,7 +60,16 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	}
 
 	getType(): RelationType {
-		return buildJoinRelationType(this.left.getType(), this.right.getType(), this.joinType, []);
+		const leftType = this.left.getType();
+		const rightType = this.right.getType();
+		const leftAttrs = this.left.getAttributes();
+		const rightAttrs = this.right.getAttributes();
+		const indexPairs = this.equiPairs.map(p => ({
+			left: leftAttrs.findIndex(a => a.id === p.leftAttrId),
+			right: rightAttrs.findIndex(a => a.id === p.rightAttrId),
+		})).filter(p => p.left >= 0 && p.right >= 0);
+		const keys = combineJoinKeys(leftType.keys, rightType.keys, this.joinType, leftType.columns.length, indexPairs);
+		return buildJoinRelationType(leftType, rightType, this.joinType, keys);
 	}
 
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
@@ -87,13 +96,22 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			? leftPhys.ordering
 			: undefined;
 
+		const totalCols = this.getAttributes().length;
+		const fdResult = propagateJoinFds(
+			this.joinType, leftPhys, rightPhys, indexPairs,
+			leftAttrs.length, totalCols, result.preservedKeys,
+		);
+
 		return {
 			ordering,
-			uniqueKeys: result.uniqueKeys,
 			estimatedRows: result.estimatedRows,
 			// MergeJoin physically guarantees monotonicOn on equi-pair attrIds when both
 			// inputs were monotonic on their respective X (the merge join's whole point).
 			monotonicOn: propagateJoinMonotonicOn(this.joinType, leftPhys, rightPhys, this.equiPairs),
+			fds: fdResult.fds,
+			equivClasses: fdResult.equivClasses,
+			constantBindings: fdResult.constantBindings,
+			domainConstraints: fdResult.domainConstraints,
 		};
 	}
 
@@ -160,7 +178,7 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
-		const attrs: Record<string, unknown> = {
+		return {
 			joinType: this.joinType,
 			algorithm: 'merge',
 			equiPairs: this.equiPairs.map(p => ({ left: p.leftAttrId, right: p.rightAttrId })),
@@ -168,9 +186,5 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 			leftRows: this.left.estimatedRows,
 			rightRows: this.right.estimatedRows,
 		};
-		if (this.physical?.uniqueKeys) {
-			attrs.uniqueKeys = this.physical.uniqueKeys;
-		}
-		return attrs;
 	}
 }

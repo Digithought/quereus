@@ -8,6 +8,7 @@ import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { ColumnReferenceNode } from './reference.js';
 import { COST_CONSTANTS } from '../cost/index.js';
+import { propagateAggregateFds } from './aggregate-node.js';
 
 /**
  * Physical node representing a hash-based aggregate operation.
@@ -175,16 +176,25 @@ export class HashAggregateNode extends PlanNode implements UnaryRelationalNode {
 		}
 	}
 
-	computePhysical(_childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		const sourcePhysical = childrenPhysical[0];
+		const { fds, equivClasses, constantBindings, domainConstraints } = propagateAggregateFds(
+			this.source.getAttributes(),
+			this.groupBy,
+			sourcePhysical,
+			this.getAttributes().length,
+		);
+
 		return {
 			estimatedRows: this.estimatedRows,
 			// Hash aggregate does NOT preserve input ordering
 			ordering: undefined,
-			uniqueKeys: this.groupBy.length > 0 ?
-				[this.groupBy.map((_, idx) => idx)] :
-				[[]],
 			// Aggregation boundary: drop monotonicOn (the grouped relation is a set).
 			monotonicOn: undefined,
+			fds,
+			equivClasses,
+			constantBindings,
+			domainConstraints,
 		};
 	}
 
@@ -222,8 +232,6 @@ export class HashAggregateNode extends PlanNode implements UnaryRelationalNode {
 			}));
 		}
 
-		const groupCount = this.groupBy.length;
-		props.uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
 		return props;
 	}
 

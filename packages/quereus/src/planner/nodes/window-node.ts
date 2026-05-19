@@ -8,6 +8,7 @@ import type * as AST from '../../parser/ast.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { ColumnReferenceNode } from './reference.js';
+import { isAssertedKey } from '../util/fd-utils.js';
 
 export interface WindowSpec {
 	partitionBy: AST.Expression[];
@@ -261,9 +262,7 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 					const leadIdx = sourceAttrs.findIndex(a => a.id === leadAttrId);
 					if (leadIdx >= 0) {
 						const direction = this.windowSpec.orderBy[0]?.direction === 'desc' ? 'desc' : 'asc';
-						const strict = (sourcePhysical?.uniqueKeys ?? []).some(
-							key => key.length === 1 && key[0] === leadIdx,
-						);
+						const strict = isAssertedKey(new Set([leadIdx]), sourcePhysical?.fds, sourceAttrs.length);
 						monotonicOn = [{ attrId: leadAttrId, direction, strict }];
 					}
 				}
@@ -273,8 +272,14 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 		return {
 			estimatedRows: this.estimatedRows,
 			ordering: sourcePhysical?.ordering,
-			uniqueKeys: sourcePhysical?.uniqueKeys,
 			monotonicOn,
+			// Window functions append columns but don't change the source row stream;
+			// FDs, equivalence classes, and constant bindings pass through on the
+			// source columns. (Window output columns are not in any new FDs — deferred.)
+			fds: sourcePhysical?.fds,
+			equivClasses: sourcePhysical?.equivClasses,
+			constantBindings: sourcePhysical?.constantBindings,
+			domainConstraints: sourcePhysical?.domainConstraints,
 		};
 	}
 

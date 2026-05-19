@@ -43,6 +43,7 @@ export enum PlanNodeType {
   IndexScan = 'IndexScan',          // Physical index scan
   IndexSeek = 'IndexSeek',          // Physical index seek
   EmptyResult = 'EmptyResult',      // Physical empty result (impossible predicate)
+  EmptyRelation = 'EmptyRelation',  // Schema-polymorphic zero-row relation (const-fold result)
   RemoteQuery = 'RemoteQuery',      // Physical remote query execution
   StreamAggregate = 'StreamAggregate',  // Physical ordered aggregate
   HashAggregate = 'HashAggregate',      // Physical hash aggregate

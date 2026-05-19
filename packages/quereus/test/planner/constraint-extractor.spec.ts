@@ -878,6 +878,42 @@ describe('Constraint Extractor — Mutation Killing Tests', () => {
 			);
 			expect(result).to.deep.equal([[0]]);
 		});
+
+		// Regression: a correlated equality (`col = <outer-col-ref>`) is not
+		// a unique-key cover for delta-binding purposes — the RHS varies per
+		// outer row. The binding extractor must skip it so the relation is
+		// classified `'global'` (not `'row'`), preventing false-positive
+		// NOT-EXISTS violations downstream. Tracked via
+		// `lamina-quereus-assertion-residual-correlated-binding`.
+		it('correlated equality (bindingKind: "correlated") does NOT cover', () => {
+			const c = makeConstraint('=', 0);
+			c.bindingKind = 'correlated';
+			const result = computeCoveredKeysForConstraints([c], [[0]]);
+			expect(result).to.deep.equal([]);
+		});
+
+		it('literal equality still covers (bindingKind: "literal")', () => {
+			const c = makeConstraint('=', 0);
+			c.bindingKind = 'literal';
+			const result = computeCoveredKeysForConstraints([c], [[0]]);
+			expect(result).to.deep.equal([[0]]);
+		});
+
+		it('parameter equality still covers (bindingKind: "parameter")', () => {
+			const c = makeConstraint('=', 0);
+			c.bindingKind = 'parameter';
+			const result = computeCoveredKeysForConstraints([c], [[0]]);
+			expect(result).to.deep.equal([[0]]);
+		});
+
+		it('mixed-key composite: literal on one column + correlated on the other does NOT cover', () => {
+			const c0 = makeConstraint('=', 0);
+			c0.bindingKind = 'literal';
+			const c1 = makeConstraint('=', 1);
+			c1.bindingKind = 'correlated';
+			const result = computeCoveredKeysForConstraints([c0, c1], [[0, 1]]);
+			expect(result).to.deep.equal([]);
+		});
 	});
 
 	// ===================================================================

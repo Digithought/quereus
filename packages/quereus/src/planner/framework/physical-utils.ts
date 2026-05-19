@@ -166,50 +166,6 @@ export function reverseOrdering(ordering: Ordering[]): Ordering[] {
 }
 
 /**
- * Check if unique keys guarantee distinctness for given columns
- */
-export function uniqueKeysImplyDistinct(
-	uniqueKeys: number[][],
-	projectedColumns: number[]
-): boolean {
-	// Check if any unique key is a subset of projected columns
-	return uniqueKeys.some(key =>
-		key.every(col => projectedColumns.includes(col))
-	);
-}
-
-/**
- * Project unique keys through a projection
- * Returns keys that are still unique after projection
- */
-export function projectUniqueKeys(
-	uniqueKeys: number[][],
-	columnMapping: Map<number, number> // oldColumn -> newColumn
-): number[][] {
-	const result: number[][] = [];
-
-	for (const key of uniqueKeys) {
-		const projectedKey: number[] = [];
-		let keyIsValid = true;
-
-		for (const col of key) {
-			const newCol = columnMapping.get(col);
-			if (newCol === undefined) {
-				keyIsValid = false;
-				break; // Key column not in projection
-			}
-			projectedKey.push(newCol);
-		}
-
-		if (keyIsValid) {
-			result.push(projectedKey);
-		}
-	}
-
-	return result;
-}
-
-/**
  * Project ordering through a projection
  * Returns undefined if any ordering column is removed by the projection
  */

@@ -118,7 +118,7 @@ interface OptimizationPass {
 - **Proper Sequencing**: Structural transformations happen before physical selection
 - **Flexible Traversal**: Each pass can choose its optimal traversal order
 - **Clean Debugging**: Clear pass boundaries make optimization easier to understand
-- **Depth safety**: Traversal enforces `tuning.maxOptimizationDepth` to prevent pathological recursion
+- **Depth safety**: Each pass enforces a per-pass depth budget of `max(tuning.maxOptimizationDepth, planInputDepth + tuning.optimizationDepthHeadroom)` so wide input shapes (deep AND chains, deep CASE) plan without tripping the guard, while a separate `tuning.maxRulesFired` budget catches runaway rule rewrites independent of input shape.
 
 ### Core Components
 
@@ -301,7 +301,78 @@ The base class returns conservative defaults (`{ injective: false }` / `{ monoto
 
 The function-call traits compose with the operand's own `monotonicityIn` / `isInjectiveIn`, so `f(g(x))` is treated correctly when both layers are annotated. `rangeRewriteIn` is intentionally tighter: it only rewrites the `f(x) op c` case, requiring the operand to be a bare `ColumnReferenceNode` for the queried attribute (anything else would conflate value spaces).
 
-Consumers (key propagation through non-trivial projections, sargable predicate rewrites for `date(ts) = D`, etc.) will arrive in separate tickets.
+Consumers (key propagation through non-trivial projections, sargable predicate rewrites for `date(ts) = D`, etc.) build on this surface — see [Sargable range rewrites](#sargable-range-rewrites) below.
+
+### Sargable range rewrites
+
+Rule `rule-sargable-range-rewrite` (Structural pass, priority 18 — runs before `aggregate-predicate-pushdown` / `predicate-pushdown`) turns predicates of the form `f(col) = c` into the equivalent half-open range on `col`:
+
+```
+f(col) = c    →    col >= lower(c)  AND  col < upper(c)
+```
+
+This converts a function-of-column equality (which the constraint extractor cannot push down) into a bare `col op literal` shape that `rule-predicate-pushdown` carries through the Retrieve pipeline and `rule-select-access-path` can convert to an `IndexSeek` or range scan.
+
+**Wiring.** The rule consults the per-function trait `FunctionSchema.rangeRewriteOnArg` (see [Scalar Expression Properties](#scalar-expression-properties-per-attribute)) which names a bucketing **kind**; the actual boundary computation lives on the column's `LogicalType.bucketBounds(kind, value)`. Bounds are wrapped in `LiteralNode`s typed with the column's logical type, so the result rides the same coercion-free path the constraint extractor already knows.
+
+**Initial coverage.** Only `=` is rewritten; `<`/`<=`/`>`/`>=` require direction analysis on `monotonicityIn` and are deferred. Built-in trait wiring covers the unary `date(x)` form (`func/builtins/conversion.ts`) and `DATE_TYPE` / `DATETIME_TYPE` `bucketBounds`. The variadic `dateFunc` (`func/builtins/datetime.ts`, `numArgs: -1`) is intentionally **not** annotated — its trailing modifiers can shift or re-bucket the result. Build-time dispatch picks the unary `numArgs: 1` form when an SQL `date(col)` call has exactly one argument.
+
+**Identity / null constraints.** The rule never rewrites `f(g(col)) = c` — `bucketBounds` answers in `col`'s value space, not `g(col)`'s, so only a bare column reference is safe. A `null` constant is left alone (`f(col) = null` is already null-rejecting). A null column row continues to be rejected because `col >= L` and `col < U` both evaluate to null.
+
+**Parameter-bound RHS** (`where date(ts) = :p`) is out of scope here — the rule needs a literal RHS at plan time. A follow-up will introduce scalar bound functions (`bucket_lower(:p)` / `bucket_upper(:p)`) backed by the same `bucketBounds`.
+
+### TVF Property Declarations
+
+Table-valued functions can advertise relational and physical characteristics through an optional `relationalAdvertisement` field on `TableValuedFunctionSchema`. Without it, a TVF's logical `returnType.keys` / `returnType.isSet` are exposed but `physical` defaults are conservative (no key FDs, no `ordering`, no `monotonicOn`, default `estimatedRows`). With an advertisement, `TableFunctionCallNode.computePhysical` consumes it on the standard physical-property path so downstream rules (FD propagation, DISTINCT elimination, sort/monotonic-window rules, cardinality estimation) see the same information they get from a real vtab.
+
+**Advertisement surface** — each field is either a static value or a `TVFAdvertiseFn<T>` that receives the call's operands and the schema and may return `undefined` to decline:
+
+| Field | Type | Notes |
+|---|---|---|
+| `isSet` | `boolean` | Overrides `returnType.isSet` when present. |
+| `keys` | `ReadonlyArray<ReadonlyArray<ColRef>>` | Output-column unique keys; lifted into `physical.fds` as `key → other-cols` FDs and into `getType().keys`. |
+| `fds` | `ReadonlyArray<FunctionalDependency>` | Additional (non-key) FDs over output columns. |
+| `equivClasses` | `ReadonlyArray<ReadonlyArray<number>>` | Equivalence classes; each class must have ≥ 2 members. |
+| `ordering` | `ReadonlyArray<{column, desc}>` | Output ordering. |
+| `monotonicOnColumns` | `ReadonlyArray<{column, direction, strict?}>` | Column-keyed monotonicity; preferred over `monotonicOn` because the node mints attribute IDs per call — the node translates `column → attrId` when assembling physical props. |
+| `monotonicOn` | `ReadonlyArray<MonotonicOnInfo>` | Direct form for advanced uses where the author already has the attrId. |
+| `constantBindings` | `ReadonlyArray<ConstantBinding>` | Columns pinned to a single value over the call. |
+| `estimatedRows` | `number` | Row-count estimate; the `TableFunctionCallNode.estimatedRows` getter consults this before falling back to the default. |
+| `accessCapabilities` | `PhysicalProperties['accessCapabilities']` | `ordinalSeek` / `asofRight`. |
+| `deterministic`, `readonly`, `idempotent` | `boolean` | Overrides the FunctionFlags-derived defaults. |
+
+**Literal operand inspection** — `evaluateLiteralOperand(operand)` (from `schema/function.js`) returns `operand.expression.value` when the operand is a literal and `undefined` otherwise. Use it in a `TVFAdvertiseFn` closure to declare parameter-dependent values:
+
+```typescript
+estimatedRows: (operands) => {
+  const start = evaluateLiteralOperand(operands[0]);
+  const end = evaluateLiteralOperand(operands[1]);
+  if (typeof start === 'number' && typeof end === 'number' && end >= start) {
+    return end - start + 1;
+  }
+  return undefined;  // Decline when bounds are non-literal.
+},
+```
+
+**Validation** — every advertised field is shape-checked against the call's column count and attribute set before it lands in `physical`. Bad advertisements (out-of-range column indices, empty FD dependents, equivalence classes of size < 1, duplicate ordering columns, etc.) are dropped silently with a single warning on the `planner:tvf` log channel — they never break planning. A `TVFAdvertiseFn` closure that throws is treated the same way. This guarantees a buggy third-party advertisement degrades to "no advertisement" instead of poisoning the optimizer.
+
+**Built-in annotations** — the following TVFs ship with relational advertisements:
+
+| TVF | Advertisement |
+|---|---|
+| `generate_series(start, end)` | `isSet`, `keys=[[value]]`, `ordering=[{value, asc}]`, `monotonicOnColumns=[{value, asc, strict}]`, `estimatedRows` (when bounds are literal). |
+| `json_each(json[, path])` | `isSet`, `keys=[[id]]`. |
+| `json_tree(json[, path])` | `isSet`, `keys=[[id]]`. |
+| `query_plan(sql)` | `isSet`, `keys=[[id]]`. |
+| `table_info(table)` | `isSet`, `keys=[[cid]]`. |
+| `index_info(table)` | `isSet`, `keys=[[index_name, seq]]`. |
+| `foreign_key_info(table)` | `isSet`, `keys=[[id, seq]]`. |
+| `unique_constraint_info(table)` | `isSet`, `keys=[[id, seq]]`. |
+| `check_constraint_info(table)` | `isSet`, `keys=[[id]]`. |
+| `assertion_info()` | `isSet`, `keys=[[name]]`. |
+| `function_info()` | `isSet`, `keys=[[name, num_args]]`. |
+
+Non-deterministic or trace-only TVFs (`execution_trace`, `row_trace`, `stack_trace`, `scheduler_program`, `schema_size`, `explain_assertion`, `schema`) skip advertisement.
 
 ### Constant Folding Subsystem
 
@@ -398,6 +469,7 @@ Rules are organized by optimization family in `src/planner/rules/`:
 
 **Aggregation** (`aggregate/`)
 - `ruleAggregatePhysical`: Cost-based selection between `StreamAggregateNode` and `HashAggregateNode`. Scalar aggregates (no GROUP BY) always use stream. Already-sorted input always uses stream (preserves ordering). Unsorted input compares sort+stream cost vs hash cost and picks the cheaper option.
+- `ruleGroupByFdSimplification`: Drops GROUP BY columns that are functionally determined by other GROUP BY columns under the aggregate-output FDs and equivalence classes (PK / UNIQUE / EC bridges; FK-derived FDs when that ticket lands). Each dropped column is re-emitted as a `MIN(<original-column>)` picker aggregate, with the original output attribute ID preserved via `AggregateNode.preserveAttributeIds` so downstream `Filter`/`Sort`/`Project` bindings survive untouched. Targets the common FK-join-then-aggregate shape (e.g. `GROUP BY c.id, c.name, c.email` where `id` is the PK) — cuts hash-key width and sort-key width before `ruleAggregatePhysical` makes its stream/hash choice. Runs in the Structural pass at priority 23 (after `aggregate-predicate-pushdown` so filter-derived ECs are on the source, before `ruleAggregatePhysical` in the Physical pass). Skips when fewer than two GROUP BY columns are bare `ColumnReferenceNode`s. See the FD framework section for the propagation rules the rule consumes.
 
 **Caching** (`cache/`)
 - `ruleCteOptimization`: Adds caching to frequently-accessed CTEs
@@ -409,17 +481,28 @@ Rules are organized by optimization family in `src/planner/rules/`:
 **Retrieve** (`retrieve/`)
 - `ruleProjectionPruning`: Prunes unused inner projections in Project-on-Project patterns (common after view expansion). Collects attribute IDs referenced by the outer project's scalar expressions, then filters the inner project to only those projections whose output attributes are referenced. Skips when all inner projections are used or pruning would yield zero projections. Runs in the Structural pass at priority 19 (between distinct-elimination at 18 and predicate-pushdown at 20).
 
+**Sort** (`sort/`)
+- `ruleOrderByFdPruning`: Drops trailing `ORDER BY` keys functionally determined by the leading bare-column keys under the source's FDs and equivalence classes (PK-driven, EC-driven via `WHERE a = b`, etc.). Walks the keys front-to-back maintaining `determined = closure({leading bare-column source-indices}, fds, ECs)`; drops any subsequent bare-column key whose source-attribute index is already in `determined`. Non-bare-column keys (expressions) are opaque — they neither contribute to nor consume the determined set, and are never droppable. The rule reasons in source-attribute-INDEX space (positions in `source.getAttributes()`) since `node.source.physical.fds` / `equivClasses` are indexed that way. Direction and NULL placement of the dropped trailing key are irrelevant — once a preceding key pins every value of that column to a single value per equivalence group, the trailing key cannot reorder anything. Skips when fewer than two keys are present, or when no keys are droppable. Runs in the Structural pass at priority 26, which is automatically before `monotonic-limit-pushdown` (PostOptimization priority 8) so single-key reductions enable the pushdown. See the LIMIT/OFFSET pushdown section below for the load-bearing interaction.
+
 **Join** (`join/`)
 - `ruleJoinPhysicalSelection`: Selects hash join or merge join over nested loop for equi-joins when cheaper. Three-way cost comparison (nested-loop vs hash vs merge). Supports INNER, LEFT, SEMI, and ANTI join types. Merge-join recognition here is positional on `physical.ordering`.
 - `ruleMonotonicMergeJoin`: Recognises merge-join opportunities whenever both sides advertise `MonotonicOn` on the equi-pair attributes — strictly broader than ordering-based recognition. Picks up cases the ordering-based rule misses (notably parent joins on a child `MergeJoin`'s right-side equi-pair attribute, where the child's `physical.ordering` reflects only the left side but `monotonicOn` covers both). Single driving equi-pair in v1; remaining equi-pairs become residual conjuncts. Defers to `ruleJoinPhysicalSelection` whenever ordering already covers all pairs (so multi-key merge joins keep full unique-key propagation). Runs at priority 4 in PostOptimization, ahead of `ruleJoinPhysicalSelection` (priority 5).
+- `ruleJoinElimination`: Drops a `JOIN` whose non-preserved side is never referenced above the join and is at-most-one-matching per a declared FK→PK relationship. Fires on `ProjectNode`, walks down through `Filter` / `Sort` / `LimitOffset` / `Distinct` / `Alias` collecting demanded attribute IDs; when the walk reaches a `JoinNode`, the demanded set is final for that chain. Requires an AND-of-column-equalities ON-clause and an FK→PK alignment verified via `checkFkPkAlignment` (same helper that drives FK-aware key/row-count reduction in `analyzeJoinKeyCoverage`). LEFT/RIGHT outer joins may only drop the non-preserved side; INNER joins may drop either side but additionally require (a) every FK column to be `NOT NULL` (otherwise NULL FK rows that wouldn't have matched would now survive) and (b) the eliminable side to be a row-preserving path to its base table — only `TableReference` / `Retrieve` (bare-source) / `Alias` / `Sort` wrappers are permitted, since a `Filter` / `LimitOffset` / `Distinct` / `Project` between the join and the table would either drop rows the FK→PK guarantee assumes are present or break the table-column-index→attribute-index mapping `checkFkPkAlignment` relies on. Most commonly fires on views that join a parent table for FK-side selects the outer caller never references. Runs in the Structural pass at priority 24 (after `predicate-pushdown` at 20, so right-side residual predicates have already landed below the join and protect themselves from elimination).
 - `ruleLateralTop1Asof`: Recognizes the lateral-top-1 idiom and rewrites it to a streaming `AsofScanNode` (see "Streaming asof scan" below).
 
 **Predicate** (`predicate/`)
+- `ruleAggregatePredicatePushdown`: Splits `Filter(predicate, Aggregate|StreamAggregate|HashAggregate)` so that conjuncts referencing only GROUP-BY-determined columns are rewritten onto the aggregate's source attribute IDs and moved below the aggregate; conjuncts referencing aggregate outputs (sum/count/etc.) or non-column GROUP-BY expressions stay above. Subsumes the WHERE-on-group-by-column and HAVING-on-group-by-column cases. Uses `computeClosure` over the aggregate's `physical.fds` so composite GROUP BYs whose members FD-determine each other widen the pushable set (see the FD framework section). Runs in the Structural pass at priority 19, ahead of `rulePredicatePushdown` so anything it places below an aggregate can propagate further.
 - `rulePredicatePushdown`: Pushes filter predicates down across safe commuting nodes (Sort, Distinct, Alias, eligible Project) and into RetrieveNode boundaries where the virtual table module supports them, reducing rows processed upstream.
 - `ruleFilterMerge`: Merges adjacent Filter nodes into a single Filter with an AND-combined predicate. Iteratively absorbs entire chains of adjacent filters in one visit. Runs in the Structural pass at priority 21 (after predicate pushdown at 20).
+- `rulePredicateInferenceEquivalence`: Materializes inferred equality predicates from the cross of predicate-derived constant bindings and the source's equivalence classes. For a `Filter(predicate, source)` where `predicate` pins `t.k = V` (literal or parameter) and `source.physical.equivClasses` includes a class containing `t.k`'s column index, the rule emits `col = V` for every other class member not already pinned by the predicate. The augmented predicate is ANDed into the outer Filter; for `inner`/`cross` join sources, single-side inferred conjuncts are additionally injected as `FilterNode` wrappers on the corresponding branch so subsequent `predicate-pushdown` (priority 20) iterations carry them into branch-level vtab access plans. LEFT/RIGHT/FULL joins fall back to the simple form (outer Filter only) — the safety case relies on `propagateJoinFds` already having stripped NULL-padded sides' bindings/ECs from the join's output. Idempotent: a second invocation finds every EC member already in the predicate's bound set and emits nothing. Runs in the Structural pass at priority 22; no collision with `scalar-cse` (priority 22) since they target different node types. Worked example: `t INNER JOIN u ON t.k = u.k WHERE t.k = 5` produces a `Filter(u.k = 5)` wrapper above the u-side Retrieve, which the next pushdown iteration carries into the leaf and lets the vtab handle as an index seek instead of a sequential scan. Range and `IS NULL` inference are intentionally out of scope.
+- `ruleSargableRangeRewrite`: Rewrites `f(col) = c` into `col >= lower(c) AND col < upper(c)` using `LogicalType.bucketBounds`, restoring sargability for bare-column equality on lossy-monotone transforms (notably `date(ts) = D`). Structural pass priority 18 — ahead of `aggregate-predicate-pushdown` / `predicate-pushdown` so the rewritten range flows through the rest of the predicate pipeline. See § [Sargable range rewrites](#sargable-range-rewrites) for the wiring (function-schema `rangeRewriteOnArg` trait + per-type `bucketBounds`) and the identity/null/parameter guards.
+- `ruleFilterContradiction`: Recognises when a Filter's predicate, conjoined with the source's `domainConstraints` and literal `constantBindings`, is provably unsatisfiable and emits `EmptyRelationNode` carrying the Filter's own attribute IDs / RelationType. Structural pass priority 27, downstream of `rule-empty-relation-folding` at the same priority so the cascade can collapse the surrounding subtree. Reasoning is per-column range/enum intersection (`planner/analysis/sat-checker.ts`); OR / CASE / cross-column arithmetic stay out of scope. See § [Predicate contradiction detection](#predicate-contradiction-detection).
+- `ruleEmptyRelationFolding`: Cascades `EmptyRelationNode` up through immediate `Filter` / `Project` / `Sort` / `LimitOffset` / `Distinct` / inner-or-cross-or-semi-anti joins, lifting the host's attribute IDs / RelationType onto the new empty result. Also folds `Filter(_, false|null|0)` directly. Structural pass priority 27 — after the IND rules at 26 so anti-join-to-empty rewrites can cascade in the same visit. See § [Empty-relation folding](#empty-relation-folding).
 
 **Subquery** (`subquery/`)
 - `ruleSubqueryDecorrelation`: Transforms correlated EXISTS/IN subqueries in WHERE-clause filters into semi/anti joins, enabling hash join selection and eliminating per-row re-execution. Handles: correlated EXISTS → semi join, NOT EXISTS → anti join, correlated IN → semi join. NOT IN is deferred (NULL semantics complexity). Runs in the Structural pass at priority 25 (after predicate pushdown).
+- `ruleSemiJoinFkTrivial`: `SemiJoin(L, R)` whose equi-pairs cover a non-null FK on L referencing R's PK (with R a row-preserving path to its base table) rewrites to `L` when every FK column is `NOT NULL`, otherwise to `Filter(L, fk_col IS NOT NULL AND …)`. Structural pass priority 26, after `rule-subquery-decorrelation` has materialized `EXISTS / IN` as semi joins. See § [Inclusion-dependency reasoning](#key-driven-row-count-reduction).
+- `ruleAntiJoinFkEmpty`: `AntiJoin(L, R)` with the same preconditions rewrites to `EmptyRelationNode` carrying L's attribute IDs and `RelationType` — every (non-null) L row is guaranteed a parent in R, so the anti-join is empty. Structural pass priority 26; the empty result then feeds `rule-empty-relation-folding` at priority 27 for further cascade. See § [Inclusion-dependency reasoning](#key-driven-row-count-reduction).
 
 **Constant Folding** (pass)
 - Constant folding pass: Evaluates constant expressions at plan time
@@ -581,11 +664,13 @@ if (tableConstraints) {
 
 ### Property Propagation
 ```typescript
-computePhysical(): Partial<PhysicalProperties> {
+computePhysical(_children: PhysicalProperties[]): Partial<PhysicalProperties> {
   return {
     estimatedRows: this.source.estimatedRows,
-    uniqueKeys: this.source.getType().keys.map(key => key.map(colRef => colRef.index)),
-    ordering: this.providesOrdering
+    // Keys propagate as FDs in `fds`. TableReferenceNode emits `{pk} → other-cols`
+    // FDs; physical access nodes pass them through unchanged.
+    fds: childrenPhysical[0]?.fds,
+    ordering: this.providesOrdering,
   };
 }
 ```
@@ -779,6 +864,8 @@ LimitOffsetNode
 - `ORDER BY` references multiple columns.
 
 When the precondition is unmet the rule does not fire and the existing `LimitOffsetNode` path executes unchanged. The `memory` module currently does **not** advertise `supportsOrdinalSeek` (its layered store does not cheaply support ordinal seek across overlay layers); custom modules with native ordinal indexing — IndexedDB-backed stores, sorted external datasets — can opt in.
+
+**Composes with `ruleOrderByFdPruning`**: a multi-key `ORDER BY` (the last bail condition) frequently arises from `ORDER BY pk, name` shapes where the trailing keys are functionally determined by the PK. The Structural-pass `ruleOrderByFdPruning` (rule catalog above, under Sort) reduces such sorts to single-key form, which then satisfies this rule's `Sort`-shape precondition. Structural runs before PostOptimization, so the ordering is automatic.
 
 The rule runs in the PostOptimization pass at priority 8 (after `join-physical-selection`, before `mutating-subquery-cache`) — late enough that `select-access-path` has produced the physical leaf with its capabilities, early enough to interact with downstream cache and materialization rules.
 
@@ -1057,13 +1144,13 @@ class OptimizationContext {
     this.copyTrackingState(newContext); // Preserve learned optimizations
     return newContext;
   }
-  
-  // Contexts can be forked for parallel exploration
-  withIncrementedDepth(): OptimizationContext {
-    // Inherits tracking state but can diverge independently
-  }
 }
 ```
+
+Per-traversal depth is tracked by the pass framework itself rather than on the
+context — see "Pass Framework" above for the input-scaled budget
+(`max(maxOptimizationDepth, planInputDepth + optimizationDepthHeadroom)`) and
+the `maxRulesFired` cap.
 
 ### Performance Characteristics
 
@@ -1085,30 +1172,356 @@ The context-scoped design enables sophisticated optimization strategies:
 - Tier 2 re-optimization re-runs physical selection with runtime stats overlay
 - Runtime cardinality feedback updates stats between executions
 
+### Functional Dependency Tracking
+
+Functional dependencies (FDs) are the canonical surface for "what determines what" on a relational physical node's output. There is no separate `uniqueKeys` field — a unique key `K` is encoded as the FD `K → (all_cols \ K)`, and `∅ → all_cols` encodes the "at-most-one-row" claim that used to be `uniqueKeys: [[]]`.
+
+```typescript
+export interface FunctionalDependency {
+  readonly determinants: readonly number[]; // empty = "constant"
+  readonly dependents: readonly number[];
+  readonly guard?: GuardPredicate;          // when present, activation-gated
+}
+
+export interface GuardPredicate {
+  readonly clauses: readonly GuardClause[]; // conjunctive
+}
+
+export type GuardClause =
+  | { readonly kind: 'eq-literal'; readonly column: number; readonly value: SqlValue }
+  | { readonly kind: 'eq-column'; readonly left: number; readonly right: number }
+  | { readonly kind: 'is-null'; readonly column: number; readonly negated: boolean }
+  | { readonly kind: 'range'; readonly column: number;
+      readonly min?: SqlValue; readonly max?: SqlValue;
+      readonly minInclusive: boolean; readonly maxInclusive: boolean }
+  | { readonly kind: 'or-of'; readonly clauses: readonly GuardClause[] };
+
+export type ConstantValue =
+  | { readonly kind: 'literal'; readonly value: SqlValue }
+  | { readonly kind: 'parameter'; readonly paramRef: string | number };
+
+export interface ConstantBinding {
+  readonly attrs: readonly number[];
+  readonly value: ConstantValue;
+}
+
+export type DomainConstraint =
+  | { readonly kind: 'range'; readonly column: number;
+      readonly min?: SqlValue; readonly max?: SqlValue;
+      readonly minInclusive: boolean; readonly maxInclusive: boolean }
+  | { readonly kind: 'enum'; readonly column: number;
+      readonly values: ReadonlyArray<SqlValue> };
+
+interface PhysicalProperties {
+  // ... ordering, estimatedRows, monotonicOn ...
+  fds?: ReadonlyArray<FunctionalDependency>;
+  equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
+  constantBindings?: ReadonlyArray<ConstantBinding>;
+  domainConstraints?: ReadonlyArray<DomainConstraint>;
+}
+```
+
+Column indices are output-column indices. The FD list is **non-canonical** — each operator stores only what it can prove locally. Use `computeClosure(attrs, fds)` from `planner/util/fd-utils.ts` to derive what a set of attributes implies.
+
+The "all-columns is a key" claim (DISTINCT, schema-set tables with no smaller key) has no non-trivial FD encoding — it is communicated via `RelationType.isSet`. Consumers asking "does this relation have set semantics?" should check both `getType().isSet` and `getType().keys.length > 0` *and* the FD set (via `hasAnyKey` / `hasSingletonFd`).
+
+#### Equivalence classes
+
+An **equivalence class** (EC) is a set of output column indices known to hold equal values for every row. ECs are derived from equality predicates (`col1 = col2` conjuncts in a Filter; equi-pairs in an inner join). They flow through operators alongside FDs — the per-operator table below applies to both. Two columns in the same EC can be freely substituted for each other in scalar expressions: that's what predicate-inference and ordering-pruning rules consume.
+
+#### Constant bindings
+
+A **constant binding** (`ConstantBinding`) is a companion to a `∅ → col` FD: that FD says "this column is constant under this scope," while a binding additionally records **what value** it is pinned to. Bindings let consumers (predicate inference, ordering pruning) read off the value without re-walking the predicate AST.
+
+Parameters are constants here. A `ParameterReferenceNode` is bound once before iteration and the same value is observed by every row — that matches the per-execution scope `computePhysical` describes, so `WHERE col = ?` produces both a `∅ → col` FD and a `ConstantBinding { attrs: [col], value: { kind: 'parameter', paramRef: ... } }`. Literal equality produces the same shape with `value.kind === 'literal'`.
+
+Bindings are closed over equivalence classes: at every node that contributes bindings (Filter, inner join), if a binding pins column `c` to value `v` and there's an EC `{c, c2, ...}`, the binding's `attrs` are extended to cover every EC member. So `WHERE t.k = u.k AND t.k = 5` lands as a single binding `{ attrs: [t.k, u.k], value: literal 5 }` on the join's output — exactly the input the predicate-inference rule will read.
+
+**Per-operator propagation:**
+
+| Operator                                  | FDs / ECs added or transformed                                                                                                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TableReferenceNode`                      | Seed `key → others` for each declared key (PK + UNIQUE). Additionally seed FDs / EC pairs / constant bindings / `domainConstraints` from declared CHECK constraints (cached per `TableSchema`); see *Check-derived contributions* below. Bindings are then closed over the resulting EC list. |
+| `SeqScanNode` / `IndexScanNode` / `IndexSeekNode` | Pass child FDs/ECs through unchanged.                                                                                                |
+| `RetrieveNode`                            | Pass source pipeline's FDs / ECs / constant bindings / ordering through unchanged. Retrieve is a marker for the module/Quereus execution boundary; its output is the source pipeline's output. |
+| `FilterNode`                              | Inherit child. For each equality conjunct: `col = literal` or `col = ?` ⇒ `∅ → col` FD plus a `ConstantBinding`; `col1 = col2` ⇒ bi-directional FDs and EC merge. Bindings are then closed over the resulting EC list. |
+| `ProjectNode` / `ReturningNode`           | Project FDs/ECs through the source→output mapping built from (a) bare column-reference projections **and** (b) *injectively-derived* projections — scalar expressions that reference exactly one source attribute `a` (with all other leaves being `LiteralNode` / `ParameterReferenceNode`) and satisfy `ScalarPlanNode.isInjectiveIn(a).injective`. The derived column is treated as a synonym of `src(a)`: source keys/FDs/ECs flow through to its output index. Non-injective expressions still drop out. When both `a` and an injective derivation of `a` are projected (`SELECT id, id+1`), the helper additionally emits bi-directional FDs between the bare and derived columns and copies the unique key onto the derived column too. Built-in injectivity covers unary `±x`, `x ± const`, `const ± x`, and same-logical-type `CAST`; scalar functions opt in via the `injectiveOnArgs` trait on the `FunctionSchema`. |
+| `AliasNode`                               | Pass through unchanged.                                                                                                                     |
+| `DistinctNode`                            | Pass source FDs / ECs / constant bindings through unchanged. The "all-columns is a key" claim lives on `RelationType.isSet = true` set in `getType()`. |
+| `StreamAggregateNode` / `HashAggregateNode` / `AggregateNode` | A source FD `X → Y` survives only if `X` and `Y` are all column-reference GROUP BY columns; project to output indices. ECs project the same way. Additionally emit the group-key FD `{0..groupCount-1} → (all_other_out_cols)`; with no GROUP BY, emit the singleton `∅ → all_out_cols` instead. |
+| `JoinNode` / `BloomJoinNode` / `MergeJoinNode` (inner / cross) | `union(leftFds, shift(rightFds, leftCols))`; for each equi-pair `(L, R')`: add bi-directional FDs and EC merge `L ≡ R'`. Constant bindings union both sides (right shifted), then close over the merged EC list — so a one-sided `t.k = 5` plus an equi-pair `t.k = u.k` lands as a single binding covering both columns. |
+| Join (left outer)                         | Keep left's FDs/ECs/bindings only; drop right's and equi-pair contributions (NULL-padded rows can violate them).                            |
+| Join (right outer)                        | Mirror of left outer.                                                                                                                       |
+| Join (full outer)                         | Drop both sides' FDs/ECs/bindings (conservative).                                                                                           |
+| Join (semi / anti)                        | Left's FDs/ECs/bindings survive; no right contribution.                                                                                     |
+| `AsofScanNode`                            | Inherit left's FDs/ECs. Right's FDs are dropped (asof = at-most-one match, NULL-padded in outer mode). The asof condition is not an equality, so no equi-pair FDs. |
+| `SetOperationNode`                        | Conservative: drop all FDs/ECs.                                                                                                             |
+| `WindowNode`                              | Pass source FDs/ECs through unchanged (window output columns are not in any new FDs — deferred).                                            |
+
+`domainConstraints` propagate alongside `constantBindings` using the same projection / shift / drop rules: pass-through nodes (Filter, Distinct, Alias, Window, Sort, Limit, scan family) inherit them unchanged; Project/Returning/Aggregate keep only constraints whose column maps to an output column; inner/cross joins concat with shift; LEFT/RIGHT outer keep only the preserved side; FULL outer and SetOperation drop everything. Filter does **not** intersect domains with the filter predicate yet — that intersection is deferred to the predicate-contradiction-detection ticket. Multiple constraints on the same column may coexist (no implicit intersection at this layer).
+
+#### Check-derived contributions
+
+Declared `CHECK` constraints contribute to the table reference's physical properties in addition to declared keys. The walker (`planner/analysis/check-extraction.ts`, cached per `TableSchema` via `WeakMap`) recognizes a small set of syntactic shapes per check and decomposes through `AND`:
+
+| Shape                            | Contribution                                                                       |
+| -------------------------------- | ---------------------------------------------------------------------------------- |
+| `col1 = col2`                    | bi-directional FDs `{col1 ↔ col2}` plus EC pair `[col1, col2]`                     |
+| `col = <literal>`                | FD `∅ → col` plus a literal `ConstantBinding`                                      |
+| `col = <expr>` (single-col RHS)  | one-way FD `<other-col> → col` (no EC, no binding)                                 |
+| `col >= lit` / `col > lit`       | range domain with `min` (inclusive on `>=`, exclusive on `>`)                      |
+| `col <= lit` / `col < lit`       | range domain with `max`                                                            |
+| `col BETWEEN lit AND lit`        | range domain with both bounds inclusive                                            |
+| `col IN (lit, lit, ...)`         | enum domain                                                                        |
+| `<expr-a> AND <expr-b>`          | recurse into both                                                                  |
+
+Disjunctions (`OR`), `NOT`, subqueries, and any function call the schema marks non-deterministic skip the whole CHECK — with the **exception** of implication-form disjunctions covered in the next subsection. Schema validation already rejects non-deterministic functions in CHECK at CREATE TABLE time, so the in-cache extraction passes a `() => true` callback; the function-level callback exists for tests and future external callers.
+
+#### Guarded (conditional) FDs
+
+A *guarded FD* `K → D | guard` activates only when a surrounding predicate entails every clause of `guard`. The canonical source is an implication-form CHECK such as `CHECK (status <> 'active' OR assigned_region = customer_region)` — read as "if `status = 'active'` then `assigned_region = customer_region`". The check extractor flattens the top-level `OR` chain, recognizes all-but-the-last disjunct as the negation of an equality / is-null clause, and emits guarded body FDs:
+
+| Disjunct shape                | Negation = guard clause                                       |
+| ----------------------------- | ------------------------------------------------------------- |
+| `col <> literal`              | `eq-literal { column, value }`                                |
+| `col1 <> col2`                | `eq-column { left, right }`                                   |
+| `col IS NOT NULL`             | `is-null { column, negated: false }` (guard = `col is null`)  |
+| `col IS NULL`                 | `is-null { column, negated: true }`  (guard = `col is not null`) |
+| `col <  literal`              | `range { col, min: lit, minInclusive: true,  maxInclusive: false }` (guard = `col >= lit`) |
+| `col <= literal`              | `range { col, min: lit, minInclusive: false, maxInclusive: false }` (guard = `col > lit`)  |
+| `col >  literal`              | `range { col, max: lit, maxInclusive: true,  minInclusive: false }` (guard = `col <= lit`) |
+| `col >= literal`              | `range { col, max: lit, maxInclusive: false, minInclusive: false }` (guard = `col < lit`)  |
+
+`lit op col` shapes are operand-flipped (`flipComparison` in `predicate-shape.ts`) so the column ends up on the left before the negation table above is applied. NULL literal bounds are rejected.
+
+The body is recognized only as a guarded **equality** (bi-directional FDs for `col1 = col2`, `∅ → col` for `col = literal`, one-way for single-column expressions). No equivalence pairs, constant bindings, or domain constraints are lifted from a guarded body — those are unconditional facts and a guarded source cannot guarantee them.
+
+**Partial UNIQUE indexes** are the second producer of guarded FDs. `CREATE UNIQUE INDEX (K) WHERE P` records a `predicate` on the synthesized `UniqueConstraintSchema`; `relationTypeFromTableSchema` skips it (the constraint isn't a relation-level key — see § Unique constraints above), and `planner/analysis/partial-unique-extraction.ts` instead emits a guarded FD `K → (all_cols \ K) | P` per partial UC. The recognizer flattens `P`'s top-level `AND` and maps each conjunct to a guard clause:
+
+| Conjunct shape                       | Guard clause                                            |
+| ------------------------------------ | ------------------------------------------------------- |
+| `col = literal`                      | `eq-literal { column, value }`                          |
+| `literal = col`                      | same (normalized)                                       |
+| `col1 = col2`                        | `eq-column { left, right }`                             |
+| `col IS NULL`                        | `is-null { column, negated: false }`                    |
+| `col IS NOT NULL`                    | `is-null { column, negated: true }`                     |
+| `NOT col`  (declared NOT NULL + numeric only)  | `eq-literal { column, value: 0 }`  (SQL boolean FALSE)  |
+| `col IN (lit, lit, …)`               | `or-of [eq-literal { col, lit_i } …]` (singleton collapses) |
+| `col >  literal` / `literal <  col`  | `range { col, min: lit, minInclusive: false, maxInclusive: false }` |
+| `col >= literal` / `literal <= col`  | `range { col, min: lit, minInclusive: true,  maxInclusive: false }` |
+| `col <  literal` / `literal >  col`  | `range { col, max: lit, maxInclusive: false, minInclusive: false }` |
+| `col <= literal` / `literal >= col`  | `range { col, max: lit, maxInclusive: true,  minInclusive: false }` |
+| `col BETWEEN lit AND lit`            | `range { col, min, max, minInclusive: true, maxInclusive: true }` (`NOT BETWEEN` is rejected) |
+| `a OR b OR …`                        | `or-of [recognize(a), recognize(b), …]` (flattens nested OR) |
+
+The `or-of` variant is a flat disjunction — sub-clauses are themselves guard clauses from the first five rows, never another `or-of` (the recognizer flattens nested OR chains at construction time). Singleton OR / IN lists collapse to the underlying clause.
+
+The `NOT col` rewrite to `col = 0` is sound under three-valued logic *for numeric columns*: SQLite encodes boolean FALSE as integer 0, and `WHERE NOT col` on a numeric column excludes both `col IS NULL` and `col = 0` rows. The producer rejects `NOT col` on nominally-nullable columns because the NOT-NULL gate (below) is syntactic — it doesn't recognize `NOT col` as a NULL-excluding witness. The producer additionally requires the column's logical type to be numeric: for TEXT, BLOB, and BOOLEAN columns the rewrite is unsound because the consumer matches `eq-literal { col, value: 0 }` via strict `sqlValueEquals` — TEXT `''` and boolean `false` are falsy under `NOT col` but compare unequal to integer 0, so the rewrite would activate the FD over rows the runtime UC never excluded. Both the producer (`partial-unique-extraction.ts`) and the consumer (`buildPredicateFacts` in `fd-utils.ts`) gate the rewrite the same way; the consumer still records `IS NOT NULL` for the column regardless of type (that's sound on its own).
+
+If **any** conjunct fails to map, the whole FD is dropped — a partial guard would falsely activate over rows the unrecognized conjunct excludes. The NOT-NULL gate requires each UC column to be effectively non-NULL inside the partial scope: it qualifies if either (a) it is declared NOT NULL on the table, or (b) the partial predicate has a matching `col IS NOT NULL` conjunct — sound because that conjunct is itself one of the guard clauses, so discharge cannot activate the FD over rows where the column might be NULL. A nullable UC column whose `IS NOT NULL` is not in the predicate would admit multiple NULLs inside scope and is rejected.
+
+Extraction is cached per `TableSchema` via `getPartialUniqueGuardedFds`. The downstream activation path is identical to the implication-form CHECK case: a Filter whose predicate entails `P` strips the guard and the FD becomes an ordinary key downstream, unlocking DISTINCT elimination, GROUP BY simplification, ORDER BY pruning, and FK→PK join elimination for queries inside the partial scope.
+
+#### Assertion-derived premises
+
+`CREATE ASSERTION` whose CHECK matches the canonical *trivially universal* shape
+
+```
+not exists (select 1 from T [where P])
+```
+
+is treated as if `T` carried a per-row `check (not P)`. The classifier
+(`planner/analysis/assertion-classifier.ts`) recognizes the shape syntactically
+— a top-level `NOT` over an `EXISTS` subquery whose SELECT has exactly one
+base-table FROM, no joins / GROUP BY / HAVING / ORDER BY / LIMIT / OFFSET /
+set ops, and an optional `where` clause that references only columns of `T`
+(no correlated refs, no subqueries, no aggregates, no non-deterministic
+calls). When all gates pass, the negated inner predicate `NOT P` is pushed
+through De Morgan / comparison-flip rules (`negateAst`) and fed into the
+existing `extractCheckConstraints` pipeline, producing FDs / EC pairs /
+constant bindings / domain constraints exactly as a declared CHECK would.
+
+Out of scope (silently falls through to commit-time enforcement):
+
+- Existential assertions (`check (exists (...))`).
+- Multi-table assertions / joined subqueries.
+- Aggregate-form assertions (`(select count(*) from t) = 0`, `sum(qty) >= 0`).
+- Unconditional-empty assertions (`not exists (select 1 from t)`) — would
+  synthesize `check (false)`; deferred as too aggressive for the pilot.
+- View-targeted assertions (only base `TableSchema` targets qualify).
+- Non-deterministic calls inside the inner predicate.
+
+Wiring lives in `TableReferenceNode.computePhysical`, which calls
+`getAssertionHoistedConstraints(schemaManager, tableSchema)` from
+`planner/analysis/assertion-hoist-cache.ts`. Results are cached per
+`(SchemaManager, TableSchema)` via a `WeakMap`-backed registry and a
+generation counter the registry bumps on every `assertion_added` /
+`assertion_removed` / `assertion_modified` event from `SchemaChangeNotifier`
+(see `schema/change-events.ts`). The cache compares generations on lookup
+and recomputes on mismatch — so `DROP ASSERTION` invalidates the hoisted
+view automatically.
+
+Hoisted contributions tag each emitted FD / `ConstantBinding` /
+`DomainConstraint` with `source = { kind: 'assertion', name }` (see
+`ConstraintProvenance` in `plan-node.ts`). The dedup helpers in
+`fd-utils.ts` compare structural fields only and ignore `source`, so when a
+declared CHECK and a hoisted assertion produce structurally identical facts
+the table reference (which merges declared first) keeps the
+`declared-check`-flavored entry. Provenance is informational; downstream
+rules ignore it.
+
+**Soundness:** hoisted facts are an additive optimizer signal only.
+`AssertionEvaluator` in `core/database-assertions.ts` continues to run the
+violation query at COMMIT and remains the source of truth.
+
+**Activation lives at `FilterNode.computePhysical`.** Before extracting predicate-derived FDs, the filter walks inherited FDs and asks `predicateImpliesGuard(predicate, fd.guard, ecs, bindings, attrIdToIndex, isColumnNonNullable, isColumnNumeric)` — a conservative implication check that flattens the predicate's `AND` conjunction and matches each guard clause against direct conjuncts, equivalence classes, constant bindings, and (for `is-null negated:true`) the source column's nullability. `isColumnNumeric` gates the `NOT col → col = 0` rewrite (numeric columns only — see above). When entailed, the guard is stripped and the FD becomes an ordinary unconditional FD downstream; otherwise the guarded FD passes through unchanged so a later Filter / Join can still activate it once additional facts land.
+
+**Propagation rules:**
+
+- `computeClosure` / `determines` / `isSuperkey` / `hasAnyKey` / `hasSingletonFd` / `isAssertedKey` / `deriveKeysFromFds` all **skip** guarded FDs — a guarded FD is not a closure-time fact and cannot prove a key claim.
+- `addFd` subsumption applies only when two FDs share the same guard; FDs with different guards (or one guarded and one not) coexist.
+- `shiftFds` shifts guard column indices alongside determinants/dependents.
+- `projectFds` drops a guarded FD whose guard references any column missing from the mapping — the guard would become unobservable and the FD could never re-activate downstream.
+- Outer joins drop guarded FDs that sit on the NULL-padded side (along with that side's unconditional FDs), because NULL-padding can flip guard satisfaction.
+
+Predicates `predicateImpliesGuard` recognizes today: `col = literal` / `col = col2` (and via EC closure), `col is null`, `col is not null`, column non-nullability from the type system, `col IN (lit, …)` (literal-only), `NOT col` (numeric columns only; rewritten to `col = 0`, paired with the same NOT-NULL claim — for TEXT/BLOB/BOOLEAN columns `NOT col` records only the `IS NOT NULL` fact), and per-column literal-bounded `<`/`<=`/`>`/`>=` plus `BETWEEN` — these accumulate into an intersected per-column filter range that discharges a `range` guard when the filter's range is a subset of the guard's (per-side comparison via `compareSqlValues` with BINARY collation). The range path checks the guard's column, every EC peer, and every binding-shared column. It can discharge an `or-of` guard either by entailing any single sub-clause directly, or — when every sub-clause is `eq-literal` on the same column — by checking that the filter pins that column (via `=`, IN-list, EC peer, or `ConstantBinding`) to a *subset* of the OR-set. `eq-literal` does not piggyback onto `range` (filter `col = 25` does not discharge a `range` guard); collation-aware text bound comparison, symbolic/parameter bounds, and `NOT BETWEEN` remain out of scope.
+
+**Helper surface** (`planner/util/fd-utils.ts`):
+
+- `computeClosure(attrs, fds)` — iterative fixed-point.
+- `determines(attrs, target, fds)` — closure-based check.
+- `minimalCover(attrs, fds)` — greedy minimization.
+- `mergeFds(a, b)`, `addFd(fds, next, opts?)` — subsumption-aware merge. `addFd`'s options carry `keyHints` (column-index sets known to be keys) for cap enforcement and `cap` for an explicit override (default `MAX_FDS_PER_NODE = 64`).
+- `projectFds(fds, mapping)` — drop FDs that lose any determinant column. Dependents that don't map are filtered out (preserving the FD if at least one dependent survives); this is the rule that lets `∅ → all_cols` singleton claims survive projection.
+- `superkeyToFd(key, columnCount)` — build `key → (all_cols \ key)` from a superkey, or `undefined` when `key` covers every column.
+- `singletonFd(columnCount)` — build the `∅ → all_cols` "at-most-one-row" FD.
+- `isSuperkey(attrs, fds, columnCount)` / `isAssertedKey(attrs, fds, columnCount)` — closure-based superkey check. `isSuperkey` returns true on the trivial all-cols tautology; `isAssertedKey` is stricter — it requires some FD in the set whose determinants ⊆ attrs and whose closure covers all columns. Use the latter when you need a positive uniqueness claim (e.g. strict-monotonicOn detection).
+- `hasAnyKey(fds, columnCount)` — true iff the FD set encodes any non-trivial key (replaces the legacy `uniqueKeys.length > 0` check).
+- `hasSingletonFd(fds, columnCount)` — true iff `∅ → all_cols` is present (replaces the `[[]]` marker).
+- `deriveKeysFromFds(fds, columnCount)` — enumerate the minimal full-cover key sets from the FD set.
+- `shiftFds(fds, offset)` / `shiftEquivClasses(classes, offset)` — column index translation for joins.
+- `mergeEquivClasses(a, b)` / `addEquivalence(classes, a, b)` — transitive-closure union of overlapping classes.
+- `mergeConstantBindings(a, b)` — coalesce bindings sharing a `ConstantValue` by unioning `attrs`.
+- `closeConstantBindingsOverEcs(bindings, ecs)` — extend each binding's `attrs` over every overlapping EC member (the predicate-inference surface).
+- `projectConstantBindings(bindings, mapping)` / `shiftConstantBindings(bindings, offset)` — projection/translation mirrors of the FD/EC variants.
+- `mergeDomainConstraints(a, b)` / `projectDomainConstraints(domains, mapping)` / `shiftDomainConstraints(domains, offset)` — analogous helpers for the new `domainConstraints` surface. `merge` concatenates dropping structural duplicates; intersection of overlapping ranges/enums is **not** done here (deferred to `optimizer-predicate-contradiction-detection`).
+- `extractEqualityFds(predicate, attrIdToIndex)` — predicate walker used by `FilterNode`; returns FDs, EC pairs, and constant bindings (literals and parameters both contribute bindings).
+- `extractCheckConstraints(checks, columnIndexMap, isDeterministic)` (in `planner/analysis/check-extraction.ts`) — schema-time AST walker used by `TableReferenceNode` to lift declared CHECK constraints into FDs / EC pairs / `ConstantBinding`s / `DomainConstraint`s. Cached per `TableSchema` via `getCheckExtraction`. Recognizes implication-form disjunctions and emits guarded FDs.
+- `predicateImpliesGuard(predicate, guard, ecs, bindings, attrIdToIndex, isColumnNonNullable, isColumnNumeric)` — conservative implication check used by `FilterNode` to activate guarded FDs. `isColumnNumeric` gates the `NOT col → col = 0` rewrite so it only applies to numeric columns.
+- `stripGuard(fd)` — return the unconditional twin of a guarded FD (used by Filter activation).
+
+**De-dup / cap behavior:** `addFd` performs subsumption (drop existing FDs with the same determinants whose dependent set is a subset of the new one, and skip adding a new FD already subsumed). When the resulting list exceeds the cap, FDs whose determinants are not a subset of any `keyHints` entry passed by the caller are dropped first; truncations are logged at debug under `quereus:planner:fd`. `mergeConstantBindings` enforces the same cap and logs the same way.
+
+`ruleAggregatePredicatePushdown` (Predicate rules above) is the first consumer of `physical.fds`: it uses `computeClosure` over the aggregate's output FDs to widen the set of pushable conjuncts on composite GROUP BYs.
+
+`rulePredicateInferenceEquivalence` (Predicate rules above) is the first consumer of `physical.constantBindings` × `physical.equivClasses`: for `SELECT ... FROM t JOIN u ON t.k = u.k WHERE t.k = 5`, the join contributes an EC `{t.k, u.k}` and the filter contributes a binding `{t.k → 5}`. The rule crosses them and emits a `u.k = 5` conjunct on the u-branch, which subsequent `predicate-pushdown` iterations carry into the leaf so the vtab can pick a seek over a scan. The same shape works for parameter bindings (`t.k = ?`) and chains transitively across multiple equi-joins.
+
 ### Key-driven row-count reduction
 
 * If a predicate contains **equality** on all columns of a unique key the result cardinality ≤ 1.
+* See the FD framework above; a unique key is encoded as the FD `key → all_other_cols`, and the broader `fds`/`equivClasses` fields capture additional non-key dependencies.
 
 **Shared join key-coverage analysis** (`analyzeJoinKeyCoverage` in `key-utils.ts`):
 - Extracts equi-join column index pairs from join conditions
-- Checks if equi-pairs cover a logical key (`RelationType.keys`) or physical key (`PhysicalProperties.uniqueKeys`) on either side
-- When a key on side B is covered, preserves side A's unique keys and caps `estimatedRows` at side A's row count
+- Checks if equi-pairs cover a logical key (`RelationType.keys`) or an FD-implied key (`isSuperkey(eqSet, phys.fds, colCount)`) on either side
+- INNER / CROSS: when side B's key is covered, preserves side A's unique keys (both directions can apply) — `propagateJoinFds` materializes each preserved key as a `key → all_other_join_cols` FD on the join output — and caps `estimatedRows` at side A's row count
+- LEFT outer: when the **right** side's key is covered, preserves the **left** side's unique keys and caps `estimatedRows` at left's row count. The right-side keys are NOT propagated — unmatched left rows produce NULL-padded right columns, breaking right uniqueness. If the right key is not covered, no keys propagate (left rows can fan out)
+- RIGHT outer: symmetric to LEFT
+- FULL outer: no keys propagate (both sides can be NULL-padded)
+- SEMI / ANTI: left's keys pass through unchanged (left-only output, no null-padding)
 - Used by all three join node types: `JoinNode`, `BloomJoinNode`, `MergeJoinNode`
 
 **FK→PK inference** (`rule-join-key-inference.ts` + `CatalogStatsProvider`):
 - When equi-join pairs align with a foreign key→primary key relationship, the PK side's key is guaranteed covered (each FK row matches ≤1 PK row)
 - `CatalogStatsProvider.joinSelectivity()` uses FK→PK detection to produce tighter selectivity (`1/ndv_pk`) instead of the general `1/max(ndv_left, ndv_right)`
 - FK constraints stored in `TableSchema.foreignKeys`, extracted from AST during CREATE TABLE
-- Unique constraints stored in `TableSchema.uniqueConstraints`, surfaced as additional `RelationType.keys`
+- Unique constraints stored in `TableSchema.uniqueConstraints`, surfaced as additional `RelationType.keys` (only when **all constrained columns are NOT NULL** and the constraint is **not partial** — partial UNIQUE constraints, i.e. those carrying a `predicate` from `CREATE UNIQUE INDEX ... WHERE ...`, only guarantee uniqueness within their scope and would derive an unsound `K → all-other-cols` FD over the whole table; see `relationTypeFromTableSchema` in `src/planner/type-utils.ts`). Partial UCs are instead routed through `partial-unique-extraction.ts` to emit *guarded* FDs that Filter activation discharges when a surrounding predicate entails the partial WHERE — see § Guarded (conditional) FDs above.
+
+**Inclusion-dependency reasoning** (`util/ind-utils.ts` + `rule-anti-join-fk-empty.ts` + `rule-semi-join-fk-trivial.ts` + `rule-join-elimination.ts`):
+
+Foreign keys are inclusion dependencies — `child.fk ⊆ parent.pk` — and three optimizer rules exploit them to remove parent-side access entirely. All three run in the Structural pass at priority 26, after `rule-subquery-decorrelation` (priority 25) has materialized `EXISTS / NOT EXISTS / IN` as semi/anti joins. The shared util `lookupCoveringFK` walks `TableSchema.foreignKeys`, matches the equi-pairs against the FK's declared *positional* pairing (`fk.columns[i] → referencedColumns[i]` — a permuted equi-pair set on a composite FK such as `(fa = b AND fb = a)` against `FOREIGN KEY (fa, fb) REFERENCES p(a, b)` is **not** covered and the rule abstains), and reports the matched FK plus whether any child column is nullable; `isRowPreservingPathToTable` guards against parent-side filters/limits/distincts that would invalidate the IND under filtering.
+
+- **`rule-anti-join-fk-empty`**: `AntiJoin(L, R, p)` where `p` is AND-of-column-equalities, the equi-pairs cover a non-null FK on L referencing R's PK, and R is a row-preserving path to its base table → rewrite to `EmptyRelationNode` carrying L's attribute IDs and `RelationType`. Correct because the IND guarantees every (non-null) L row has a matching parent in R, so the anti-join is empty.
+- **`rule-semi-join-fk-trivial`**: `SemiJoin(L, R, p)` with the same preconditions → rewrite to `L` (every L row matches) if every FK column is NOT NULL, otherwise to `Filter(L, fk_col IS NOT NULL AND …)` (rows with NULL in any FK column never match the equi-condition).
+- **`rule-join-elimination` (Aggregate entrypoint)**: `Aggregate(group, aggs, source = chain → Join(L, R))` where the inner join is FK-covered (non-null FK, row-preserving R) and neither the group keys nor any aggregate expression reference R → drop the join, keep the wrapper chain. Covers `count(*) from child join parent on …` since `|L ⋈ R| == |L|` under the FK/non-null guarantee.
+
+The federated-vtab payoff: each fold removes a remote round-trip to the parent table. Rules abstain conservatively when: the FK is undeclared, equi-pairs don't cover all FK columns, the parent side has a row-reducing wrapper (Filter, LimitOffset, Distinct, Project, non-trivial Retrieve pipeline), or — for the anti-join and inner-join cases — any FK column is nullable.
+
+The anti-join-to-empty rewrite emits `EmptyRelationNode` carrying L's attribute IDs and `RelationType`. Downstream the const-fold pass (`rule-empty-relation-folding`, Structural priority 27) cascades that emptiness up through immediate Filter / Project / Sort / LimitOffset / Distinct / inner-or-cross-or-semi-anti joins; see "Empty-relation folding" below.
+
+### Empty-relation folding
+
+`EmptyRelationNode` (`planner/nodes/empty-relation-node.ts`) is a schema-polymorphic zero-row relation. Its constructor takes the exact `Attribute[]` and `RelationType` that the surrounding node would have produced, so attribute IDs above the fold site remain stable. It is distinct from `EmptyResultNode` (a `TableAccessNode` tied to a `TableReferenceNode` — the table-access-bound empty result for impossible predicates inferred during access-path planning); `EmptyRelationNode` is unmoored from any specific source.
+
+`rule-empty-relation-folding.ts` runs in the Structural pass at priority 27 — after the IND rules at 26 — and rewrites the following shapes (`E = EmptyRelationNode`):
+
+| Host shape                                  | Rewrite                                                          | Note |
+|---------------------------------------------|------------------------------------------------------------------|------|
+| `Filter(x, lit-false / null / 0)`           | `EmptyRelationNode(x.getAttributes(), x.getType())`              | WHERE-clause truthiness — `false`, `NULL`, `0`, `0n` all reject. |
+| `Filter(E, _)`                              | `E` (schema unchanged)                                            | Pass-through. |
+| `Project(E, projections)`                   | `EmptyRelationNode(project.getAttributes(), project.getType())`  | Lifts Project's own attribute IDs. |
+| `Sort(E, _)`, `LimitOffset(E, _)`, `Distinct(E)` | `E`                                                              | Schema unchanged. |
+| `Join(E, R, inner \| cross \| semi)` or `Join(L, E, inner \| cross \| semi)` | `EmptyRelationNode(join.getAttributes(), join.getType())`     | |
+| `Join(E, R, left)` or `Join(L, E, right)`   | `EmptyRelationNode(join.getAttributes(), join.getType())`        | Empty driving side. |
+| `Join(E, _, anti)`                          | `EmptyRelationNode(join.getAttributes(), join.getType())`        | Anti drives from left only. |
+| `Join(E, E, full)` (both empty)             | `EmptyRelationNode(join.getAttributes(), join.getType())`        | A single empty side under FULL still null-pads — don't fold. |
+
+The fold rule's `isEmpty` helper looks through `AliasNode` wrappers (FROM-clause subquery aliases produce these). This is sound for the fold itself because the host node (Join, Filter, Project, …) supplies its own attribute IDs when constructing the new `EmptyRelationNode`; the Alias's rename is discarded along with the Alias.
+
+Cascade limits: the Structural pass traverses top-down, so a parent's rules fire BEFORE its children are visited. When an inner Filter folds to `EmptyRelation` mid-traversal, the residual operators above it (Sort, LimitOffset, Project, Join, …) have already been rule-visited and won't re-fire automatically. The runtime is unaffected — `EmptyRelation` yields no rows, so output is correct — but the plan may still show residual operators above the `EmptyRelation`. The IND rules and the fold rules co-located in the Structural pass mean that whenever the IND rule rewrites an anti-join to `EmptyRelation` *within the same node visit*, the JoinFoldEmpty rule can still fire via the per-node fixed-point loop in `applyPassRules`.
+
+### Predicate contradiction detection
+
+`rule-filter-contradiction.ts` (Structural pass priority 27) recognizes when a Filter's predicate, conjoined with the source's `domainConstraints` and literal `constantBindings`, is provably unsatisfiable, and emits `EmptyRelationNode` carrying the Filter's own attribute IDs / RelationType. The const-fold cascade above (Project / Sort / LimitOffset / Distinct / inner-or-cross-or-semi Join) then collapses the surrounding subtree.
+
+The reasoning is implemented by `planner/analysis/sat-checker.ts` — a single-pass per-column accumulator over the conjuncts. Scope is intentionally narrow:
+
+- **In-scope** (can prove `unsat`):
+  - Single-column comparisons against literals: `= / == / != / <> / < / <= / > / >=`.
+  - Single-column positive `BETWEEN literal AND literal`.
+  - Single-column `IN (lit, lit, ...)` and intersection across multiple IN-lists; the empty form `x IN ()` is recognized as trivially `unsat`.
+  - Range intersection across multiple bounds, with inclusive/exclusive arithmetic.
+  - Domain-vs-predicate intersection (CHECK-derived `range` and `enum`).
+  - Literal `ConstantBinding` from the source (treated as a degenerate point range plus singleton enum).
+- **Out of scope** (clauses set a per-column `sawUnknown` flag; never produces a false `unsat`):
+  - `OR` / `CASE` branch analysis — would require case-decomposition.
+  - Cross-column arithmetic (`a + b > 10`), function calls, `LIKE` patterns, `IS NULL` / `IS NOT NULL`, `NOT (...)`, parameter bindings (the runtime value isn't known at plan time).
+  - Outer-join `on`-clause contradiction (null padding survives; deferred).
+  - Inner-join `on`-clause contradiction — covered by the filter rule whenever `predicate-pushdown` has lowered the predicate onto a Filter, which is the canonical shape. The standalone `on`-clause variant is a tracked follow-up.
+
+The `sawUnknown` flag is **per column**, not global: a LIKE pattern on `b` does not block proving an interval-range contradiction on `a`.
+
+Prereqs in the propagation chain (already landed):
+- `optimizer-check-derived-fds-and-domains` — populates `PhysicalProperties.domainConstraints` from declared CHECK.
+- `optimizer-empty-relation-node` — supplies the schema-polymorphic empty target so the rewrite preserves attribute IDs.
+
+**Worked example**:
+
+```sql
+CREATE TABLE t (id INTEGER PRIMARY KEY, qty INTEGER, CHECK (qty >= 0));
+
+-- Source advertises domainConstraints = [{ kind: 'range', column: 1, min: 0, minInclusive: true }].
+-- WHERE qty < 0 contributes the conjunct `qty < 0` → upper bound 0 exclusive on column 1.
+-- Intersection: min=0 (inclusive) ∧ max=0 (exclusive) → empty range → 'unsat'.
+SELECT * FROM t WHERE qty < 0;
+-- → EmptyRelationNode (the SeqScan and downstream Filter are eliminated by the fold cascade).
+```
 
 **DISTINCT elimination** (`rule-distinct-elimination.ts`):
-- When a `DistinctNode`'s source already has `uniqueKeys` (from PK, UNIQUE constraint, GROUP BY, etc.), the DISTINCT is redundant and removed
+- When a `DistinctNode`'s source already has a key (from logical `RelationType.keys`, or an FD-encoded key in `physical.fds` via `hasAnyKey` / `hasSingletonFd`), the DISTINCT is redundant and removed
 - Registered in the structural pass at priority 18 (after key inference, before predicate pushdown)
 
 ### Key inference after projections / joins
 
 * `projectKeys(keys, columnMapping)` pushes keys through `ProjectNode` / `ReturningNode`.
-* `combineJoinKeys(leftKeys, rightKeys, joinType)` combines keys across joins (inner/cross only; outer joins conservatively clear keys).
+* `combineJoinKeys(leftKeys, rightKeys, joinType, leftColumnCount, equiPairs?)` combines logical `RelationType.keys` across joins:
+  * **INNER / CROSS**: union of both sides (right indices shifted).
+  * **LEFT**: when `equiPairs` cover any right-side key, left's keys survive (each left row matches ≤ 1 right row); otherwise empty. Right's keys never survive (NULL-padded right columns break uniqueness).
+  * **RIGHT**: symmetric — when `equiPairs` cover any left-side key, right's keys (shifted) survive.
+  * **FULL**: empty (both sides can be NULL-padded).
+  * **SEMI / ANTI**: left's keys pass through unchanged.
+  * If `equiPairs` is omitted, LEFT/RIGHT conservatively return empty.
+  * Equi-pair coverage at the logical-type layer mirrors the physical-side check in `analyzeJoinKeyCoverage`: callers (`JoinNode.getType`, `BloomJoinNode.getType`, `MergeJoinNode.getType`) extract column-index pairs from their condition/`equiPairs` field and pass them through.
 
 ## Row‑specific vs Global Classification for Assertions
 
@@ -1122,10 +1535,11 @@ Global transaction‑deferred integrity assertions are expressed as violation qu
 ### Core Definitions
 
 - relationKey: Unique identifier for a table reference instance within a plan. Format: `schema.table#<nodeId>` or `schema.table@alias#<nodeId>`.
-- uniqueKeys: Physical property carried by nodes, each key is an array of column indices relative to the node’s output that uniquely identify a row. `[[]]` denotes ≤1 row (singleton) regardless of columns.
-- coveredKey: A unique key that is fully constrained by equality predicates at a node boundary. Presence of a covered key implies `estimatedRows ≤ 1`.
-- Row‑specific: A table reference instance classified as producing at most one row for any given unique key binding at COMMIT time.
-- Global: Any instance not provably row‑specific.
+- unique key: A set of column indices on a node's output that uniquely identifies each row. Encoded as the FD `key → (all_cols \ key)` in `PhysicalProperties.fds`. The empty set (`∅ → all_cols`) is the singleton/"at-most-one-row" form.
+- coveredKey: A unique key that is fully constrained by equality predicates at a node boundary, **or whose columns lie in the FD-closure of the equality-covered column set**. Presence of a covered key implies `estimatedRows ≤ 1`. Closure expansion uses the table reference's physical FDs/ECs — so equality on a UNIQUE column closes to the PK via the table's `unique → other-columns` FD, and equality on column `a` plus an EC `{a, b}` closes to include `b`.
+- Row‑specific: A table reference instance classified as producing at most one row for any given unique key binding at COMMIT time (covered-key holds and no identity-breaking node above demotes it).
+- Group-specific: A table reference instance beneath an aggregate whose `GROUP BY` columns (under FD closure at the aggregate's source) cover a unique key of the reference. The aggregate output is row-unique per group key, so the runtime can parameterize on changed group keys.
+- Global: Any instance not provably row- or group-specific.
 
 ### Logical Analysis Pipeline
 
@@ -1134,32 +1548,45 @@ Global transaction‑deferred integrity assertions are expressed as violation qu
 - This stabilizes logical shape and enables reliable key propagation without physical access assumptions.
 
 2) Unique key propagation rules
-- Filter: If predicate covers a full unique key on the source, set `uniqueKeys = [[]]` and cap `estimatedRows = 1`; otherwise propagate source `uniqueKeys` unchanged.
-- Project/Returning: Map source `uniqueKeys` through projection mapping; drop keys that aren’t fully preserved. If `ordering` is present and all ordering columns survive the projection, remap ordering indices through the same mapping; otherwise clear ordering.
-- Join (INNER/CROSS): Preserve side keys when equi‑join predicates cover the other side’s key; compute composite keys when applicable. For OUTER joins, only preserve non‑null‑safe keys on the preserved side.
-- Aggregate: `GROUP BY` columns define `uniqueKeys` over their indices; global aggregates without grouping produce `[[]]`.
-- Distinct: All columns form a `uniqueKey`.
-- Set operations/window functions: Conservatively clear `uniqueKeys` unless proven otherwise.
+- Filter: If predicate covers a full unique key on the source, emit the singleton FD `∅ → all_cols` and cap `estimatedRows = 1`; otherwise propagate source FDs (which carry the source's key encodings) unchanged.
+- Project/Returning: Project source logical keys (`RelationType.keys`) through the column mapping; for each surviving key emit the FD `key → all_other_out_cols`. Source FDs project through the same column map (FDs that lose a determinant column are dropped; surviving dependents stay).
+- Join (INNER/CROSS): Preserve side keys when equi‑join predicates cover the other side's key; emit each preserved key as a `key → all_other_join_cols` FD. For OUTER joins, only preserve non‑null‑safe keys on the preserved side.
+- Aggregate: `GROUP BY` columns are a unique key on the output; emit `{0..groupCount-1} → all_other_out_cols`. Global aggregates without grouping emit the singleton `∅ → all_out_cols`.
+- Distinct: Set semantics is encoded via `RelationType.isSet = true` (the all-columns "key" has no non-trivial FD encoding). Source FDs pass through unchanged.
+- Set operations/window functions: Conservatively drop key-encoding FDs unless proven otherwise.
 
 3) Covered key detection
-- Constraint extractor emits `coveredKeysByTable: Map<relationKey, number[][]>` by matching normalized equality predicates to unique key columns.
-- A table reference instance is row‑specific at a node if any covered key is present or `uniqueKeys` contains `[[]]`.
+- Constraint extractor emits `coveredKeysByTable: Map<relationKey, number[][]>` by matching normalized equality predicates to the table's logical `RelationType.keys`. Closure expansion uses the table reference's physical FDs/ECs.
+- A table reference instance is row‑specific at a node if any covered key is present or the FD set carries the singleton `∅ → all_cols`.
 
 ### Classification API
 
 ```ts
 // Pre‑physical plan only
-function analyzeRowSpecific(plan: RelationalPlanNode): Map<string /* relationKey */, 'row' | 'global'>
+type RowClassification = 'row' | 'group' | 'global';
+
+interface RowSpecificResult {
+  classifications: Map<string /* relationKey */, RowClassification>;
+  /** For 'group'-classified relations, the minimal group-key columns expressed as
+   *  output column indices on the underlying table reference. */
+  groupKeys: Map<string /* relationKey */, number[]>;
+}
+
+function analyzeRowSpecific(plan: RelationalPlanNode | PlanNode): RowSpecificResult;
 ```
 
 Algorithm (concise):
-- Traverse plan; collect `TableInfo` for each table reference instance with `relationKey` and `uniqueKeys` inferred at that point.
-- Compute `coveredKeysByTable` from normalized predicates along the path to the instance.
-- Classify a relationKey as 'row' if: `uniqueKeys` contains `[[]]` at or above its earliest reference OR any `coveredKey` fully matches a declared/inferred unique key. Else 'global'.
+1. **Initial pass.** Traverse plan; collect `TableInfo` for each table reference instance, including its `uniqueKeys`, physical `fds`, and `equivClasses`.
+2. **Covered-key under FD closure.** Walk predicates along the path to each instance and gather equality-covered columns `E`. Compute `closure(E)` under the table reference's local FDs + EC-derived FDs. A unique key is covered if every column lies in the closure. Classify as `'row'` if any key is covered, else `'global'`.
+3. **Identity-breaking adjustment pass.** Walk the tree top-down:
+   - **Aggregate** (`AggregateNode`, `StreamAggregateNode`, `HashAggregateNode`): for each table reference beneath, compute `closure(group-by-bare-cols)` at the aggregate's source physical context (FDs + ECs). If the closure covers a unique key (mapped through the source-to-table column correspondence), classify the reference as `'group'` and store the minimal subset of GROUP BY columns whose closure still covers a key (greedy minimization). If the reference already holds `'row'` (equality cover at a Filter beneath the aggregate), keep `'row'` — it is strictly stronger than `'group'`. Otherwise demote to `'global'`. Aggregate without GROUP BY is single-group: existing classifications survive.
+   - **SetOperation**: conservatively demote all references beneath to `'global'`.
+   - **Window**: pass-through. Windowing preserves input row count, so the classification at the Filter level survives upward.
 
 Notes:
 - Multi‑reference handling: Classify per‑instance via `relationKey`. The same base table may have both row‑specific and global instances in one assertion.
 - Joins with equality on a unique key reduce the joined side to row‑specific; push this information upward to avoid false global classifications.
+- All three modes (`'row'`, `'group'`, `'global'`) are now driven by the reusable `DeltaExecutor` kernel; `'group'` classifications parameterize per changed group-key tuple. See [`docs/incremental-maintenance.md`](incremental-maintenance.md) for the kernel surface.
 
 ### Transaction Change Tracking
 
@@ -1208,7 +1635,7 @@ During assertion creation/update:
 
 ### Diagnostics & Tooling
 
-- `explain_assertion(name)` TVF: returns normalized SQL plus concise logical plan (pre‑physical) and the classification map `{ relationKey → 'row' | 'global' }`.
+- `explain_assertion(name)` TVF: returns normalized SQL plus concise logical plan (pre‑physical) and the classification map `{ relationKey → 'row' | 'group' | 'global' }`. The `prepared_pk_params` column lists the parameter names a parameterized variant would bind: for `'row'`, PK column names (`pk0`, `pk1`, ...); for `'group'`, the minimal group-key column names from `RowSpecificResult.groupKeys`. Both modes are now executed by the `DeltaExecutor` kernel at COMMIT time.
 - Error formatting on violation: include assertion name and up to N sample violating key tuples when available from parameterized runs.
 
 ### Guarantees and Safety
@@ -1219,31 +1646,36 @@ During assertion creation/update:
 
 ## Binding-aware Delta Planning (Reusable)
 
-The same analysis used for assertions generalizes to incremental view maintenance and other delta-driven features.
+The same analysis used for assertions generalizes to incremental view maintenance and other delta-driven features. `analyzeRowSpecific` returns a `RowSpecificResult { classifications, groupKeys }`; `extractBindings` packages that into a `PlanBindings { perRelation, relationToBase }` map of `BindingMode` per `TableReferenceNode` instance. The full runtime surface is documented in [`docs/incremental-maintenance.md`](incremental-maintenance.md).
+
+The **public** projection of this analysis is the `ChangeScope` data contract — a JSON-serializable description of "what state does this prepared statement depend on?". `Statement.getChangeScope()` returns one for any prepared statement; see [`docs/change-scope.md`](change-scope.md).
 
 ### Modes of Specificity
-- Row-specific: unique key fully covered (or `[[]]`); bind PK/unique key
-- Group-specific: GROUP BY or window PARTITION BY on columns K; bind K
-- Global: no safe binding → evaluate full query
+- Row-specific (`'row'`): unique key fully covered (under FD closure including FK→PK and EC-derived FDs); bind PK/unique key columns.
+- Group-specific (`'group'`): aggregate `GROUP BY` columns (under FD closure at the aggregate's source) cover a unique key of the underlying table reference; bind the minimal group-key column subset (`groupKeys[relKey]`). Group-membership transitions (when an UPDATE changes a captured column) drive OLD/NEW projection emission so both old and new group keys are re-evaluated.
+- Global (`'global'`): no safe binding → evaluate full query once.
 
 ### Binding Extraction
-- From predicates: equality that covers a declared/inferred unique key
-- From aggregations/windows: grouping or partition keys
-- From joins: propagate bindings through equi-joins; when `T.k = U.k` and `k` is a binding key on `T`, it binds `U` as well
+`extractBindings(plan)` (see `src/planner/analysis/binding-extractor.ts`) walks the plan once, runs `analyzeRowSpecific`, and emits one `BindingMode` per `TableReferenceNode`:
+- From predicates: equality that covers a declared/inferred unique key.
+- From aggregations: grouping keys whose closure covers a unique key.
+- From joins: propagate bindings through equi-joins; when `T.k = U.k` and `k` is a binding key on `T`, it binds `U` as well.
+
+For `'row'` bindings, the chosen key prefers the table's primary key when it's among the covered keys; otherwise it picks the lex-min covered key for determinism.
 
 ### Residual Construction
-- Do not rewrite joins structurally; inject a Filter on the bound relation’s own attributes with `= ?` parameters
-- Preserve attribute IDs; parameter order follows key column order
-- Cache one residual per `relationKey` and key-shape
+- Do not rewrite joins structurally; inject a Filter on the bound relation’s own attributes with `= ?` parameters (`injectKeyFilter` in `database-assertions.ts`).
+- Preserve attribute IDs; parameter order follows key column order. `'row'` parameters use the prefix `pk0..pkN-1`; `'group'` parameters use `gk0..gkN-1`.
+- Each consumer owns its residual cache, keyed by `(relationKey, BindingMode.kind, columnsJoined)`.
 
 ### Delta Execution Strategy
-- On COMMIT, collect changed keys/groups per base table
-- If any dependent reference is global and that base changed → run full query once
-- Else run residual per affected key/group; batch in future via IN/VALUES
+- On COMMIT, the `DeltaExecutor` walks each `DeltaSubscription`. Per relation, it pulls projected tuples from `TransactionManager.getChangedTuples` and either parameterizes the residual per tuple, or — when changed distinct tuples ≥ `tuning.deltaPerRowFallbackRatio × estimatedRows(base)` — falls back to a single global run.
+- The change-capture layer registers per-base-table column-projection demand via `registerCaptureSpec`. PK is always captured implicitly; non-PK columns are retained only when at least one consumer has registered demand. UPDATEs emit both OLD and NEW projections when any captured column changes value, making per-group dispatch see group-membership transitions.
+- Multiple consumers (assertions, MVs, signals) share the same kernel and the same change capture; only their `apply` callbacks differ.
 
 ### Applicability Beyond Assertions
-- Materialized Views: compute ΔQ and merge into cached relation
-- Triggers/Signals: invoke actions only for affected keys/groups
+- Materialized Views: compute ΔQ and merge into cached relation. The future MV ticket (`tickets/backlog/4-materialized-views.md`) plugs in by registering one `DeltaSubscription` per view with an `apply` that performs delete-then-upsert per binding tuple.
+- Triggers/Signals: invoke actions only for affected keys/groups.
 
 This places “what to bind” in the optimizer and “when/how to execute residuals” in the runtime, enabling reuse across features.
 
@@ -1390,7 +1822,7 @@ export function ruleSelectAccessPath(node: PlanNode, context: OptContext): PlanN
 - `SeqScanNode`: Full table scan
 - `IndexScanNode`: Index-based scan with filters
 - `IndexSeekNode`: Index-based point/range lookups
-- `EmptyResultNode`: Zero-row short-circuit (e.g., `IS NULL` on NOT NULL column)
+- `EmptyResultNode`: Zero-row short-circuit at the access boundary (e.g., `IS NULL` on NOT NULL column). Sibling node `EmptyRelationNode` (`planner/nodes/empty-relation-node.ts`) covers the schema-polymorphic empty case for general fold rules — `EmptyResultNode` stays bound to a `TableReferenceNode` (for EXPLAIN), while `EmptyRelationNode` is detached from any specific source. See § Empty-relation folding.
 
 ### Parameterization hand-off
 

@@ -12,7 +12,7 @@ import { normalizePredicate } from '../analysis/predicate-normalizer.js';
 import { combineJoinKeys, analyzeJoinKeyCoverage } from '../util/key-utils.js';
 import { BinaryOpNode } from './scalar.js';
 import { ColumnReferenceNode } from './reference.js';
-import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, propagateJoinMonotonicOn } from './join-utils.js';
+import { buildJoinAttributes, buildJoinRelationType, estimateJoinRows, propagateJoinMonotonicOn, propagateJoinFds } from './join-utils.js';
 
 export type JoinType = 'inner' | 'left' | 'right' | 'full' | 'cross' | 'semi' | 'anti';
 
@@ -118,10 +118,19 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 		})).filter(p => p.leftAttrId !== undefined && p.rightAttrId !== undefined) as
 			Array<{ leftAttrId: number; rightAttrId: number }>;
 
+		const totalCols = this.getAttributes().length;
+		const fdResult = propagateJoinFds(
+			this.joinType, leftPhys, rightPhys, pairs,
+			leftType.columns.length, totalCols, result.preservedKeys,
+		);
+
 		return {
-			uniqueKeys: result.uniqueKeys,
 			estimatedRows: result.estimatedRows,
 			monotonicOn: propagateJoinMonotonicOn(this.joinType, leftPhys, rightPhys, attrIdPairs),
+			fds: fdResult.fds,
+			equivClasses: fdResult.equivClasses,
+			constantBindings: fdResult.constantBindings,
+			domainConstraints: fdResult.domainConstraints,
 		};
 	}
 
@@ -136,7 +145,12 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 	getType(): RelationType {
 		const leftType = this.left.getType();
 		const rightType = this.right.getType();
-		const keys = combineJoinKeys(leftType.keys, rightType.keys, this.joinType, leftType.columns.length);
+		// Equi-pairs are needed for LEFT/RIGHT outer key propagation (preserved-side
+		// keys only survive when the other side's key is covered by the pairs).
+		const pairs = extractEquiPairsFromCondition(
+			this.condition, this.left.getAttributes(), this.right.getAttributes(),
+		);
+		const keys = combineJoinKeys(leftType.keys, rightType.keys, this.joinType, leftType.columns.length, pairs);
 		return buildJoinRelationType(leftType, rightType, this.joinType, keys);
 	}
 
@@ -203,18 +217,13 @@ export class JoinNode extends PlanNode implements BinaryRelationalNode, JoinCapa
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
-		const attrs: Record<string, unknown> = {
+		return {
 			joinType: this.joinType,
 			hasCondition: !!this.condition,
 			usingColumns: this.usingColumns,
 			leftRows: this.left.estimatedRows,
 			rightRows: this.right.estimatedRows
 		};
-		// Expose unique keys computed by physical properties
-		if (this.physical?.uniqueKeys) {
-			attrs.uniqueKeys = this.physical.uniqueKeys;
-		}
-		return attrs;
 	}
 
 	public getJoinType(): JoinType {

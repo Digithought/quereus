@@ -235,6 +235,9 @@ The `SchemaChangeEvent` discriminated union includes:
 | `function_added` | `newObject: FunctionSchema` | After function registration |
 | `function_removed` | `oldObject: FunctionSchema` | After function removal |
 | `function_modified` | `oldObject`, `newObject: FunctionSchema` | After function replacement |
+| `assertion_added` | `newObject: IntegrityAssertionSchema` | After `CREATE ASSERTION` |
+| `assertion_removed` | `oldObject: IntegrityAssertionSchema` | After `DROP ASSERTION` |
+| `assertion_modified` | `oldObject`, `newObject: IntegrityAssertionSchema` | After assertion replacement |
 | `module_added` | _(name only)_ | After module registration |
 | `module_removed` | _(name only)_ | After module removal |
 | `collation_added` | _(name only)_ | After collation registration |

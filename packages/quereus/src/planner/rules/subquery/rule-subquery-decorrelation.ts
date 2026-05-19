@@ -30,6 +30,7 @@ import { BinaryOpNode } from '../../nodes/scalar.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
 import { isCorrelatedSubquery } from '../../cache/correlation-detector.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
+import { splitConjuncts, combineConjuncts } from '../../analysis/predicate-conjuncts.js';
 
 const log = createLogger('optimizer:rule:subquery-decorrelation');
 
@@ -40,38 +41,6 @@ interface DecorrelationCandidate {
 	joinType: JoinType;
 	/** The scalar node in the filter predicate that matched (ExistsNode, UnaryOpNode wrapping ExistsNode, or InNode) */
 	predicateNode: ScalarPlanNode;
-}
-
-/**
- * Split an AND-tree into conjuncts.
- */
-function splitConjuncts(pred: ScalarPlanNode): ScalarPlanNode[] {
-	const result: ScalarPlanNode[] = [];
-	const stack: ScalarPlanNode[] = [pred];
-	while (stack.length) {
-		const n = stack.pop()!;
-		if (n instanceof BinaryOpNode && n.expression.operator === 'AND') {
-			stack.push(n.left, n.right);
-		} else {
-			result.push(n);
-		}
-	}
-	return result;
-}
-
-/**
- * Combine conjuncts back into an AND-tree.
- */
-function combineConjuncts(conjuncts: ScalarPlanNode[]): ScalarPlanNode | null {
-	if (conjuncts.length === 0) return null;
-	return conjuncts.reduce((acc, cur) =>
-		new BinaryOpNode(
-			cur.scope,
-			{ type: 'binary', operator: 'AND', left: acc.expression, right: cur.expression },
-			acc,
-			cur
-		)
-	);
 }
 
 /**

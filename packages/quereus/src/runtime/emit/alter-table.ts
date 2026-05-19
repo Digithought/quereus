@@ -9,7 +9,7 @@ import { buildColumnIndexMap, opsToMask, withGeneratedColumnGraph } from '../../
 import type { ColumnDef } from '../../parser/ast.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
 import { quoteIdentifier, expressionToString, selectToString } from '../../emit/ast-stringify.js';
-import { renameTableInAst, renameColumnInAst } from '../../schema/rename-rewriter.js';
+import { renameTableInAst, renameColumnInAst, renameColumnInCheckExpression } from '../../schema/rename-rewriter.js';
 import type { Schema } from '../../schema/schema.js';
 import { tryFoldLiteral } from '../../parser/utils.js';
 
@@ -920,9 +920,15 @@ function propagateColumnRename(
 	oldCol: string,
 	newCol: string,
 ): void {
-	const notifier = rctx.db.schemaManager.getChangeNotifier();
-	for (const schema of rctx.db.schemaManager._getAllSchemas()) {
-		propagateColumnRenameInSchema(schema, renamedSchemaName, tableName, oldCol, newCol, notifier);
+	const schemaManager = rctx.db.schemaManager;
+	const notifier = schemaManager.getChangeNotifier();
+	const resolveColumnInSource: import('../../schema/rename-rewriter.js').ResolveColumnInSource = (s, t, col) => {
+		const targetSchema = schemaManager.getSchema(s);
+		const targetTable = targetSchema?.getTable(t);
+		return targetTable?.columnIndexMap.has(col.toLowerCase()) ?? false;
+	};
+	for (const schema of schemaManager._getAllSchemas()) {
+		propagateColumnRenameInSchema(schema, renamedSchemaName, tableName, oldCol, newCol, notifier, resolveColumnInSource);
 	}
 }
 
@@ -933,11 +939,12 @@ function propagateColumnRenameInSchema(
 	oldCol: string,
 	newCol: string,
 	notifier: import('../../schema/change-events.js').SchemaChangeNotifier,
+	resolveColumnInSource: import('../../schema/rename-rewriter.js').ResolveColumnInSource,
 ): void {
 	const renamedSchemaLower = renamedSchemaName.toLowerCase();
 
 	for (const table of Array.from(schema.getAllTables())) {
-		const updated = rewriteTableForColumnRename(table, renamedSchemaLower, tableName, oldCol, newCol);
+		const updated = rewriteTableForColumnRename(table, renamedSchemaLower, tableName, oldCol, newCol, resolveColumnInSource);
 		if (updated !== table) {
 			schema.addTable(updated);
 			notifier.notifyChange({
@@ -967,13 +974,19 @@ function rewriteTableForColumnRename(
 	tableName: string,
 	oldCol: string,
 	newCol: string,
+	resolveColumnInSource: import('../../schema/rename-rewriter.js').ResolveColumnInSource,
 ): TableSchema {
 	const oldColLower = oldCol.toLowerCase();
 	const tableLower = tableName.toLowerCase();
+	const isRenamedTable =
+		table.schemaName.toLowerCase() === renamedSchemaLower &&
+		table.name.toLowerCase() === tableLower;
 	let changed = false;
 
 	const newChecks = table.checkConstraints.map(cc => {
-		const rewrote = renameColumnInAst(cc.expr, tableName, oldCol, newCol, renamedSchemaLower);
+		const rewrote = isRenamedTable
+			? renameColumnInCheckExpression(cc.expr, tableName, oldCol, newCol, renamedSchemaLower, resolveColumnInSource)
+			: renameColumnInAst(cc.expr, tableName, oldCol, newCol, renamedSchemaLower);
 		if (!rewrote) return cc;
 		changed = true;
 		return { ...cc };

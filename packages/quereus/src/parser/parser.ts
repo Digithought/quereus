@@ -805,13 +805,13 @@ export class Parser {
 		const startToken = this.peek();
 		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
-		// Check for subquery: ( SELECT ... or ( VALUES ... or ( INSERT/UPDATE/DELETE ...
+		// Check for subquery: ( SELECT ... or ( VALUES ... or ( WITH ... or ( INSERT/UPDATE/DELETE ...
 		if (this.check(TokenType.LPAREN)) {
 			// Look ahead to see if this is a subquery
 			const lookahead = this.current + 1;
 			if (lookahead < this.tokens.length) {
 				const nextTokenType = this.tokens[lookahead].type;
-				if (nextTokenType === TokenType.SELECT || nextTokenType === TokenType.VALUES) {
+				if (nextTokenType === TokenType.SELECT || nextTokenType === TokenType.VALUES || nextTokenType === TokenType.WITH) {
 					return this.subquerySource(startToken, withClause);
 				} else if (nextTokenType === TokenType.INSERT || nextTokenType === TokenType.UPDATE || nextTokenType === TokenType.DELETE) {
 					return this.mutatingSubquerySource(startToken, withClause);
@@ -835,7 +835,14 @@ export class Parser {
 
 		let subquery: AST.SelectStmt | AST.ValuesStmt;
 
-		if (this.check(TokenType.SELECT)) {
+		if (this.check(TokenType.WITH)) {
+			// (WITH ... SELECT ...) — the WITH attaches to the inner SELECT.
+			const innerWith = this.tryParseWithClause();
+			const selectToken = this.consume(TokenType.SELECT, "Expected 'SELECT' after WITH in subquery.");
+			const sel = this.selectStatement(selectToken, innerWith);
+			sel.withClause = innerWith;
+			subquery = sel;
+		} else if (this.check(TokenType.SELECT)) {
 			// Consume the SELECT token and pass it as startToken to selectStatement
 			const selectToken = this.advance();
 			subquery = this.selectStatement(selectToken, withClause);
@@ -844,7 +851,7 @@ export class Parser {
 			const valuesToken = this.advance();
 			subquery = this.valuesStatement(valuesToken);
 		} else {
-			throw this.error(this.peek(), "Expected 'SELECT' or 'VALUES' in subquery.");
+			throw this.error(this.peek(), "Expected 'SELECT', 'VALUES', or 'WITH' in subquery.");
 		}
 
 		this.consume(TokenType.RPAREN, "Expected ')' after subquery.");

@@ -21,6 +21,159 @@ export interface MonotonicOnInfo {
 }
 
 /**
+ * A functional dependency on a relational node's output columns: when the
+ * values of `determinants` are fixed, the values of `dependents` are also
+ * fixed for every row.
+ *
+ * Column indices are output-column indices.
+ *
+ * - `determinants` empty means "constant": the dependents take a single value
+ *   for every row in the relation. An FD `∅ → all_cols` is the canonical
+ *   marker for an "at-most-one-row" relation.
+ * - A unique key `K` is encoded as the FD `K → (all_cols \ K)`. Consumers ask
+ *   "is K a superkey?" via `isSuperkey(K, fds, columnCount)` from
+ *   `planner/util/fd-utils.ts`.
+ * - The set is non-canonical — only the FDs each operator can prove are
+ *   stored. Use `computeClosure` to derive what a set of attributes implies.
+ * - The full-relation case (`K = all_cols`, i.e. set semantics with no smaller
+ *   discoverable key) is communicated via `RelationType.isSet`, not an FD.
+ * - `guard`, when present, restricts the FD to predicates that entail every
+ *   clause in the conjunction. A guarded FD never participates in closure;
+ *   `FilterNode` activates it (strips the guard) when its predicate implies
+ *   the guard, after which it propagates as an ordinary unconditional FD.
+ */
+export interface FunctionalDependency {
+  /** Determinant column indices in the node's output. Empty array means "constant" (no row variation). */
+  readonly determinants: readonly number[];
+  /** Dependent column indices in the node's output. Non-empty. */
+  readonly dependents: readonly number[];
+  /** When defined, the FD only activates if a surrounding predicate entails every clause. */
+  readonly guard?: GuardPredicate;
+  /** Optional provenance tag — informational for diagnostics, ignored by dedup. */
+  readonly source?: ConstraintProvenance;
+}
+
+/**
+ * Origin of an inferred constraint (FD / binding / domain). Optional and
+ * informational — dedup helpers in `fd-utils.ts` compare structural fields
+ * only, so identical constraints from different sources collapse to one and
+ * the kept entry's provenance is whichever was merged first. When a declared
+ * CHECK and a hoisted assertion produce structurally-identical contributions,
+ * the table reference merges declared-check facts first, so `declared-check`
+ * wins.
+ */
+export interface ConstraintProvenance {
+  readonly kind: 'declared-check' | 'assertion';
+  /** Lowercased assertion name when kind === 'assertion'. */
+  readonly name?: string;
+}
+
+/**
+ * Predicate guarding a conditional functional dependency. All clauses must be
+ * entailed by the surrounding predicate (conjunctively) before the guarded FD
+ * activates.
+ */
+export interface GuardPredicate {
+  readonly clauses: readonly GuardClause[];
+}
+
+/**
+ * Narrow guard-clause vocabulary recognized by predicate-implies-guard
+ * checking. Each shape is something `extractEqualityFds` / EC / binding layers
+ * can already reason about, so activation is a structural check.
+ *
+ * Shapes:
+ * - `eq-literal` / `eq-column` / `is-null` — equality and null-test atoms.
+ * - `range` — open or closed interval on one column, matching `DomainConstraint`
+ *   range shape. Inclusivity flags for absent bounds are unobservable but
+ *   stored conservatively as `false`. Discharge subsumption ("filter ⊆ guard")
+ *   is via per-side bound comparison.
+ * - `or-of` — flat disjunction of the other shapes; recognizers flatten nested
+ *   `or-of` clauses at construction time so a sub-clause is never itself an
+ *   `or-of`.
+ *
+ * `IN (lit, ...)` and `NOT col` shapes are pre-normalized at recognition time
+ * into the same vocabulary (IN-list → `or-of [eq-literal]`, `NOT col` →
+ * `eq-literal { col, value: 0 }`).
+ */
+export type GuardClause =
+  | { readonly kind: 'eq-literal'; readonly column: number; readonly value: SqlValue }
+  | { readonly kind: 'eq-column'; readonly left: number; readonly right: number }
+  | { readonly kind: 'is-null'; readonly column: number; readonly negated: boolean }
+  | {
+      readonly kind: 'range';
+      readonly column: number;
+      readonly min?: SqlValue;
+      readonly max?: SqlValue;
+      readonly minInclusive: boolean;
+      readonly maxInclusive: boolean;
+    }
+  | { readonly kind: 'or-of'; readonly clauses: readonly GuardClause[] };
+
+/**
+ * A pinned-constant value associated with a `ConstantBinding`. Either a
+ * compile-time literal `SqlValue`, or a bound parameter identified by
+ * `paramRef` (numeric 1-based index for `?`, string name for `:foo`-style).
+ */
+export type ConstantValue =
+  | { readonly kind: 'literal'; readonly value: SqlValue }
+  | { readonly kind: 'parameter'; readonly paramRef: string | number };
+
+/**
+ * Output columns pinned to a single value across every row of one execution.
+ * Companion to `∅ → col` FDs: that FD records *that* a column is constant,
+ * while a `ConstantBinding` additionally records *what value* it is pinned
+ * to. Downstream rules (predicate inference through ECs, ordering pruning)
+ * consume bindings directly instead of re-walking predicate ASTs.
+ */
+export interface ConstantBinding {
+  /** Output column indices pinned to `value`. */
+  readonly attrs: readonly number[];
+  readonly value: ConstantValue;
+  /** Optional provenance tag — informational, ignored by dedup. */
+  readonly source?: ConstraintProvenance;
+}
+
+/**
+ * A bound on the values a single output column can take across every row of one
+ * execution. Sourced from declared CHECK constraints at the table reference and
+ * propagated like FDs/ECs/bindings — see `planner/util/fd-utils.ts` for the
+ * merge/project/shift helpers.
+ *
+ * - `range`: an open or closed interval. `min`/`max` are absent for unbounded
+ *   sides; `minInclusive`/`maxInclusive` are ignored when the corresponding
+ *   bound is absent.
+ * - `enum`: a finite set of allowed values.
+ *
+ * Multiple constraints may exist on the same column (and even on the same kind)
+ * — intersection is deferred to the predicate-contradiction-detection ticket.
+ */
+export type DomainConstraint =
+	| {
+		readonly kind: 'range';
+		/** Output column index. */
+		readonly column: number;
+		/** Lower bound, when known. */
+		readonly min?: SqlValue;
+		/** Upper bound, when known. */
+		readonly max?: SqlValue;
+		/** Lower bound is inclusive. Ignored when `min` is absent. */
+		readonly minInclusive: boolean;
+		/** Upper bound is inclusive. Ignored when `max` is absent. */
+		readonly maxInclusive: boolean;
+		/** Optional provenance tag — informational, ignored by dedup. */
+		readonly source?: ConstraintProvenance;
+	}
+	| {
+		readonly kind: 'enum';
+		/** Output column index. */
+		readonly column: number;
+		readonly values: ReadonlyArray<SqlValue>;
+		/** Optional provenance tag — informational, ignored by dedup. */
+		readonly source?: ConstraintProvenance;
+	};
+
+/**
  * Physical properties that execution nodes can provide or require
  */
 export interface PhysicalProperties {
@@ -31,11 +184,38 @@ export interface PhysicalProperties {
   estimatedRows?: number;
 
   /**
-   * Column sets that are guaranteed unique in the output.
-   * Unlike logical keys which are schema-defined, these are derived from
-   * the operation (e.g., DISTINCT creates a unique key on all columns)
+   * Functional dependencies that hold over the output stream. The canonical
+   * representation of "what determines what" — unique keys are encoded as
+   * FDs `K → (all_cols \ K)`, and `∅ → all_cols` encodes "at-most-one-row".
+   * Use `computeClosure` / `isSuperkey` / `hasAnyKey` / `hasSingletonFd`
+   * from `planner/util/fd-utils.ts` to query them.
    */
-  uniqueKeys?: number[][];
+  fds?: ReadonlyArray<FunctionalDependency>;
+
+  /**
+   * Equivalence classes over the node's output columns. Each class is a set
+   * of column indices known to hold equal values for every row. Derived from
+   * equality predicates and equi-join conditions.
+   */
+  equivClasses?: ReadonlyArray<ReadonlyArray<number>>;
+
+  /**
+   * Output columns pinned to a known constant value within a single execution.
+   * Mirrors `∅ → col` FDs but carries the *value* so downstream rules
+   * (predicate inference, ordering pruning) can rewrite predicates without
+   * re-walking the source predicate AST. Parameters (`?` / `:foo`) count as
+   * constants here because they are bound once before iteration.
+   */
+  constantBindings?: ReadonlyArray<ConstantBinding>;
+
+  /**
+   * Per-column value bounds (range or enum) provable for every row in the
+   * stream. Sourced from declared CHECK constraints at the table reference and
+   * propagated through unary/binary operators using the same projection rules
+   * as FDs/ECs/bindings. Multiple constraints on the same column may coexist;
+   * intersection across constraints is deferred to a follow-up ticket.
+   */
+  domainConstraints?: ReadonlyArray<DomainConstraint>;
 
   /**
    * Attributes the relation is monotonically ordered on. Stronger than `ordering`:

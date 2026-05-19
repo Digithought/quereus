@@ -11,6 +11,7 @@ import type { PlanNode, RelationalPlanNode, ScalarPlanNode, ConstantNode, TableD
 import { isRelationalNode } from '../nodes/plan-node.js';
 import type * as AST from '../../parser/ast.js';
 import type { TableSchema } from '../../schema/table.js';
+import { hasAnyKey, hasSingletonFd } from '../util/fd-utils.js';
 
 // Default row estimate when not available
 const DEFAULT_ROW_ESTIMATE = 1000;
@@ -73,16 +74,31 @@ export class PlanNodeCharacteristics {
 		return node.physical.estimatedRows ?? DEFAULT_ROW_ESTIMATE;
 	}
 
+	/**
+	 * True iff the relation is guaranteed to produce at most one row — i.e.,
+	 * the singleton FD `∅ → all_cols` holds. (Replaces the legacy `[[]]`
+	 * uniqueKeys marker.)
+	 */
 	static guaranteesUniqueRows(node: PlanNode): boolean {
-		return node.physical.uniqueKeys?.some(key => key.length === 0) === true;
+		if (!isRelationalNode(node)) return false;
+		const colCount = node.getAttributes().length;
+		if (colCount === 0) {
+			// Zero-column relation: at-most-one-row claim comes via estimatedRows
+			// since the singleton FD isn't representable.
+			return node.physical.estimatedRows === 1;
+		}
+		return hasSingletonFd(node.physical.fds, colCount);
 	}
 
+	/**
+	 * True iff the relation has at least one non-trivial unique key — i.e., an
+	 * FD whose determinants form a superkey of all output columns, with the
+	 * determinant set strictly smaller than the full column list.
+	 */
 	static hasUniqueKeys(node: PlanNode): boolean {
-		return node.physical.uniqueKeys !== undefined && node.physical.uniqueKeys.length > 0;
-	}
-
-	static getUniqueKeys(node: PlanNode): number[][] | undefined {
-		return node.physical.uniqueKeys;
+		if (!isRelationalNode(node)) return false;
+		const colCount = node.getAttributes().length;
+		return hasAnyKey(node.physical.fds, colCount);
 	}
 
 	// Relational capabilities

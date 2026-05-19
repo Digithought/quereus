@@ -156,13 +156,28 @@ export class AsofScanNode extends PlanNode implements BinaryRelationalNode {
 		const monotonicOn: readonly MonotonicOnInfo[] | undefined = leftPhys?.monotonicOn;
 		const ordering = leftPhys?.ordering;
 
+		// FDs/ECs: inherit left's contributions on left's columns. The right side's
+		// FDs are dropped — asof matches at most one right row and may NULL-pad in
+		// outer mode, neither of which preserves right-side FDs. The asof condition
+		// is an inequality, not an equality, so no equi-pair FDs are added.
+		// Constant bindings follow the same rule (inherit left only).
+		const fds = leftPhys?.fds;
+		const equivClasses = leftPhys?.equivClasses;
+		const constantBindings = leftPhys?.constantBindings;
+		const domainConstraints = leftPhys?.domainConstraints;
+
 		return {
 			ordering,
 			monotonicOn,
 			estimatedRows: this.left.estimatedRows,
-			// Drop unique keys: appending right values per left row doesn't preserve
-			// uniqueness on left's keys (and the right side has no key contribution).
-			uniqueKeys: undefined,
+			// Key-encoding FDs from left are not re-emitted here: appending right
+			// values per left row doesn't preserve uniqueness on left's keys (the
+			// asof match may be NULL-padded under `outer` and the right side has no
+			// key contribution). `fds` carries forward left's non-key dependencies.
+			fds,
+			equivClasses,
+			constantBindings,
+			domainConstraints,
 		};
 	}
 

@@ -22,12 +22,18 @@ import { ruleMonotonicRangeAccess } from './rules/access/rule-monotonic-range-ac
 import { ruleAsofStrategySelect } from './rules/access/rule-asof-strategy-select.js';
 import { ruleGrowRetrieve } from './rules/retrieve/rule-grow-retrieve.js';
 import { rulePredicatePushdown } from './rules/predicate/rule-predicate-pushdown.js';
+import { ruleAggregatePredicatePushdown } from './rules/predicate/rule-aggregate-predicate-pushdown.js';
 import { ruleFilterMerge } from './rules/predicate/rule-filter-merge.js';
+import { rulePredicateInferenceEquivalence } from './rules/predicate/rule-predicate-inference-equivalence.js';
+import { ruleSargableRangeRewrite } from './rules/predicate/rule-sargable-range-rewrite.js';
 import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
+import { ruleJoinElimination, ruleJoinEliminationUnderAggregate } from './rules/join/rule-join-elimination.js';
 // Predicate pushdown rules
 // Core optimization rules
 import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
+import { ruleGroupByFdSimplification } from './rules/aggregate/rule-groupby-fd-simplification.js';
+import { ruleOrderByFdPruning } from './rules/sort/rule-orderby-fd-pruning.js';
 import { ruleQuickPickJoinEnumeration } from './rules/join/rule-quickpick-enumeration.js';
 import { ruleJoinPhysicalSelection } from './rules/join/rule-join-physical-selection.js';
 import { ruleMonotonicMergeJoin } from './rules/join/rule-monotonic-merge-join.js';
@@ -38,6 +44,17 @@ import { ruleCteOptimization } from './rules/cache/rule-cte-optimization.js';
 import { ruleMutatingSubqueryCache } from './rules/cache/rule-mutating-subquery-cache.js';
 import { ruleInSubqueryCache } from './rules/cache/rule-in-subquery-cache.js';
 import { ruleSubqueryDecorrelation } from './rules/subquery/rule-subquery-decorrelation.js';
+import { ruleAntiJoinFkEmpty } from './rules/subquery/rule-anti-join-fk-empty.js';
+import { ruleSemiJoinFkTrivial } from './rules/subquery/rule-semi-join-fk-trivial.js';
+import {
+	ruleFilterFoldEmpty,
+	ruleProjectFoldEmpty,
+	ruleSortFoldEmpty,
+	ruleLimitOffsetFoldEmpty,
+	ruleDistinctFoldEmpty,
+	ruleJoinFoldEmpty,
+} from './rules/predicate/rule-empty-relation-folding.js';
+import { ruleFilterContradiction } from './rules/predicate/rule-filter-contradiction.js';
 import { ruleDistinctElimination } from './rules/distinct/rule-distinct-elimination.js';
 import { ruleProjectionPruning } from './rules/retrieve/rule-projection-pruning.js';
 import { ruleScalarCSE } from './rules/cache/rule-scalar-cse.js';
@@ -143,6 +160,32 @@ export class Optimizer {
 			priority: 19
 		});
 
+		// Sargable range rewrite: turn `f(col) = c` (for monotone-lossy `f` with
+		// a bucketBounds-aware logical type) into `col >= L AND col < U` so the
+		// subsequent pushdown wave can carry the bare `col op literal` shape into
+		// Retrieve / access-path selection. Runs before aggregate-predicate-pushdown
+		// (priority 19) and predicate-pushdown (priority 20) so the rewritten
+		// conjuncts ride the same pushdown pass.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'sargable-range-rewrite',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleSargableRangeRewrite,
+			priority: 18
+		});
+
+		// Aggregate-aware predicate pushdown: splits a Filter above an aggregate so
+		// conjuncts on GROUP-BY-determined columns land below the aggregate. Runs
+		// before the cross-node predicate pushdown (priority 20) so anything we
+		// push below the aggregate can propagate further via that rule.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'aggregate-predicate-pushdown',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleAggregatePredicatePushdown,
+			priority: 19
+		});
+
 		this.passManager.addRuleToPass(PassId.Structural, {
 			id: 'predicate-pushdown',
 			nodeType: PlanNodeType.Filter,
@@ -169,6 +212,50 @@ export class Optimizer {
 			priority: 22
 		});
 
+		// EC-driven predicate inference: materialize inferred equality predicates
+		// from the cross of predicate-derived constant bindings and the source's
+		// equivalence classes. Runs after predicate-pushdown (priority 20) and
+		// filter-merge (priority 21) so the predicate is already consolidated and
+		// pushdown won't immediately reabsorb the inferred conjuncts on this
+		// iteration; the Structural pass's fixed-point loop then re-runs pushdown
+		// on subsequent iterations so the new conjuncts can be carried to
+		// branch-level Retrieve pipelines.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'predicate-inference-equivalence',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: rulePredicateInferenceEquivalence,
+			priority: 22
+		});
+
+		// GROUP BY FD simplification: drop GROUP BY columns determined by other
+		// GROUP BY columns under the aggregate's output FDs + ECs. Picker MIN()
+		// aggregates re-emit the dropped columns so output attribute IDs survive.
+		// Runs after aggregate-predicate-pushdown (priority 19) so filter-derived
+		// ECs are already on the aggregate's source, and before
+		// ruleAggregatePhysical (Physical pass) so the smaller GROUP BY feeds
+		// the stream/hash decision.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'groupby-fd-simplification',
+			nodeType: PlanNodeType.Aggregate,
+			phase: 'rewrite',
+			fn: ruleGroupByFdSimplification,
+			priority: 23
+		});
+
+		// Join elimination (FK→PK): drop LEFT/INNER joins whose non-preserved side
+		// is never referenced above the join and is at-most-one-matching per a
+		// declared FK→PK relationship. Runs after predicate-pushdown (priority 20)
+		// so any pushed-up filter that *uses* the eliminable side has had a chance
+		// to land below the join (and thereby protect itself from elimination).
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'join-elimination',
+			nodeType: PlanNodeType.Project,
+			phase: 'rewrite',
+			fn: ruleJoinElimination,
+			priority: 24
+		});
+
 		// Subquery decorrelation: transform correlated EXISTS/IN into semi/anti joins
 		// Runs after predicate pushdown (priority 25 > 20) so inner predicates are already pushed
 		this.passManager.addRuleToPass(PassId.Structural, {
@@ -177,6 +264,124 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleSubqueryDecorrelation,
 			priority: 25
+		});
+
+		// IND-driven existence folding (priority 26 — runs after decorrelation has
+		// materialized EXISTS / NOT EXISTS as semi/anti joins):
+		//   - Anti-join over a covering non-null FK → Filter(L, false)
+		//   - Semi-join over a covering FK → drop join (or Filter L on IS NOT NULL
+		//     when the FK is nullable)
+		// Both rules read `lookupCoveringFK` from `util/ind-utils.ts`.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'anti-join-fk-empty',
+			nodeType: PlanNodeType.Join,
+			phase: 'rewrite',
+			fn: ruleAntiJoinFkEmpty,
+			priority: 26
+		});
+
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'semi-join-fk-trivial',
+			nodeType: PlanNodeType.Join,
+			phase: 'rewrite',
+			fn: ruleSemiJoinFkTrivial,
+			priority: 26
+		});
+
+		// Aggregate variant of join-elimination: when an Aggregate sits over an
+		// FK-covered inner join and only references the FK side (or `count(*)`),
+		// drop the join. Shares chain-walking + FK-PK alignment with
+		// ruleJoinElimination via the same module.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'join-elimination-aggregate',
+			nodeType: PlanNodeType.Aggregate,
+			phase: 'rewrite',
+			fn: ruleJoinEliminationUnderAggregate,
+			priority: 26
+		});
+
+		// ORDER BY FD pruning: drop trailing ORDER BY keys functionally determined
+		// by the leading bare-column keys (under the source's FDs + ECs). Reduces
+		// multi-key sorts to single-key sorts when a leading key (e.g. a primary
+		// key) determines the rest, which in turn lets `monotonic-limit-pushdown`
+		// (PostOptimization priority 8) fire. Structural runs before
+		// PostOptimization, so the ordering is automatic. Priority 26 — independent
+		// of `subquery-decorrelation` (25); the relative ordering across these
+		// Structural priorities is not load-bearing for this rule.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'orderby-fd-pruning',
+			nodeType: PlanNodeType.Sort,
+			phase: 'rewrite',
+			fn: ruleOrderByFdPruning,
+			priority: 26
+		});
+
+		// Predicate-contradiction folding (priority 27 — after IND rules at 26):
+		// detect when (filter predicate ∧ source domainConstraints ∧ literal
+		// constantBindings) is provably unsatisfiable, and emit EmptyRelationNode
+		// carrying the Filter's own schema. Runs alongside the empty-relation
+		// folding rules so its output cascades up the same pass.
+		//
+		// Inner-join `on`-clause contradiction is intentionally NOT registered
+		// here. The filter rule already covers WHERE clauses pushed onto the
+		// lowest Filter by `predicate-pushdown`; the join-on variant is tracked
+		// as follow-up work — it requires deciding how to preserve the join's
+		// post-rewrite output schema for parent operators that reference the
+		// right side's attribute IDs.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'filter-contradiction',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleFilterContradiction,
+			priority: 27,
+		});
+
+		// Empty-relation folding (priority 27 — after IND rules at 26): recognize
+		// provably-empty subtrees (Filter on lit-false, or any host with an
+		// EmptyRelation source under appropriate join semantics) and replace them
+		// with EmptyRelationNode carrying the host's attribute IDs. Cascades to a
+		// fixed point via the Structural pass loop.
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-filter-empty',
+			nodeType: PlanNodeType.Filter,
+			phase: 'rewrite',
+			fn: ruleFilterFoldEmpty,
+			priority: 27,
+		});
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-project-empty',
+			nodeType: PlanNodeType.Project,
+			phase: 'rewrite',
+			fn: ruleProjectFoldEmpty,
+			priority: 27,
+		});
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-sort-empty',
+			nodeType: PlanNodeType.Sort,
+			phase: 'rewrite',
+			fn: ruleSortFoldEmpty,
+			priority: 27,
+		});
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-limit-empty',
+			nodeType: PlanNodeType.LimitOffset,
+			phase: 'rewrite',
+			fn: ruleLimitOffsetFoldEmpty,
+			priority: 27,
+		});
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-distinct-empty',
+			nodeType: PlanNodeType.Distinct,
+			phase: 'rewrite',
+			fn: ruleDistinctFoldEmpty,
+			priority: 27,
+		});
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fold-join-empty',
+			nodeType: PlanNodeType.Join,
+			phase: 'rewrite',
+			fn: ruleJoinFoldEmpty,
+			priority: 27,
 		});
 
 		// Physical pass rules (bottom-up) - for logical to physical transformations

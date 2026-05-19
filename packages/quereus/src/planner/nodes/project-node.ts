@@ -3,7 +3,8 @@ import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Scala
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { Cached } from '../../util/cached.js';
-import { projectKeys } from '../util/key-utils.js';
+import { deriveProjectionColumnMap, projectKeys } from '../util/key-utils.js';
+import { addFd, projectConstantBindings, projectDomainConstraints, projectFds, superkeyToFd } from '../util/fd-utils.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { formatProjection } from '../../util/plan-formatter.js';
 import { ColumnReferenceNode } from './reference.js';
@@ -88,15 +89,10 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 				isSet: sourceType.isSet,
 				columns,
 				keys: (() => {
-					// Build source->output index map for simple column references
-					const map = new Map<number, number>();
-					this.projections.forEach((proj, outIdx) => {
-						if (proj.node instanceof ColumnReferenceNode) {
-							const colRef = proj.node as ColumnReferenceNode;
-							const srcIndex = this.source.getAttributes().findIndex(a => a.id === colRef.attributeId);
-							if (srcIndex >= 0) map.set(srcIndex, outIdx);
-						}
-					});
+					const { map } = deriveProjectionColumnMap(
+						this.source.getAttributes(),
+						this.projections.map((p, outIndex) => ({ expr: p.node, outIndex })),
+					);
 					return projectKeys(sourceType.keys, map);
 				})(),
 				// TODO: propagate row constraints that don't have projected off columns
@@ -164,36 +160,91 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const sourcePhysical = childrenPhysical[0];
-		// Build mapping from source index -> projected index for ColumnReferences
-		const map = new Map<number, number>();
 		const sourceAttrs = this.source.getAttributes();
+		const outputColCount = this.projections.length;
+
+		// monotonicOn only propagates through bare-column-reference projections —
+		// attribute identity must survive, which injectively-derived columns don't
+		// preserve (the column changes value space).
 		const preservedAttrIds = new Set<number>();
-		this.projections.forEach((proj, outIdx) => {
+		for (const proj of this.projections) {
 			if (proj.node instanceof ColumnReferenceNode) {
-				const colRef = proj.node as ColumnReferenceNode;
-				const srcIndex = sourceAttrs.findIndex(a => a.id === colRef.attributeId);
-				if (srcIndex >= 0 && !map.has(srcIndex)) map.set(srcIndex, outIdx);
-				// Track attrIds preserved by trivial column-reference projections.
-				// Until expression-properties land, only these survive monotonicOn.
-				preservedAttrIds.add(colRef.attributeId);
+				preservedAttrIds.add(proj.node.attributeId);
 			}
-		});
-		const uniqueKeys = (sourcePhysical?.uniqueKeys || [])
-			.map(key => {
-				const projected: number[] = [];
-				for (const col of key) {
-					const outIdx = map.get(col);
-					if (outIdx === undefined) return null;
-					projected.push(outIdx);
+		}
+
+		const { map, injectivePairs } = deriveProjectionColumnMap(
+			sourceAttrs,
+			this.projections.map((p, outIndex) => ({ expr: p.node, outIndex })),
+		);
+
+		// Project the source's logical unique keys (from RelationType) through the
+		// column map: each surviving key K' becomes the FD `K' → (all_other_out_cols)`
+		// on the projection's output, carrying the "key-ness" claim through.
+		const sourceLogicalKeys = this.source.getType().keys.map(k => k.map(ref => ref.index));
+		const projectedKeys: number[][] = [];
+		for (const key of sourceLogicalKeys) {
+			const projected: number[] = [];
+			let miss = false;
+			for (const col of key) {
+				const outIdx = map.get(col);
+				if (outIdx === undefined) { miss = true; break; }
+				projected.push(outIdx);
+			}
+			if (!miss) projectedKeys.push(projected);
+		}
+
+		// When both a bare-column projection and an injective derivation of the
+		// same source column appear (`SELECT id, id+1 FROM t`), the derived column
+		// is *also* a unique key — substitute it into each surviving key.
+		for (const [srcIdx, outIdx] of injectivePairs) {
+			const bareOut = map.get(srcIdx);
+			if (bareOut === undefined || bareOut === outIdx) continue;
+			const variants: number[][] = [];
+			for (const key of projectedKeys) {
+				if (key.includes(bareOut) && !key.includes(outIdx)) {
+					variants.push(key.map(c => (c === bareOut ? outIdx : c)));
 				}
-				return projected;
-			})
-			.filter((k): k is number[] => k !== null);
+			}
+			projectedKeys.push(...variants);
+		}
+
+		// FDs/ECs project through the same column mapping. Non-trivial expressions
+		// drop out of the mapping, so any FD/EC that references them is dropped —
+		// except for injective unary projections (`id + 1`, `-id`, ...) which the
+		// augmented map carries through and which additionally emit a
+		// bi-directional FD when both the bare and derived columns are projected.
+		let fds = projectFds(sourcePhysical?.fds ?? [], map);
+		for (const key of projectedKeys) {
+			const keyFd = superkeyToFd(key, outputColCount);
+			if (keyFd) fds = addFd(fds, keyFd, { keyHints: projectedKeys });
+		}
+		for (const [srcIdx, outIdx] of injectivePairs) {
+			const bareOut = map.get(srcIdx);
+			if (bareOut === undefined || bareOut === outIdx) continue;
+			fds = addFd(fds, { determinants: [bareOut], dependents: [outIdx] }, { keyHints: projectedKeys });
+			fds = addFd(fds, { determinants: [outIdx], dependents: [bareOut] }, { keyHints: projectedKeys });
+		}
+		const projectedEquiv: number[][] = [];
+		for (const cls of sourcePhysical?.equivClasses ?? []) {
+			const mapped: number[] = [];
+			for (const c of cls) {
+				const out = map.get(c);
+				if (out !== undefined && !mapped.includes(out)) mapped.push(out);
+			}
+			if (mapped.length >= 2) projectedEquiv.push(mapped.sort((a, b) => a - b));
+		}
+		const projectedBindings = projectConstantBindings(sourcePhysical?.constantBindings ?? [], map);
+		const projectedDomains = projectDomainConstraints(sourcePhysical?.domainConstraints ?? [], map);
+
 		return {
 			estimatedRows: this.source.estimatedRows,
 			ordering: projectOrdering(sourcePhysical?.ordering, map),
-			uniqueKeys,
 			monotonicOn: projectMonotonicOnByAttrId(sourcePhysical?.monotonicOn, preservedAttrIds),
+			fds: fds.length > 0 ? fds : undefined,
+			equivClasses: projectedEquiv.length > 0 ? projectedEquiv : undefined,
+			constantBindings: projectedBindings.length > 0 ? projectedBindings : undefined,
+			domainConstraints: projectedDomains.length > 0 ? projectedDomains : undefined,
 		};
 	}
 

@@ -7,6 +7,7 @@ import { formatExpressionList } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { ColumnReferenceNode } from './reference.js';
+import { propagateAggregateFds } from './aggregate-node.js';
 
 /**
  * Physical node representing a streaming aggregate operation.
@@ -194,19 +195,27 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
     }
   }
 
-  computePhysical(_childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+  computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+    const sourcePhysical = childrenPhysical[0];
+    const { fds, equivClasses, constantBindings, domainConstraints } = propagateAggregateFds(
+      this.source.getAttributes(),
+      this.groupBy,
+      sourcePhysical,
+      this.getAttributes().length,
+    );
+
     return {
       estimatedRows: this.estimatedRows,
       // Stream aggregate preserves ordering on GROUP BY columns
       ordering: this.groupBy.length > 0 ?
         this.groupBy.map((_, idx) => ({ column: idx, desc: false })) :
         undefined,
-      // Aggregation creates unique keys on GROUP BY columns
-      uniqueKeys: this.groupBy.length > 0 ?
-        [this.groupBy.map((_, idx) => idx)] :
-        [[]], // Single row if no GROUP BY
       // Aggregation boundary: drop monotonicOn (the grouped relation is a set).
       monotonicOn: undefined,
+      fds,
+      equivClasses,
+      constantBindings,
+      domainConstraints,
     };
   }
 
@@ -244,9 +253,6 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
       }));
     }
 
-    // Expose logical unique keys: group-by columns (0..groupCount-1) or [[]] for global aggregate
-    const groupCount = this.groupBy.length;
-    props.uniqueKeys = groupCount > 0 ? [Array.from({ length: groupCount }, (_, i) => i)] : [[]];
     return props;
   }
 

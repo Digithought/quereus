@@ -54,6 +54,15 @@ export class SchemaManager {
 	private defaultVTabModuleArgs: Record<string, SqlValue> = {};
 	private db: Database;
 	private changeNotifier = new SchemaChangeNotifier();
+	/**
+	 * Re-entrancy guard: when truthy, optimizer-side assertion hoisting is
+	 * suppressed. Set by `AssertionEvaluator` while compiling an assertion's
+	 * own violation query — without this guard, the hoist would make the
+	 * violation query plan to empty (the optimizer would trust the assertion
+	 * to prove its own non-violation), defeating commit-time enforcement.
+	 * See `assertion-hoist-cache.ts` and `core/database-assertions.ts`.
+	 */
+	private assertionHoistSuppressed: number = 0;
 
 	/**
 	 * Creates a new schema manager
@@ -240,10 +249,85 @@ export class SchemaManager {
 	}
 
 	/**
+	 * Adds (or replaces) an assertion in the named schema, firing
+	 * `assertion_added` or `assertion_modified` events as appropriate.
+	 * The Schema object itself does not hold a notifier; this wrapper exists
+	 * so optimizer caches (e.g. assertion-hoist) can invalidate on change.
+	 */
+	addAssertion(schemaName: string, assertion: IntegrityAssertionSchema): void {
+		const schema = this.schemas.get(schemaName.toLowerCase());
+		if (!schema) {
+			throw new QuereusError(`Schema not found: ${schemaName}`, StatusCode.ERROR);
+		}
+		const existing = schema.getAssertion(assertion.name);
+		schema.addAssertion(assertion);
+		if (existing) {
+			this.changeNotifier.notifyChange({
+				type: 'assertion_modified',
+				schemaName: schemaName,
+				objectName: assertion.name,
+				oldObject: existing,
+				newObject: assertion,
+			});
+		} else {
+			this.changeNotifier.notifyChange({
+				type: 'assertion_added',
+				schemaName: schemaName,
+				objectName: assertion.name,
+				newObject: assertion,
+			});
+		}
+	}
+
+	/**
+	 * Removes an assertion from the named schema, firing `assertion_removed`
+	 * on success. Returns true iff the assertion existed and was removed.
+	 */
+	removeAssertion(schemaName: string, name: string): boolean {
+		const schema = this.schemas.get(schemaName.toLowerCase());
+		if (!schema) return false;
+		const existing = schema.getAssertion(name);
+		if (!existing) return false;
+		const removed = schema.removeAssertion(name);
+		if (removed) {
+			this.changeNotifier.notifyChange({
+				type: 'assertion_removed',
+				schemaName: schemaName,
+				objectName: name,
+				oldObject: existing,
+			});
+		}
+		return removed;
+	}
+
+	/**
 	 * Gets the schema change notifier for listening to schema changes
 	 */
 	getChangeNotifier(): SchemaChangeNotifier {
 		return this.changeNotifier;
+	}
+
+	/**
+	 * True when assertion-hoisting must be suppressed (the caller is currently
+	 * planning an assertion's own violation query). Read by
+	 * `getAssertionHoistedConstraints`.
+	 */
+	isAssertionHoistSuppressed(): boolean {
+		return this.assertionHoistSuppressed > 0;
+	}
+
+	/**
+	 * Run `fn` with assertion-hoisting suppressed. Re-entrant via a depth
+	 * counter so nested suppressions compose. Always restores the previous
+	 * state, even when `fn` throws.
+	 */
+	withSuppressedAssertionHoist<T>(fn: () => T): T {
+		this.assertionHoistSuppressed++;
+		try {
+			return fn();
+		} finally {
+			this.assertionHoistSuppressed--;
+		}
 	}
 
 	/**
@@ -675,9 +759,10 @@ export class SchemaManager {
 	): {
 		columns: ColumnSchema[];
 		pkDefinition: ReadonlyArray<import('./table.js').PrimaryKeyColumnDefinition>;
+		pkDefaultConflict: import('../common/constants.js').ConflictResolution | undefined;
 	} {
 		const preliminaryColumnSchemas: ColumnSchema[] = astColumns.map(colDef => columnDefToSchema(colDef, defaultNotNull));
-		const pkDefinition = findPKDefinition(preliminaryColumnSchemas, astConstraints);
+		const { pkDef: pkDefinition, defaultConflict: pkDefaultConflict } = findPKDefinition(preliminaryColumnSchemas, astConstraints);
 
 		const columns = preliminaryColumnSchemas.map((col, idx) => {
 			const isPkColumn = pkDefinition.some(pkCol => pkCol.index === idx);
@@ -692,7 +777,7 @@ export class SchemaManager {
 			};
 		});
 
-		return { columns, pkDefinition };
+		return { columns, pkDefinition, pkDefaultConflict };
 	}
 
 	/**
@@ -888,7 +973,7 @@ export class SchemaManager {
 		const defaultNotNull = defaultNullability === 'not_null';
 
 		const astColumns = stmt.columns || [];
-		const { columns, pkDefinition } = this.buildColumnSchemas(astColumns, stmt.constraints, defaultNotNull);
+		const { columns, pkDefinition, pkDefaultConflict } = this.buildColumnSchemas(astColumns, stmt.constraints, defaultNotNull);
 		const checkConstraints = this.extractCheckConstraints(astColumns, stmt.constraints);
 		const columnIndexMap = buildColumnIndexMap(columns);
 		const foreignKeys = this.extractForeignKeys(astColumns, stmt.constraints, columnIndexMap, tableName, targetSchemaName);
@@ -919,6 +1004,7 @@ export class SchemaManager {
 			columns: Object.freeze(columns),
 			columnIndexMap,
 			primaryKeyDefinition: pkDefinition,
+			primaryKeyDefaultConflict: pkDefaultConflict,
 			checkConstraints: Object.freeze(checkConstraints),
 			foreignKeys: foreignKeys.length > 0 ? Object.freeze(foreignKeys) : undefined,
 			uniqueConstraints: uniqueConstraints.length > 0 ? Object.freeze(uniqueConstraints) : undefined,
@@ -1256,6 +1342,7 @@ export class SchemaManager {
 				name: indexSchema.name,
 				columns: Object.freeze(indexSchema.columns.map(c => c.index)),
 				predicate: indexSchema.predicate,
+				derivedFromIndex: indexSchema.name,
 			};
 			const updatedConstraints = [...(tableSchema.uniqueConstraints ?? []), newConstraint];
 			result.uniqueConstraints = Object.freeze(updatedConstraints);
@@ -1311,13 +1398,20 @@ export class SchemaManager {
 			}
 		}
 
-		// Remove the index from the table schema
+		// Remove the index from the table schema, along with any uniqueConstraint
+		// that was synthesized from this index (see addIndexToTableSchema).
 		const updatedIndexes = (ownerTable.indexes || []).filter(
 			idx => idx.name.toLowerCase() !== lowerIndexName
+		);
+		const updatedUniqueConstraints = (ownerTable.uniqueConstraints ?? []).filter(
+			uc => uc.derivedFromIndex?.toLowerCase() !== lowerIndexName
 		);
 		const updatedTableSchema: TableSchema = {
 			...ownerTable,
 			indexes: Object.freeze(updatedIndexes),
+			uniqueConstraints: updatedUniqueConstraints.length > 0
+				? Object.freeze(updatedUniqueConstraints)
+				: undefined,
 		};
 		schema.addTable(updatedTableSchema);
 
