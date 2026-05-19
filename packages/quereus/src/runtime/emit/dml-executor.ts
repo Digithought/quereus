@@ -14,7 +14,7 @@ import { hasNativeEventSupport } from '../../util/event-support.js';
 import { sqlValuesEqual } from '../../util/comparison.js';
 import { withAsyncRowContext } from '../context-helpers.js';
 import type { RowDescriptor } from '../../planner/nodes/plan-node.js';
-import { executeForeignKeyActions, assertNoRestrictedChildrenForParentMutation } from '../foreign-key-actions.js';
+import { executeForeignKeyActions, assertTransitiveRestrictsForParentMutation } from '../foreign-key-actions.js';
 
 /**
  * Module-scope counter producing unique statement-savepoint names across
@@ -537,10 +537,12 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 
 				// Defense-in-depth RESTRICT enforcement: the plan-time `NOT EXISTS`
 				// check is the primary path, but some vtab modules evaluate the
-				// embedded subquery differently from a plain row scan. Re-run the
-				// check via a direct `select` so any backend sees a consistent
-				// enforcement path.
-				await assertNoRestrictedChildrenForParentMutation(ctx.db, tableSchema, 'update', oldRow, newRow);
+				// embedded subquery differently from a plain row scan. Pre-walk
+				// the transitive cascade closure so RESTRICTs at any depth fire
+				// BEFORE vtab.update — needed for rowid-mode backends (lamina)
+				// where post-mutation OLD-value scans dereference through the
+				// just-mutated parent and find zero rows.
+				await assertTransitiveRestrictsForParentMutation(ctx.db, tableSchema, 'update', oldRow, newRow);
 
 				const args: UpdateArgs = {
 					operation: 'update',
@@ -657,7 +659,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 
 				// Defense-in-depth RESTRICT enforcement — see comment on the UPDATE
 				// path above.
-				await assertNoRestrictedChildrenForParentMutation(ctx.db, tableSchema, 'delete', oldRow);
+				await assertTransitiveRestrictsForParentMutation(ctx.db, tableSchema, 'delete', oldRow);
 
 				const args: UpdateArgs = {
 					operation: 'delete',

@@ -81,6 +81,153 @@ export async function executeForeignKeyActions(
 }
 
 /**
+ * Pre-walk the FK action graph rooted at `parentTable` and assert that no
+ * RESTRICT child anywhere in the transitive cascade closure blocks the
+ * mutation. Reads happen at call time — the caller is responsible for
+ * invoking this BEFORE `vtab.update` runs, so OLD-value scans still resolve
+ * for backends with rowid-mode FK columns (lamina) where post-mutation
+ * scans would dereference through the new parent value.
+ *
+ * The walk:
+ *   1. Runs the existing direct RESTRICT scan
+ *      (`assertNoRestrictedChildrenForParentMutation`) for `parentTable`.
+ *   2. For each child FK with action `cascade` / `setNull` / `setDefault`
+ *      that would propagate a column change (UPDATE: parent's referenced
+ *      column changed; DELETE: always), enumerates the matching child
+ *      rows and computes the would-be post-cascade row. Recurses with the
+ *      child as the new "parent" — for UPDATE with `cascade` the recursion
+ *      carries the new FK column values forward; for DELETE the recursion
+ *      treats the cascade as another DELETE; SET NULL recurses with the
+ *      child's projected new row.
+ *   3. Cycle detection via a `visited` set keyed by
+ *      `${schemaName}.${tableName}` (matches the existing walker's key).
+ */
+export async function assertTransitiveRestrictsForParentMutation(
+	db: Database,
+	parentTable: TableSchema,
+	operation: 'delete' | 'update',
+	oldRow: Row,
+	newRow?: Row,
+	visited?: Set<string>,
+): Promise<void> {
+	log('TRANSITIVE entry: parent=%s op=%s fk-pragma=%o', parentTable.name, operation, db.options.getBooleanOption('foreign_keys'));
+	if (!db.options.getBooleanOption('foreign_keys')) return;
+
+	const visitedSet = visited ?? new Set<string>();
+	const parentKey = `${parentTable.schemaName}.${parentTable.name}`.toLowerCase();
+	if (visitedSet.has(parentKey)) return;
+	visitedSet.add(parentKey);
+
+	try {
+		// Step 1: direct RESTRICT scan for this parent.
+		log('TRANSITIVE step1: parent=%s op=%s', parentTable.name, operation);
+		await assertNoRestrictedChildrenForParentMutation(db, parentTable, operation, oldRow, newRow);
+
+		// Step 2: recurse through cascading children that would propagate a
+		// referenced-column change. For each FK whose action would rewrite or
+		// delete child rows, scan the matching children NOW (pre-mutation, so
+		// the parent's OLD values still resolve), compute the projected child
+		// row, and recurse with that child as the new "parent".
+		const parentSchemaLower = parentTable.schemaName.toLowerCase();
+		const parentTableLower = parentTable.name.toLowerCase();
+
+		for (const schema of db.schemaManager._getAllSchemas()) {
+			for (const childTable of schema.getAllTables()) {
+				if (!childTable.foreignKeys) continue;
+
+				for (const fk of childTable.foreignKeys) {
+					if (fk.referencedTable.toLowerCase() !== parentTableLower) continue;
+					const targetSchema = fk.referencedSchema ?? childTable.schemaName;
+					if (targetSchema.toLowerCase() !== parentSchemaLower) continue;
+
+					const action = operation === 'delete' ? fk.onDelete : fk.onUpdate;
+					if (action !== 'cascade' && action !== 'setNull' && action !== 'setDefault') continue;
+
+					const parentColIndices = resolveReferencedColumns(fk, parentTable);
+					if (parentColIndices.length !== fk.columns.length) continue;
+
+					// MATCH SIMPLE: NULL parent values cannot be referenced.
+					const oldParentValues = parentColIndices.map(idx => oldRow[idx]) as SqlValue[];
+					if (oldParentValues.some(v => v === null || v === undefined)) continue;
+
+					// UPDATE-only short-circuit: skip if no referenced parent column changed.
+					let newParentValues: SqlValue[] | undefined;
+					if (operation === 'update' && newRow !== undefined) {
+						let anyChanged = false;
+						for (const idx of parentColIndices) {
+							if (!sqlValuesEqual(oldRow[idx] as SqlValue, newRow[idx] as SqlValue)) {
+								anyChanged = true;
+								break;
+							}
+						}
+						if (!anyChanged) continue;
+						newParentValues = parentColIndices.map(idx => newRow[idx]) as SqlValue[];
+					}
+
+					// Scan child rows that match the OLD parent values.
+					const childColQuoted = fk.columns.map(idx => quoteIdentifier(childTable.columns[idx].name));
+					const whereClause = childColQuoted.map(c => `${c} = ?`).join(' AND ');
+					const schemaPrefix = childTable.schemaName.toLowerCase() !== 'main'
+						? `${quoteIdentifier(childTable.schemaName)}.`
+						: '';
+					const sql = `select * from ${schemaPrefix}${quoteIdentifier(childTable.name)} where ${whereClause}`;
+
+					log('TRANSITIVE pre-walk: %s with params %o', sql, oldParentValues);
+
+					const stmt = db.prepare(sql);
+					try {
+						stmt.bindAll(oldParentValues);
+						for await (const childOldRow of stmt._iterateRowsRaw()) {
+							let childNewRow: Row | undefined;
+							let childOp: 'delete' | 'update';
+
+							if (action === 'cascade' && operation === 'delete') {
+								childOp = 'delete';
+								childNewRow = undefined;
+							} else if (action === 'cascade' && operation === 'update' && newParentValues) {
+								childOp = 'update';
+								const next = [...(childOldRow as Row)] as SqlValue[];
+								for (let i = 0; i < fk.columns.length; i++) {
+									next[fk.columns[i]] = newParentValues[i];
+								}
+								childNewRow = next as Row;
+							} else if (action === 'setNull') {
+								childOp = 'update';
+								const next = [...(childOldRow as Row)] as SqlValue[];
+								for (let i = 0; i < fk.columns.length; i++) {
+									next[fk.columns[i]] = null;
+								}
+								childNewRow = next as Row;
+							} else if (action === 'setDefault') {
+								// SET DEFAULT recursion: pass the child OLD row as both
+								// old and new. The recursion's column-change short-circuit
+								// will treat this as "no FK column moved" and the per-target
+								// cascade SQL (executeSingleFKAction) still fires its own
+								// RESTRICT enforcement for non-rowid-chained backends. This
+								// matches the coverage gap SET DEFAULT already has in
+								// rowid-chained backends — no regression beyond status quo.
+								childOp = 'update';
+								childNewRow = childOldRow as Row;
+							} else {
+								continue;
+							}
+
+							await assertTransitiveRestrictsForParentMutation(
+								db, childTable, childOp, childOldRow as Row, childNewRow, visitedSet,
+							);
+						}
+					} finally {
+						await stmt.finalize();
+					}
+				}
+			}
+		}
+	} finally {
+		visitedSet.delete(parentKey);
+	}
+}
+
+/**
  * Backend-agnostic RESTRICT pre-check fired by the runtime DML executor BEFORE
  * a parent DELETE or UPDATE hits the vtab. Mirrors the plan-time `NOT EXISTS`
  * synthesized by `buildParentSideFKChecks`, but uses a direct `select 1 ... limit 1`

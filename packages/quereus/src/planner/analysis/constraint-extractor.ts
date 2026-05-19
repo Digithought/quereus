@@ -908,7 +908,23 @@ export function computeCoveredKeysForConstraints(
 ): number[][] {
     const eqCols = new Set<number>();
     for (const c of constraints) {
-        if (c.op === '=') {
+        // Skip correlated equalities: `col = <outer-ref>` does not cover the
+        // LHS unique key for delta-binding purposes — the RHS varies per
+        // outer row, so the binding extractor cannot fix the LHS to a single
+        // parameter tuple. Without this guard, a correlated equality is
+        // treated as a covering equality, the relation is classified `'row'`,
+        // and the kernel dispatches a per-tuple residual whose inner key
+        // filter (`col = :pk0`) intersected with the correlated equality
+        // can collapse to a structurally-empty seek (`outer.id = 1 AND
+        // p.id = 3`), producing false-positive NOT-EXISTS violations.
+        // Discovered via `lamina-quereus-assertion-residual-correlated-
+        // binding`: lamina's planner leaves `p.id = cp.id` as a Filter over
+        // a SeqScan, whereas MemoryTable's optimizer rewrites it to an
+        // IndexSeek whose `seekKeys` are not exposed via `getPredicates`
+        // (hiding the constraint from `extractConstraintsForTable`). Both
+        // backends' analyzed plans should agree on classification; the
+        // logical fix is to honor `bindingKind` here.
+        if (c.op === '=' && c.bindingKind !== 'correlated') {
             eqCols.add(c.columnIndex);
         }
         if (c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length === 1) {

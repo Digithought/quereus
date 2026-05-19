@@ -6,7 +6,7 @@
 
 import { expect } from 'chai';
 import { Database } from '../../src/index.js';
-import { assertNoRestrictedChildrenForParentMutation } from '../../src/runtime/foreign-key-actions.js';
+import { assertNoRestrictedChildrenForParentMutation, assertTransitiveRestrictsForParentMutation } from '../../src/runtime/foreign-key-actions.js';
 
 async function expectThrows(fn: () => Promise<unknown>, messageContains: string): Promise<Error> {
 	let thrown: unknown;
@@ -170,6 +170,85 @@ describe('runtime FK RESTRICT pre-check', () => {
 
 		// oldRow for the unreferenced row: (id=2, code='BBB')
 		await assertNoRestrictedChildrenForParentMutation(db, parentSchema!, 'delete', [2, 'BBB']);
+	});
+
+	// Transitive pre-walk: a multi-hop chain where the top action is CASCADE
+	// (or SET NULL / SET DEFAULT) but a downstream child has a default
+	// RESTRICT FK. The parent mutation must abort atomically. Without the
+	// transitive pre-walk, backends that rowid-chain FK columns (lamina)
+	// silently no-op the cascade because the OLD-value scan finds zero rows
+	// after the parent's PK index entry has already been rewritten. Tracked
+	// in lamina-quereus-fk-cascade-then-restrict-check.
+	it('fires transitively when CASCADE UPDATE would propagate into a RESTRICT child', async () => {
+		await db.exec(`
+			create table fa (id integer primary key);
+			create table fb (id integer primary key,
+				foreign key (id) references fa(id) on update cascade);
+			create table fc (b_id integer primary key,
+				foreign key (b_id) references fb(id));
+			insert into fa values (1);
+			insert into fb values (1);
+			insert into fc values (1);
+		`);
+
+		await expectThrows(
+			() => db.exec('update fa set id = 2 where id = 1'),
+			"violates RESTRICT from 'fc'",
+		);
+
+		// Atomic abort: every table still reads its pre-mutation values.
+		const fa: Record<string, unknown>[] = [];
+		for await (const r of db.eval('select id from fa')) fa.push(r);
+		void expect(fa).to.deep.equal([{ id: 1 }]);
+		const fb: Record<string, unknown>[] = [];
+		for await (const r of db.eval('select id from fb')) fb.push(r);
+		void expect(fb).to.deep.equal([{ id: 1 }]);
+		const fc: Record<string, unknown>[] = [];
+		for await (const r of db.eval('select b_id from fc')) fc.push(r);
+		void expect(fc).to.deep.equal([{ b_id: 1 }]);
+	});
+
+	it('fires transitively when CASCADE DELETE would propagate into a RESTRICT child', async () => {
+		await db.exec(`
+			create table da (id integer primary key);
+			create table dbt (id integer primary key,
+				foreign key (id) references da(id) on delete cascade);
+			create table dc (b_id integer primary key,
+				foreign key (b_id) references dbt(id));
+			insert into da values (1);
+			insert into dbt values (1);
+			insert into dc values (1);
+		`);
+
+		await expectThrows(
+			() => db.exec('delete from da where id = 1'),
+			"violates RESTRICT from 'dc'",
+		);
+
+		const da: Record<string, unknown>[] = [];
+		for await (const r of db.eval('select id from da')) da.push(r);
+		void expect(da).to.deep.equal([{ id: 1 }]);
+	});
+
+	it('transitive walker direct call surfaces deepest RESTRICT', async () => {
+		await db.exec(`
+			create table ta (id integer primary key);
+			create table tb (id integer primary key,
+				foreign key (id) references ta(id) on update cascade);
+			create table tc (b_id integer primary key,
+				foreign key (b_id) references tb(id));
+			insert into ta values (1);
+			insert into tb values (1);
+			insert into tc values (1);
+		`);
+
+		const parentSchema = db.schemaManager.getTable('main', 'ta');
+		void expect(parentSchema, 'ta schema').to.exist;
+
+		await expectThrows(
+			() => assertTransitiveRestrictsForParentMutation(db, parentSchema!, 'update', [1], [2]),
+			"violates RESTRICT from 'tc'",
+		);
 	});
 
 	it('does not fire for CASCADE / SET NULL / SET DEFAULT — those go through the action walker', async () => {
