@@ -131,27 +131,10 @@ export class TransactionLayer implements Layer {
 	}
 
 	/**
-	 * Check if change tracking is enabled.
-	 */
-	isTrackingChanges(): boolean {
-		return this.pendingChanges !== null;
-	}
-
-	/**
 	 * Get pending changes for event emission.
 	 */
 	getPendingChanges(): readonly PendingChange[] {
 		return this.pendingChanges ?? [];
-	}
-
-	/**
-	 * Copy change tracking state from another layer (for savepoint snapshots).
-	 */
-	copyChangeTrackingFrom(source: TransactionLayer): void {
-		if (source.pendingChanges) {
-			this.pendingChanges = [...source.pendingChanges];
-		}
-		this._hasModifications = source._hasModifications;
 	}
 
 	public getPkExtractorsAndComparators(schema: TableSchema): {
