@@ -46,6 +46,14 @@ export interface PredicateConstraint extends VtabPredicateConstraint {
 	valueExpr?: ScalarPlanNode | ScalarPlanNode[];
 	/** Binding kind describing how value is supplied */
 	bindingKind?: 'literal' | 'parameter' | 'correlated' | 'expression' | 'mixed';
+	/**
+	 * True when the value binding references a column outside the constrained
+	 * table — i.e. the binding varies per outer row (correlated). Orthogonal to
+	 * `bindingKind` (which describes binding *shape*); this captures row-scope
+	 * *escape*. Used by `computeCoveredKeysForConstraints` to refuse treating
+	 * such a constraint as covering the LHS unique key.
+	 */
+	correlated?: boolean;
 	/** Range specifications for OR_RANGE constraints */
 	ranges?: RangeSpec[];
 }
@@ -269,6 +277,37 @@ function findTargetRelationKey(expr: ScalarPlanNode, attributeToTableMap: Map<nu
   return undefined;
 }
 
+/**
+ * Walk a scalar subtree collecting the attributeIds of every free
+ * ColumnReference within it. Walking into children (rather than only
+ * unwrapping a top-level Cast) reaches references nested inside arithmetic,
+ * function calls, casts, etc. — e.g. `outer.id + 1`, `coalesce(outer.id, 0)`,
+ * `cast(outer.id + 1 as integer)`.
+ */
+function collectColumnRefAttributeIds(node: ScalarPlanNode): number[] {
+  const ids: number[] = [];
+  const stack: ScalarPlanNode[] = [node];
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (n.nodeType === PlanNodeType.ColumnReference) {
+      ids.push((n as unknown as ColumnReferenceNode).attributeId);
+    }
+    for (const c of n.getChildren()) {
+      stack.push(c as unknown as ScalarPlanNode);
+    }
+  }
+  return ids;
+}
+
+/**
+ * True when a value binding references any column outside the constrained
+ * table (its attributeId is absent from `tableInfo.columnIndexMap`), meaning
+ * the binding varies per outer row and cannot fix the LHS to a single tuple.
+ */
+function bindingReferencesOuterTable(valueExpr: ScalarPlanNode, tableInfo: TableInfo): boolean {
+  return collectColumnRefAttributeIds(valueExpr).some(id => !tableInfo.columnIndexMap.has(id));
+}
+
 function combineParts(parts: ScalarPlanNode[]): ScalarPlanNode | undefined {
   if (parts.length === 0) return undefined;
   if (parts.length === 1) return parts[0];
@@ -368,6 +407,11 @@ function extractBinaryConstraint(
       } else {
         result.bindingKind = 'expression';
       }
+      // Free-reference walk: a value side that touches any column outside the
+      // constrained table varies per outer row. This subsumes the bare
+      // other-table ColumnReference case ('correlated') and wrapped/general
+      // 'expression' cases like `outer.id + 1` or `cast(outer.id + 1 as int)`.
+      result.correlated = bindingReferencesOuterTable(valueSide, tableInfo);
     } else {
       result.bindingKind = 'literal';
     }
@@ -466,6 +510,10 @@ function extractInConstraint(
   if (!allLiteral) {
     result.valueExpr = expr.values as ScalarPlanNode[];
     result.bindingKind = 'mixed';
+    // A value-list element referencing an outer table makes the IN binding vary
+    // per outer row (e.g. `p.id IN (outer.id)`). Flag it so a singleton IN of
+    // this shape is not mistaken for a covering equality.
+    result.correlated = expr.values.some(v => bindingReferencesOuterTable(v, tableInfo));
   }
 
   return result;
@@ -908,23 +956,28 @@ export function computeCoveredKeysForConstraints(
 ): number[][] {
     const eqCols = new Set<number>();
     for (const c of constraints) {
-        // Skip correlated equalities: `col = <outer-ref>` does not cover the
-        // LHS unique key for delta-binding purposes — the RHS varies per
-        // outer row, so the binding extractor cannot fix the LHS to a single
-        // parameter tuple. Without this guard, a correlated equality is
+        // Skip correlated bindings: a value side that escapes the table's row
+        // scope (`col = <outer-ref>`, `col = outer.id + 1`, `col IN (outer.id)`)
+        // does not cover the LHS unique key for delta-binding purposes — the
+        // RHS varies per outer row, so the binding extractor cannot fix the LHS
+        // to a single parameter tuple. Without this guard, the constraint is
         // treated as a covering equality, the relation is classified `'row'`,
-        // and the kernel dispatches a per-tuple residual whose inner key
-        // filter (`col = :pk0`) intersected with the correlated equality
-        // can collapse to a structurally-empty seek (`outer.id = 1 AND
-        // p.id = 3`), producing false-positive NOT-EXISTS violations.
-        // Discovered via `lamina-quereus-assertion-residual-correlated-
-        // binding`: lamina's planner leaves `p.id = cp.id` as a Filter over
-        // a SeqScan, whereas MemoryTable's optimizer rewrites it to an
-        // IndexSeek whose `seekKeys` are not exposed via `getPredicates`
-        // (hiding the constraint from `extractConstraintsForTable`). Both
-        // backends' analyzed plans should agree on classification; the
-        // logical fix is to honor `bindingKind` here.
-        if (c.op === '=' && c.bindingKind !== 'correlated') {
+        // and the kernel dispatches a per-tuple residual whose inner key filter
+        // (`col = :pk0`) intersected with the correlated binding can collapse to
+        // a structurally-empty seek (`outer.id = 1 AND p.id = 3`), producing
+        // false-positive NOT-EXISTS violations.
+        //
+        // Discovered via `lamina-quereus-assertion-residual-correlated-binding`:
+        // lamina's planner leaves `p.id = cp.id` as a Filter over a SeqScan,
+        // whereas MemoryTable's optimizer rewrites it to an IndexSeek whose
+        // `seekKeys` are not exposed via `getPredicates` (hiding the constraint
+        // from `extractConstraintsForTable`). Both backends' analyzed plans
+        // should agree on classification. The `correlated` flag is computed at
+        // extraction time (where the constrained table's attribute set is known)
+        // and captures bare-, wrapped-, and singleton-IN-correlated shapes
+        // uniformly — see `bindingReferencesOuterTable`.
+        if (c.correlated) continue;
+        if (c.op === '=') {
             eqCols.add(c.columnIndex);
         }
         if (c.op === 'IN' && Array.isArray(c.value) && (c.value as unknown[]).length === 1) {
