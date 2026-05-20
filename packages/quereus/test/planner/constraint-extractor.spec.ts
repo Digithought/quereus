@@ -1107,6 +1107,21 @@ describe('Constraint Extractor — Mutation Killing Tests', () => {
 			expect(result.allConstraints[0].correlated).to.equal(false);
 		});
 
+		// Cast-wrapped IN element: `cast(outer.id)` passes isDynamicValue (single
+		// unwrapCast exposes a column ref) so it IS extracted, and the free-ref
+		// walk reaches the outer ref through the cast → correlated true. Mirrors
+		// the equality cast case for the IN path.
+		it('p.id IN (cast(outer.id)) (cast-wrapped correlated singleton) → correlated true', () => {
+			const id = colRef(100, 'id', 0);
+			const other = colRef(200, 'x', 0);
+			const expr = inNode(id, [castNode(other)]);
+			const result = extractConstraints(expr, [TABLE_A, TABLE_B]);
+			expect(result.allConstraints).to.have.length(1);
+			expect(result.allConstraints[0].op).to.equal('IN');
+			expect(result.allConstraints[0].correlated).to.equal(true);
+			expect(result.coveredKeysByTable!.get('t')!).to.have.length(0);
+		});
+
 		// Cover integration: a correlated singleton IN must not be treated as a
 		// covering key (the latent gap this ticket closes).
 		it('p.id IN (outer.id) does NOT cover the PK (coveredKeysByTable)', () => {
