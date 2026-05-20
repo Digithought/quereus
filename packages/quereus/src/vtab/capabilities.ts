@@ -19,6 +19,26 @@ export interface ModuleCapabilities {
 
 	/** Module supports range scans (not just point lookups) */
 	rangeScans?: boolean;
+
+	/**
+	 * Module owns ADD-COLUMN NOT-NULL-backfill semantics and opts out of the
+	 * engine-generic rejection.
+	 *
+	 * Default/absent ⇒ the engine rejects `ALTER TABLE … ADD COLUMN <NOT NULL,
+	 * no usable DEFAULT>` on a non-empty table before dispatching to the module
+	 * (see `validateNotNullBackfill` in `runtime/emit/alter-table.ts`).
+	 *
+	 * When true, the engine skips that pre-check and delegates the decision to
+	 * the module's `alterTable`. Intended for modules that are structurally
+	 * total for schema changes — a migration always commits and NOT NULL is
+	 * declared on the new schema and enforced at write time going forward,
+	 * rather than applied retroactively to pre-existing rows. Such a module must
+	 * still perform its own validation in `alterTable` if it wants any.
+	 *
+	 * Native modules (memory, store) leave this off, so their behavior — and
+	 * Quereus's own conformance suite — is unchanged.
+	 */
+	delegatesNotNullBackfill?: boolean;
 }
 
 /**

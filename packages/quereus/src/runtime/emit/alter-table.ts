@@ -226,8 +226,15 @@ async function runAddColumn(
 	// NOT NULL without a usable DEFAULT cannot backfill existing rows. A DEFAULT whose
 	// folded value is NULL is equivalent to "no DEFAULT" for this purpose. If the table
 	// is non-empty, reject before mutating any schema or data.
+	//
+	// A module may opt out of this engine-generic rejection via the
+	// `delegatesNotNullBackfill` capability (structurally-total modules that
+	// carry pre-existing rows forward and enforce NOT NULL at write time). When
+	// it declares the capability, the decision is left entirely to its
+	// `alterTable`. Native modules leave it off, so this still fires for them.
+	const delegatesBackfill = module.getCapabilities?.().delegatesNotNullBackfill === true;
 	const hasNotNull = columnDef.constraints?.some(c => c.type === 'notNull') ?? false;
-	if (hasNotNull) {
+	if (hasNotNull && !delegatesBackfill) {
 		const folded = defaultConstraint?.expr ? tryFoldLiteral(defaultConstraint.expr) : undefined;
 		const defaultIsNullish = !defaultConstraint || folded === undefined || folded === null;
 		if (defaultIsNullish) {

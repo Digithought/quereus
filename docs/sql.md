@@ -1140,7 +1140,7 @@ ALTER TABLE table_name ADD COLUMN col_name type [constraints];
 Adds a new column to the table. Existing rows are backfilled with the column's DEFAULT value (or NULL if no default). Restrictions:
 
 - Cannot add a PRIMARY KEY column.
-- Cannot add a NOT NULL column without a DEFAULT if the table has existing rows.
+- Cannot add a NOT NULL column without a DEFAULT if the table has existing rows — unless the table's module advertises the `delegatesNotNullBackfill` capability, in which case the engine skips this pre-check and the module's `alterTable` owns the decision (intended for structurally-total modules that carry pre-existing rows forward and enforce NOT NULL at write time going forward). Native modules (memory, store) leave the capability off, so this restriction applies to them.
 
 **DROP COLUMN**
 
