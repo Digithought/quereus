@@ -541,9 +541,14 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	/**
 	 * Executes one or more SQL statements directly.
 	 * Statements are serialized through the execution mutex. Transactions are started
-	 * lazily (just-in-time) when the first DML or DDL operation occurs. If an implicit
-	 * transaction was started during execution, it is committed on success or rolled
-	 * back on error.
+	 * lazily (just-in-time) when the first DML or DDL operation occurs. Each
+	 * statement is its own implicit-transaction boundary — matching SQLite's
+	 * autocommit semantics, where every statement either commits on success or
+	 * rolls back on failure independently of its sibling statements in the same
+	 * `exec` batch. Statements running inside an explicit transaction (user
+	 * `BEGIN`) are NOT auto-committed per-statement; they remain part of the
+	 * surrounding explicit transaction until the user issues `COMMIT` or
+	 * `ROLLBACK`.
 	 *
 	 * @param sql The SQL string(s) to execute.
 	 * @param params Optional parameters to bind.
@@ -558,20 +563,24 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		if (batch.length === 0) return;
 
 		await this._withMutex(async () => {
-			try {
-				// Execute statements - transactions are started JIT by runtime when needed
-				await this._executeStatementBatch(batch, params);
-
-				// Commit if an implicit transaction was started during execution
-				if (this.transactionManager.isImplicitTransaction()) {
-					await this._commitTransaction();
+			// Per-statement implicit-transaction scope: matches SQLite autocommit
+			// semantics so a later statement's failure (e.g. OR ABORT) does NOT
+			// roll back prior statements that already successfully committed.
+			// The `isImplicitTransaction()` gate skips this for statements
+			// running inside an explicit `BEGIN…COMMIT` block, including
+			// statements that follow a mid-batch `BEGIN`.
+			for (const statementAst of batch) {
+				try {
+					await this._executeSingleStatement(statementAst, params);
+					if (this.transactionManager.isImplicitTransaction()) {
+						await this._commitTransaction();
+					}
+				} catch (err) {
+					if (this.transactionManager.isImplicitTransaction()) {
+						await this._rollbackTransaction();
+					}
+					throw err;
 				}
-			} catch (err) {
-				// Rollback if an implicit transaction was started during execution
-				if (this.transactionManager.isImplicitTransaction()) {
-					await this._rollbackTransaction();
-				}
-				throw err;
 			}
 		});
 	}

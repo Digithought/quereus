@@ -50,3 +50,73 @@ select id, n from t_rb order by id;
 → [{"id":1,"n":10}]
 
 drop table t_rb;
+
+-- ===================================
+-- 4. OR FAIL nested under a user-level SAVEPOINT — ROLLBACK TO must work
+-- ===================================
+-- The per-row OR FAIL savepoint (`__or_fail_N`) is created and released
+-- inside the bracket. After the bracket ends, the user-level savepoint
+-- stack must remain aligned with TxnMgr's. If the per-row create/release
+-- did not broadcast to connections (the bug this exercises), per-connection
+-- stacks would drift relative to TxnMgr and ROLLBACK TO sp would restore
+-- the wrong layer.
+
+create table t_sp (id integer primary key, name text);
+insert into t_sp values (10, 'pre');
+-- run
+
+begin;
+savepoint sp1;
+-- OR FAIL succeeds for all rows: per-row create/release brackets must
+-- compose cleanly with the surrounding user savepoint.
+insert or fail into t_sp values (1, 'a'), (2, 'b'), (3, 'c');
+select id, name from t_sp order by id;
+→ [{"id":1,"name":"a"},{"id":2,"name":"b"},{"id":3,"name":"c"},{"id":10,"name":"pre"}]
+
+-- ROLLBACK TO sp1: must undo all three OR-FAIL rows, leaving only `pre`.
+rollback to savepoint sp1;
+select id, name from t_sp order by id;
+→ [{"id":10,"name":"pre"}]
+
+-- Re-INSERT under the same sp1 to verify the stack is still well-formed.
+insert or fail into t_sp values (4, 'd'), (5, 'e');
+select id, name from t_sp order by id;
+→ [{"id":4,"name":"d"},{"id":5,"name":"e"},{"id":10,"name":"pre"}]
+
+release savepoint sp1;
+commit;
+
+select id, name from t_sp order by id;
+→ [{"id":4,"name":"d"},{"id":5,"name":"e"},{"id":10,"name":"pre"}]
+
+drop table t_sp;
+
+-- ===================================
+-- 5. OR FAIL whose middle row fails, nested under a SAVEPOINT
+-- ===================================
+-- When OR FAIL aborts mid-statement, the per-row __or_fail_N savepoint for
+-- the failing row is rolled back + released. Earlier rows commit. The
+-- surrounding sp1 must still be reachable for a follow-on rollback.
+
+create table t_spf (id integer primary key, n integer check (n > 0));
+insert into t_spf values (100, 99);
+-- run
+
+begin;
+savepoint sp1;
+insert or fail into t_spf values (1, 1), (2, 2), (3, -1), (4, 4);
+-- error: CHECK
+
+-- Rows 1,2 survive; 3,4 do not. Pre-row 100 also survives.
+select id, n from t_spf order by id;
+→ [{"id":1,"n":1},{"id":2,"n":2},{"id":100,"n":99}]
+
+-- The user-level sp1 is still aligned: rollback wipes the OR-FAIL survivors.
+rollback to savepoint sp1;
+select id, n from t_spf order by id;
+→ [{"id":100,"n":99}]
+
+release savepoint sp1;
+commit;
+
+drop table t_spf;
