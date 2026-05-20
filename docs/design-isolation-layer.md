@@ -228,6 +228,16 @@ interface ModuleCapabilities {
 
   /** Module supports secondary indexes */
   secondaryIndexes?: boolean;
+
+  /** Module supports range scans (not just point lookups) */
+  rangeScans?: boolean;
+
+  /**
+   * Module owns ADD-COLUMN NOT-NULL-backfill semantics and opts out of the
+   * engine-generic rejection of NOT-NULL-without-usable-DEFAULT on non-empty
+   * tables (see `vtab/capabilities.ts` for full docs).
+   */
+  delegatesNotNullBackfill?: boolean;
 }
 
 interface VirtualTableModule {

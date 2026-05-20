@@ -320,10 +320,22 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		try {
 			try {
 				for await (const flatRow of rows) {
+					// OR FAIL per-row savepoint. Like the statement-scope wrap above,
+					// we broadcast create/release/rollback-to to every active
+					// VirtualTableConnection so per-connection savepoint stacks stay
+					// in lockstep with TransactionManager's. If a new connection
+					// registers mid-row (e.g. via CTE materialization that
+					// instantiates a new memory-backed table), Database.registerConnection
+					// replays the active depth onto it — without broadcasting our
+					// create here, that replay would offset its stack by one and a
+					// subsequent user-level ROLLBACK TO would restore the wrong layer.
 					let savepointName: string | undefined;
 					if (isFailMode) {
 						savepointName = `__or_fail_${failSavepointCounter++}`;
-						await ctx.db._createSavepoint(savepointName);
+						const depth = ctx.db._createSavepoint(savepointName);
+						for (const connection of ctx.db.getAllConnections()) {
+							await connection.createSavepoint(depth);
+						}
 					}
 
 					let rowToYield: Row | undefined;
@@ -341,8 +353,18 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 						succeeded = true;
 					} catch (e) {
 						if (savepointName) {
-							try { await ctx.db._rollbackToSavepoint(savepointName); } catch { /* swallow */ }
-							try { await ctx.db._releaseSavepoint(savepointName); } catch { /* swallow */ }
+							try {
+								const depth = ctx.db._rollbackToSavepoint(savepointName);
+								for (const connection of ctx.db.getAllConnections()) {
+									await connection.rollbackToSavepoint(depth);
+								}
+							} catch { /* swallow */ }
+							try {
+								const depth = ctx.db._releaseSavepoint(savepointName);
+								for (const connection of ctx.db.getAllConnections()) {
+									await connection.releaseSavepoint(depth);
+								}
+							} catch { /* swallow */ }
 							savepointName = undefined;
 						}
 						// Translate plain constraint violations to FAIL/ROLLBACK error subclasses
@@ -351,7 +373,10 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					}
 
 					if (succeeded && savepointName) {
-						await ctx.db._releaseSavepoint(savepointName);
+						const depth = ctx.db._releaseSavepoint(savepointName);
+						for (const connection of ctx.db.getAllConnections()) {
+							await connection.releaseSavepoint(depth);
+						}
 					}
 
 					if (rowToYield !== undefined) {
