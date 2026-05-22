@@ -1094,6 +1094,12 @@ Set `QUEREUS_FORK_STRICT=1` (or run `yarn test:fork-strict` from `packages/quere
 
 State is tracked per parent map (not globally) so concurrent unrelated drivers don't interfere and forks may freely mutate their own (fresh) maps. When the env flag is unset every helper is a no-op pass-through — production paths see vanilla `new RowContextMap()` / `new Map()`.
 
+### EagerPrefetchNode (first ParallelDriver.fork consumer)
+
+`EagerPrefetchNode` is the first physical relational node that consumes `ParallelDriver.fork()` directly. It is a pass-through whose only effect is timing: on first iteration, its emitter forks the runtime context once, immediately starts a detached "pump" that drains the child sub-tree into a bounded ring buffer, and serves the consumer from that buffer. Rows, order, attribute IDs, keys, FDs, equivalence classes, orderings, and monotonicity all pass through verbatim — only `deterministic` / `idempotent` / `readonly` propagate via the default child-merge.
+
+Because the emitter uses `ParallelDriver.fork()` without going through `drive()`, it is responsible for the strict-fork bookkeeping that `drive()` normally handles internally. `parallel-driver.ts` re-exports `bumpParentForkCounter` / `dropParentForkCounter` for this purpose: any caller using `fork()` manually must `bump` once per parent map after forking and `drop` the returned state in a `finally` block once the fork's iteration is complete. Don't import these from `strict-fork.ts` directly — that module is internal.
+
 ## Incremental Delta Runtime (Design)
 
 Quereus can reuse a single incremental runtime to power multiple features that react to base-table changes: transaction-deferred assertions, materialized views, and future trigger-like facilities. The core idea is to execute only the affected slice of a registered query at transaction boundaries using binding-aware residual plans.

@@ -10,6 +10,13 @@ import {
 } from './strict-fork.js';
 
 /**
+ * Strict-fork bookkeeping helpers, re-exported for consumers that use
+ * {@link ParallelDriver.fork} directly without going through {@link ParallelDriver.drive}.
+ * Manual users are responsible for calling these around the fork's lifetime.
+ */
+export { bumpParentForkCounter, dropParentForkCounter };
+
+/**
  * Options controlling {@link ParallelDriver.drive} execution.
  */
 export interface ParallelDriveOptions {

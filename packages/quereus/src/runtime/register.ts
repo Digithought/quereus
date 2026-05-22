@@ -54,6 +54,7 @@ import { emitBloomJoin } from './emit/bloom-join.js';
 import { emitMergeJoin } from './emit/merge-join.js';
 import { emitAsofScan } from './emit/asof-scan.js';
 import { emitCache } from './emit/cache.js';
+import { emitEagerPrefetch } from './emit/eager-prefetch.js';
 import { emitReturning } from './emit/returning.js';
 import { emitSink } from './emit/sink.js';
 import { emitBetween } from './emit/between.js';
@@ -163,6 +164,9 @@ export function registerEmitters() {
 
 	// Cache emitter
 	registerEmitter(PlanNodeType.Cache, emitCache as EmitterFunc);
+
+	// Eager prefetch emitter
+	registerEmitter(PlanNodeType.EagerPrefetch, emitEagerPrefetch as EmitterFunc);
 
 	// Sink emitter
 	registerEmitter(PlanNodeType.Sink, emitSink as EmitterFunc);
