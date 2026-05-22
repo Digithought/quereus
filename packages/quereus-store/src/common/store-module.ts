@@ -747,6 +747,13 @@ export class StoreModule implements VirtualTableModule<StoreTable, StoreModuleCo
 				return updatedSchema;
 			}
 
+			case 'addConstraint': {
+				throw new QuereusError(
+					`Store table does not support ADD CONSTRAINT ${change.constraint.type}`,
+					StatusCode.UNSUPPORTED,
+				);
+			}
+
 			case 'alterColumn': {
 				const colNameLower = change.columnName.toLowerCase();
 				const colIndex = oldSchema.columns.findIndex(c => c.name.toLowerCase() === colNameLower);
