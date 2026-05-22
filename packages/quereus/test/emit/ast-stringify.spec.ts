@@ -237,5 +237,18 @@ describe('Emit: ast-stringify AST round-trip', () => {
 			const seed = reparsed.items.find(i => i.type === 'declaredSeed') as DeclaredSeed;
 			expect(seed.seedData?.[0]).to.deep.equal([1, "O'Brien"]);
 		});
+
+		it('preserves declared seed with explicit column list', () => {
+			const sql = "declare schema main { table T (id integer, name text, primary key (id)); seed T values (id, name) values ((1, 'Alice'), (2, 'Bob')) }";
+			const original = declared(sql);
+			const reparsed = parse(astToString(original)) as DeclareSchemaStmt;
+			const seed = reparsed.items.find(i => i.type === 'declaredSeed') as DeclaredSeed;
+			expect(seed).to.exist;
+			expect(seed.columns).to.deep.equal(['id', 'name']);
+			expect(seed.seedData).to.deep.equal([
+				[1, 'Alice'],
+				[2, 'Bob'],
+			]);
+		});
 	});
 });
