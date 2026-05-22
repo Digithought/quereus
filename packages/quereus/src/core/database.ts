@@ -1210,19 +1210,90 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		this.transactionManager.recordUpdate(baseTable, oldRow, newRow, pkIndices);
 	}
 
-	/** Create a named savepoint, returning its depth index */
+	/**
+	 * Create a named savepoint on the TransactionManager stack, returning
+	 * its depth index. Does NOT broadcast to active connections — call sites
+	 * driving real SAVEPOINT semantics (or statement/row-level placeholders)
+	 * must use `_createSavepointBroadcast` instead, or per-connection
+	 * savepoint stacks will silently desync.
+	 */
 	public _createSavepoint(name: string): number {
 		return this.transactionManager.createSavepoint(name);
 	}
 
-	/** Release a named savepoint (merges layers down to target), returns target depth */
+	/**
+	 * Release a named savepoint on the TransactionManager stack (merges layers
+	 * down to target), returns target depth. See `_createSavepoint` —
+	 * prefer `_releaseSavepointBroadcast` for any real SAVEPOINT semantics.
+	 */
 	public _releaseSavepoint(name: string): number {
 		return this.transactionManager.releaseSavepoint(name);
 	}
 
-	/** Rollback to a named savepoint (discards layers down to target) */
+	/**
+	 * Rollback to a named savepoint on the TransactionManager stack (discards
+	 * layers down to target). See `_createSavepoint` — prefer
+	 * `_rollbackToSavepointBroadcast` for any real SAVEPOINT semantics.
+	 */
 	public _rollbackToSavepoint(name: string): number {
 		return this.transactionManager.rollbackToSavepoint(name);
+	}
+
+	/**
+	 * Create a named savepoint AND broadcast it to every active connection so
+	 * per-connection savepoint stacks stay in lockstep with the
+	 * TransactionManager's stack. Returns the depth index.
+	 *
+	 * Prefer this over the bare `_createSavepoint` for any real SAVEPOINT (or
+	 * statement/row-level placeholder) — `_createSavepoint` alone only
+	 * advances the TxnMgr stack and silently desyncs per-connection stacks,
+	 * a class of bug that has bitten multiple call sites historically.
+	 * @internal
+	 */
+	public async _createSavepointBroadcast(name: string): Promise<number> {
+		const depth = this.transactionManager.createSavepoint(name);
+		for (const connection of this.getAllConnections()) {
+			await connection.createSavepoint(depth);
+		}
+		return depth;
+	}
+
+	/**
+	 * Release a named savepoint AND broadcast the release to every active
+	 * connection. See `_createSavepointBroadcast` for the rationale.
+	 * @internal
+	 */
+	public async _releaseSavepointBroadcast(name: string): Promise<number> {
+		const depth = this.transactionManager.releaseSavepoint(name);
+		for (const connection of this.getAllConnections()) {
+			await connection.releaseSavepoint(depth);
+		}
+		return depth;
+	}
+
+	/**
+	 * Roll back to a named savepoint AND broadcast the rollback to every
+	 * active connection. See `_createSavepointBroadcast` for the rationale.
+	 * @internal
+	 */
+	public async _rollbackToSavepointBroadcast(name: string): Promise<number> {
+		const depth = this.transactionManager.rollbackToSavepoint(name);
+		for (const connection of this.getAllConnections()) {
+			await connection.rollbackToSavepoint(depth);
+		}
+		return depth;
+	}
+
+	/**
+	 * Combo helper for the swallow-and-retry pattern used in DML-executor
+	 * error paths: rollback-to + release, each wrapped in its own try/catch
+	 * so a partial broadcast on rollback doesn't prevent release from running,
+	 * and a missing-name on release doesn't escape.
+	 * @internal
+	 */
+	public async _rollbackAndReleaseSavepointBroadcast(name: string): Promise<void> {
+		try { await this._rollbackToSavepointBroadcast(name); } catch { /* swallow */ }
+		try { await this._releaseSavepointBroadcast(name); } catch { /* swallow */ }
 	}
 
 	public _clearChangeLog(): void {

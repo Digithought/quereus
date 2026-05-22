@@ -337,6 +337,11 @@ export class MemoryTable extends VirtualTable {
 						'MemoryTable does not support in-place primary key alteration',
 						StatusCode.UNSUPPORTED,
 					);
+				case 'addConstraint':
+					throw new QuereusError(
+						`MemoryTable does not support ADD CONSTRAINT ${changeInfo.constraint.type}`,
+						StatusCode.UNSUPPORTED,
+					);
 				case 'alterColumn':
 					await this.manager.alterColumn({
 						columnName: changeInfo.columnName,

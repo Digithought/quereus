@@ -1,7 +1,7 @@
 import type { BaseType, ScalarType, RelationType } from '../../common/datatype.js';
 import { PlanNode, type ZeroAryRelationalNode, type ZeroAryScalarNode, type Attribute, type InjectivityResult, type MonotonicityResult, type PhysicalProperties, type FunctionalDependency, type ConstantBinding, type DomainConstraint } from './plan-node.js';
 import { addFd, closeConstantBindingsOverEcs, mergeConstantBindings, mergeDomainConstraints, mergeEquivClasses } from '../util/fd-utils.js';
-import { getCheckExtraction } from '../analysis/check-extraction.js';
+import { getCheckExtraction, type CheckExtraction } from '../analysis/check-extraction.js';
 import { getPartialUniqueGuardedFds } from '../analysis/partial-unique-extraction.js';
 import { getAssertionHoistedConstraints } from '../analysis/assertion-hoist-cache.js';
 import type { SchemaManager } from '../../schema/manager.js';
@@ -19,6 +19,16 @@ import { StatusCode } from '../../common/types.js';
 import type { AnyVirtualTableModule } from '../../vtab/module.js';
 import type { ColumnBindingProvider } from '../framework/characteristics.js';
 import type { TableAccessCapable } from '../framework/characteristics.js';
+
+/** Shared empty `CheckExtraction` instance used when a vtab module's
+ *  `permitsGrandfatheredCheckViolators` capability suppresses the CHECK
+ *  contribution lift in `TableReferenceNode.computePhysical`. */
+const EMPTY_CHECK_EXTRACTION: CheckExtraction = {
+	fds: [],
+	equivPairs: [],
+	constantBindings: [],
+	domainConstraints: [],
+};
 
 /** Represents a reference to a table in the global schema. */
 export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNode, TableAccessCapable, ColumnBindingProvider {
@@ -113,7 +123,21 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 		}
 
 		// Merge in CHECK-derived FDs/ECs/bindings/domains. Cached per-schema.
-		const checkExt = getCheckExtraction(this.tableSchema);
+		//
+		// Skipped wholesale when the owning vtab module declares the
+		// `permitsGrandfatheredCheckViolators` capability: under that contract
+		// `ALTER TABLE … ADD CHECK` against non-conforming rows succeeds and
+		// grandfathers the violators, so a declared CHECK is no longer a
+		// universal invariant over the current row set and lifting it into
+		// physical properties would let consumers (e.g. the filter-contradiction
+		// rule) fold WHERE predicates that would have matched the violators.
+		// Assertion-hoist and partial-UNIQUE contributions are independent
+		// paths and are NOT gated by this flag.
+		const permitsCheckViolators =
+			this.vtabModule.getCapabilities?.().permitsGrandfatheredCheckViolators === true;
+		const checkExt: CheckExtraction = permitsCheckViolators
+			? EMPTY_CHECK_EXTRACTION
+			: getCheckExtraction(this.tableSchema);
 		for (const fd of checkExt.fds) {
 			fds = addFd(fds, fd);
 		}

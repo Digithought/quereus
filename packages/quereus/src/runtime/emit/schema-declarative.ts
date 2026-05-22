@@ -133,6 +133,30 @@ export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruct
 		if (applyStmt.withSeed) {
 			const allSeedData = rctx.db.declaredSchemaManager.getAllSeedData(schemaName);
 			log('Seed data available for %d tables', allSeedData.size);
+			// Identify tables freshly created by this apply (declared but not
+			// in the pre-apply catalog). For those, skip the `DELETE FROM <tbl>`
+			// wipe: the table is structurally empty by construction, and the
+			// DELETE's scan would route through the host's snapshot resolver at
+			// `asOf(ep.startedAt)` — an HLC sampled BEFORE the schema-batch
+			// fact-group commit, at which point the new table did not yet
+			// exist in the fact log. Pre-existing tables retain the wipe-then-
+			// reseed semantics.
+			// Both sides of the comparison are lower-cased: `actualCatalog`
+			// table names come from the live catalog (case as declared by
+			// DDL), and `getAllSeedData` keys seed rows by `tableName.toLowerCase()`
+			// (see DeclaredSchemaManager.setSeedData). Normalising here keeps
+			// the lookup symmetric regardless of how the declared schema
+			// cased its table identifiers.
+			const preApplyTableNames = new Set(actualCatalog.tables.map(t => t.name.toLowerCase()));
+			const freshlyCreatedTables = new Set<string>();
+			for (const item of declaredSchema.items) {
+				if (item.type === 'declaredTable') {
+					const lowerName = item.tableStmt.table.name.toLowerCase();
+					if (!preApplyTableNames.has(lowerName)) {
+						freshlyCreatedTables.add(lowerName);
+					}
+				}
+			}
 			for (const [tableName, rows] of allSeedData) {
 				log('Applying seed data to %s.%s (%d rows)', schemaName, tableName, rows.length);
 
@@ -141,9 +165,11 @@ export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruct
 					? `${schemaName}.${tableName}`
 					: tableName;
 
-				// Delete existing rows, then insert seed rows in one batch
+				const isFreshlyCreated = freshlyCreatedTables.has(tableName.toLowerCase());
+				// Delete existing rows (only when the table pre-existed), then
+				// insert seed rows in one batch.
 				const deleteAndInsertSql = [
-					`DELETE FROM ${qualifiedTableName}`,
+					...(isFreshlyCreated ? [] : [`DELETE FROM ${qualifiedTableName}`]),
 					...rows.map(row => {
 						const values = row.map(v =>
 							v === null ? 'NULL' :

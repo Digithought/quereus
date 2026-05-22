@@ -301,29 +301,24 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 
 		// For non-FAIL modes (ABORT default / IGNORE / REPLACE / ROLLBACK) we wrap
 		// the whole statement in a savepoint so a mid-statement constraint failure
-		// unwinds partial writes from earlier rows. Mirrors the broadcast pattern
-		// used in runtime/emit/transaction.ts — we must create/release/rollback
-		// on every active connection so per-connection savepoint stacks stay in
-		// lockstep with the TransactionManager's stack (otherwise an outer
-		// user-level SAVEPOINT could index into a stale placeholder).
+		// unwinds partial writes from earlier rows. Use the broadcast helper so
+		// per-connection savepoint stacks stay in lockstep with the
+		// TransactionManager's stack (otherwise an outer user-level SAVEPOINT
+		// could index into a stale placeholder).
 		const wrapStatementSavepoint = !isFailMode;
 		const stmtSavepointName = wrapStatementSavepoint
 			? `__or_abort_${stmtSavepointCounter++}`
 			: undefined;
 		if (stmtSavepointName) {
-			const depth = ctx.db._createSavepoint(stmtSavepointName);
-			for (const connection of ctx.db.getAllConnections()) {
-				await connection.createSavepoint(depth);
-			}
+			await ctx.db._createSavepointBroadcast(stmtSavepointName);
 		}
 
 		try {
 			try {
 				for await (const flatRow of rows) {
 					// OR FAIL per-row savepoint. Like the statement-scope wrap above,
-					// we broadcast create/release/rollback-to to every active
-					// VirtualTableConnection so per-connection savepoint stacks stay
-					// in lockstep with TransactionManager's. If a new connection
+					// we use the broadcast helper so per-connection savepoint stacks
+					// stay in lockstep with TransactionManager's. If a new connection
 					// registers mid-row (e.g. via CTE materialization that
 					// instantiates a new memory-backed table), Database.registerConnection
 					// replays the active depth onto it — without broadcasting our
@@ -332,10 +327,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					let savepointName: string | undefined;
 					if (isFailMode) {
 						savepointName = `__or_fail_${failSavepointCounter++}`;
-						const depth = ctx.db._createSavepoint(savepointName);
-						for (const connection of ctx.db.getAllConnections()) {
-							await connection.createSavepoint(depth);
-						}
+						await ctx.db._createSavepointBroadcast(savepointName);
 					}
 
 					let rowToYield: Row | undefined;
@@ -353,18 +345,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 						succeeded = true;
 					} catch (e) {
 						if (savepointName) {
-							try {
-								const depth = ctx.db._rollbackToSavepoint(savepointName);
-								for (const connection of ctx.db.getAllConnections()) {
-									await connection.rollbackToSavepoint(depth);
-								}
-							} catch { /* swallow */ }
-							try {
-								const depth = ctx.db._releaseSavepoint(savepointName);
-								for (const connection of ctx.db.getAllConnections()) {
-									await connection.releaseSavepoint(depth);
-								}
-							} catch { /* swallow */ }
+							await ctx.db._rollbackAndReleaseSavepointBroadcast(savepointName);
 							savepointName = undefined;
 						}
 						// Translate plain constraint violations to FAIL/ROLLBACK error subclasses
@@ -373,10 +354,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					}
 
 					if (succeeded && savepointName) {
-						const depth = ctx.db._releaseSavepoint(savepointName);
-						for (const connection of ctx.db.getAllConnections()) {
-							await connection.releaseSavepoint(depth);
-						}
+						await ctx.db._releaseSavepointBroadcast(savepointName);
 					}
 
 					if (rowToYield !== undefined) {
@@ -384,25 +362,11 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					}
 				}
 				if (stmtSavepointName) {
-					const depth = ctx.db._releaseSavepoint(stmtSavepointName);
-					for (const connection of ctx.db.getAllConnections()) {
-						await connection.releaseSavepoint(depth);
-					}
+					await ctx.db._releaseSavepointBroadcast(stmtSavepointName);
 				}
 			} catch (e) {
 				if (stmtSavepointName) {
-					try {
-						const depth = ctx.db._rollbackToSavepoint(stmtSavepointName);
-						for (const connection of ctx.db.getAllConnections()) {
-							await connection.rollbackToSavepoint(depth);
-						}
-					} catch { /* swallow */ }
-					try {
-						const depth = ctx.db._releaseSavepoint(stmtSavepointName);
-						for (const connection of ctx.db.getAllConnections()) {
-							await connection.releaseSavepoint(depth);
-						}
-					} catch { /* swallow */ }
+					await ctx.db._rollbackAndReleaseSavepointBroadcast(stmtSavepointName);
 				}
 				throw e;
 			}

@@ -1,7 +1,7 @@
 import type { Database } from '../core/database.js'; // Assuming Database class exists
 import type { VirtualTable } from './table.js';
 
-import type { ColumnDef, Expression } from '../parser/ast.js'; // <-- Add parser AST import
+import type { ColumnDef, Expression, TableConstraint } from '../parser/ast.js'; // <-- Add parser AST import
 import type { TableSchema, IndexSchema } from '../schema/table.js'; // Add import for TableSchema and IndexSchema
 import type { BestAccessPlanRequest, BestAccessPlanResult } from './best-access-plan.js';
 import type { PlanNode } from '../planner/nodes/plan-node.js';
@@ -246,6 +246,7 @@ export type SchemaChangeInfo =
 	| { type: 'dropColumn'; columnName: string }
 	| { type: 'renameColumn'; oldName: string; newName: string; newColumnDefAst?: ColumnDef }
 	| { type: 'alterPrimaryKey'; newPkColumns: ReadonlyArray<{ index: number; desc: boolean }> }
+	| { type: 'addConstraint'; constraint: TableConstraint }
 	| {
 		/**
 		 * ALTER COLUMN with exactly one attribute change.

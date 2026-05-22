@@ -39,6 +39,33 @@ export interface ModuleCapabilities {
 	 * Quereus's own conformance suite — is unchanged.
 	 */
 	delegatesNotNullBackfill?: boolean;
+
+	/**
+	 * Module may carry rows that violate a currently-declared CHECK constraint
+	 * (i.e. `ALTER TABLE … ADD CHECK` against a non-conforming table succeeds
+	 * and grandfathers the violator while declaring the CHECK on the new schema
+	 * and enforcing it on forward writes).
+	 *
+	 * Default/absent ⇒ the planner treats declared CHECKs as universal
+	 * invariants over the current row set and lifts them into FD / EC /
+	 * constant-binding / domain-constraint contributions on the
+	 * `TableReferenceNode`'s physical properties. The filter-contradiction
+	 * rule (`rules/predicate/rule-filter-contradiction.ts`) and other
+	 * consumers then constant-fold WHERE predicates that are unsatisfiable
+	 * with the CHECK — sound under the third-manifesto reading where CHECKs
+	 * are gate-on-add.
+	 *
+	 * When true, that lift is skipped for declared CHECKs on this table: the
+	 * CHECK is still enforced at write time (the engine's CHECK enforcer is
+	 * unchanged) but the planner can no longer prove `count(*) where v <= 0`
+	 * folds to `0` from `CHECK (v > 0)` alone, because a grandfathered violator
+	 * might satisfy the WHERE. Native modules (memory, store) leave this off,
+	 * so their behaviour — and Quereus's own conformance suite — is unchanged.
+	 *
+	 * Note: assertion-hoist (CREATE ASSERTION) and partial-UNIQUE FDs are
+	 * lifted by separate paths and are NOT gated by this flag.
+	 */
+	permitsGrandfatheredCheckViolators?: boolean;
 }
 
 /**
