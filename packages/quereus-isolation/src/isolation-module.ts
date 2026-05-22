@@ -558,6 +558,7 @@ export class IsolationModule implements VirtualTableModule<IsolatedTable, BaseMo
 			case 'renameColumn':
 			case 'alterColumn':
 			case 'alterPrimaryKey':
+			case 'addConstraint':
 				newData = data;
 				break;
 			default: {
