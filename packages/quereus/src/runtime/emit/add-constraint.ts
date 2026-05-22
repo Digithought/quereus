@@ -54,8 +54,6 @@ async function runAddCheck(
 		name: constraint.name || `check_${tableSchema.checkConstraints.length}`,
 		expr: constraint.expr,
 		operations: opsToMask(constraint.operations),
-		deferrable: constraint.deferrable ?? false,
-		initiallyDeferred: constraint.initiallyDeferred,
 	};
 
 	const updatedConstraints = [...tableSchema.checkConstraints, constraintSchema];

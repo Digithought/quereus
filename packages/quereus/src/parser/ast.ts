@@ -429,8 +429,6 @@ export interface ColumnConstraint extends AstNode {
 		expr: Expression;
 		stored: boolean;          // STORED or VIRTUAL
 	};
-	deferrable?: boolean;
-	initiallyDeferred?: boolean;
 	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
@@ -443,8 +441,6 @@ export interface TableConstraint extends AstNode {
 	operations?: RowOp[];       // ADDED: For CHECK ON (...)
 	onConflict?: ConflictResolution;
 	foreignKey?: ForeignKeyClause;
-	deferrable?: boolean;
-	initiallyDeferred?: boolean;
 	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 

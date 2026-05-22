@@ -321,8 +321,6 @@ function extractColumnLevelCheckConstraints(columnDef: ColumnDef): RowConstraint
 			name: con.name ?? `_check_${columnDef.name}`,
 			expr: con.expr,
 			operations: opsToMask(con.operations),
-			deferrable: con.deferrable,
-			initiallyDeferred: con.initiallyDeferred,
 			tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 		});
 	}

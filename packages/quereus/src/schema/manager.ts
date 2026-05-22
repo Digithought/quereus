@@ -796,8 +796,6 @@ export class SchemaManager {
 						name: con.name ?? `_check_${colDef.name}`,
 						expr: con.expr,
 						operations: opsToMask(con.operations),
-						deferrable: con.deferrable,
-						initiallyDeferred: con.initiallyDeferred,
 						defaultConflict: con.onConflict,
 						tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 					});
@@ -811,8 +809,6 @@ export class SchemaManager {
 					name: con.name,
 					expr: con.expr,
 					operations: opsToMask(con.operations),
-					deferrable: con.deferrable,
-					initiallyDeferred: con.initiallyDeferred,
 					defaultConflict: con.onConflict,
 					tags: con.tags && Object.keys(con.tags).length > 0 ? Object.freeze({ ...con.tags }) : undefined,
 				});
