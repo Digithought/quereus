@@ -2142,15 +2142,23 @@ export class Parser {
 
 	/** @internal */
 	private createStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt | AST.CreateAssertionStmt {
+		let isTemporary = false;
+		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
+			isTemporary = true;
+			this.advance();
+		}
+
 		if (this.peekKeyword('TABLE')) {
 			this.consumeKeyword('TABLE', "Expected 'TABLE' after CREATE.");
-			return this.createTableStatement(startToken, withClause);
+			return this.createTableStatement(startToken, isTemporary, withClause);
+		} else if (this.peekKeyword('VIEW')) {
+			this.consumeKeyword('VIEW', "Expected 'VIEW' after CREATE.");
+			return this.createViewStatement(startToken, isTemporary, withClause);
+		} else if (isTemporary) {
+			throw this.error(this.peek(), "Expected TABLE or VIEW after CREATE TEMP/TEMPORARY.");
 		} else if (this.peekKeyword('INDEX')) {
 			this.consumeKeyword('INDEX', "Expected 'INDEX' after CREATE.");
 			return this.createIndexStatement(startToken, false, withClause);
-		} else if (this.peekKeyword('VIEW')) {
-			this.consumeKeyword('VIEW', "Expected 'VIEW' after CREATE.");
-			return this.createViewStatement(startToken, withClause);
 		} else if (this.peekKeyword('ASSERTION')) {
 			this.consumeKeyword('ASSERTION', "Expected 'ASSERTION' after CREATE.");
 			return this.createAssertionStatement(startToken, withClause);
@@ -2166,13 +2174,7 @@ export class Parser {
 	 * Parse CREATE TABLE statement
 	 * @returns AST for CREATE TABLE
 	 */
-	private createTableStatement(startToken: Token, _withClause?: AST.WithClause): AST.CreateTableStmt {
-		let isTemporary = false;
-		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
-			isTemporary = true;
-			this.advance();
-		}
-
+	private createTableStatement(startToken: Token, isTemporary: boolean, _withClause?: AST.WithClause): AST.CreateTableStmt {
 		let ifNotExists = false;
 		if (this.matchKeyword('IF')) {
 			this.consumeKeyword('NOT', "Expected 'NOT' after 'IF'.");
@@ -2345,13 +2347,7 @@ export class Parser {
 	 * Parse CREATE VIEW statement
 	 * @returns AST for CREATE VIEW
 	 */
-	private createViewStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateViewStmt {
-		let isTemporary = false;
-		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
-			isTemporary = true;
-			this.advance();
-		}
-
+	private createViewStatement(startToken: Token, isTemporary: boolean, withClause?: AST.WithClause): AST.CreateViewStmt {
 		let ifNotExists = false;
 		if (this.matchKeyword('IF')) {
 			this.consumeKeyword('NOT', "Expected 'NOT' after 'IF'.");

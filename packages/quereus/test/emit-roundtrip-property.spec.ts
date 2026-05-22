@@ -306,16 +306,12 @@ function makeTableConstraintArb(columnNames: string[]): fc.Arbitrary<AST.TableCo
 // CREATE TABLE
 // ------------------------------------------------------------------------
 
-// Note: `isTemporary: true` does NOT round-trip. The stringifier emits
-// `create temp table ...`, but `createStatement` in the parser dispatches
-// directly on TABLE/VIEW/INDEX with no TEMP/TEMPORARY hop in between, so the
-// `temp` token reads as an unknown post-CREATE keyword. Treated as a known
-// finding — see the review handoff. Always false here.
 const createTableArb: fc.Arbitrary<AST.CreateTableStmt> = fc.tuple(
 	identArb,                                  // table name
 	uniqueIdents(3),                            // column names (3 fixed so table constraints have something to reference)
 	fc.boolean(),                               // ifNotExists
-).chain(([tableName, colNames, ifNotExists]) => {
+	fc.boolean(),                               // isTemporary
+).chain(([tableName, colNames, ifNotExists, isTemporary]) => {
 	const columnDefs = colNames.map(name => makeColumnDefArb(name));
 	return fc.tuple(
 		...columnDefs,
@@ -324,7 +320,7 @@ const createTableArb: fc.Arbitrary<AST.CreateTableStmt> = fc.tuple(
 		type: 'createTable',
 		table: { type: 'identifier', name: tableName },
 		ifNotExists,
-		isTemporary: false,
+		isTemporary,
 		columns: [c0, c1, c2],
 		constraints,
 	}));
@@ -340,17 +336,17 @@ const simpleSelectArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(identArb, identAr
 	from: [{ type: 'table', table: { type: 'identifier', name: table } }],
 }));
 
-// Same TEMP-can't-round-trip caveat as createTableArb; isTemporary fixed to false.
 const createViewArb: fc.Arbitrary<AST.CreateViewStmt> = fc.tuple(
 	identArb,
 	fc.boolean(),
 	fc.option(uniqueIdents(1), { nil: undefined }),
 	simpleSelectArb,
-).map(([name, ifNotExists, columns, select]): AST.CreateViewStmt => ({
+	fc.boolean(),
+).map(([name, ifNotExists, columns, select, isTemporary]): AST.CreateViewStmt => ({
 	type: 'createView',
 	view: { type: 'identifier', name },
 	ifNotExists,
-	isTemporary: false,
+	isTemporary,
 	columns,
 	select,
 }));

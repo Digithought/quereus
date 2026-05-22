@@ -116,4 +116,34 @@ describe('Emit: ast-stringify AST round-trip', () => {
 			}
 		});
 	});
+
+	describe('CREATE TEMP TABLE / VIEW dispatch', () => {
+		it('preserves isTemporary through `create temp table` round-trip', () => {
+			const sql = 'create temp table T (Id int, primary key (Id))';
+			const original = parse(sql) as CreateTableStmt;
+			expect(original.isTemporary, 'parser sets isTemporary on TEMP table').to.equal(true);
+
+			const emitted = createTableToString(original);
+			const reparsed = parse(emitted) as CreateTableStmt;
+			expect(reparsed.isTemporary, 'isTemporary survives parse → stringify → parse').to.equal(true);
+		});
+
+		it('preserves isTemporary through `create temporary table` round-trip', () => {
+			const sql = 'create temporary table T (Id int, primary key (Id))';
+			const original = parse(sql) as CreateTableStmt;
+			expect(original.isTemporary).to.equal(true);
+
+			const reparsed = parse(createTableToString(original)) as CreateTableStmt;
+			expect(reparsed.isTemporary).to.equal(true);
+		});
+
+		it('preserves isTemporary through `create temp view` round-trip', () => {
+			const sql = 'create temp view V as select 1 as N';
+			const original = parse(sql) as CreateViewStmt;
+			expect(original.isTemporary, 'parser sets isTemporary on TEMP view').to.equal(true);
+
+			const reparsed = parse(createViewToString(original)) as CreateViewStmt;
+			expect(reparsed.isTemporary).to.equal(true);
+		});
+	});
 });

@@ -53,10 +53,12 @@ drop table cr_base;
 create table tv_base (id integer primary key, val integer);
 insert into tv_base values (1, 10), (2, 20);
 
--- Quereus parser doesn't support CREATE TEMP VIEW
 create temp view tv_t as select id, val from tv_base where val > 10;
--- error:
 
+select * from tv_t;
+→ [{"id":2,"val":20}]
+
+drop view tv_t;
 drop table tv_base;
 
 -- ===================================
@@ -92,10 +94,9 @@ create view main.sq_v as select id, val from sq_base where val > 10;
 select * from main.sq_v;
 → [{"id":2,"val":20}]
 
--- Quereus parser doesn't support CREATE TEMP VIEW
 create temp view temp.sq_tv as select id from sq_base;
--- error:
 
+drop view temp.sq_tv;
 drop view main.sq_v;
 drop table sq_base;
 
