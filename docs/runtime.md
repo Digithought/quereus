@@ -1063,6 +1063,37 @@ For comprehensive optimizer details, see the [Optimizer Documentation](../optimi
 
 The driver is intentionally combinator-agnostic — it does not gather, zip, merge, or otherwise combine branch outputs. It has no plan-node or emitter consumers yet; it exists as the foundation primitive for the broader `parallel-*` track. Parallel use of virtual-table connections is out of scope here and tracked separately as a vtab concurrency-mode declaration.
 
+### Parallel runtime fork contract
+
+Three invariants govern what code may do with a `RuntimeContext` once it has been forked. They are enforced by the test harness in `packages/quereus/test/runtime/fork-contract.spec.ts`.
+
+**1. Fork policy per RuntimeContext field.** Every field has a declared policy:
+
+| Field | Policy | Meaning |
+| --- | --- | --- |
+| `db` | `shared-frozen` | Shared by reference, immutable for fork lifetime. |
+| `stmt` | `shared-frozen` | Shared by reference. |
+| `params` | `shared-frozen` | Shared by reference (bound args). |
+| `context` | `forked` | Independent per branch (snapshot-at-fork). |
+| `tableContexts` | `forked` | Independent per branch (snapshot-at-fork). |
+| `tracer` | `shared-sink` | Shared write-only instrumentation. |
+| `activeConnection` | `shared-cooperative` | Vtab's `concurrencyMode` declares concurrent-use safety. |
+| `enableMetrics` | `shared-frozen` | Boolean flag. |
+| `contextTracker` | `shared-sink` | Diagnostics sink. |
+| `planStack` | `shared-sink` | Tracing-only stack. |
+
+Adding a new field to `RuntimeContext` requires adding it to `EXPECTED_FORK_POLICY` in `fork-contract.spec.ts` with a declared policy — the test fails compile otherwise.
+
+**2. Parent immutability during fork lifetime.** A `RuntimeContext` whose `tableContexts` or `context` has been forked must not be mutated by the parent until every fork has finished being driven. The fork snapshots are taken at `fork()` time, not read-through, so parent mutations made afterward would silently diverge between parent and forks.
+
+**3. Mutation-site allowlist.** Direct `tableContexts.set/delete` and `context.set/delete` on a `RuntimeContext` are restricted to an audited set of files (`TABLE_CONTEXTS_MUTATION_ALLOWLIST` and `ROW_CONTEXT_MUTATION_ALLOWLIST` in the spec). Prefer `createRowSlot` / `withRowContext` / `withAsyncRowContext` over direct mutation. New direct-mutation sites must be added to the allowlist deliberately after weighing the fork-contract implications.
+
+### Strict-fork test mode
+
+Set `QUEREUS_FORK_STRICT=1` (or run `yarn test:fork-strict` from `packages/quereus`) to enable a Node-only proxy/subclass that wraps every `RuntimeContext.tableContexts` and `RuntimeContext.context` constructed at the five production sites (`Statement`, `Database._executeSingleStatement`, `DatabaseAssertions.executeResidualPerTuple`, `DeferredConstraintQueue.runDeferredRows`, `const-evaluator`) plus every fork's own maps. The wrapper throws a `strict-fork: parent context mutated ...` error if any `set` / `delete` / `clear` is invoked on a parent map while one of its forks is currently being driven by `ParallelDriver.drive()`.
+
+State is tracked per parent map (not globally) so concurrent unrelated drivers don't interfere and forks may freely mutate their own (fresh) maps. When the env flag is unset every helper is a no-op pass-through — production paths see vanilla `new RowContextMap()` / `new Map()`.
+
 ## Incremental Delta Runtime (Design)
 
 Quereus can reuse a single incremental runtime to power multiple features that react to base-table changes: transaction-deferred assertions, materialized views, and future trigger-like facilities. The core idea is to execute only the affected slice of a registered query at transaction boundaries using binding-aware residual plans.

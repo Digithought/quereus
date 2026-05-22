@@ -1,5 +1,13 @@
 import type { RuntimeContext } from './types.js';
 import { RowContextMap } from './context-helpers.js';
+import {
+	createStrictRowContextMap,
+	wrapTableContextsStrict,
+	markForkOf,
+	bumpParentForkCounter,
+	dropParentForkCounter,
+	strictForkEnabled,
+} from './strict-fork.js';
 
 /**
  * Options controlling {@link ParallelDriver.drive} execution.
@@ -46,24 +54,34 @@ export class ParallelDriver {
 		if (n < 0 || !Number.isInteger(n)) {
 			throw new RangeError(`ParallelDriver.fork: n must be a non-negative integer, got ${n}`);
 		}
+		const strict = strictForkEnabled();
 		const forks: RuntimeContext[] = new Array(n);
 		for (let i = 0; i < n; i++) {
-			const childContext = new RowContextMap();
+			// Fresh per-fork maps. Under strict mode the maps are wrapped so they
+			// can themselves serve as parents for sub-forks; the seed loop runs
+			// before any sub-fork is active, so the wrapper's guard passes naturally.
+			const childContext = strict ? createStrictRowContextMap() : new RowContextMap();
 			for (const [desc, getter] of rctx.context.entries()) {
 				childContext.set(desc, getter);
 			}
+			const childTableContextsRaw = new Map(rctx.tableContexts);
+			const childTableContexts = strict ? wrapTableContextsStrict(childTableContextsRaw) : childTableContextsRaw;
 			forks[i] = {
 				db: rctx.db,
 				stmt: rctx.stmt,
 				params: rctx.params,
 				context: childContext,
-				tableContexts: new Map(rctx.tableContexts),
+				tableContexts: childTableContexts,
 				tracer: rctx.tracer,
 				activeConnection: rctx.activeConnection,
 				enableMetrics: rctx.enableMetrics,
 				contextTracker: rctx.contextTracker,
 				planStack: rctx.planStack,
 			};
+			if (strict) {
+				markForkOf(childTableContexts, rctx.tableContexts);
+				markForkOf(childContext, rctx.context);
+			}
 		}
 		return forks;
 	}
@@ -123,6 +141,11 @@ async function* driveImpl<T>(
 	}
 
 	if (factories.length === 0) return;
+
+	// Strict-fork bookkeeping (no-op outside strict mode). All forks share the
+	// same parent, so reading the first fork's back-reference is sufficient.
+	const parentTableState = forks.length > 0 ? bumpParentForkCounter(forks[0].tableContexts) : null;
+	const parentRowState = forks.length > 0 ? bumpParentForkCounter(forks[0].context) : null;
 
 	const concurrency = Math.max(1, opts?.concurrency ?? factories.length);
 	const branchCount = factories.length;
@@ -248,6 +271,8 @@ async function* driveImpl<T>(
 		if (signal && onAbort) {
 			signal.removeEventListener('abort', onAbort);
 		}
+		dropParentForkCounter(parentTableState);
+		dropParentForkCounter(parentRowState);
 		await closeAll();
 	}
 }
