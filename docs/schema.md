@@ -274,6 +274,8 @@ The `declare schema` / `diff schema` / `apply schema` workflow provides order-in
 
 Destructive changes (drops) require explicit acknowledgement. See the [SQL Reference](sql.md#20-declarative-schema-optional-order-independent) for full syntax and examples.
 
+The equivalence guarantee that direct `create table` / `create view` DDL and the corresponding `declare schema` + `apply schema` body produce indistinguishable catalogs and runtime behaviour is enforced by `test/declarative-equivalence.spec.ts` (curated corpus) plus the `Declarative-schema equivalence (property)` block in `test/property.spec.ts` (`fast-check`-driven dragnet).
+
 ### Migration Order
 
 `generateMigrationDDL` produces DDL in a fixed order:

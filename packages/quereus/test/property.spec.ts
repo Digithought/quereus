@@ -7,6 +7,7 @@ import { safeJsonStringify } from '../src/util/serialization.js';
 import type { SqlValue } from '../src/common/types.js';
 import { Parser } from '../src/parser/parser.js';
 import { QuereusError } from '../src/common/errors.js';
+import { assertTableSchemaEqual, assertProbeEquivalent } from './util/schema-equivalence.js';
 
 describe('Property-Based Tests', () => {
 	let db: Database;
@@ -1365,4 +1366,178 @@ describe('Property-Based Tests', () => {
 		});
 	});
 
+	// --- 14. Declarative-schema equivalence ---
+	// Generates a small constrained table shape, builds two DBs in parallel
+	// (canonical `create table` vs `declare schema {...} apply schema`), and
+	// asserts the two end up indistinguishable at the catalog level AND under
+	// the same DML probes. Acts as the dragnet behind the curated
+	// `declarative-equivalence.spec.ts` corpus.
+	//
+	// Gated to `numRuns: 50` by default; set `PROPERTY_LONG=1` for `numRuns: 200`.
+	describe('Declarative-schema equivalence (property)', () => {
+		const NUM_RUNS = process.env.PROPERTY_LONG ? 200 : 50;
+
+		const identArb = fc.stringMatching(/^[a-z][a-z0-9_]{2,7}$/).filter(s => !RESERVED.has(s));
+		const colTypeArb = fc.constantFrom('integer', 'text');
+		const literalArb: fc.Arbitrary<{ sql: string; jsValue: unknown }> = fc.oneof(
+			fc.integer({ min: 0, max: 1000 }).map(n => ({ sql: String(n), jsValue: n })),
+			fc.stringMatching(/^[a-z0-9 ]{1,8}$/).map(s => ({ sql: `'${s}'`, jsValue: s })),
+		);
+
+		/** A simple CHECK predicate against a single column. */
+		function checkExprArb(colName: string, type: 'integer' | 'text'): fc.Arbitrary<string> {
+			if (type === 'integer') {
+				return fc.oneof(
+					fc.integer({ min: 0, max: 100 }).map(n => `${colName} >= ${n}`),
+					fc.integer({ min: 1, max: 100 }).map(n => `${colName} < ${n}`),
+				);
+			}
+			return fc.oneof(
+				fc.constant(`${colName} is not null`),
+				fc.stringMatching(/^[a-z]{1,4}$/).map(s => `${colName} <> '${s}'`),
+			);
+		}
+
+		interface ColumnShape {
+			name: string;
+			type: 'integer' | 'text';
+			notNull: boolean;
+			default?: { sql: string; jsValue: unknown };
+		}
+
+		interface TableShape {
+			tableName: string;
+			columns: ColumnShape[];
+			pkColumn: string;
+			checks: Array<{ name: string; sql: string }>;
+		}
+
+		function tableShapeArb(): fc.Arbitrary<TableShape> {
+			return fc.tuple(
+				identArb,
+				fc.uniqueArray(identArb, { minLength: 2, maxLength: 3 }),
+			).chain(([tableName, colNames]) => {
+				const colShapeArbs = colNames.map((name, i) => {
+					// First column is always integer PK to keep the shape valid for FK
+					// experiments and to give probes a deterministic id to insert.
+					if (i === 0) {
+						return fc.constant<ColumnShape>({ name, type: 'integer', notNull: true });
+					}
+					return fc.record({
+						type: colTypeArb,
+						notNull: fc.boolean(),
+						defaultOpt: fc.option(literalArb, { nil: undefined }),
+					}).map(({ type, notNull, defaultOpt }): ColumnShape => ({
+						name,
+						type,
+						notNull,
+						default: defaultOpt,
+					}));
+				});
+				return fc.tuple(...colShapeArbs).chain(columns => {
+					const cols = columns as ColumnShape[];
+					// Pick at most 1 CHECK over a single non-PK column to keep arbitrary inside the parser's accepted region.
+					const checkableCol = cols.find(c => c.name !== cols[0].name);
+					const checksArb: fc.Arbitrary<Array<{ name: string; sql: string }>> =
+						checkableCol
+							? fc.option(
+								checkExprArb(checkableCol.name, checkableCol.type).map((sql, idx) => [{ name: `chk_${idx}`, sql }]),
+								{ nil: [] as Array<{ name: string; sql: string }> },
+							)
+							: fc.constant([] as Array<{ name: string; sql: string }>);
+					return checksArb.map(checks => ({
+						tableName,
+						columns: cols,
+						pkColumn: cols[0].name,
+						checks,
+					}));
+				});
+			});
+		}
+
+		function renderCanonicalDDL(shape: TableShape): string {
+			const colSqls = shape.columns.map(c => {
+				const parts = [c.name, c.type.toUpperCase()];
+				if (c.name === shape.pkColumn) parts.push('primary key');
+				if (c.notNull && c.name !== shape.pkColumn) parts.push('not null');
+				if (c.default) parts.push(`default ${c.default.sql}`);
+				return parts.join(' ');
+			});
+			const checkSqls = shape.checks.map(c => `constraint ${c.name} check (${c.sql})`);
+			return `create table ${shape.tableName} (${[...colSqls, ...checkSqls].join(', ')})`;
+		}
+
+		function renderDeclarativeBody(shape: TableShape): string {
+			const colLines = shape.columns.map(c => {
+				const parts = [c.name, c.type.toUpperCase()];
+				if (c.name === shape.pkColumn) parts.push('PRIMARY KEY');
+				if (c.notNull && c.name !== shape.pkColumn) parts.push('NOT NULL');
+				if (c.default) parts.push(`DEFAULT ${c.default.sql}`);
+				return '\t' + parts.join(' ');
+			});
+			const checkLines = shape.checks.map(c => `\tconstraint ${c.name} check (${c.sql})`);
+			return `table ${shape.tableName} {\n${[...colLines, ...checkLines].join(',\n')}\n}`;
+		}
+
+		it('canonical DDL ≡ declarative body at the catalog + probe level', async function () {
+			await fc.assert(fc.asyncProperty(tableShapeArb(), async (shape) => {
+				const canonicalDDL = renderCanonicalDDL(shape);
+				const declarativeBody = renderDeclarativeBody(shape);
+
+				const directDb = new Database();
+				const appliedDb = new Database();
+				try {
+					await directDb.exec(canonicalDDL);
+					await appliedDb.exec(`declare schema main {\n${declarativeBody}\n}`);
+					await appliedDb.exec('apply schema main');
+
+					const directTbl = directDb.schemaManager.getTable('main', shape.tableName);
+					const appliedTbl = appliedDb.schemaManager.getTable('main', shape.tableName);
+					if (!directTbl || !appliedTbl) {
+						throw new Error(`table missing  canonicalDDL: ${canonicalDDL}\n  declarativeBody: ${declarativeBody}`);
+					}
+					try {
+						assertTableSchemaEqual(directTbl, appliedTbl, shape.tableName);
+					} catch (e) {
+						const msg = e instanceof Error ? e.message : String(e);
+						throw new Error(`${msg}\n  canonicalDDL:    ${canonicalDDL}\n  declarativeBody: ${declarativeBody}`);
+					}
+
+					// One simple count probe (cheap; catalog compare is the strong oracle here).
+					await assertProbeEquivalent(directDb, appliedDb, {
+						sql: `select count(*) as n from ${shape.tableName}`,
+						expect: { rows: [{ n: 0 }] },
+					}, shape.tableName);
+				} finally {
+					await directDb.close();
+					await appliedDb.close();
+				}
+			}), { numRuns: NUM_RUNS });
+		});
+	});
+
 });
+
+// Identifier denylist for the declarative-equivalence property arbitrary.
+// Kept lightweight (only the lexer keywords the small arbitrary can collide with).
+const RESERVED = new Set<string>([
+	'select', 'from', 'where', 'and', 'or', 'not', 'null', 'true', 'false',
+	'table', 'index', 'view', 'create', 'drop', 'alter', 'rename', 'column',
+	'add', 'set', 'primary', 'key', 'unique', 'check', 'default', 'collate',
+	'references', 'foreign', 'cascade', 'restrict', 'on', 'delete', 'update',
+	'insert', 'into', 'values', 'using', 'with', 'as', 'asc', 'desc',
+	'between', 'in', 'exists', 'case', 'when', 'then', 'else', 'end',
+	'group', 'by', 'having', 'order', 'limit', 'offset', 'distinct', 'all',
+	'inner', 'left', 'right', 'full', 'outer', 'cross', 'join', 'union',
+	'intersect', 'except', 'diff', 'cast', 'is', 'like', 'glob', 'match',
+	'regexp', 'begin', 'commit', 'rollback', 'savepoint', 'release',
+	'pragma', 'analyze', 'temp', 'temporary', 'if', 'integer', 'real', 'text',
+	'blob', 'numeric', 'declare', 'schema', 'version', 'apply', 'explain',
+	'seed', 'assertion', 'constraint', 'generated', 'always', 'stored', 'virtual',
+	'context', 'tags', 'nulls', 'first', 'last', 'rows', 'range', 'over',
+	'partition', 'preceding', 'following', 'unbounded', 'current', 'row',
+	'returning', 'option', 'maxrecursion', 'lateral', 'recursive', 'no', 'action',
+	'conflict', 'abort', 'fail', 'ignore', 'replace', 'deferrable',
+	'initially', 'deferred', 'immediate',
+	'count', 'sum', 'avg', 'min', 'max', 'length', 'substr', 'abs',
+]);
