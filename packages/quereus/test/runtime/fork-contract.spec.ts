@@ -154,23 +154,35 @@ describe('Fork contract (test harness)', () => {
 		it('shared fields are aliased to parent', () => {
 			const driver = new ParallelDriver();
 			const parent = makeRuntimeContext();
+			// Populate every shared field with a distinct, non-undefined sentinel so
+			// the identity assertion below is non-trivial (undefined === undefined
+			// passes vacuously and would mask a broken fork() copy).
+			parent.db = {} as unknown as RuntimeContext['db'];
+			parent.stmt = {} as unknown as RuntimeContext['stmt'];
 			parent.params = { 1: 99 };
+			parent.tracer = {} as unknown as RuntimeContext['tracer'];
+			parent.activeConnection = {} as unknown as RuntimeContext['activeConnection'];
+			parent.contextTracker = {} as unknown as RuntimeContext['contextTracker'];
+			parent.planStack = [];
+
 			const [fork] = driver.fork(parent, 1);
 
 			for (const [key, policy] of Object.entries(EXPECTED_FORK_POLICY)) {
 				if (policy === 'forked') continue;
 				const k = key as keyof RuntimeContext;
+				expect(parent[k], `parent.${key} sentinel must be non-undefined for a meaningful identity check`).to.not.equal(undefined);
 				expect(fork[k], `fork.${key} (${policy}) must alias parent`).to.equal(parent[k]);
 			}
 		});
 	});
 
 	describe('mutation-site allowlist', () => {
-		it('tableContexts.set/delete is only called from approved files', () => {
-			// Match `<identifier>.tableContexts.set(` or `.delete(`. The leading
-			// identifier (rctx / ctx / runtimeCtx / etc) prevents false positives on
-			// unrelated `tableContexts` symbols.
-			const pattern = /\b[A-Za-z_][\w$]*\.tableContexts\.(?:set|delete)\(/;
+		it('tableContexts.set/delete/clear is only called from approved files', () => {
+			// Match `<identifier>.tableContexts.set(` / `.delete(` / `.clear(`. The
+			// leading identifier (rctx / ctx / runtimeCtx / etc) prevents false
+			// positives on unrelated `tableContexts` symbols. `clear` is included
+			// so a new `tableContexts.clear()` site can't slip past the static check.
+			const pattern = /\b[A-Za-z_][\w$]*\.tableContexts\.(?:set|delete|clear)\(/;
 			const found = findMatchingFiles(pattern);
 
 			const unexpected = [...found].filter(f => !TABLE_CONTEXTS_MUTATION_ALLOWLIST.has(f));
@@ -185,12 +197,15 @@ describe('Fork contract (test harness)', () => {
 			expect(dead, `Stale entries in TABLE_CONTEXTS_MUTATION_ALLOWLIST: ${dead.join(', ')}`).to.deep.equal([]);
 		});
 
-		it('RowContextMap.set/delete on RuntimeContext is only called from approved files', () => {
+		it('RowContextMap.set/delete/clear on RuntimeContext is only called from approved files', () => {
 			// Two-step match: file must reference RuntimeContext mutations of `.context.`
 			// (not the unrelated planner OptimizationContext.context). Restricting to
 			// `runtime/` directory is the practical scope filter — runtime-context
-			// receivers there are universally named `rctx` or `ctx`.
-			const pattern = /\b(?:rctx|ctx|runtimeCtx|runtimeContext)\.context\.(?:set|delete)\(/;
+			// receivers there are universally named `rctx` or `ctx` (convention; if a
+			// future contributor introduces a different receiver name, they must
+			// extend this alternation or rename to one of the listed forms).
+			// `clear` is included to keep parity with the strict-fork mode guard.
+			const pattern = /\b(?:rctx|ctx|runtimeCtx|runtimeContext)\.context\.(?:set|delete|clear)\(/;
 			const found = findMatchingFiles(pattern);
 
 			// Filter to runtime sources only — the planner has its own Map<string,unknown>
