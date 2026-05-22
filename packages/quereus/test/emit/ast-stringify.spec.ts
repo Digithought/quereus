@@ -1,7 +1,18 @@
 import { expect } from 'chai';
 import { parse } from '../../src/parser/index.js';
-import { createTableToString, createViewToString } from '../../src/emit/ast-stringify.js';
-import type { CreateTableStmt, CreateViewStmt, SelectStmt, TableConstraint } from '../../src/parser/ast.js';
+import { astToString, createTableToString, createViewToString } from '../../src/emit/ast-stringify.js';
+import type {
+	CreateTableStmt,
+	CreateViewStmt,
+	DeclareSchemaStmt,
+	DeclaredAssertion,
+	DeclaredIndex,
+	DeclaredSeed,
+	DeclaredTable,
+	DeclaredView,
+	SelectStmt,
+	TableConstraint,
+} from '../../src/parser/ast.js';
 
 /**
  * These tests pin the AST round-trip — parse → stringify → parse — at the
@@ -144,6 +155,87 @@ describe('Emit: ast-stringify AST round-trip', () => {
 
 			const reparsed = parse(createViewToString(original)) as CreateViewStmt;
 			expect(reparsed.isTemporary).to.equal(true);
+		});
+	});
+
+	describe('DECLARE SCHEMA items', () => {
+		// The previous stringifier emitted placeholders like `table X { ... }` for every
+		// declared-item kind. These cases prove each kind survives stringify→parse with
+		// its real body intact.
+		const declared = (sql: string): DeclareSchemaStmt => parse(sql) as DeclareSchemaStmt;
+
+		it('preserves a declared table body (columns + PK constraint)', () => {
+			const sql = "declare schema main { table T (id integer, name text, primary key (id)) }";
+			const original = declared(sql);
+			const reparsed = parse(astToString(original)) as DeclareSchemaStmt;
+			expect(reparsed.items).to.have.lengthOf(1);
+			const t = reparsed.items[0] as DeclaredTable;
+			expect(t.type).to.equal('declaredTable');
+			expect(t.tableStmt.columns.map(c => c.name)).to.deep.equal(['id', 'name']);
+			expect(t.tableStmt.constraints).to.have.lengthOf(1);
+			expect(t.tableStmt.constraints[0].type).to.equal('primaryKey');
+		});
+
+		it('preserves a declared unique index over multiple columns', () => {
+			const sql = 'declare schema main { table T (a integer, b integer, primary key (a)); unique index Ix on T (a, b desc) }';
+			const original = declared(sql);
+			const reparsed = parse(astToString(original)) as DeclareSchemaStmt;
+			const idx = reparsed.items.find(i => i.type === 'declaredIndex') as DeclaredIndex;
+			expect(idx).to.exist;
+			expect(idx.indexStmt.isUnique).to.equal(true);
+			expect(idx.indexStmt.index.name.toLowerCase()).to.equal('ix');
+			expect(idx.indexStmt.table.name.toLowerCase()).to.equal('t');
+			expect(idx.indexStmt.columns).to.have.lengthOf(2);
+			expect(idx.indexStmt.columns[1].direction).to.equal('desc');
+		});
+
+		it('preserves a declared view body (SELECT survives)', () => {
+			const sql = "declare schema main { table T (id integer, primary key (id)); view V as select id from T where id > 0 }";
+			const original = declared(sql);
+			const reparsed = parse(astToString(original)) as DeclareSchemaStmt;
+			const view = reparsed.items.find(i => i.type === 'declaredView') as DeclaredView;
+			expect(view).to.exist;
+			expect(view.viewStmt.view.name.toLowerCase()).to.equal('v');
+			expect(view.viewStmt.select.where).to.exist;
+		});
+
+		it('preserves declared seed rows with literal values', () => {
+			const sql = "declare schema main { table T (id integer, name text, primary key (id)); seed T ((1, 'Alice'), (2, 'Bob')) }";
+			const original = declared(sql);
+			const reparsed = parse(astToString(original)) as DeclareSchemaStmt;
+			const seed = reparsed.items.find(i => i.type === 'declaredSeed') as DeclaredSeed;
+			expect(seed).to.exist;
+			expect(seed.seedData).to.deep.equal([
+				[1, 'Alice'],
+				[2, 'Bob'],
+			]);
+		});
+
+		it('preserves a declared assertion CHECK expression', () => {
+			const sql = "declare schema main { table T (id integer, primary key (id)); assertion A check ((select count(*) from T) >= 0) }";
+			const original = declared(sql);
+			const reparsed = parse(astToString(original)) as DeclareSchemaStmt;
+			const a = reparsed.items.find(i => i.type === 'declaredAssertion') as DeclaredAssertion;
+			expect(a).to.exist;
+			expect(a.assertionStmt.name.toLowerCase()).to.equal('a');
+			expect(a.assertionStmt.check.type).to.equal('binary');
+		});
+
+		it('preserves WITH TAGS on declared table and index', () => {
+			const sql = "declare schema main { table T (id integer, primary key (id)) with tags (env = 'prod'); index Ix on T (id) with tags (hot = true) }";
+			const original = declared(sql);
+			const reparsed = parse(astToString(original)) as DeclareSchemaStmt;
+			const t = reparsed.items[0] as DeclaredTable;
+			const i = reparsed.items[1] as DeclaredIndex;
+			expect(t.tableStmt.tags).to.deep.equal({ env: 'prod' });
+			expect(i.indexStmt.tags).to.deep.equal({ hot: true });
+		});
+
+		it('seed strings with single quotes are escaped and round-trip', () => {
+			const sql = "declare schema main { table T (id integer, name text, primary key (id)); seed T ((1, 'O''Brien')) }";
+			const reparsed = parse(astToString(declared(sql))) as DeclareSchemaStmt;
+			const seed = reparsed.items.find(i => i.type === 'declaredSeed') as DeclaredSeed;
+			expect(seed.seedData?.[0]).to.deep.equal([1, "O'Brien"]);
 		});
 	});
 });

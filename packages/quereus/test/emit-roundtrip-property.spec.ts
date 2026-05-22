@@ -395,6 +395,115 @@ const createAssertionArb: fc.Arbitrary<AST.CreateAssertionStmt> = fc.record({
 }));
 
 // ------------------------------------------------------------------------
+// DECLARE SCHEMA (items round-trip)
+// ------------------------------------------------------------------------
+
+/**
+ * Declared-table inner CreateTableStmt. The declarative grammar forces
+ * `ifNotExists`/`isTemporary` to false (no `IF NOT EXISTS` or `TEMP` keyword
+ * at the item level), so we pin both to false here to keep generated trees
+ * inside the parser's declared-form subset.
+ */
+const declaredTableInnerArb: fc.Arbitrary<AST.CreateTableStmt> = fc.tuple(
+	identArb,
+	uniqueIdents(3),
+).chain(([tableName, colNames]) => {
+	const columnDefs = colNames.map(name => makeColumnDefArb(name));
+	return fc.tuple(
+		...columnDefs,
+		fc.array(makeTableConstraintArb(colNames), { minLength: 0, maxLength: 2 }),
+	).map(([c0, c1, c2, constraints]): AST.CreateTableStmt => ({
+		type: 'createTable',
+		table: { type: 'identifier', name: tableName },
+		ifNotExists: false,
+		isTemporary: false,
+		columns: [c0, c1, c2],
+		constraints,
+	}));
+});
+
+const declaredTableItemArb: fc.Arbitrary<AST.DeclaredTable> = declaredTableInnerArb.map(tableStmt => ({
+	type: 'declaredTable' as const,
+	tableStmt,
+}));
+
+const declaredIndexItemArb: fc.Arbitrary<AST.DeclaredIndex> = fc.record({
+	idxName: identArb,
+	tblName: identArb,
+	isUnique: fc.boolean(),
+	columns: fc.array(indexedColumnArb, { minLength: 1, maxLength: 3 }),
+}).map(({ idxName, tblName, isUnique, columns }): AST.DeclaredIndex => ({
+	type: 'declaredIndex',
+	indexStmt: {
+		type: 'createIndex',
+		index: { type: 'identifier', name: idxName },
+		table: { type: 'identifier', name: tblName },
+		ifNotExists: false,
+		isUnique,
+		columns,
+	},
+}));
+
+const declaredViewItemArb: fc.Arbitrary<AST.DeclaredView> = fc.record({
+	name: identArb,
+	cols: fc.option(uniqueIdents(1), { nil: undefined }),
+	select: simpleSelectArb,
+}).map(({ name, cols, select }): AST.DeclaredView => ({
+	type: 'declaredView',
+	viewStmt: {
+		type: 'createView',
+		view: { type: 'identifier', name },
+		ifNotExists: false,
+		isTemporary: false,
+		columns: cols,
+		select,
+	},
+}));
+
+/** Seed literals limited to integers and short strings — what the parser accepts as `literal`. */
+const seedScalarArb: fc.Arbitrary<number | string | null> = fc.oneof(
+	fc.integer({ min: 0, max: 1_000_000 }),
+	fc.stringMatching(/^[a-zA-Z0-9 _.,!?-]{0,12}$/),
+	fc.constant(null),
+);
+
+const declaredSeedItemArb: fc.Arbitrary<AST.DeclaredSeed> = fc.tuple(
+	identArb,
+	fc.integer({ min: 1, max: 3 }), // columns-per-row
+	fc.integer({ min: 1, max: 3 }), // rows
+).chain(([tableName, width, height]) =>
+	fc.array(fc.array(seedScalarArb, { minLength: width, maxLength: width }), { minLength: height, maxLength: height })
+		.map((rows): AST.DeclaredSeed => ({
+			type: 'declaredSeed',
+			tableName,
+			seedData: rows,
+		})),
+);
+
+const declaredAssertionItemArb: fc.Arbitrary<AST.DeclaredAssertion> = fc.record({
+	name: identArb,
+	check: checkExprArb,
+}).map(({ name, check }): AST.DeclaredAssertion => ({
+	type: 'declaredAssertion',
+	assertionStmt: { type: 'createAssertion', name, check },
+}));
+
+const declareItemArb: fc.Arbitrary<AST.DeclareItem> = fc.oneof(
+	declaredTableItemArb,
+	declaredIndexItemArb,
+	declaredViewItemArb,
+	declaredSeedItemArb,
+	declaredAssertionItemArb,
+);
+
+const declareSchemaArb: fc.Arbitrary<AST.DeclareSchemaStmt> = fc.array(declareItemArb, { minLength: 1, maxLength: 3 })
+	.map((items): AST.DeclareSchemaStmt => ({
+		type: 'declareSchema',
+		schemaName: 'main',
+		items,
+	}));
+
+// ------------------------------------------------------------------------
 // ALTER TABLE actions
 // ------------------------------------------------------------------------
 
@@ -698,6 +807,10 @@ describe('AST round-trip property: DDL', () => {
 
 	it('DROP round-trips structurally', () => {
 		fc.assert(fc.property(dropArb, checkRoundTrip), { numRuns: 50 });
+	});
+
+	it('DECLARE SCHEMA round-trips structurally', () => {
+		fc.assert(fc.property(declareSchemaArb, checkRoundTrip), { numRuns: 100 });
 	});
 });
 
