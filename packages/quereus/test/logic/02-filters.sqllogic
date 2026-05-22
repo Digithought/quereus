@@ -49,24 +49,6 @@ drop table tb;
 drop table ta;
 drop table u;
 
--- ---------------------------------------------------------------------------
--- Prefix NOT precedence — must bind above every predicate (IN, BETWEEN,
--- LIKE, IS [NOT] NULL, comparison) rather than alongside arithmetic unary.
--- Regression for github.com/gotchoices/quereus/issues/22.
--- ---------------------------------------------------------------------------
-
-select (not 5 in (1,2,3)) as a;
-→ [{"a":true}]
-
-select (not 5 between 1 and 3) as b;
-→ [{"b":true}]
-
-select (not 'a' like 'b%') as c;
-→ [{"c":true}]
-
-select (not null is null) as d;
-→ [{"d":false}]
-
-select (not 0 = 5) as e;
-→ [{"e":true}]
+-- Prefix-NOT precedence (issue #22) is covered by the full predicate
+-- matrix in 03.8-not-precedence.sqllogic.
 drop table t;
