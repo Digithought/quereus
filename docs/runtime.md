@@ -1054,6 +1054,15 @@ The runtime's column reference resolution relies on the optimizer's attribute ID
 
 For comprehensive optimizer details, see the [Optimizer Documentation](../optimizer.md).
 
+## ParallelDriver (Runtime Primitive)
+
+`src/runtime/parallel-driver.ts` exposes a `ParallelDriver` class with two operations:
+
+- `fork(rctx, n)` — returns `n` independent `RuntimeContext` views. Each fork has its own `RowContextMap` (seeded with a snapshot of the parent's entries) and its own `tableContexts` `Map` (seeded with a shallow copy). Writes via `createRowSlot`, `withRowContext`, or direct `tableContexts.set/delete` in one fork do not leak to siblings or to the parent. Read-mostly fields (`db`, `stmt`, `params`, `enableMetrics`, `tracer`, `activeConnection`, `contextTracker`, `planStack`) are shared by reference.
+- `drive(factories, forks, opts?)` — runs N `(ctx) => AsyncIterable<T>` factories concurrently with optional `concurrency` cap and `AbortSignal` cancellation, yielding `{ branch, value }` pairs in arrival order. On any branch error or signal abort, all sibling iterators are best-effort `return()`-closed before the error propagates; the same close-all path runs when a consumer breaks out of the `for-await` early.
+
+The driver is intentionally combinator-agnostic — it does not gather, zip, merge, or otherwise combine branch outputs. It has no plan-node or emitter consumers yet; it exists as the foundation primitive for the broader `parallel-*` track. Parallel use of virtual-table connections is out of scope here and tracked separately as a vtab concurrency-mode declaration.
+
 ## Incremental Delta Runtime (Design)
 
 Quereus can reuse a single incremental runtime to power multiple features that react to base-table changes: transaction-deferred assertions, materialized views, and future trigger-like facilities. The core idea is to execute only the affected slice of a registered query at transaction boundaries using binding-aware residual plans.
