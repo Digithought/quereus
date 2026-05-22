@@ -10,9 +10,11 @@ import type {
 	DeclaredSeed,
 	DeclaredTable,
 	DeclaredView,
+	InsertStmt,
 	SelectStmt,
 	TableConstraint,
 } from '../../src/parser/ast.js';
+import { ConflictResolution } from '../../src/common/constants.js';
 
 /**
  * These tests pin the AST round-trip — parse → stringify → parse — at the
@@ -289,6 +291,49 @@ describe('Emit: ast-stringify AST round-trip', () => {
 				[1, 'Alice'],
 				[2, 'Bob'],
 			]);
+		});
+	});
+
+	describe('INSERT OR <res> lead-in', () => {
+		// The parser populates `onConflict` only via the `INSERT OR <res>` lead-in.
+		// The retired trailing `on conflict <res>` form must not appear in emitted SQL.
+		const cases: Array<{ keyword: string; res: ConflictResolution }> = [
+			{ keyword: 'rollback', res: ConflictResolution.ROLLBACK },
+			{ keyword: 'fail', res: ConflictResolution.FAIL },
+			{ keyword: 'ignore', res: ConflictResolution.IGNORE },
+			{ keyword: 'replace', res: ConflictResolution.REPLACE },
+		];
+
+		for (const tc of cases) {
+			it(`preserves INSERT OR ${tc.keyword.toUpperCase()} through round-trip`, () => {
+				const sql = `insert or ${tc.keyword} into T (a, b) values (1, 2)`;
+				const original = parse(sql) as InsertStmt;
+				expect(original.onConflict).to.equal(tc.res);
+
+				const emitted = astToString(original);
+				expect(emitted).to.match(new RegExp(`^insert\\s+or\\s+${tc.keyword}\\s+into\\b`, 'i'));
+
+				const reparsed = parse(emitted) as InsertStmt;
+				expect(reparsed.onConflict).to.equal(tc.res);
+			});
+		}
+
+		it('drops the OR clause for the default ABORT resolution', () => {
+			const stmt: InsertStmt = {
+				type: 'insert',
+				table: { type: 'identifier', name: 'T' },
+				columns: ['a', 'b'],
+				values: [[
+					{ type: 'literal', value: 1 },
+					{ type: 'literal', value: 2 },
+				]],
+				onConflict: ConflictResolution.ABORT,
+			};
+
+			const emitted = astToString(stmt);
+			expect(emitted).to.match(/^insert\s+into\b/i);
+			expect(emitted).to.not.match(/\binsert\s+or\b/i);
+			expect(emitted).to.not.match(/\bon\s+conflict\b/i);
 		});
 	});
 });

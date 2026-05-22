@@ -540,7 +540,11 @@ export function insertToString(stmt: AST.InsertStmt): string {
 		parts.push(withClauseToString(stmt.withClause));
 	}
 
-	parts.push('insert into', expressionToString(stmt.table));
+	parts.push('insert');
+	if (stmt.onConflict && stmt.onConflict !== ConflictResolution.ABORT) {
+		parts.push('or', ConflictResolution[stmt.onConflict].toLowerCase());
+	}
+	parts.push('into', expressionToString(stmt.table));
 
 	if (stmt.columns && stmt.columns.length > 0) {
 		parts.push(`(${stmt.columns.map(quoteIdentifier).join(', ')})`);
@@ -560,10 +564,6 @@ export function insertToString(stmt: AST.InsertStmt): string {
 		parts.push('values', valueRows.join(', '));
 	} else if (stmt.select) {
 		parts.push(selectToString(stmt.select));
-	}
-
-	if (stmt.onConflict && stmt.onConflict !== ConflictResolution.ABORT) {
-		parts.push(`on conflict ${ConflictResolution[stmt.onConflict].toLowerCase()}`);
 	}
 
 	// UPSERT clauses (ON CONFLICT DO ...)

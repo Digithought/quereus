@@ -657,20 +657,21 @@ const analyzeArb: fc.Arbitrary<AST.AnalyzeStmt> = fc.oneof(
 // DML smoke (kept tiny — string round-trip already covers most surface)
 // ------------------------------------------------------------------------
 
-// Note: legacy `INSERT OR <res>` syntax sets `onConflict`, but the stringifier
-// currently emits `on conflict <res>` (a trailing form the parser no longer
-// accepts — UPSERT consumed that production). So `onConflict` cannot round-trip.
-// Left out of the arbitrary; flagged as a finding in the review handoff.
 const insertArb: fc.Arbitrary<AST.InsertStmt> = fc.tuple(
 	identArb,
 	uniqueIdents(2),
 	fc.array(literalArb, { minLength: 2, maxLength: 2 }),
-).map(([tbl, colNames, vals]): AST.InsertStmt => ({
-	type: 'insert',
-	table: { type: 'identifier', name: tbl },
-	columns: colNames,
-	values: [vals],
-}));
+	conflictResArb,
+).map(([tbl, colNames, vals, onConflict]): AST.InsertStmt => {
+	const stmt: AST.InsertStmt = {
+		type: 'insert',
+		table: { type: 'identifier', name: tbl },
+		columns: colNames,
+		values: [vals],
+	};
+	if (onConflict !== undefined) stmt.onConflict = onConflict;
+	return stmt;
+});
 
 const updateArb: fc.Arbitrary<AST.UpdateStmt> = fc.tuple(
 	identArb,
