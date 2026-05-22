@@ -1,5 +1,5 @@
 description: AsyncGatherNode — N independent (uncorrelated) child relations driven concurrently and combined by an explicit combinator (unionAll / crossProduct / zipByKey). Final operator in the parallel-* track; targets UNION ALL over remote sources and N-way full outer joins.
-prereq: parallel-driver-context-fork, parallel-vtab-concurrency-mode
+prereq: parallel-driver-context-fork, parallel-vtab-concurrency-mode, parallel-runtime-fork-test-harness
 files: packages/quereus/src/planner/nodes/, packages/quereus/src/runtime/emit/, packages/quereus/src/planner/rules/, packages/quereus/src/runtime/parallel-driver.ts, packages/quereus/src/planner/optimizer-tuning.ts
 ----
 

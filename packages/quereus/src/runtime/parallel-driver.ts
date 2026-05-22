@@ -105,7 +105,9 @@ type AbortSentinel = typeof ABORT_SENTINEL;
 interface BranchPullResult<T> {
 	branch: number;
 	result: IteratorResult<T>;
-	error?: unknown;
+	/** True iff the iterator threw; `error` then carries the thrown value (which may itself be `undefined`). */
+	hadError: boolean;
+	error: unknown;
 }
 
 async function* driveImpl<T>(
@@ -155,9 +157,14 @@ async function* driveImpl<T>(
 		const promise: Promise<BranchPullResult<T>> = (async () => {
 			try {
 				const result = await it.next();
-				return { branch: i, result };
+				return { branch: i, result, hadError: false, error: undefined };
 			} catch (error) {
-				return { branch: i, result: { value: undefined as unknown as T, done: true } as IteratorResult<T>, error };
+				return {
+					branch: i,
+					result: { value: undefined as unknown as T, done: true } as IteratorResult<T>,
+					hadError: true,
+					error,
+				};
 			}
 		})();
 		pendingPulls.set(i, promise);
@@ -217,10 +224,10 @@ async function* driveImpl<T>(
 			]);
 			if (winner === ABORT_SENTINEL) throw abortReason;
 
-			const { branch, result, error } = winner;
+			const { branch, result, hadError, error } = winner;
 			pendingPulls.delete(branch);
 
-			if (error !== undefined) {
+			if (hadError) {
 				throw error;
 			}
 

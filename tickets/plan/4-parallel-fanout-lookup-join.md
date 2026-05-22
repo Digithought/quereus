@@ -1,5 +1,5 @@
 description: FanOutLookupJoin physical node — for one outer row, fire N parameterized child sub-plans concurrently and assemble a wide result row. Generalizes the "N LEFT JOINs to one lookup table from one driving table" pattern; the biggest payoff operator in the parallel-* track.
-prereq: parallel-driver-context-fork, parallel-vtab-concurrency-mode
+prereq: parallel-driver-context-fork, parallel-vtab-concurrency-mode, parallel-runtime-fork-test-harness
 files: packages/quereus/src/planner/nodes/, packages/quereus/src/runtime/emit/, packages/quereus/src/planner/rules/join/, packages/quereus/src/planner/util/key-utils.ts, packages/quereus/src/planner/util/ind-utils.ts, packages/quereus/src/planner/cost/index.ts, packages/quereus/src/planner/optimizer-tuning.ts, packages/quereus/src/runtime/parallel-driver.ts
 ----
 

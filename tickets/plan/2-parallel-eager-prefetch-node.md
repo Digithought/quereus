@@ -1,5 +1,5 @@
 description: EagerPrefetchNode — wrap a single sub-tree and start iterating into a bounded buffer the moment the parent emits. Smallest end-to-end consumer of ParallelDriver; primarily a latency hider for remote-vtab scans.
-prereq: parallel-driver-context-fork
+prereq: parallel-driver-context-fork, parallel-runtime-fork-test-harness
 files: packages/quereus/src/planner/nodes/plan-node-type.ts, packages/quereus/src/planner/nodes/, packages/quereus/src/runtime/emit/, packages/quereus/src/planner/rules/, packages/quereus/src/runtime/parallel-driver.ts
 ----
 

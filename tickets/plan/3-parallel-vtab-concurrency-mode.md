@@ -1,5 +1,5 @@
 description: Add concurrencyMode declaration to VirtualTableModule so the runtime knows which modules tolerate concurrent reads (or writes) on a shared connection. Memory vtab flips to fully-reentrant; everything else stays serial by default.
-prereq: parallel-driver-context-fork
+prereq: parallel-driver-context-fork, parallel-runtime-fork-test-harness
 files: packages/quereus/src/vtab/module.ts, packages/quereus/src/vtab/memory/, packages/quereus/src/runtime/parallel-driver.ts, packages/quereus-plugin-leveldb/, packages/quereus-plugin-indexeddb/, docs/architecture.md
 ----
 

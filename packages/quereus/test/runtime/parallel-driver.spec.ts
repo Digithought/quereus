@@ -171,6 +171,47 @@ describe('ParallelDriver', () => {
 			const driver = new ParallelDriver();
 			expect(driver.fork(makeRuntimeContext(), 0)).to.deep.equal([]);
 		});
+
+		it('preserves parent-seeded attributes in every fork, then isolates fork-local overrides', () => {
+			// Seed the parent with a slot BEFORE forking — the snapshot loop must rebuild
+			// the child's attributeIndex from this entry so a fork-local read sees it.
+			const driver = new ParallelDriver();
+			const parent = makeRuntimeContext();
+
+			const outerAttrId = 300;
+			const outerDescriptor: RowDescriptor = [];
+			outerDescriptor[outerAttrId] = 0;
+			const parentSlot = createRowSlot(parent, outerDescriptor);
+			parentSlot.set(['outer'] as unknown as Row);
+
+			const forks = driver.fork(parent, 2);
+
+			// Every fork resolves the outer attribute via its own attributeIndex
+			// (proves the snapshot re-driving rebuilt the index correctly).
+			for (const fork of forks) {
+				const entry = fork.context.attributeIndex[outerAttrId];
+				expect(entry, 'fork must have outer attribute in its index').to.not.equal(undefined);
+				expect(entry!.rowGetter()).to.deep.equal(['outer']);
+			}
+
+			// A fork-local override of the same descriptor must not affect siblings
+			// or the parent (proves descriptor identity is preserved across the snapshot,
+			// so `RowContextMap.set` updates the fork's *existing* entry rather than
+			// adding a parallel one).
+			const fork0Slot = createRowSlot(forks[0], outerDescriptor);
+			fork0Slot.set(['fork0-override'] as unknown as Row);
+
+			expect(forks[0].context.attributeIndex[outerAttrId]!.rowGetter()).to.deep.equal(['fork0-override']);
+			expect(forks[1].context.attributeIndex[outerAttrId]!.rowGetter()).to.deep.equal(['outer']);
+			expect(parent.context.attributeIndex[outerAttrId]!.rowGetter()).to.deep.equal(['outer']);
+
+			// Fork-local close removes the override from the fork but parent retains its slot.
+			fork0Slot.close();
+			expect(forks[0].context.attributeIndex[outerAttrId]).to.equal(undefined);
+			expect(parent.context.attributeIndex[outerAttrId]!.rowGetter()).to.deep.equal(['outer']);
+
+			parentSlot.close();
+		});
 	});
 
 	describe('drive() — concurrency', () => {
@@ -188,7 +229,7 @@ describe('ParallelDriver', () => {
 			// Loose upper bound — wide enough to absorb timer / CI jitter while still
 			// proving the four 50ms waits ran in parallel (which would otherwise total ~200ms).
 			expect(elapsed).to.be.lessThan(150, `expected parallel run, got ${elapsed}ms`);
-			expect(items.map(i => i.branch).sort()).to.deep.equal([0, 1, 2, 3]);
+			expect(items.map(i => i.branch).sort((a, b) => a - b)).to.deep.equal([0, 1, 2, 3]);
 		});
 
 		it('respects concurrency cap', async () => {
