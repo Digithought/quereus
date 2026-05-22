@@ -420,12 +420,22 @@ export function selectToString(stmt: AST.SelectStmt): string {
 
 	let result = parts.join(' ');
 
-	if (stmt.union) {
-		result += stmt.unionAll ? ' union all ' : ' union ';
-		result += selectToString(stmt.union);
+	if (stmt.compound) {
+		result += ` ${compoundOpToKeyword(stmt.compound.op)} `;
+		result += selectToString(stmt.compound.select);
 	}
 
 	return result;
+}
+
+function compoundOpToKeyword(op: 'union' | 'unionAll' | 'intersect' | 'except' | 'diff'): string {
+	switch (op) {
+		case 'union': return 'union';
+		case 'unionAll': return 'union all';
+		case 'intersect': return 'intersect';
+		case 'except': return 'except';
+		case 'diff': return 'diff';
+	}
 }
 
 function withClauseToString(withClause: AST.WithClause): string {
@@ -910,7 +920,12 @@ function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string 
 				s += conflictToString(c.onConflict);
 				break;
 			case 'check':
-				s += `check (${expressionToString(c.expr!)})`;
+				s += 'check';
+				if (c.operations && c.operations.length > 0) {
+					s += ` on ${c.operations.join(', ')}`;
+				}
+				s += ` (${expressionToString(c.expr!)})`;
+				s += conflictToString(c.onConflict);
 				break;
 			case 'default':
 				s += `default ${expressionToString(c.expr!)}`;
@@ -956,7 +971,12 @@ function tableConstraintsToString(constraints: AST.TableConstraint[]): string {
 				s += conflictToString(c.onConflict);
 				break;
 			case 'check':
-				s += `check (${expressionToString(c.expr!)})`;
+				s += 'check';
+				if (c.operations && c.operations.length > 0) {
+					s += ` on ${c.operations.join(', ')}`;
+				}
+				s += ` (${expressionToString(c.expr!)})`;
+				s += conflictToString(c.onConflict);
 				break;
 			case 'foreignKey':
 				if (c.foreignKey) {
