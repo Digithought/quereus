@@ -128,6 +128,46 @@ describe('Emit: ast-stringify AST round-trip', () => {
 		});
 	});
 
+	describe('Foreign-key deferrability', () => {
+		// Each case: source SQL produces a column-level and a table-level FK with
+		// the given deferrability shape; both must survive parse → stringify → parse.
+		const cases: Array<{
+			label: string;
+			clause: string;
+			deferrable: boolean;
+			initiallyDeferred?: boolean;
+		}> = [
+			{ label: 'DEFERRABLE', clause: 'deferrable', deferrable: true },
+			{ label: 'DEFERRABLE INITIALLY DEFERRED', clause: 'deferrable initially deferred', deferrable: true, initiallyDeferred: true },
+			{ label: 'DEFERRABLE INITIALLY IMMEDIATE', clause: 'deferrable initially immediate', deferrable: true, initiallyDeferred: false },
+			{ label: 'NOT DEFERRABLE', clause: 'not deferrable', deferrable: false },
+		];
+
+		for (const tc of cases) {
+			it(`preserves column-level ${tc.label}`, () => {
+				const sql = `create table Child (Id int references Parent (Id) ${tc.clause}, primary key (Id))`;
+				const original = parse(sql) as CreateTableStmt;
+				const emitted = createTableToString(original);
+				const reparsed = parse(emitted) as CreateTableStmt;
+				const colFk = reparsed.columns[0].constraints.find(c => c.type === 'foreignKey');
+				if (!colFk || !colFk.foreignKey) throw new Error('Expected column-level FK to survive re-parse');
+				expect(colFk.foreignKey.deferrable).to.equal(tc.deferrable);
+				expect(colFk.foreignKey.initiallyDeferred).to.equal(tc.initiallyDeferred);
+			});
+
+			it(`preserves table-level ${tc.label}`, () => {
+				const sql = `create table Child (Id int, primary key (Id), foreign key (Id) references Parent (Id) ${tc.clause})`;
+				const original = parse(sql) as CreateTableStmt;
+				const emitted = createTableToString(original);
+				const reparsed = parse(emitted) as CreateTableStmt;
+				const tblFk = reparsed.constraints.find(c => c.type === 'foreignKey');
+				if (!tblFk || !tblFk.foreignKey) throw new Error('Expected table-level FK to survive re-parse');
+				expect(tblFk.foreignKey.deferrable).to.equal(tc.deferrable);
+				expect(tblFk.foreignKey.initiallyDeferred).to.equal(tc.initiallyDeferred);
+			});
+		}
+	});
+
 	describe('CREATE TEMP TABLE / VIEW dispatch', () => {
 		it('preserves isTemporary through `create temp table` round-trip', () => {
 			const sql = 'create temp table T (Id int, primary key (Id))';

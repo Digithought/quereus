@@ -78,6 +78,22 @@ const rowOpSubsetArb: fc.Arbitrary<RowOp[]> = fc.uniqueArray(rowOpArb, { minLeng
 
 const fkActionArb: fc.Arbitrary<AST.ForeignKeyAction> = fc.constantFrom('setNull', 'setDefault', 'cascade', 'restrict');
 
+/**
+ * [NOT] DEFERRABLE [INITIALLY DEFERRED|IMMEDIATE] — produced as `deferrable` /
+ * `initiallyDeferred` on `ForeignKeyClause`. `initiallyDeferred` is only set
+ * inside a DEFERRABLE/NOT DEFERRABLE branch (the parser cannot reach it
+ * otherwise), so we never emit `initiallyDeferred` without `deferrable`.
+ */
+const fkDeferrabilityArb: fc.Arbitrary<{ deferrable?: boolean; initiallyDeferred?: boolean }> = fc.oneof(
+	fc.constant({}),
+	fc.constant({ deferrable: true }),
+	fc.constant({ deferrable: true, initiallyDeferred: true }),
+	fc.constant({ deferrable: true, initiallyDeferred: false }),
+	fc.constant({ deferrable: false }),
+	fc.constant({ deferrable: false, initiallyDeferred: true }),
+	fc.constant({ deferrable: false, initiallyDeferred: false }),
+);
+
 // ------------------------------------------------------------------------
 // Expression arbitraries (kept small — DDL is the focus; expression
 // coverage is provided transitively via CHECK/DEFAULT/CTE bodies)
@@ -174,17 +190,20 @@ const columnConstraintArb: fc.Arbitrary<AST.ColumnConstraint> = fc.oneof(
 		type: 'collate',
 		collation,
 	})),
-	// REFERENCES tbl [(col)] [ON DELETE ...] [ON UPDATE ...]
+	// REFERENCES tbl [(col)] [ON DELETE ...] [ON UPDATE ...] [[NOT] DEFERRABLE [INITIALLY ...]]
 	fc.record({
 		fkTable: identArb,
 		fkColumn: fc.option(identArb, { nil: undefined }),
 		onDelete: fc.option(fkActionArb, { nil: undefined }),
 		onUpdate: fc.option(fkActionArb, { nil: undefined }),
-	}).map(({ fkTable, fkColumn, onDelete, onUpdate }): AST.ColumnConstraint => {
+		deferrability: fkDeferrabilityArb,
+	}).map(({ fkTable, fkColumn, onDelete, onUpdate, deferrability }): AST.ColumnConstraint => {
 		const fk: AST.ForeignKeyClause = { table: fkTable };
 		if (fkColumn) fk.columns = [fkColumn];
 		if (onDelete) fk.onDelete = onDelete;
 		if (onUpdate) fk.onUpdate = onUpdate;
+		if (deferrability.deferrable !== undefined) fk.deferrable = deferrability.deferrable;
+		if (deferrability.initiallyDeferred !== undefined) fk.initiallyDeferred = deferrability.initiallyDeferred;
 		return { type: 'foreignKey', foreignKey: fk };
 	}),
 	// GENERATED ALWAYS AS (<expr>) [STORED|VIRTUAL]
@@ -281,18 +300,21 @@ function makeTableConstraintArb(columnNames: string[]): fc.Arbitrary<AST.TableCo
 			if (onConflict !== undefined) c.onConflict = onConflict;
 			return c;
 		}),
-		// FOREIGN KEY (cols) REFERENCES tbl [(cols)] [ON DELETE ...] [ON UPDATE ...]
+		// FOREIGN KEY (cols) REFERENCES tbl [(cols)] [ON DELETE ...] [ON UPDATE ...] [[NOT] DEFERRABLE [INITIALLY ...]]
 		fc.record({
 			localCols: multiCol(2),
 			fkTable: identArb,
 			fkColumn: fc.option(identArb, { nil: undefined }),
 			onDelete: fc.option(fkActionArb, { nil: undefined }),
 			onUpdate: fc.option(fkActionArb, { nil: undefined }),
-		}).map(({ localCols, fkTable, fkColumn, onDelete, onUpdate }): AST.TableConstraint => {
+			deferrability: fkDeferrabilityArb,
+		}).map(({ localCols, fkTable, fkColumn, onDelete, onUpdate, deferrability }): AST.TableConstraint => {
 			const fk: AST.ForeignKeyClause = { table: fkTable };
 			if (fkColumn) fk.columns = [fkColumn];
 			if (onDelete) fk.onDelete = onDelete;
 			if (onUpdate) fk.onUpdate = onUpdate;
+			if (deferrability.deferrable !== undefined) fk.deferrable = deferrability.deferrable;
+			if (deferrability.initiallyDeferred !== undefined) fk.initiallyDeferred = deferrability.initiallyDeferred;
 			return {
 				type: 'foreignKey',
 				columns: localCols.map(name => ({ name })),

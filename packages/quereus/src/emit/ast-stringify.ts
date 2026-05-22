@@ -9,7 +9,6 @@
  *   - `ON CONFLICT ABORT`
  *   - `ASC` direction for primary keys
  *   - `VIRTUAL` storage for generated columns
- *   - (TODO: `FOREIGN KEY` default actions and deferrability)
  */
 import type * as AST from '../parser/ast.js';
 import { ConflictResolution } from '../common/constants.js';
@@ -1005,13 +1004,7 @@ function columnConstraintsToString(constraints: AST.ColumnConstraint[]): string 
 				break;
 			case 'foreignKey':
 				if (c.foreignKey) {
-					const fk = c.foreignKey;
-					s += `references ${quoteIdentifier(fk.table)}`;
-					if (fk.columns && fk.columns.length > 0) {
-						s += `(${fk.columns.map(quoteIdentifier).join(', ')})`;
-					}
-					if (fk.onDelete) s += ` on delete ${foreignKeyActionToString(fk.onDelete)}`;
-					if (fk.onUpdate) s += ` on update ${foreignKeyActionToString(fk.onUpdate)}`;
+					s += foreignKeyClauseTail(c.foreignKey);
 				}
 				break;
 			case 'generated':
@@ -1050,13 +1043,8 @@ function tableConstraintsToString(constraints: AST.TableConstraint[]): string {
 				break;
 			case 'foreignKey':
 				if (c.foreignKey) {
-					const fk = c.foreignKey;
-					s += `foreign key (${c.columns!.map(col => quoteIdentifier(col.name)).join(', ')}) references ${quoteIdentifier(fk.table)}`;
-					if (fk.columns && fk.columns.length > 0) {
-						s += `(${fk.columns.map(quoteIdentifier).join(', ')})`;
-					}
-					if (fk.onDelete) s += ` on delete ${foreignKeyActionToString(fk.onDelete)}`;
-					if (fk.onUpdate) s += ` on update ${foreignKeyActionToString(fk.onUpdate)}`;
+					s += `foreign key (${c.columns!.map(col => quoteIdentifier(col.name)).join(', ')}) `;
+					s += foreignKeyClauseTail(c.foreignKey);
 				}
 				break;
 		}
@@ -1072,6 +1060,23 @@ function foreignKeyActionToString(action: AST.ForeignKeyAction): string {
 		case 'cascade': return 'cascade';
 		case 'restrict': return 'restrict';
 	}
+}
+
+/** Emits `references TBL(cols) [on delete …] [on update …] [[not] deferrable [initially …]]`. */
+function foreignKeyClauseTail(fk: AST.ForeignKeyClause): string {
+	let s = `references ${quoteIdentifier(fk.table)}`;
+	if (fk.columns && fk.columns.length > 0) {
+		s += `(${fk.columns.map(quoteIdentifier).join(', ')})`;
+	}
+	if (fk.onDelete) s += ` on delete ${foreignKeyActionToString(fk.onDelete)}`;
+	if (fk.onUpdate) s += ` on update ${foreignKeyActionToString(fk.onUpdate)}`;
+	if (fk.deferrable !== undefined) {
+		s += fk.deferrable ? ' deferrable' : ' not deferrable';
+		if (fk.initiallyDeferred !== undefined) {
+			s += fk.initiallyDeferred ? ' initially deferred' : ' initially immediate';
+		}
+	}
+	return s;
 }
 
 /** Formats a tag value as a SQL literal */
