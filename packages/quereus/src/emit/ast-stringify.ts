@@ -178,14 +178,14 @@ export function expressionToString(expr: AST.Expression): string {
 		}
 
 		case 'unary': {
-			const exprStr = expr.expr.type === 'binary'
+			const exprStr = unaryBodyNeedsParens(expr)
 				? `(${expressionToString(expr.expr)})`
 				: expressionToString(expr.expr);
 			// Handle postfix operators like IS NULL, IS NOT NULL
 			if (expr.operator === 'IS NULL' || expr.operator === 'IS NOT NULL') {
 				return `${exprStr} ${expr.operator.toLowerCase()}`;
 			} else if (expr.operator.toUpperCase() === 'NOT') {
-				return `${expr.operator.toLowerCase()} ${exprStr}`;
+				return `not ${exprStr}`;
 			}
 			return `${expr.operator.toLowerCase()}${exprStr}`;
 		}
@@ -269,6 +269,15 @@ export function expressionToString(expr: AST.Expression): string {
 		default:
 			return '[unknown_expr]';
 	}
+}
+
+// Determines whether the body of a unary expression must be parenthesised so
+// the emitted SQL re-parses to the same AST. With prefix NOT bound above all
+// predicates (IS [NOT] NULL, IN, BETWEEN, LIKE, comparison), most inner shapes
+// round-trip cleanly without parens — only a `binary` body could re-associate
+// (e.g. `not a and b` would be read as `(not a) and b`).
+function unaryBodyNeedsParens(expr: AST.UnaryExpr): boolean {
+	return expr.expr.type === 'binary';
 }
 
 // Helper to determine if parentheses are needed for binary operations

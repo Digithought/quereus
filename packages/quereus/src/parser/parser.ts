@@ -1194,10 +1194,24 @@ export class Parser {
 	 */
 	private logicalAnd(): AST.Expression {
 		return this.parseBinaryChain(
-			() => this.isNull(),
+			() => this.notExpression(),
 			[TokenType.AND],
 			() => 'AND',
 		);
+	}
+
+	/**
+	 * Parse prefix NOT expression. Binds above every predicate (IS [NOT] NULL,
+	 * comparison, IN, BETWEEN, LIKE) but below AND/OR/XOR. Right-recursive so
+	 * stacked `not not p` falls out naturally.
+	 */
+	private notExpression(): AST.Expression {
+		if (this.match(TokenType.NOT)) {
+			const operatorToken = this.previous();
+			const right = this.notExpression();
+			return { type: 'unary', operator: 'NOT', expr: right, loc: _createLoc(operatorToken, this.previous()) };
+		}
+		return this.isNull();
 	}
 
 	/**
@@ -1459,10 +1473,12 @@ export class Parser {
 	}
 
 	/**
-	 * Parse unary prefix operators (-, +, ~, NOT). Recurses to support stacked unary (e.g. `- -1`).
+	 * Parse arithmetic unary prefix operators (-, +, ~). Recurses to support
+	 * stacked unary (e.g. `- -1`). Prefix NOT is handled higher up by
+	 * `notExpression()` so that it binds above all predicates.
 	 */
 	private unary(): AST.Expression {
-		if (this.match(TokenType.MINUS, TokenType.PLUS, TokenType.TILDE, TokenType.NOT)) {
+		if (this.match(TokenType.MINUS, TokenType.PLUS, TokenType.TILDE)) {
 			const operatorToken = this.previous();
 			const right = this.unary();
 			return { type: 'unary', operator: operatorToken.lexeme, expr: right, loc: _createLoc(operatorToken, this.previous()) };

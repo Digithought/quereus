@@ -799,3 +799,35 @@ insert into decl_uniq.T values (4, 'b@y', 'p', 'r');
 select count(*) as cnt from decl_uniq.T;
 → [{"cnt": 2}]
 
+-- Regression for github.com/gotchoices/quereus/issues/22 — prefix NOT against
+-- a subquery predicate inside CHECK, through the declare/apply round-trip.
+-- This exercises stringify → re-parse and must produce a semantically
+-- equivalent CHECK constraint (not one that rejects every row).
+declare schema decl_not_in
+{
+	table Block (Code text primary key);
+	table TIn (
+		Id int, Color text,
+		primary key (Id),
+		constraint NoBlocked check (Color not in (select Code from Block))
+	);
+}
+
+-- run
+
+apply schema decl_not_in;
+
+-- run
+
+insert into decl_not_in.Block (Code) values ('r');
+insert into decl_not_in.Block (Code) values ('y');
+insert into decl_not_in.TIn (Id, Color) values (1, 'g');
+select Color from decl_not_in.TIn;
+→ [{"Color":"g"}]
+
+insert into decl_not_in.TIn (Id, Color) values (2, 'r');
+-- error: CHECK constraint failed: NoBlocked
+
+drop table decl_not_in.TIn;
+drop table decl_not_in.Block;
+

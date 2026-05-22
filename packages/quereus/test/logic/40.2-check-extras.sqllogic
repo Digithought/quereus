@@ -119,3 +119,19 @@ drop table if exists t_p;
 create table t_p2 (a integer not null, check (a = :foo));
 -- error: bind parameters
 drop table if exists t_p2;
+
+-- ===================================
+-- 6. Prefix NOT against a subquery predicate inside CHECK (direct DDL path).
+-- Regression for github.com/gotchoices/quereus/issues/22 — proves the parser
+-- fix lands independent of the declare/apply round-trip.
+-- ===================================
+
+create table Block (Code text primary key) using memory;
+insert into Block values ('r'), ('y');
+create table T (Id int, Color text, primary key (Id),
+				constraint NB check (not Color in (select Code from Block))) using memory;
+insert into T (Id, Color) values (1, 'g');
+insert into T (Id, Color) values (2, 'r');
+-- error: CHECK constraint failed: NB
+drop table T;
+drop table Block;
