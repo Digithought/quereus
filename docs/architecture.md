@@ -220,6 +220,7 @@ Quereus employs a multi-faceted testing strategy:
 		*   **Comparison Properties** — validates `compareSqlValues` maintains antisymmetry, reflexivity, and transitivity across mixed types.
 		*   **Insert/Select Roundtrip** — tests value preservation through insert+select for INTEGER, REAL, TEXT, BLOB, and ANY column types.
 		*   **ORDER BY Determinism** — verifies repeated ORDER BY queries on data with duplicate sort keys produce identical results.
+		*   **AST Round-Trip (`test/emit-roundtrip-property.spec.ts`)** — generates AST nodes and asserts `parse(stringify(ast)) ≡ ast` via a structural comparator (`test/emit-roundtrip-comparator.ts`) that drops positional metadata and applies documented default-equivalences. Catches stealth field-drops in `emit/ast-stringify.ts` that the string-equality round-trip in `emit-roundtrip.spec.ts` cannot detect.
 
 3.  **Performance Sentinels (`test/performance-sentinels.spec.ts`)**
 	*   Micro-benchmarks with generous thresholds to catch severe performance regressions.
