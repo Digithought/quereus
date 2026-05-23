@@ -62,11 +62,11 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 	getType(): RelationType {
 		const leftType = this.left.getType();
 		const rightType = this.right.getType();
-		const leftAttrs = this.left.getAttributes();
-		const rightAttrs = this.right.getAttributes();
+		const leftIndex = this.left.getAttributeIndex();
+		const rightIndex = this.right.getAttributeIndex();
 		const indexPairs = this.equiPairs.map(p => ({
-			left: leftAttrs.findIndex(a => a.id === p.leftAttrId),
-			right: rightAttrs.findIndex(a => a.id === p.rightAttrId),
+			left: leftIndex.get(p.leftAttrId) ?? -1,
+			right: rightIndex.get(p.rightAttrId) ?? -1,
 		})).filter(p => p.left >= 0 && p.right >= 0);
 		const keys = combineJoinKeys(leftType.keys, rightType.keys, this.joinType, leftType.columns.length, indexPairs);
 		return buildJoinRelationType(leftType, rightType, this.joinType, keys);
@@ -76,12 +76,13 @@ export class MergeJoinNode extends PlanNode implements BinaryRelationalNode, Joi
 		const leftPhys = childrenPhysical[0];
 		const rightPhys = childrenPhysical[1];
 		const leftAttrs = this.left.getAttributes();
-		const rightAttrs = this.right.getAttributes();
+		const leftIndex = this.left.getAttributeIndex();
+		const rightIndex = this.right.getAttributeIndex();
 
 		// Map attribute-ID-based equi-pairs to column-index-based pairs
 		const indexPairs = this.equiPairs.map(p => ({
-			left: leftAttrs.findIndex(a => a.id === p.leftAttrId),
-			right: rightAttrs.findIndex(a => a.id === p.rightAttrId),
+			left: leftIndex.get(p.leftAttrId) ?? -1,
+			right: rightIndex.get(p.rightAttrId) ?? -1,
 		}));
 
 		const result = analyzeJoinKeyCoverage(
