@@ -66,9 +66,14 @@ export type AsyncGatherCombinator =
  *   (a function of the per-branch arrival order). **Buffers all branches
  *   before yielding** — not suitable for large branches.
  *
- * `concurrencySafe` (AND of children) and `expectedLatencyMs` (max of
- * children) are propagated by the standard child-merge path established
- * elsewhere; this node does not override them.
+ * `concurrencySafe` and `expectedLatencyMs` are NOT propagated by this node:
+ * those fields are not yet defined on {@link PhysicalProperties} (the parallel
+ * track has not landed them). Once a successor ticket (5.5 or later) adds
+ * them, the intended merge is `AND` across children for `concurrencySafe` and
+ * `max` across children for `expectedLatencyMs`; update this node's
+ * `computePhysical` at that time. The fields currently inherited from
+ * `PlanNode.physical`'s default child-merge are `deterministic`,
+ * `idempotent`, and `readonly` (AND across children).
  */
 export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 	override readonly nodeType = PlanNodeType.AsyncGather;

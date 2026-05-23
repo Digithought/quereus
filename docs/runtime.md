@@ -1110,7 +1110,7 @@ Because the emitter uses `ParallelDriver.fork()` without going through `drive()`
 
 Both combinators inherit `ParallelDriver.drive()`'s cancellation, error propagation (one branch's throw is re-raised after a best-effort `return()`-close of in-flight siblings), strict-fork bookkeeping, and consumer-break cleanup. Concurrency is capped at the node's `concurrencyCap` field, which the recognition rule (see `5.5-parallel-async-gather-union-all-rule`) initialises from `tuning.parallel.concurrency`.
 
-`expectedLatencyMs` (max of children) and `concurrencySafe` (AND of children) propagate through the standard child-merge path established for the parallel-fanout track; the gather node does not override them. The optimizer rule for `unionAll` recognition lands separately in ticket `5.5-parallel-async-gather-union-all-rule`. `crossProduct` recognition is opt-in only and is not on the optimizer roadmap. The third planned combinator, `zipByKey`, is deferred to the backlog ticket `parallel-async-gather-zip-by-key`.
+`expectedLatencyMs` and `concurrencySafe` are not yet defined on `PhysicalProperties` — the parallel-fanout track has not landed those fields. When a successor ticket adds them, the intended merge for `AsyncGatherNode` is `max` across children for `expectedLatencyMs` and `AND` across children for `concurrencySafe`; the node should be updated to override `computePhysical` at that time. The optimizer rule for `unionAll` recognition lands separately in ticket `5.5-parallel-async-gather-union-all-rule`. `crossProduct` recognition is opt-in only and is not on the optimizer roadmap. The third planned combinator, `zipByKey`, is deferred to the backlog ticket `parallel-async-gather-zip-by-key`.
 
 ## Incremental Delta Runtime (Design)
 
