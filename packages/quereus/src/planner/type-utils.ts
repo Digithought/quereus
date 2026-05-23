@@ -59,7 +59,7 @@ export function relationTypeFromTableSchema(tableSchema: TableSchema): RelationT
 
   return {
     typeClass: 'relation',
-    isReadOnly: !!(tableSchema.isView || tableSchema.isTemporary),
+    isReadOnly: !!(tableSchema.isView || tableSchema.isReadOnly),
     isSet: true, // Base tables are sets by definition (enforced by primary keys)
     columns: columnDefs,
     keys: keys,
