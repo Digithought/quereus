@@ -55,6 +55,7 @@ import { emitMergeJoin } from './emit/merge-join.js';
 import { emitAsofScan } from './emit/asof-scan.js';
 import { emitCache } from './emit/cache.js';
 import { emitEagerPrefetch } from './emit/eager-prefetch.js';
+import { emitAsyncGather } from './emit/async-gather.js';
 import { emitReturning } from './emit/returning.js';
 import { emitSink } from './emit/sink.js';
 import { emitBetween } from './emit/between.js';
@@ -167,6 +168,9 @@ export function registerEmitters() {
 
 	// Eager prefetch emitter
 	registerEmitter(PlanNodeType.EagerPrefetch, emitEagerPrefetch as EmitterFunc);
+
+	// Async gather emitter (N-ary parallel relational combinator)
+	registerEmitter(PlanNodeType.AsyncGather, emitAsyncGather as EmitterFunc);
 
 	// Sink emitter
 	registerEmitter(PlanNodeType.Sink, emitSink as EmitterFunc);

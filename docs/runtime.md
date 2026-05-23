@@ -1100,6 +1100,18 @@ State is tracked per parent map (not globally) so concurrent unrelated drivers d
 
 Because the emitter uses `ParallelDriver.fork()` without going through `drive()`, it is responsible for the strict-fork bookkeeping that `drive()` normally handles internally. `parallel-driver.ts` re-exports `bumpParentForkCounter` / `dropParentForkCounter` for this purpose: any caller using `fork()` manually must `bump` once per parent map after forking and `drop` the returned state in a `finally` block once the fork's iteration is complete. Don't import these from `strict-fork.ts` directly — that module is internal.
 
+### AsyncGatherNode (N-ary parallel relational combinator)
+
+`AsyncGatherNode` is a physical N-ary relational node that drives ≥ 2 independent (uncorrelated) child relations concurrently via `ParallelDriver.drive()` and combines their outputs with a per-node `AsyncGatherCombinator`. v1 ships two combinators:
+
+- `unionAll` — yield every row from every branch in **arrival order** (multiset union, no dedup). All children must share a column count. Attribute IDs mirror `children[0]` so downstream `ORDER BY` references keep resolving (same convention as `SetOperationNode.buildAttributes`). Ordering, FDs, equivalence classes, constant bindings, and domain constraints are all dropped — arrival-order interleave is non-deterministic, so downstream consumers requiring a total order must wrap the gather in `Sort`. `isSet` is `false`; per-column nullability is the OR across children.
+
+- `crossProduct` — drain every branch fully, then yield the full N-ary Cartesian product. Output attributes are the verbatim concatenation of children's attributes; FDs / ECs / constant bindings / domain constraints are the pairwise N-ary fold of children's properties (the same fold `JoinNode(cross)` does, applied repeatedly). Cartesian-product order is deterministic-but-unspecified — it depends on the per-branch arrival order. **Memory caveat: the runtime buffers every branch in memory before yielding the first row.** This matches the materialization profile a fully-materialized `JoinNode(cross)` would have, but it is a real cost on wide products — callers should not use `crossProduct` when any branch is large. No streaming variant exists in v1.
+
+Both combinators inherit `ParallelDriver.drive()`'s cancellation, error propagation (one branch's throw is re-raised after a best-effort `return()`-close of in-flight siblings), strict-fork bookkeeping, and consumer-break cleanup. Concurrency is capped at the node's `concurrencyCap` field, which the recognition rule (see `5.5-parallel-async-gather-union-all-rule`) initialises from `tuning.parallel.concurrency`.
+
+`expectedLatencyMs` (max of children) and `concurrencySafe` (AND of children) propagate through the standard child-merge path established for the parallel-fanout track; the gather node does not override them. The optimizer rule for `unionAll` recognition lands separately in ticket `5.5-parallel-async-gather-union-all-rule`. `crossProduct` recognition is opt-in only and is not on the optimizer roadmap. The third planned combinator, `zipByKey`, is deferred to the backlog ticket `parallel-async-gather-zip-by-key`.
+
 ## Incremental Delta Runtime (Design)
 
 Quereus can reuse a single incremental runtime to power multiple features that react to base-table changes: transaction-deferred assertions, materialized views, and future trigger-like facilities. The core idea is to execute only the affected slice of a registered query at transaction boundaries using binding-aware residual plans.

@@ -96,6 +96,7 @@ export enum PlanNodeType {
   // Query execution
   Cache = 'Cache',
   EagerPrefetch = 'EagerPrefetch',
+  AsyncGather = 'AsyncGather',
   Sink = 'Sink',
 
   // RETURNING support
