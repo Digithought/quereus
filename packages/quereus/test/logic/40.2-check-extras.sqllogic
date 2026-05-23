@@ -149,3 +149,24 @@ drop table if exists t_compound_param;
 create table t_compound_nd (x integer not null, check (x in (select 1 union all select random())));
 -- error: Non-deterministic expression not allowed in CHECK
 drop table if exists t_compound_nd;
+
+-- DEFAULT-side: bind parameter hidden in the second leg of a compound subquery.
+create table t_compound_default (
+	id integer primary key,
+	v integer default (coalesce((select 1 union all select :p limit 1), 0))
+);
+-- error: bind parameters
+drop table if exists t_compound_default;
+
+-- Generated-column dependency: column ref hidden in the second leg of a compound
+-- subquery must still register as a dependency for the topo sort. Here `g`
+-- depends on `b` only via the later leg; the engine must not silently miss it.
+create table t_compound_gen (
+	a integer not null,
+	b integer not null,
+	g integer generated always as ((select a union all select b limit 1)) virtual
+);
+insert into t_compound_gen (a, b) values (1, 2);
+select g from t_compound_gen;
+→ [{"g":1}]
+drop table t_compound_gen;
