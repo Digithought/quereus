@@ -29,6 +29,7 @@ import { ruleSargableRangeRewrite } from './rules/predicate/rule-sargable-range-
 import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
 import { ruleJoinElimination, ruleJoinEliminationUnderAggregate } from './rules/join/rule-join-elimination.js';
+import { ruleFanOutLookupJoin } from './rules/join/rule-fanout-lookup-join.js';
 // Predicate pushdown rules
 // Core optimization rules
 import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
@@ -240,6 +241,23 @@ export class Optimizer {
 			nodeType: PlanNodeType.Aggregate,
 			phase: 'rewrite',
 			fn: ruleGroupByFdSimplification,
+			priority: 23
+		});
+
+		// Fan-out lookup join (FK→PK): cluster N LEFT/INNER nested-loop joins from
+		// a common outer into one parallel `FanOutLookupJoinNode` when the cost
+		// gate (per-branch latency × (N - cap) > N × branchSetupCost) approves.
+		// Runs *before* `join-elimination` (priority 24) so the rule sees the full
+		// branch set; elimination would otherwise steal any single branch whose
+		// non-preserved side isn't referenced upstream. The rule's cost gate is
+		// inert when `expectedLatencyMs === 0`, so memory-vtab chains never
+		// transform (single golden-plan sweep verified — see
+		// test/optimizer/parallel-fanout.spec.ts).
+		this.passManager.addRuleToPass(PassId.Structural, {
+			id: 'fanout-lookup-join',
+			nodeType: PlanNodeType.Project,
+			phase: 'rewrite',
+			fn: ruleFanOutLookupJoin,
 			priority: 23
 		});
 

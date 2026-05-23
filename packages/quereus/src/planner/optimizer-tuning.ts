@@ -109,6 +109,25 @@ export interface OptimizerTuning {
 		/** Enable/disable QuickPick globally */
 		readonly enabled: boolean;
 	};
+
+	/**
+	 * Parallel-execution rule tuning. Consumed by `rule-fanout-lookup-join`
+	 * (the FK→PK fan-out recognition rule). All values are unitless cost
+	 * comparators except `concurrency`, which is a row-time branch cap.
+	 */
+	readonly parallel: {
+		/** Don't form a fan-out below this branch count. Default 2. */
+		readonly minBranches: number;
+		/**
+		 * Per-branch fixed overhead, charged against the latency win. Anchored
+		 * against `COST_CONSTANTS.NL_JOIN_PER_OUTER_ROW`; the value only matters
+		 * relative to `expectedLatencyMs`, so the unit is "ms-equivalent cost".
+		 * Default 1.0.
+		 */
+		readonly branchSetupCost: number;
+		/** Static cap on in-flight branches per outer row. Default 8. */
+		readonly concurrency: number;
+	};
 }
 
 /**
@@ -151,5 +170,12 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 		timeLimitMs: 100,
 		minTriggerCost: 0,
 		enabled: true
+	},
+	parallel: {
+		minBranches: 2,
+		// 1.0 ≈ COST_CONSTANTS.NL_JOIN_PER_OUTER_ROW; this is "ms-equivalent" because
+		// it is compared directly against `expectedLatencyMs * (N - cap)` savings.
+		branchSetupCost: 1.0,
+		concurrency: 8,
 	}
 };

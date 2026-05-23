@@ -77,6 +77,19 @@ export interface VirtualTableModule<
 	readonly concurrencyMode?: VtabConcurrencyMode;
 
 	/**
+	 * Optional hint: expected first-row latency in milliseconds for an iterator
+	 * opened against tables of this module. Local in-process modules omit this
+	 * (treated as 0). Remote / network-backed modules should declare a non-zero
+	 * value so the parallel fan-out rule can amortize per-branch latency across
+	 * concurrent branches.
+	 *
+	 * Read by `TableReferenceNode.computePhysical` and propagated through the
+	 * subtree via the standard `expectedLatencyMs` max-merge. Consumers must
+	 * treat the value as a heuristic; correctness must never depend on it.
+	 */
+	readonly expectedLatencyMs?: number;
+
+	/**
 	 * Creates the persistent definition of a virtual table.
 	 * Called by CREATE VIRTUAL TABLE to define schema and initialize storage.
 	 *

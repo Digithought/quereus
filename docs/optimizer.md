@@ -1449,6 +1449,36 @@ The federated-vtab payoff: each fold removes a remote round-trip to the parent t
 
 The anti-join-to-empty rewrite emits `EmptyRelationNode` carrying L's attribute IDs and `RelationType`. Downstream the const-fold pass (`rule-empty-relation-folding`, Structural priority 27) cascades that emptiness up through immediate Filter / Project / Sort / LimitOffset / Distinct / inner-or-cross-or-semi-anti joins; see "Empty-relation folding" below.
 
+### Fan-out lookup join (FK→PK)
+
+`rule-fanout-lookup-join.ts` (Structural pass priority 23, registered ahead of `join-elimination` at 24) clusters a Project-rooted chain of N FK→PK-aligned LEFT/INNER joins from a common outer into one physical `FanOutLookupJoinNode` (see `docs/runtime.md` § FanOutLookupJoinNode for the runtime). The recognition primitives are shared with `rule-join-elimination`:
+
+- `isAndOfColumnEqualities` — the ON clause must be an AND of `colRef = colRef` atoms; any residual disqualifies the branch.
+- `checkFkPkAlignment` + `lookupCoveringFK` (`util/key-utils.ts`, `util/ind-utils.ts`) — verifies the join's equi-pairs match an FK on the outer's table referencing the lookup's PK, in the FK's declared positional order. INNER branches additionally require a non-null FK and a row-preserving path to the PK table (the same `isRowPreservingPathToTable` guard the join-elim rule uses).
+- The outer subtree must resolve to a single base table (`extractTableSchema`) so the FK column indices are well-defined — middle-of-chain joins that don't resolve to a single schema are not eligible.
+
+Each recognized branch becomes a `FanOutBranchSpec` whose `child` is the lookup wrapped in a `FilterNode` carrying the original equi-condition. At runtime, `FanOutLookupJoinNode` installs the outer row's slot on `rctx.context` before forking each branch, so the Filter's outer-side `ColumnReferenceNode` lookups resolve through the parent fork's snapshot.
+
+**Cost gate.** The rule fires only when
+```
+(N − concurrencyCap) × max(expectedLatencyMs across branches) > N × tuning.parallel.branchSetupCost
+```
+where `concurrencyCap = min(tuning.parallel.concurrency, N)`. Practical consequences:
+
+- `expectedLatencyMs == 0` ⇒ no rewrite. Local-only paths (memory vtab, in-process compute) leave the latency field at the default 0, so the gate is inert and `test/plan/`-style memory-vtab goldens never change shape under this rule. The gate becomes meaningful only when a remote-vtab plugin populates `VirtualTableModule.expectedLatencyMs` with a non-zero hint (`TableReferenceNode.computePhysical` reads it; the value propagates as `max(children)` through the subtree).
+- `concurrencyCap ≥ N` ⇒ savings clamps to 0 (or negative, treated as 0). Fan-out wins only when concurrency-bound; below that, the nested-loop chain is already an upper bound on wall-clock and a fresh round of branch setup is pure cost.
+- `N < tuning.parallel.minBranches` (default 2) ⇒ no rewrite; a single-branch fan-out has no parallelism to exploit.
+
+**Tuning knobs** (`OptimizerTuning.parallel`):
+
+- `minBranches` (default 2) — minimum branch count before clustering is considered.
+- `branchSetupCost` (default 1.0) — per-branch fixed overhead in `expectedLatencyMs`-equivalent units (anchored against `COST_CONSTANTS.NL_JOIN_PER_OUTER_ROW`).
+- `concurrency` (default 8) — static cap on in-flight branches per outer row, also fed to the constructed `FanOutLookupJoinNode.concurrencyCap`.
+
+**Relationship to `join-elimination`.** The fan-out rule runs first (priority 23). A successful cluster removes all eligible branches from the chain. If the rule abstains (branch count < `minBranches`, or the cost gate rejects), the remaining single-branch joins fall through to `join-elimination` at priority 24, which can still eliminate them individually when the non-preserved side isn't referenced upstream.
+
+**Out of scope for v1.** Aggregate-rooted recognition (analogous to `ruleJoinEliminationUnderAggregate`) is deferred to a follow-up backlog ticket. Connection-per-branch acquisition is not implemented — v1 always reuses the outer's connection, and `'serial'`-mode branches serialize through the per-connection lock; correctness is preserved but the parallelism payoff is module-mode-gated. Adaptive concurrency, latency-driven branch ordering, and the tighter per-branch equi-pair FD propagation in `FanOutLookupJoinNode.computePhysical` are all tracked as follow-ups.
+
 ### Empty-relation folding
 
 `EmptyRelationNode` (`planner/nodes/empty-relation-node.ts`) is a schema-polymorphic zero-row relation. Its constructor takes the exact `Attribute[]` and `RelationType` that the surrounding node would have produced, so attribute IDs above the fold site remain stable. It is distinct from `EmptyResultNode` (a `TableAccessNode` tied to a `TableReferenceNode` — the table-access-bound empty result for impossible predicates inferred during access-path planning); `EmptyRelationNode` is unmoored from any specific source.

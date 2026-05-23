@@ -17,6 +17,7 @@ import { formatScalarType } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { AnyVirtualTableModule } from '../../vtab/module.js';
+import { getModuleConcurrencyMode } from '../../vtab/concurrency.js';
 import type { ColumnBindingProvider } from '../framework/characteristics.js';
 import type { TableAccessCapable } from '../framework/characteristics.js';
 
@@ -194,6 +195,18 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 		if (equivClasses.length > 0) out.equivClasses = equivClasses;
 		if (constantBindings.length > 0) out.constantBindings = constantBindings;
 		if (domainConstraints.length > 0) out.domainConstraints = domainConstraints;
+		// Concurrency safety: read-only subtree over a module that tolerates
+		// concurrent calls. The base PlanNode `physical` getter ANDs children's
+		// `concurrencySafe` automatically; here we set the leaf value.
+		out.concurrencySafe = getModuleConcurrencyMode(this.vtabModule) !== 'serial';
+		// expectedLatencyMs: pick up the module's declared hint. Local in-process
+		// modules omit it (0). Remote modules declare a non-zero value so the
+		// parallel fan-out rule can amortize per-branch latency. With no remote
+		// plugin in tree this stays 0 and the cost gate is inert by design.
+		const moduleLatency = this.vtabModule.expectedLatencyMs;
+		if (typeof moduleLatency === 'number' && moduleLatency > 0) {
+			out.expectedLatencyMs = moduleLatency;
+		}
 		return out;
 	}
 

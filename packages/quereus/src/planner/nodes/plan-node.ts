@@ -286,6 +286,33 @@ export interface PhysicalProperties {
 	 * If this is true, the node should implement getValue() to return the constant value.
    */
   constant?: boolean;
+
+  /**
+   * Expected first-row latency in milliseconds for this subtree's iterator.
+   * 0 (default) for local-only paths (memory vtab, in-process compute).
+   * Non-zero for remote vtabs and any operator whose cost model declares it.
+   * Consumed by rule-fanout-lookup-join's cost gate; consumers must not rely
+   * on it for correctness (only as a fan-out savings hint).
+   *
+   * Propagation: unary/multi-input nodes inherit the max of children. Leaves
+   * declare their own value via `computePhysical`. Remote-vtab leaves should
+   * source this from their access plan; the in-tree default is 0 and the
+   * fan-out cost gate is intentionally inert until a remote plugin populates it.
+   */
+  expectedLatencyMs?: number;
+
+  /**
+   * True when the subtree is safe to execute concurrently with siblings sharing
+   * the same vtab connection. Defaults to true for read-only subtrees over
+   * modules with `concurrencyMode !== 'serial'`. False when the subtree mutates
+   * state, holds a non-reentrant cursor, or sits over a `'serial'` module that
+   * does not have a per-branch connection available.
+   *
+   * Propagation: multi-input nodes inherit the AND of children — any non-safe
+   * child poisons the parent. Leaves derive their own value from the
+   * underlying module's concurrency mode and the subtree's readonly status.
+   */
+  concurrencySafe?: boolean;
 }
 
 // Derived properties (computed, not stored):
@@ -524,6 +551,16 @@ export abstract class PlanNode {
 					idempotent: childrenPhysical.every(child => child.idempotent),
 					readonly: childrenPhysical.every(child => child.readonly),
 					// constant: DON'T INHERIT - only ValueNodes can be directly constant
+					// expectedLatencyMs: max of children — slowest child gates first-row
+					// latency. 0 default for local-only paths.
+					expectedLatencyMs: childrenPhysical.reduce(
+						(acc, child) => Math.max(acc, child.expectedLatencyMs ?? 0),
+						0,
+					),
+					// concurrencySafe: AND of children — any non-safe child poisons the
+					// parent. Default true so missing values do not spuriously disable
+					// parallelism; leaves that need stricter behavior set false.
+					concurrencySafe: childrenPhysical.every(child => child.concurrencySafe !== false),
 				}
 				: DEFAULT_PHYSICAL;
 
