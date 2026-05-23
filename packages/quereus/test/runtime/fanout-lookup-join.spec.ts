@@ -427,6 +427,66 @@ describe('FanOutLookupJoin', () => {
 		});
 	});
 
+	describe('empty outer source', () => {
+		it('yields no rows and never forks branches when outer is empty', async () => {
+			const ctx = makeRuntimeContext();
+			let branchInvocations = 0;
+			const branch: FanOutLookupBranchFactory = () => {
+				branchInvocations++;
+				return (async function* () { yield ['x'] as Row; })();
+			};
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'atMostOne-left', outputColCount: 1, concurrencySafe: true },
+			];
+
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([]), singleOuterDescriptor(),
+				[branch], descriptors, 1,
+			));
+			expect(out).to.deep.equal([]);
+			expect(branchInvocations).to.equal(0);
+			// Slot must have been closed in the finally — context size returns to 0.
+			expect(ctx.context.size).to.equal(0);
+		});
+	});
+
+	describe('branch error propagation', () => {
+		it('propagates a branch throw and closes sibling iterators', async () => {
+			const ctx = makeRuntimeContext();
+			let siblingClosed = false;
+			const branchThrow: FanOutLookupBranchFactory = () => (async function* () {
+				// require-yield: emit then throw on the iterator's first pull.
+				yield Promise.reject(new Error('branch boom')) as unknown as Row;
+			})();
+			const branchSlow: FanOutLookupBranchFactory = () => (async function* () {
+				try {
+					await sleep(50);
+					yield ['done'] as Row;
+				} finally {
+					siblingClosed = true;
+				}
+			})();
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'atMostOne-left', outputColCount: 1, concurrencySafe: true },
+				{ mode: 'atMostOne-left', outputColCount: 1, concurrencySafe: true },
+			];
+
+			let caught: unknown = undefined;
+			try {
+				await collect(runFanOutLookupJoin(
+					ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+					[branchThrow, branchSlow], descriptors, 2,
+				));
+			} catch (e) {
+				caught = e;
+			}
+			expect(String((caught as Error)?.message ?? caught)).to.equal('branch boom');
+			expect(siblingClosed, 'sibling branch iterator must be closed via finally').to.equal(true);
+			// Outer slot closed even on error path.
+			expect(ctx.context.size).to.equal(0);
+		});
+	});
+
 	describe('input validation', () => {
 		it('rejects mismatched factories/descriptors length', async () => {
 			const ctx = makeRuntimeContext();
