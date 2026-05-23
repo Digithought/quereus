@@ -135,3 +135,17 @@ insert into T (Id, Color) values (2, 'r');
 -- error: CHECK constraint failed: NB
 drop table T;
 drop table Block;
+
+-- ===================================
+-- 7. Bind parameters / non-determinism hidden in later legs of a compound
+-- subquery inside a CHECK must still be detected at DDL.
+-- Regression for ast-visitor-compound-select-traversal.
+-- ===================================
+
+create table t_compound_param (x integer not null, check (x in (select 1 union all select :p)));
+-- error: bind parameters
+drop table if exists t_compound_param;
+
+create table t_compound_nd (x integer not null, check (x in (select 1 union all select random())));
+-- error: Non-deterministic expression not allowed in CHECK
+drop table if exists t_compound_nd;

@@ -71,7 +71,7 @@ export function traverseAst(node: AST.AstNode | undefined, callbacks: AstVisitor
 			(stmt.orderBy ?? []).forEach(o => traverseAst(o.expr, callbacks));
 			traverseAst(stmt.limit, callbacks);
 			traverseAst(stmt.offset, callbacks);
-			traverseAst(stmt.union, callbacks);
+			traverseAst(stmt.compound?.select, callbacks);
 			break;
 		}
 		case 'insert': {
