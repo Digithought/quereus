@@ -65,6 +65,19 @@ function collectEqualityBoundColumns(filters: readonly PredicateConstraint[]): R
  * database connection.
  */
 export class MemoryTableModule implements VirtualTableModule<MemoryTable, MemoryTableConfig> {
+	/**
+	 * Memory tables snapshot the connection's read layer once at `query()` entry
+	 * and iterate immutable BTree layers; writes always go through a fresh
+	 * transient layer that is atomically published on the connection. Concurrent
+	 * scans on a single connection therefore see consistent, non-mutating
+	 * snapshots — safe to interleave with any other operation in JS's
+	 * single-threaded execution model.
+	 *
+	 * If a future change adds genuine mid-iteration mutation of a scanned layer
+	 * (e.g. an in-place layer collapser), this must drop to `'reentrant-reads'`.
+	 */
+	readonly concurrencyMode = 'fully-reentrant' as const;
+
 	public readonly tables: Map<string, MemoryTableManager> = new Map();
 	private eventEmitter?: VTableEventEmitter;
 

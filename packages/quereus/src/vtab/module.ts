@@ -17,6 +17,23 @@ export interface BaseModuleConfig {
 }
 
 /**
+ * Declares whether a virtual table module tolerates concurrent calls on a
+ * single connection. Consulted by parallel runtime consumers (e.g. fan-out
+ * lookup joins) to decide whether sibling branches may share a connection
+ * or must serialize.
+ *
+ * - `'serial'` — runtime must serialize vtab calls per connection. Safe
+ *   default for any module that has not been audited; defeats parallelism
+ *   for that module.
+ * - `'reentrant-reads'` — concurrent `query()` calls on a single
+ *   connection are safe; writes (`update()`, savepoint ops, etc.) still
+ *   serialize.
+ * - `'fully-reentrant'` — no constraint; any operation is safe to
+ *   interleave with any other on the same connection.
+ */
+export type VtabConcurrencyMode = 'serial' | 'reentrant-reads' | 'fully-reentrant';
+
+/**
  * Assessment result from a module's supports() method indicating
  * whether it can execute a plan subtree and at what cost.
  */
@@ -38,6 +55,26 @@ export interface VirtualTableModule<
 	TTable extends VirtualTable,
 	TConfig extends BaseModuleConfig = BaseModuleConfig
 > {
+
+	/**
+	 * Declares whether the runtime may issue concurrent calls (query, update,
+	 * connect, …) against tables owned by this module while another call is
+	 * already in flight on the same connection. Read by `ParallelDriver`
+	 * consumers (e.g. FanOutLookupJoin) to decide whether sibling branches
+	 * may share a connection or must serialize.
+	 *
+	 * - `'serial'` (default) — runtime serializes vtab calls per connection.
+	 *   Safe for any module that has not been audited; defeats parallelism
+	 *   for that module.
+	 * - `'reentrant-reads'` — concurrent `query()` calls on a single
+	 *   connection are safe; writes (`update()`, savepoint ops, etc.)
+	 *   continue to serialize.
+	 * - `'fully-reentrant'` — no constraint; any operation is safe to
+	 *   interleave with any other on the same connection.
+	 *
+	 * Omit to inherit `'serial'`.
+	 */
+	readonly concurrencyMode?: VtabConcurrencyMode;
 
 	/**
 	 * Creates the persistent definition of a virtual table.

@@ -27,7 +27,8 @@ export { MemoryTableModule } from './vtab/memory/module.js';
 export type { IndexInfo, IndexConstraint, IndexConstraintUsage, IndexOrderBy } from './vtab/index-info.js';
 export { IndexScanFlags } from './vtab/index-info.js';
 export type { FilterInfo } from './vtab/filter-info.js';
-export type { BaseModuleConfig, SchemaChangeInfo } from './vtab/module.js';
+export type { BaseModuleConfig, SchemaChangeInfo, VtabConcurrencyMode } from './vtab/module.js';
+export { getModuleConcurrencyMode, acquireConnectionLock } from './vtab/concurrency.js';
 
 // Virtual Table Event Hooks
 export type {

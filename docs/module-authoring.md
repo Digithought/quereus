@@ -194,6 +194,66 @@ getBestAccessPlan(
 }
 ```
 
+### 3. Concurrency Mode (Parallel Runtime)
+
+When a parallel-runtime consumer (e.g. fan-out lookup join) wants to issue
+multiple vtab calls in flight on a single connection, it consults the
+module's declared `concurrencyMode`. By default, modules opt out of
+parallelism — the runtime acquires a per-connection lock so calls are
+serialized.
+
+```typescript
+interface VirtualTableModule {
+  readonly concurrencyMode?: 'serial' | 'reentrant-reads' | 'fully-reentrant';
+}
+```
+
+| Mode | Per-connection guarantee from the module |
+| --- | --- |
+| `'serial'` (default) | Nothing. Runtime serializes via `acquireConnectionLock`. |
+| `'reentrant-reads'` | Concurrent `query()` is safe; writes still serialize. |
+| `'fully-reentrant'` | All operations are safe to interleave on one connection. |
+
+**Default is `'serial'`** — the safe choice for any module that hasn't
+been audited. The cost is that parallel consumers fall back to lock
+serialization on shared connections, defeating parallelism for that
+module. The declaration is the knob that actually buys parallelism;
+nothing else needs to change.
+
+**Upgrading a module:**
+
+1. Identify the connection-level state mutated by `query()`, `update()`,
+   savepoints, etc. If `query()` snapshots its working set at call entry
+   and never touches state another call writes, `'reentrant-reads'` is
+   safe.
+2. Walk through the worst-case interleavings under
+   single-threaded JS: torn reads can only happen if a write publishes
+   state in more than one statement step. Atomic single-statement
+   pointer swaps are safe; multi-step state machines aren't.
+3. For `'fully-reentrant'`, the same holds for writes. This is a much
+   higher bar and is usually not worth it — `'reentrant-reads'` is the
+   common upgrade target.
+
+The runtime helpers live at `vtab/concurrency.ts`:
+
+```typescript
+import { getModuleConcurrencyMode, acquireConnectionLock } from '@quereus/quereus';
+
+const mode = getModuleConcurrencyMode(module);
+if (mode === 'serial') {
+  const release = await acquireConnectionLock(connection);
+  try {
+    for await (const row of vtab.query(filterInfo)) yield row;
+  } finally {
+    release();
+  }
+}
+```
+
+Memory vtab declares `'fully-reentrant'`. Layered stores, isolation
+wrappers, and persistent plugins stay default until their owners audit
+them.
+
 ## Runtime Execution Modes
 
 ### Query-Based Execution
