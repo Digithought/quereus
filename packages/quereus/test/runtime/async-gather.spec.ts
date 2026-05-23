@@ -247,18 +247,17 @@ describe('AsyncGather', () => {
 	});
 
 	describe('validator pass-through', () => {
-		it('is not flagged as a logical-only node type', () => {
-			// AsyncGather is a physical node — it must not appear in the
-			// validator's `logicalOnlyTypes` set. We disable the attribute
-			// uniqueness check (which would otherwise fail for any
-			// attribute-preserving N-ary node, including JoinNode and
-			// SetOperationNode) to isolate the node-type allowlist check.
+		it('passes full validation (attribute-preserving N-ary node)', () => {
+			// AsyncGather is a physical node that forwards its children's attribute
+			// IDs verbatim (crossProduct concatenates them). The attribute-provenance
+			// surface recognizes this as forwarding, not duplication, so default
+			// validation (validateAttributes: true) succeeds — no workaround needed.
 			const leftA = makeAttr('a'); const leftB = makeAttr('b');
 			const rightX = makeAttr('x'); const rightY = makeAttr('y');
 			const left = new MockRelationalNode([leftA, leftB]);
 			const right = new MockRelationalNode([rightX, rightY]);
 			const node = new AsyncGatherNode(mockScope, [left, right], { kind: 'crossProduct' }, 4);
-			expect(() => validatePhysicalTree(node, { validateAttributes: false })).to.not.throw();
+			expect(() => validatePhysicalTree(node)).to.not.throw();
 		});
 	});
 

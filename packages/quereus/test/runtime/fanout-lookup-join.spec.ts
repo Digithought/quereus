@@ -672,11 +672,11 @@ describe('FanOutLookupJoinNode', () => {
 			{ child: branchChild, mode: 'atMostOne-left', outputAttrs: b0Attrs, concurrencySafe: true },
 		];
 		const node = new FanOutLookupJoinNode(mockScope, outer, branches, 1);
-		// validateAttributes: false because outer + branch IDs deliberately
-		// pass through to FanOutLookupJoin's getAttributes(); the tree-wide
-		// uniqueness check conflates pass-through with duplicates (same as for
-		// FilterNode / EagerPrefetchNode pass-throughs).
-		expect(() => validatePhysicalTree(node, { validateAttributes: false })).not.to.throw();
+		// Default validation: outer + branch IDs are forwarded into
+		// FanOutLookupJoin's getAttributes(). The attribute-provenance surface
+		// treats this as forwarding (each ID still originates once at its leaf),
+		// so the full uniqueness check passes — no workaround needed.
+		expect(() => validatePhysicalTree(node)).not.to.throw();
 	});
 
 	it('withChildren rebuilds preserving branch shape', () => {

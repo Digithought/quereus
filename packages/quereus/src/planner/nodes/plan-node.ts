@@ -482,6 +482,27 @@ export abstract class PlanNode {
    */
   getAttributes?(): readonly Attribute[];
 
+  /** Cached attrId → index map; see getAttributeIndex(). */
+  private _attributeIndexCache?: ReadonlyMap<number, number>;
+
+  /**
+   * Map from attribute id to its index in `getAttributes()`. Replaces the
+   * ad-hoc `attrs.findIndex(a => a.id === …)` scans scattered across the
+   * planner. Cached per instance; because PlanNodes are immutable, `withChildren`
+   * mints a fresh instance and the cache rebuilds automatically.
+   */
+  getAttributeIndex(): ReadonlyMap<number, number> {
+    if (!this._attributeIndexCache) {
+      const map = new Map<number, number>();
+      const attrs = this.getAttributes?.() ?? [];
+      for (let i = 0; i < attrs.length; i++) {
+        map.set(attrs[i].id, i);
+      }
+      this._attributeIndexCache = map;
+    }
+    return this._attributeIndexCache;
+  }
+
   /**
    * Get map of attribute ID to producing scalar expression (for constant folding)
    * Only relational nodes that synthesize columns from expressions need implement this
@@ -632,6 +653,9 @@ export interface RelationalPlanNode extends PlanNode {
    * Each attribute has a unique ID that persists across plan transformations
    */
   getAttributes(): readonly Attribute[];
+
+  /** Map from attribute id to its index in getAttributes(). Cached on PlanNode. */
+  getAttributeIndex(): ReadonlyMap<number, number>;
 }
 
 /**

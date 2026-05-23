@@ -96,11 +96,7 @@ function extractRangeBounds(
 }
 
 function findColIndexForAttr(leaf: AccessLeaf, attrId: number): number {
-	const attrs = leaf.source.getAttributes();
-	for (let i = 0; i < attrs.length; i++) {
-		if (attrs[i].id === attrId) return i;
-	}
-	return -1;
+	return leaf.source.getAttributeIndex().get(attrId) ?? -1;
 }
 
 /** Clone a leaf, attaching `rangeBoundedOn` to its physical properties. */
