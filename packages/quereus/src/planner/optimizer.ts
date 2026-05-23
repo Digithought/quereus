@@ -31,6 +31,7 @@ import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js'
 import { ruleJoinElimination, ruleJoinEliminationUnderAggregate } from './rules/join/rule-join-elimination.js';
 import { ruleFanOutLookupJoin } from './rules/join/rule-fanout-lookup-join.js';
 import { ruleAsyncGatherUnionAll } from './rules/parallel/rule-async-gather-union-all.js';
+import { ruleEagerPrefetchProbe } from './rules/parallel/rule-eager-prefetch-probe.js';
 // Predicate pushdown rules
 // Core optimization rules
 import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
@@ -557,6 +558,26 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleAsyncGatherUnionAll,
 			priority: 17
+		});
+
+		// Eager-prefetch probe wrap: when a physical hash join's build (right)
+		// side is high-latency, wrap the probe (left) side in an
+		// `EagerPrefetchNode` so the buffered pump pipelines probe reads with
+		// the parent emit's per-row work. Gated on
+		// `right.physical.expectedLatencyMs >= prefetchProbeThresholdMs`, which
+		// is 0 on memory-vtab leaves — so the rule is inert on local-only plans
+		// (the golden-plan sweep is unaffected). Runs after `mutating-subquery-
+		// cache` (priority 10) and `asof-strategy-select` (priority 11) — by
+		// which point leaf physical properties incl. `expectedLatencyMs` are
+		// finalized — and before `cte-optimization` (priority 20) and
+		// `materialization-advisory` (priority 30), so the advisory sees the
+		// prefetch-wrapped tree and does not re-wrap the probe in a Cache.
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'eager-prefetch-probe',
+			nodeType: PlanNodeType.HashJoin,
+			phase: 'rewrite',
+			fn: ruleEagerPrefetchProbe,
+			priority: 15
 		});
 
 		this.passManager.addRuleToPass(PassId.PostOptimization, {

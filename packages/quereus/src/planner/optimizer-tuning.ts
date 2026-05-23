@@ -139,6 +139,23 @@ export interface OptimizerTuning {
 		 * fan-out rule).
 		 */
 		readonly gatherThresholdMs: number;
+		/**
+		 * Minimum `right.physical.expectedLatencyMs` (in milliseconds) on a
+		 * physical hash join's build side for `rule-eager-prefetch-probe` to wrap
+		 * the probe (`left`) input in an `EagerPrefetchNode`. Like
+		 * `gatherThresholdMs`, any positive value keeps the rule inert on
+		 * memory-vtab plans (their leaves declare `expectedLatencyMs=0`). Default
+		 * 25 ms — the same high-latency vtab fixture value the other parallel
+		 * rules use, so no test-side tuning is needed to exercise the rule.
+		 */
+		readonly prefetchProbeThresholdMs: number;
+		/**
+		 * Buffer size handed to the `EagerPrefetchNode` the prefetch-probe rule
+		 * inserts. Default 64 — mirrors the `EagerPrefetchNode` constructor
+		 * default so the in-tree default matches what manual construction
+		 * already produces.
+		 */
+		readonly prefetchBufferSize: number;
 	};
 }
 
@@ -193,5 +210,13 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 		// parallel gather. 25 ms matches the synthetic high-latency vtab fixture;
 		// memory-vtab plans declare 0 ms so they never cross this gate.
 		gatherThresholdMs: 25,
+		// ≥ this many ms on a hash join's build (right) side triggers wrapping
+		// the probe (left) side in EagerPrefetch. 25 ms matches the synthetic
+		// high-latency vtab fixture; memory-vtab plans declare 0 ms so the rule
+		// stays inert on local-only plans.
+		prefetchProbeThresholdMs: 25,
+		// Ring-buffer size for the inserted EagerPrefetchNode; mirrors the node's
+		// own constructor default.
+		prefetchBufferSize: 64,
 	}
 };

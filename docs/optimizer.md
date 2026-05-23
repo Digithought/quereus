@@ -1505,6 +1505,20 @@ where `concurrencyCap = min(tuning.parallel.concurrency, N)`. Practical conseque
 
 **Out of scope for v1.** The `crossProduct` combinator is opt-in only (no recognition rule yet); the `zipByKey` combinator is parked in the backlog. The `materialization-advisory`-wraps-a-high-latency-child interaction is not patched here — if the advisory introduces a `CacheNode` over a remote-vtab branch *inside* the gather, the prefetch overlap is partially defeated (the cache materializes serially before the gather sees rows); follow-up if it surfaces in practice. The mixed-branches case (one slow, two local) currently fires the rule on the simple "max-of-children" gate; an adaptive per-branch decision is parked. Sort-above-gather under `QUEREUS_FORK_STRICT=1` trips the strict-fork contract due to a pre-existing interaction between the Sort emitter (mutates parent context) and AsyncGather (keeps forks live during yielding); the optimizer-spec for this rule skips that case under strict-fork and the rest of the suite is strict-fork clean.
 
+### Eager-prefetch probe wrap
+
+`rule-eager-prefetch-probe.ts` (PostOptimization pass priority 15) wraps the probe (`left`) input of a physical hash join (`BloomJoinNode`, `PlanNodeType.HashJoin`) in an `EagerPrefetchNode` when the build (`right`) side advertises high first-row latency. Note the `BloomJoinNode` convention: **`left` is the probe (streamed) side** and `right` is the build (materialized) side — opposite of the textbook ordering. The buffered prefetch pump then pipelines probe-side reads with the parent emit's per-row work.
+
+**Cost gate.** `node.right.physical.expectedLatencyMs ≥ tuning.parallel.prefetchProbeThresholdMs`. Like the fan-out and gather rules, `expectedLatencyMs` is 0 on every in-process / memory-vtab leaf, so the rule is **inert by design on local-only plans** (the `test/plan/` golden sweep is unaffected). The gate is on the build side specifically: if `left` were the slow one the consumer above the join takes that latency hit regardless, so prefetching it would not change first-row time meaningfully.
+
+**Skip predicates.** The wrap is suppressed when the probe is already pump-driven or pre-materialized: `left` is an `EagerPrefetchNode` (idempotence), a `Cache` (pre-materialized — a prefetch over a cache buys nothing), or an `AsyncGather` (already drives its branches concurrently). Pure-`nodeType` checks; no capability detector.
+
+**Pass placement.** Priority 15 in PostOptimization — after `mutating-subquery-cache` (10) and `asof-strategy-select` (11, finalizes leaf physical properties incl. `expectedLatencyMs`), and before `cte-optimization` (20) and `materialization-advisory` (30, so the advisory sees the prefetch-wrapped tree and does not re-wrap the probe in a Cache).
+
+**Tuning knobs** (`OptimizerTuning.parallel`): `prefetchProbeThresholdMs` (default 25 — shares the synthetic high-latency vtab fixture value) and `prefetchBufferSize` (default 64 — mirrors the `EagerPrefetchNode` constructor default).
+
+**Out of scope (follow-on backlog).** EagerPrefetch eager-start in `run()` (the current pump starts on first iteration, not on emit — see `tickets/backlog/parallel-eager-prefetch-eager-start`); a broad cost-driven gate independent of remoteness; merge / nested-loop / asof join shapes; wrapping the build side (consumed once linearly, no benefit); and wrapping arbitrary high-latency subtrees.
+
 ### Empty-relation folding
 
 `EmptyRelationNode` (`planner/nodes/empty-relation-node.ts`) is a schema-polymorphic zero-row relation. Its constructor takes the exact `Attribute[]` and `RelationType` that the surrounding node would have produced, so attribute IDs above the fold site remain stable. It is distinct from `EmptyResultNode` (a `TableAccessNode` tied to a `TableReferenceNode` — the table-access-bound empty result for impossible predicates inferred during access-path planning); `EmptyRelationNode` is unmoored from any specific source.
