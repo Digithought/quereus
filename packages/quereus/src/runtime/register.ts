@@ -56,6 +56,7 @@ import { emitAsofScan } from './emit/asof-scan.js';
 import { emitCache } from './emit/cache.js';
 import { emitEagerPrefetch } from './emit/eager-prefetch.js';
 import { emitAsyncGather } from './emit/async-gather.js';
+import { emitFanOutLookupJoin } from './emit/fanout-lookup-join.js';
 import { emitReturning } from './emit/returning.js';
 import { emitSink } from './emit/sink.js';
 import { emitBetween } from './emit/between.js';
@@ -171,6 +172,9 @@ export function registerEmitters() {
 
 	// Async gather emitter (N-ary parallel relational combinator)
 	registerEmitter(PlanNodeType.AsyncGather, emitAsyncGather as EmitterFunc);
+
+	// Fan-out lookup join emitter (per outer row → N concurrent at-most-one lookups)
+	registerEmitter(PlanNodeType.FanOutLookupJoin, emitFanOutLookupJoin as EmitterFunc);
 
 	// Sink emitter
 	registerEmitter(PlanNodeType.Sink, emitSink as EmitterFunc);

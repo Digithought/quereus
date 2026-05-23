@@ -1112,6 +1112,25 @@ Both combinators inherit `ParallelDriver.drive()`'s cancellation, error propagat
 
 `expectedLatencyMs` and `concurrencySafe` are not yet defined on `PhysicalProperties` — the parallel-fanout track has not landed those fields. When a successor ticket adds them, the intended merge for `AsyncGatherNode` is `max` across children for `expectedLatencyMs` and `AND` across children for `concurrencySafe`; the node should be updated to override `computePhysical` at that time. The optimizer rule for `unionAll` recognition lands separately in ticket `5.5-parallel-async-gather-union-all-rule`. `crossProduct` recognition is opt-in only and is not on the optimizer roadmap. The third planned combinator, `zipByKey`, is deferred to the backlog ticket `parallel-async-gather-zip-by-key`.
 
+### FanOutLookupJoinNode (per-row fan-out lookup join)
+
+`FanOutLookupJoinNode` is a physical relational node that replaces a chain of N nested-loop LEFT/INNER joins where each branch is a key-aligned (FK→PK) lookup against an independent table. For one outer row, the emitter forks the runtime context N times, drives the N parameterized branch sub-plans concurrently via `ParallelDriver.drive()`, collects each branch's at-most-one lookup row, and assembles a wide result row (outer ++ branch[0] ++ … ++ branch[N-1]).
+
+**Branch modes (v1).** Each branch declares a `mode`:
+
+- `atMostOne-left` — like LEFT JOIN: a zero-row branch yields NULL-padded columns for that slice; the outer row is kept.
+- `atMostOne-inner` — like INNER JOIN: a zero-row branch drops the outer row entirely.
+
+Both modes share an `atMostOne` invariant the runtime enforces defensively: any branch that yields more than one row for a single outer row throws `QuereusError(StatusCode.CONSTRAINT, "FanOutLookupJoin: branch i produced more than one row …")`. The recognition rule (4.5, not yet landed) guarantees FK→PK alignment so this is unreachable in practice; it remains a defense against manually-constructed plans. `array` (per-row N rows preserved) and `cross` (Cartesian) modes are deferred to a follow-up backlog ticket.
+
+**Lock policy.** Each branch declares a `concurrencySafe: boolean` (the node constructor / rule layer computes it from `getModuleConcurrencyMode` on the branch's table reference, plus a read-only-subtree check). When the flag is `true` the branch is invoked raw on its forked context; when `false`, the emitter wraps the branch in `acquireConnectionLock(target)` so sibling branches sharing the same lock target serialize. The lock target is the branch's `connectionKey` hint when present, otherwise `rctx.activeConnection`. Distinct connections never contend; sibling branches sharing a `'serial'` module connection serialize through the per-connection promise chain. v1 always reuses the outer's connection (`rctx.activeConnection`) when no explicit hint is set — opening a fresh connection per branch is deferred until a `'reentrant-reads'` plugin needs per-connection isolation.
+
+**Outer-row binding propagation.** The emitter installs the outer row's `RowSlot` on the parent `rctx.context` *before* forking, so each fork's snapshot (per `ParallelDriver.fork()`'s parent-snapshot semantics) already carries the binding. The branch sub-plan can read the outer columns from `rctx.context` inside its own emit code without further wiring.
+
+**Ordering / FDs.** Outer ordering passes through; v1 emits rows in outer order. Functional-dependency propagation is conservative: it folds the branches in left-to-right `propagateJoinFds` calls with **empty equi-pair lists** — the node does not currently carry per-branch FK→PK alignment, so it cannot derive the cross-branch FDs that the recognition rule (4.5) would otherwise see. Once that rule lands and a per-branch equi-pair surface is added to `FanOutBranchSpec`, the node's `computePhysical` can tighten without changing the emitter. `concurrencyCap` bounds the number of concurrently-active branches via `ParallelDriver.drive()`; the recognition rule will eventually source it from `tuning.parallel.concurrency`.
+
+The recognition rule itself, plus the cost gate that decides when to rewrite a join chain into `FanOutLookupJoinNode`, lands separately in ticket `4.5-parallel-fanout-lookup-join-rule`. Until then, the node is reachable only by hand-construction or via tests; no SQL queries plan to it.
+
 ## Incremental Delta Runtime (Design)
 
 Quereus can reuse a single incremental runtime to power multiple features that react to base-table changes: transaction-deferred assertions, materialized views, and future trigger-like facilities. The core idea is to execute only the affected slice of a registered query at transaction boundaries using binding-aware residual plans.

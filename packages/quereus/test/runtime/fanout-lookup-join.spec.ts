@@ -1,0 +1,661 @@
+import { expect } from 'chai';
+import {
+	runFanOutLookupJoin,
+	type FanOutLookupBranchDescriptor,
+	type FanOutLookupBranchFactory,
+} from '../../src/runtime/emit/fanout-lookup-join.js';
+import { RowContextMap, resolveAttribute } from '../../src/runtime/context-helpers.js';
+import { createStrictRowContextMap, wrapTableContextsStrict } from '../../src/runtime/strict-fork.js';
+import type { RuntimeContext } from '../../src/runtime/types.js';
+import type { Row } from '../../src/common/types.js';
+import type { RowDescriptor } from '../../src/planner/nodes/plan-node.js';
+
+function makeRuntimeContext(activeConnection?: object): RuntimeContext {
+	const ctx: RuntimeContext = {
+		db: undefined as unknown as RuntimeContext['db'],
+		stmt: undefined,
+		params: {},
+		context: new RowContextMap(),
+		tableContexts: new Map(),
+		enableMetrics: false,
+	};
+	if (activeConnection !== undefined) {
+		(ctx as { activeConnection?: unknown }).activeConnection = activeConnection;
+	}
+	return ctx;
+}
+
+function makeStrictRuntimeContext(): RuntimeContext {
+	return {
+		db: undefined as unknown as RuntimeContext['db'],
+		stmt: undefined,
+		params: {},
+		context: createStrictRowContextMap(),
+		tableContexts: wrapTableContextsStrict(new Map()),
+		enableMetrics: false,
+	};
+}
+
+async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
+	const out: T[] = [];
+	for await (const item of iter) out.push(item);
+	return out;
+}
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+/** Construct an outer source from an array of rows. */
+function arrayOuter(rows: Row[]): AsyncIterable<Row> {
+	return (async function* () {
+		for (const r of rows) yield r;
+	})();
+}
+
+/** Outer descriptor with one attribute slot (attrId = 1, column 0). */
+function singleOuterDescriptor(): RowDescriptor {
+	const desc: RowDescriptor = [];
+	desc[1] = 0;
+	return desc;
+}
+
+const STRICT = process.env.QUEREUS_FORK_STRICT === '1' || process.env.QUEREUS_FORK_STRICT === 'true';
+
+describe('FanOutLookupJoin', () => {
+	describe('atMostOne-left, all branches match', () => {
+		it('composes outer + branch rows in order', async () => {
+			const ctx = makeRuntimeContext();
+			const outerRows: Row[] = [[1, 'a'], [2, 'b']];
+			const branch0Factory: FanOutLookupBranchFactory = () => (async function* () { yield [10, 'x'] as Row; })();
+			const branch1Factory: FanOutLookupBranchFactory = () => (async function* () { yield [20] as Row; })();
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'atMostOne-left', outputColCount: 2, concurrencySafe: true },
+				{ mode: 'atMostOne-left', outputColCount: 1, concurrencySafe: true },
+			];
+
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter(outerRows), singleOuterDescriptor(),
+				[branch0Factory, branch1Factory], descriptors, 4,
+			));
+			expect(out).to.deep.equal([
+				[1, 'a', 10, 'x', 20],
+				[2, 'b', 10, 'x', 20],
+			]);
+		});
+	});
+
+	describe('atMostOne-left, some branches empty', () => {
+		it('NULL-pads zero-row branches', async () => {
+			const ctx = makeRuntimeContext();
+			const outerRows: Row[] = [[1]];
+			const branchHit: FanOutLookupBranchFactory = () => (async function* () { yield ['hit', 42] as Row; })();
+			const branchMiss: FanOutLookupBranchFactory = () => (async function* () { /* empty */ })();
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'atMostOne-left', outputColCount: 2, concurrencySafe: true },
+				{ mode: 'atMostOne-left', outputColCount: 3, concurrencySafe: true },
+			];
+
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter(outerRows), singleOuterDescriptor(),
+				[branchHit, branchMiss], descriptors, 2,
+			));
+			expect(out).to.deep.equal([
+				[1, 'hit', 42, null, null, null],
+			]);
+		});
+	});
+
+	describe('atMostOne-inner, branch empty', () => {
+		it('drops the outer row', async () => {
+			const ctx = makeRuntimeContext();
+			const outerRows: Row[] = [[1], [2], [3]];
+			const branchAlways: FanOutLookupBranchFactory = () => (async function* () { yield ['ok'] as Row; })();
+			// Inner branch only matches outer row 2.
+			const branchInner: FanOutLookupBranchFactory = (innerCtx) => (async function* () {
+				const v = resolveAttribute(innerCtx, 1);
+				if (v === 2) yield ['hit'] as Row;
+			})();
+
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'atMostOne-left', outputColCount: 1, concurrencySafe: true },
+				{ mode: 'atMostOne-inner', outputColCount: 1, concurrencySafe: true },
+			];
+
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter(outerRows), singleOuterDescriptor(),
+				[branchAlways, branchInner], descriptors, 2,
+			));
+			expect(out).to.deep.equal([
+				[2, 'ok', 'hit'],
+			]);
+		});
+	});
+
+	describe('atMostOne violation', () => {
+		it('throws QuereusError(CONSTRAINT) when a branch yields more than one row', async () => {
+			const ctx = makeRuntimeContext();
+			const outerRows: Row[] = [[1]];
+			const branchBad: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['r1'] as Row;
+				yield ['r2'] as Row;
+			})();
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'atMostOne-left', outputColCount: 1, concurrencySafe: true },
+			];
+
+			let caught: unknown = undefined;
+			try {
+				await collect(runFanOutLookupJoin(
+					ctx, arrayOuter(outerRows), singleOuterDescriptor(),
+					[branchBad], descriptors, 1,
+				));
+			} catch (e) {
+				caught = e;
+			}
+			expect(caught).to.exist;
+			expect(String((caught as Error)?.message ?? caught))
+				.to.match(/FanOutLookupJoin: branch 0 produced more than one row/);
+			// StatusCode.CONSTRAINT
+			expect((caught as { code?: number }).code).to.equal(19);
+		});
+	});
+
+	describe('concurrency', () => {
+		it('runs N branches in parallel within concurrencyCap', async () => {
+			const ctx = makeRuntimeContext();
+			const branchLatencyMs = 50;
+			const makeSlow: () => FanOutLookupBranchFactory = () => () => (async function* () {
+				await sleep(branchLatencyMs);
+				yield ['done'] as Row;
+			})();
+			const factories: FanOutLookupBranchFactory[] = [makeSlow(), makeSlow(), makeSlow()];
+			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => ({
+				mode: 'atMostOne-left' as const, outputColCount: 1, concurrencySafe: true,
+			}));
+
+			const start = Date.now();
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				factories, descriptors, 3,
+			));
+			const elapsed = Date.now() - start;
+
+			expect(out).to.deep.equal([[1, 'done', 'done', 'done']]);
+			// 3 branches × 50ms serial would be ~150ms; concurrent should be ~50ms.
+			// Wall-clock is CI-flaky — use wide bands matching other parallel-driver tests.
+			expect(elapsed).to.be.lessThan(125, `expected parallel execution (~50ms), got ${elapsed}ms`);
+		});
+
+		it('respects concurrencyCap when cap < N', async () => {
+			const ctx = makeRuntimeContext();
+			const branchLatencyMs = 50;
+			const makeSlow: () => FanOutLookupBranchFactory = () => () => (async function* () {
+				await sleep(branchLatencyMs);
+				yield ['done'] as Row;
+			})();
+			const factories: FanOutLookupBranchFactory[] = [makeSlow(), makeSlow(), makeSlow(), makeSlow()];
+			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => ({
+				mode: 'atMostOne-left' as const, outputColCount: 1, concurrencySafe: true,
+			}));
+
+			const start = Date.now();
+			await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				factories, descriptors, 2,
+			));
+			const elapsed = Date.now() - start;
+
+			// 4 branches × 50ms with cap=2 → 2 waves → ~100ms.
+			expect(elapsed).to.be.greaterThan(75, `expected at least 2 waves (~100ms), got ${elapsed}ms`);
+			expect(elapsed).to.be.lessThan(225, `expected at most 2 waves (~100ms wide band), got ${elapsed}ms`);
+		});
+	});
+
+	describe('vtab lock fan-in', () => {
+		it('serial-mode branches sharing a connection observe ≤1 concurrent runner', async () => {
+			const ctx = makeRuntimeContext();
+			const sharedConn = { connectionId: 'shared' };
+			let inFlight = 0;
+			let maxInFlight = 0;
+			const makeBranch: () => FanOutLookupBranchFactory = () => () => (async function* () {
+				inFlight++;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				try {
+					await sleep(20);
+					yield ['done'] as Row;
+				} finally {
+					inFlight--;
+				}
+			})();
+			const factories: FanOutLookupBranchFactory[] = [makeBranch(), makeBranch()];
+			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => ({
+				mode: 'atMostOne-left' as const,
+				outputColCount: 1,
+				concurrencySafe: false,
+				connectionKey: sharedConn,
+			}));
+
+			await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				factories, descriptors, 2,
+			));
+			expect(maxInFlight).to.equal(1, `lock did not serialize: maxInFlight=${maxInFlight}`);
+		});
+
+		it('reentrant-reads branches sharing a connection observe parallelism', async () => {
+			const ctx = makeRuntimeContext();
+			const sharedConn = { connectionId: 'reentrant' };
+			let inFlight = 0;
+			let maxInFlight = 0;
+			const makeBranch: () => FanOutLookupBranchFactory = () => () => (async function* () {
+				inFlight++;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				try {
+					await sleep(20);
+					yield ['done'] as Row;
+				} finally {
+					inFlight--;
+				}
+			})();
+			const factories: FanOutLookupBranchFactory[] = [makeBranch(), makeBranch()];
+			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => ({
+				mode: 'atMostOne-left' as const,
+				outputColCount: 1,
+				concurrencySafe: true,
+				connectionKey: sharedConn,
+			}));
+
+			await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				factories, descriptors, 2,
+			));
+			expect(maxInFlight).to.equal(2, `expected concurrent run, maxInFlight=${maxInFlight}`);
+		});
+
+		it('distinct connections do not contend even at serial mode', async () => {
+			const ctx = makeRuntimeContext();
+			const connA = { connectionId: 'a' };
+			const connB = { connectionId: 'b' };
+			let inFlight = 0;
+			let maxInFlight = 0;
+			const makeBranch: () => FanOutLookupBranchFactory = () => () => (async function* () {
+				inFlight++;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				try {
+					await sleep(20);
+					yield ['done'] as Row;
+				} finally {
+					inFlight--;
+				}
+			})();
+			const factories: FanOutLookupBranchFactory[] = [makeBranch(), makeBranch()];
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'atMostOne-left', outputColCount: 1, concurrencySafe: false, connectionKey: connA },
+				{ mode: 'atMostOne-left', outputColCount: 1, concurrencySafe: false, connectionKey: connB },
+			];
+
+			await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				factories, descriptors, 2,
+			));
+			expect(maxInFlight).to.equal(2, `distinct connections should not contend; maxInFlight=${maxInFlight}`);
+		});
+	});
+
+	describe('outer-row binding propagation', () => {
+		it('each branch sees the correct outer row value across iterations', async () => {
+			const ctx = makeRuntimeContext();
+			const observed: Array<{ outer: unknown; branch: number }> = [];
+			const makeObserver = (branchIdx: number): FanOutLookupBranchFactory => (innerCtx) =>
+				(async function* () {
+					const v = resolveAttribute(innerCtx, 1);
+					observed.push({ outer: v, branch: branchIdx });
+					yield [`b${branchIdx}-saw-${String(v)}`] as Row;
+				})();
+			const factories = [makeObserver(0), makeObserver(1)];
+			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => ({
+				mode: 'atMostOne-left' as const, outputColCount: 1, concurrencySafe: true,
+			}));
+
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[10], [20], [30]]), singleOuterDescriptor(),
+				factories, descriptors, 2,
+			));
+			expect(out).to.deep.equal([
+				[10, 'b0-saw-10', 'b1-saw-10'],
+				[20, 'b0-saw-20', 'b1-saw-20'],
+				[30, 'b0-saw-30', 'b1-saw-30'],
+			]);
+			// Each branch ran exactly 3 times.
+			expect(observed.filter(o => o.branch === 0)).to.have.length(3);
+			expect(observed.filter(o => o.branch === 1)).to.have.length(3);
+		});
+	});
+
+	describe('consumer break', () => {
+		it('cleans up cleanly when the consumer breaks after one row', async () => {
+			const ctx = makeRuntimeContext();
+			const branchFactory: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['ok'] as Row;
+			})();
+			const factories = [branchFactory, branchFactory];
+			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => ({
+				mode: 'atMostOne-left' as const, outputColCount: 1, concurrencySafe: true,
+			}));
+
+			const unhandled: unknown[] = [];
+			const handler = (reason: unknown) => unhandled.push(reason);
+			process.on('unhandledRejection', handler);
+			try {
+				let count = 0;
+				for await (const _r of runFanOutLookupJoin(
+					ctx, arrayOuter([[1], [2], [3]]), singleOuterDescriptor(),
+					factories, descriptors, 2,
+				)) {
+					count++;
+					if (count >= 1) break;
+				}
+				expect(count).to.equal(1);
+				await sleep(20);
+				expect(unhandled).to.have.lengthOf(0);
+			} finally {
+				process.off('unhandledRejection', handler);
+			}
+		});
+	});
+
+	describe('strict-fork interaction', () => {
+		it('throws when the parent mutates context while branches are live', function () {
+			if (!STRICT) {
+				this.skip();
+				return;
+			}
+			const ctx = makeStrictRuntimeContext();
+			let resolveBranch!: () => void;
+			const branchSignal = new Promise<void>(r => { resolveBranch = r; });
+			const branchFactory: FanOutLookupBranchFactory = () => (async function* () {
+				await branchSignal;
+				yield ['ok'] as Row;
+			})();
+			const factories = [branchFactory, branchFactory];
+			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => ({
+				mode: 'atMostOne-left' as const, outputColCount: 1, concurrencySafe: true,
+			}));
+
+			return (async () => {
+				const iter = runFanOutLookupJoin(
+					ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+					factories, descriptors, 2,
+				)[Symbol.asyncIterator]();
+				// Kick the first pull so forks become active inside driver.drive.
+				const firstPromise = iter.next();
+				await sleep(15);
+				let caught: unknown = undefined;
+				try {
+					ctx.tableContexts.set({} as never, () => undefined as never);
+				} catch (e) {
+					caught = e;
+				}
+				resolveBranch();
+				await firstPromise;
+				expect(caught, 'parent mutation while branches live must violate strict-fork').to.not.equal(undefined);
+				expect(String((caught as Error)?.message ?? caught)).to.match(/strict-fork/i);
+			})();
+		});
+
+		it('allows parent mutation after the fan-out finishes', function () {
+			if (!STRICT) {
+				this.skip();
+				return;
+			}
+			const ctx = makeStrictRuntimeContext();
+			const branchFactory: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['ok'] as Row;
+			})();
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'atMostOne-left', outputColCount: 1, concurrencySafe: true },
+			];
+
+			return (async () => {
+				for await (const _ of runFanOutLookupJoin(
+					ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+					[branchFactory], descriptors, 1,
+				)) { /* drain */ }
+				expect(() => {
+					ctx.tableContexts.set({} as never, () => undefined as never);
+				}).to.not.throw();
+			})();
+		});
+	});
+
+	describe('input validation', () => {
+		it('rejects mismatched factories/descriptors length', async () => {
+			const ctx = makeRuntimeContext();
+			let caught: unknown = undefined;
+			try {
+				await collect(runFanOutLookupJoin(
+					ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+					[() => (async function* () { /* */ })()],
+					[],
+					1,
+				));
+			} catch (e) {
+				caught = e;
+			}
+			expect(caught).to.be.instanceOf(RangeError);
+		});
+
+		it('rejects non-positive concurrencyCap', async () => {
+			const ctx = makeRuntimeContext();
+			let caught: unknown = undefined;
+			try {
+				await collect(runFanOutLookupJoin(
+					ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+					[], [], 0,
+				));
+			} catch (e) {
+				caught = e;
+			}
+			expect(caught).to.be.instanceOf(RangeError);
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// FanOutLookupJoinNode (plan-node) tests
+// ---------------------------------------------------------------------------
+
+import { FanOutLookupJoinNode, type FanOutBranchSpec } from '../../src/planner/nodes/fanout-lookup-join-node.js';
+import { PlanNode, type Attribute, type PhysicalProperties } from '../../src/planner/nodes/plan-node.js';
+import { PlanNodeType } from '../../src/planner/nodes/plan-node-type.js';
+import type { Scope } from '../../src/planner/scopes/scope.js';
+import type { BaseType, RelationType, ScalarType } from '../../src/common/datatype.js';
+import { validatePhysicalTree } from '../../src/planner/validation/plan-validator.js';
+
+const mockScope = { resolveSymbol: () => undefined } as unknown as Scope;
+
+// Mirror packages/quereus/test/planner/validation.spec.ts helpers — minimal
+// mock node sufficient for relation-style validation and plan-node interop.
+class MockRelNode extends PlanNode {
+	override readonly nodeType: PlanNodeType;
+	private readonly _attrs: readonly Attribute[];
+	private readonly _physicalOverride: Partial<PhysicalProperties>;
+	private readonly _type: RelationType;
+
+	constructor(opts: {
+		nodeType?: PlanNodeType;
+		attrs: readonly Attribute[];
+		physical?: Partial<PhysicalProperties>;
+		columns?: RelationType['columns'];
+	}) {
+		super(mockScope, 0.01);
+		this.nodeType = opts.nodeType ?? PlanNodeType.SeqScan;
+		this._attrs = opts.attrs;
+		this._physicalOverride = opts.physical ?? { deterministic: true, readonly: true };
+		this._type = {
+			typeClass: 'relation',
+			columns: opts.columns ?? opts.attrs.map(a => ({ name: a.name, type: a.type })),
+			isSet: false,
+			isReadOnly: true,
+			keys: [],
+			rowConstraints: [],
+		} as RelationType;
+	}
+
+	getType(): BaseType { return this._type; }
+	getChildren(): readonly PlanNode[] { return []; }
+	override getAttributes(): readonly Attribute[] { return this._attrs; }
+	override computePhysical(): Partial<PhysicalProperties> { return this._physicalOverride; }
+	withChildren(newChildren: readonly PlanNode[]): PlanNode {
+		if (newChildren.length !== 0) throw new Error('MockRelNode expects 0 children');
+		return this;
+	}
+}
+
+const INT_TYPE: ScalarType = {
+	typeClass: 'scalar',
+	logicalType: { name: 'INTEGER', affinity: 'integer', isNumeric: true } as never,
+	nullable: false,
+} as ScalarType;
+
+let nextAttrId = 900000;
+function makeAttr(name: string, sourceRelation = 'test.t'): Attribute {
+	return { id: nextAttrId++, name, type: INT_TYPE, sourceRelation, relationName: 't' };
+}
+
+describe('FanOutLookupJoinNode', () => {
+	it('rejects empty branch list', () => {
+		const outer = new MockRelNode({ attrs: [makeAttr('outer_k')] });
+		expect(() => new FanOutLookupJoinNode(mockScope, outer, [], 2))
+			.to.throw(/requires >= 1 branch/);
+	});
+
+	it('rejects non-positive concurrencyCap', () => {
+		const outer = new MockRelNode({ attrs: [makeAttr('outer_k')] });
+		const branchChild = new MockRelNode({ attrs: [makeAttr('child_v')] });
+		const branch: FanOutBranchSpec = {
+			child: branchChild,
+			mode: 'atMostOne-left',
+			outputAttrs: branchChild.getAttributes(),
+			concurrencySafe: true,
+		};
+		expect(() => new FanOutLookupJoinNode(mockScope, outer, [branch], 0))
+			.to.throw(/concurrencyCap must be a positive integer/);
+	});
+
+	it('rejects outputAttrs length mismatch', () => {
+		const outer = new MockRelNode({ attrs: [makeAttr('outer_k')] });
+		const branchChild = new MockRelNode({ attrs: [makeAttr('child_v')] });
+		const branch: FanOutBranchSpec = {
+			child: branchChild,
+			mode: 'atMostOne-left',
+			outputAttrs: [], // empty, but child has 1 attribute
+			concurrencySafe: true,
+		};
+		expect(() => new FanOutLookupJoinNode(mockScope, outer, [branch], 1))
+			.to.throw(/outputAttrs length .* does not match/);
+	});
+
+	it('composes attributes outer-then-branches', () => {
+		const outerAttrs = [makeAttr('outer_k'), makeAttr('outer_v')];
+		const outer = new MockRelNode({ attrs: outerAttrs });
+		const b0Attrs = [makeAttr('b0_x')];
+		const b1Attrs = [makeAttr('b1_y'), makeAttr('b1_z')];
+		const branch0Child = new MockRelNode({ attrs: b0Attrs });
+		const branch1Child = new MockRelNode({ attrs: b1Attrs });
+		const branches: FanOutBranchSpec[] = [
+			{ child: branch0Child, mode: 'atMostOne-left', outputAttrs: b0Attrs, concurrencySafe: true },
+			{ child: branch1Child, mode: 'atMostOne-inner', outputAttrs: b1Attrs, concurrencySafe: true },
+		];
+		const node = new FanOutLookupJoinNode(mockScope, outer, branches, 2);
+		const attrs = node.getAttributes();
+		expect(attrs).to.have.length(5);
+		expect(attrs[0].id).to.equal(outerAttrs[0].id);
+		expect(attrs[1].id).to.equal(outerAttrs[1].id);
+		expect(attrs[2].id).to.equal(b0Attrs[0].id);
+		expect(attrs[3].id).to.equal(b1Attrs[0].id);
+		expect(attrs[4].id).to.equal(b1Attrs[1].id);
+	});
+
+	it('marks atMostOne-left branch outputs nullable', () => {
+		const outerAttrs = [makeAttr('outer_k')];
+		const outer = new MockRelNode({ attrs: outerAttrs });
+		const b0Attrs = [makeAttr('b0_x')];
+		const branchChild = new MockRelNode({ attrs: b0Attrs });
+		const branches: FanOutBranchSpec[] = [
+			{ child: branchChild, mode: 'atMostOne-left', outputAttrs: b0Attrs, concurrencySafe: true },
+		];
+		const node = new FanOutLookupJoinNode(mockScope, outer, branches, 1);
+		const attrs = node.getAttributes();
+		expect(attrs[1].type.nullable).to.equal(true);
+		// The atMostOne-inner branch keeps declared nullability.
+		const innerBranches: FanOutBranchSpec[] = [
+			{ child: branchChild, mode: 'atMostOne-inner', outputAttrs: b0Attrs, concurrencySafe: true },
+		];
+		const innerNode = new FanOutLookupJoinNode(mockScope, outer, innerBranches, 1);
+		expect(innerNode.getAttributes()[1].type.nullable).to.equal(false);
+	});
+
+	it('passes validatePhysicalTree', () => {
+		const outerAttrs = [makeAttr('outer_k')];
+		const outer = new MockRelNode({
+			nodeType: PlanNodeType.SeqScan,
+			attrs: outerAttrs,
+			physical: { deterministic: true, readonly: true, estimatedRows: 10 },
+		});
+		const b0Attrs = [makeAttr('b0_x')];
+		const branchChild = new MockRelNode({
+			nodeType: PlanNodeType.SeqScan,
+			attrs: b0Attrs,
+			physical: { deterministic: true, readonly: true, estimatedRows: 1 },
+		});
+		const branches: FanOutBranchSpec[] = [
+			{ child: branchChild, mode: 'atMostOne-left', outputAttrs: b0Attrs, concurrencySafe: true },
+		];
+		const node = new FanOutLookupJoinNode(mockScope, outer, branches, 1);
+		// validateAttributes: false because outer + branch IDs deliberately
+		// pass through to FanOutLookupJoin's getAttributes(); the tree-wide
+		// uniqueness check conflates pass-through with duplicates (same as for
+		// FilterNode / EagerPrefetchNode pass-throughs).
+		expect(() => validatePhysicalTree(node, { validateAttributes: false })).not.to.throw();
+	});
+
+	it('withChildren rebuilds preserving branch shape', () => {
+		const outerAttrs = [makeAttr('outer_k')];
+		const outer = new MockRelNode({ attrs: outerAttrs });
+		const b0Attrs = [makeAttr('b0_x')];
+		const branchChild = new MockRelNode({ attrs: b0Attrs });
+		const branches: FanOutBranchSpec[] = [
+			{ child: branchChild, mode: 'atMostOne-left', outputAttrs: b0Attrs, concurrencySafe: false, connectionKey: { id: 'k' } },
+		];
+		const node = new FanOutLookupJoinNode(mockScope, outer, branches, 4);
+
+		// Same children: returns self.
+		expect(node.withChildren([outer, branchChild])).to.equal(node);
+
+		const replaced = node.withChildren([outer, new MockRelNode({ attrs: b0Attrs })]) as FanOutLookupJoinNode;
+		expect(replaced).to.not.equal(node);
+		expect(replaced.branches).to.have.length(1);
+		expect(replaced.branches[0].mode).to.equal('atMostOne-left');
+		expect(replaced.branches[0].outputAttrs).to.deep.equal(b0Attrs);
+		expect(replaced.branches[0].concurrencySafe).to.equal(false);
+		expect(replaced.branches[0].connectionKey).to.equal(branches[0].connectionKey);
+		expect(replaced.concurrencyCap).to.equal(4);
+	});
+
+	it('emits FanOutLookupJoin in toString', () => {
+		const outerAttrs = [makeAttr('outer_k')];
+		const outer = new MockRelNode({ attrs: outerAttrs });
+		const b0Attrs = [makeAttr('b0_x')];
+		const branchChild = new MockRelNode({ attrs: b0Attrs });
+		const node = new FanOutLookupJoinNode(mockScope, outer, [
+			{ child: branchChild, mode: 'atMostOne-left', outputAttrs: b0Attrs, concurrencySafe: true },
+			{ child: branchChild, mode: 'atMostOne-inner', outputAttrs: b0Attrs, concurrencySafe: false },
+		], 3);
+		const s = node.toString();
+		expect(s).to.match(/FANOUT_LOOKUP_JOIN/);
+		expect(s).to.match(/N=2/);
+		expect(s).to.match(/cap=3/);
+		expect(s).to.match(/atMostOne-left/);
+		expect(s).to.match(/atMostOne-inner.*locked/);
+	});
+});

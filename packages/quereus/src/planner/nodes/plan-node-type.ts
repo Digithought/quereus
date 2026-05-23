@@ -97,6 +97,7 @@ export enum PlanNodeType {
   Cache = 'Cache',
   EagerPrefetch = 'EagerPrefetch',
   AsyncGather = 'AsyncGather',
+  FanOutLookupJoin = 'FanOutLookupJoin',
   Sink = 'Sink',
 
   // RETURNING support
