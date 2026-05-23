@@ -258,24 +258,30 @@ describe('ruleFanOutLookupJoin', () => {
 
 	it('preserves output attribute IDs across the rewrite', async () => {
 		await setup3Branches('hi_lat_memory');
-		// Wrap the projection in an outer SELECT so we can inspect the inner
-		// projection's column names + values — attribute IDs aren't directly
-		// exposed in query_plan, but stable column names + values across the
-		// rewrite is the user-facing manifestation.
+		// Column names + values across the rewrite are the user-facing
+		// manifestation of preserved attribute IDs (the IDs themselves aren't
+		// exposed in query_plan).
+		//
+		// IMPORTANT: Plans are built lazily on first iterator `.next()`, so we
+		// must `await` each `results(...)` call *inside* the tuning window.
+		// Returning an unawaited promise from `try { ... } finally { restore }`
+		// would let the finally run before planning, defeating the rule toggle.
 		const before = db.optimizer.tuning;
-		const baseline = (() => {
-			db.optimizer.updateTuning({
-				...before,
-				disabledRules: new Set(['fanout-lookup-join']),
-			});
-			try {
-				return results(db, fanout3SQL + ' order by o.order_id');
-			} finally {
-				db.optimizer.updateTuning(before);
-			}
-		})();
-		const rewritten = results(db, fanout3SQL + ' order by o.order_id');
-		const [base, rewr] = await Promise.all([baseline, rewritten]);
+		db.optimizer.updateTuning({
+			...before,
+			disabledRules: new Set(['fanout-lookup-join']),
+		});
+		let base: Record<string, SqlValue>[];
+		try {
+			base = await results(db, fanout3SQL + ' order by o.order_id');
+		} finally {
+			db.optimizer.updateTuning(before);
+		}
+		const rewr = await results(db, fanout3SQL + ' order by o.order_id');
+		// Confirm the rewrite actually happened on the second run — otherwise
+		// this test would compare two identical plans and pass spuriously.
+		const rewrittenPlan = await planRows(db, fanout3SQL);
+		expect(hasFanOut(rewrittenPlan), 'rewrite must fire for the comparison').to.equal(true);
 		expect(Object.keys(base[0])).to.deep.equal(Object.keys(rewr[0]));
 	});
 
