@@ -112,11 +112,12 @@ export interface OptimizerTuning {
 
 	/**
 	 * Parallel-execution rule tuning. Consumed by `rule-fanout-lookup-join`
-	 * (the FK→PK fan-out recognition rule). All values are unitless cost
+	 * (the FK→PK fan-out recognition rule) and `rule-async-gather-union-all`
+	 * (the UNION ALL gather recognition rule). All values are unitless cost
 	 * comparators except `concurrency`, which is a row-time branch cap.
 	 */
 	readonly parallel: {
-		/** Don't form a fan-out below this branch count. Default 2. */
+		/** Don't form a fan-out / gather below this branch count. Default 2. */
 		readonly minBranches: number;
 		/**
 		 * Per-branch fixed overhead, charged against the latency win. Anchored
@@ -127,6 +128,17 @@ export interface OptimizerTuning {
 		readonly branchSetupCost: number;
 		/** Static cap on in-flight branches per outer row. Default 8. */
 		readonly concurrency: number;
+		/**
+		 * The slowest child of a UNION ALL chain must have at least this expected
+		 * first-row latency (in milliseconds) for `rule-async-gather-union-all`
+		 * to fold it into an `AsyncGatherNode`. Set high enough that local-only
+		 * memory-vtab plans never trigger — `expectedLatencyMs` is 0 throughout
+		 * those plans, so any positive value keeps the rule inert there. Default
+		 * 25 ms (matches the high-latency vtab fixture used by the parallel
+		 * optimizer tests, so the same fixture exercises both this rule and the
+		 * fan-out rule).
+		 */
+		readonly gatherThresholdMs: number;
 	};
 }
 
@@ -177,5 +189,9 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 		// it is compared directly against `expectedLatencyMs * (N - cap)` savings.
 		branchSetupCost: 1.0,
 		concurrency: 8,
+		// ≥ this many ms on the slowest child of a unionAll chain triggers the
+		// parallel gather. 25 ms matches the synthetic high-latency vtab fixture;
+		// memory-vtab plans declare 0 ms so they never cross this gate.
+		gatherThresholdMs: 25,
 	}
 };

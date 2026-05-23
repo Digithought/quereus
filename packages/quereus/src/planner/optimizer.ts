@@ -30,6 +30,7 @@ import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
 import { ruleJoinElimination, ruleJoinEliminationUnderAggregate } from './rules/join/rule-join-elimination.js';
 import { ruleFanOutLookupJoin } from './rules/join/rule-fanout-lookup-join.js';
+import { ruleAsyncGatherUnionAll } from './rules/parallel/rule-async-gather-union-all.js';
 // Predicate pushdown rules
 // Core optimization rules
 import { ruleAggregatePhysical } from './rules/aggregate/rule-aggregate-streaming.js';
@@ -536,6 +537,26 @@ export class Optimizer {
 			phase: 'impl',
 			fn: ruleAsofStrategySelect,
 			priority: 11
+		});
+
+		// Async-gather UNION ALL fold: collapse a chain of
+		// SetOperationNode(unionAll) into one N-ary AsyncGatherNode(unionAll)
+		// when every flattened child clears `concurrencySafe` AND the slowest
+		// child meets `tuning.parallel.gatherThresholdMs`. Runs after
+		// `asof-strategy-select` (priority 11) — by which point physical-pass
+		// selection has finalized `expectedLatencyMs` / `concurrencySafe` on
+		// the leaves — and before `materialization-advisory` (priority 30) so
+		// any cache the advisory introduces sits *inside* each gather branch
+		// (preserving the parallel-drive overlap of high-latency I/O with
+		// branch-local compute). The cost gate is inert on memory-vtab
+		// plans (expectedLatencyMs=0), so the local-only golden-plan sweep
+		// is unaffected.
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'async-gather-union-all',
+			nodeType: PlanNodeType.SetOperation,
+			phase: 'rewrite',
+			fn: ruleAsyncGatherUnionAll,
+			priority: 17
 		});
 
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
