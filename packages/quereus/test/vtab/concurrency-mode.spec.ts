@@ -47,9 +47,13 @@ describe('vtab concurrency contract', () => {
 			expect(getModuleConcurrencyMode(makeStubModule('fully-reentrant'))).to.equal('fully-reentrant');
 		});
 
-		it('reports MemoryTableModule as fully-reentrant', () => {
+		it('reports MemoryTableModule as reentrant-reads', () => {
+			// Reads-only concurrency on a single connection is the only audited
+			// safety property — writes mutate `pendingTransactionLayer` in place,
+			// so `'fully-reentrant'` is unsafe until writer concurrency is
+			// independently justified.
 			const memModule = new MemoryTableModule();
-			expect(getModuleConcurrencyMode(memModule)).to.equal('fully-reentrant');
+			expect(getModuleConcurrencyMode(memModule)).to.equal('reentrant-reads');
 		});
 	});
 
@@ -113,15 +117,18 @@ describe('vtab concurrency contract', () => {
 	});
 
 	describe('memory vtab concurrent scan smoke', () => {
-		// Load-bearing safety check for the 'fully-reentrant' declaration on
+		// Load-bearing safety check for the 'reentrant-reads' declaration on
 		// MemoryTableModule. If a future memory-vtab change breaks concurrent
 		// reads, this test fails before any FanOutLookupJoin consumer needs it.
 		//
 		// db.eval() acquires the engine's exec mutex per call, so the four
-		// iterators below will not actually overlap at the vtab layer in
+		// iterators below do not actually overlap at the vtab layer in
 		// today's runtime — but they share a manager/connection and exercise
 		// the same scan path the parallel consumer will. The assertion holds
-		// regardless: 4 × 50 rows, no corruption.
+		// regardless: 4 × 50 rows, no corruption. A direct-`table.query()`
+		// concurrent test that bypasses the exec mutex belongs alongside the
+		// first FanOutLookupJoin consumer that actually parallel-drives the
+		// vtab.
 		it('produces correct cardinality across 4 concurrent select iterators', async () => {
 			const db = new Database();
 			try {

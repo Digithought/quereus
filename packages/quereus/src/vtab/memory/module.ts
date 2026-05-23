@@ -67,16 +67,25 @@ function collectEqualityBoundColumns(filters: readonly PredicateConstraint[]): R
 export class MemoryTableModule implements VirtualTableModule<MemoryTable, MemoryTableConfig> {
 	/**
 	 * Memory tables snapshot the connection's read layer once at `query()` entry
-	 * and iterate immutable BTree layers; writes always go through a fresh
-	 * transient layer that is atomically published on the connection. Concurrent
-	 * scans on a single connection therefore see consistent, non-mutating
-	 * snapshots — safe to interleave with any other operation in JS's
-	 * single-threaded execution model.
+	 * (`startLayer = pendingTransactionLayer ?? readLayer`) and iterate the
+	 * captured layer's BTree. Concurrent `query()` calls on a single connection
+	 * therefore see consistent, non-mutating snapshots so long as no writer is
+	 * in flight — safe for `'reentrant-reads'`.
 	 *
-	 * If a future change adds genuine mid-iteration mutation of a scanned layer
-	 * (e.g. an in-place layer collapser), this must drop to `'reentrant-reads'`.
+	 * Writes are NOT safe to interleave with reads on the same connection:
+	 * `ensureTransactionLayer` only allocates a fresh `TransactionLayer` when
+	 * `pendingTransactionLayer` is null. Once a transaction is open, subsequent
+	 * writes call `recordUpsert` on the SAME `primaryModifications` BTree that
+	 * an in-flight `query()` may be iterating, which would tear the iterator's
+	 * tree-walk path. `'fully-reentrant'` would require either fresh-per-write
+	 * layers or an in-place-mutation-safe iterator; neither is implemented yet.
+	 *
+	 * If a future change either (a) makes writes always allocate a fresh layer
+	 * (autocommit-only path) or (b) audits that mid-iteration BTree mutation
+	 * is iterator-safe, this can be upgraded to `'fully-reentrant'`. Likewise,
+	 * an in-place layer collapser would force this back to `'serial'`.
 	 */
-	readonly concurrencyMode = 'fully-reentrant' as const;
+	readonly concurrencyMode = 'reentrant-reads' as const;
 
 	public readonly tables: Map<string, MemoryTableManager> = new Map();
 	private eventEmitter?: VTableEventEmitter;

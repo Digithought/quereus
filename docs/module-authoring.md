@@ -250,9 +250,14 @@ if (mode === 'serial') {
 }
 ```
 
-Memory vtab declares `'fully-reentrant'`. Layered stores, isolation
-wrappers, and persistent plugins stay default until their owners audit
-them.
+Memory vtab declares `'reentrant-reads'`: `query()` captures the
+connection's read or pending layer at call entry and iterates that
+captured BTree, so concurrent reads on one connection see consistent,
+non-mutating snapshots. Writes serialize because, once a transaction is
+open, subsequent writes mutate the existing pending layer's BTree in
+place — `'fully-reentrant'` would require either fresh-per-write layers
+or an iterator-safe mutation path. Layered stores, isolation wrappers,
+and persistent plugins stay default until their owners audit them.
 
 ## Runtime Execution Modes
 
