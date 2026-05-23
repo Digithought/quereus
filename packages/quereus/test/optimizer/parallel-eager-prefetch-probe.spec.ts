@@ -302,4 +302,59 @@ describe('ruleEagerPrefetchProbe', () => {
 		const join = new BloomJoinNode(mockScope, probe as never, build as never, 'inner', []);
 		expect(ruleEagerPrefetchProbe(join, mockContext)).to.equal(null);
 	});
+
+	// --- Physical pass-through (regression: claims survive the wrap) ---------
+	//
+	// EagerPrefetch is a FIFO ring buffer: row count, order, and attribute IDs
+	// are identical at runtime, so every relational claim must survive on
+	// `.physical`. Before the `computePhysical` override, the default child-merge
+	// dropped ordering/fds/equivClasses/monotonicOn silently, weakening the
+	// wrapping hash join's own claims.
+
+	it('propagates relational physical claims through the wrap', () => {
+		const k = makeAttr('k');
+		const v = makeAttr('v');
+		const probe = new MockRelNode({
+			nodeType: PlanNodeType.SeqScan,
+			attrs: [k, v],
+			physical: {
+				deterministic: true,
+				readonly: true,
+				// column indices reference output column position; monotonicOn uses attrId.
+				ordering: [{ column: 0, desc: false }],
+				fds: [{ determinants: [0], dependents: [1] }],
+				equivClasses: [[0, 1]],
+				monotonicOn: [{ attrId: k.id, strict: true, direction: 'asc' }],
+			},
+		});
+		const prefetch = new EagerPrefetchNode(mockScope, probe as never, 64);
+		const phys = prefetch.physical;
+
+		expect(phys.ordering, 'ordering must survive').to.deep.equal([{ column: 0, desc: false }]);
+		expect(phys.fds, 'fds must survive').to.deep.equal([{ determinants: [0], dependents: [1] }]);
+		expect(phys.equivClasses, 'equivClasses must survive').to.deep.equal([[0, 1]]);
+		expect(phys.monotonicOn, 'monotonicOn must survive')
+			.to.deep.equal([{ attrId: k.id, strict: true, direction: 'asc' }]);
+	});
+
+	it('does NOT propagate access-path-local claims through the wrap', () => {
+		const k = makeAttr('k');
+		const probe = new MockRelNode({
+			nodeType: PlanNodeType.SeqScan,
+			attrs: [k],
+			physical: {
+				deterministic: true,
+				readonly: true,
+				accessCapabilities: { ordinalSeek: true },
+				rangeBoundedOn: { attrId: k.id, lower: { op: '>=' } },
+			},
+		});
+		const prefetch = new EagerPrefetchNode(mockScope, probe as never, 64);
+		const phys = prefetch.physical;
+
+		// A pass-through node sits between the leaf iterator and the consumer, so
+		// these must NOT carry — they live only on the physical access leaf.
+		expect(phys.accessCapabilities, 'accessCapabilities must not carry').to.be.undefined;
+		expect(phys.rangeBoundedOn, 'rangeBoundedOn must not carry').to.be.undefined;
+	});
 });

@@ -1,5 +1,5 @@
 import { PlanNodeType } from './plan-node-type.js';
-import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode } from './plan-node.js';
+import { PlanNode, type RelationalPlanNode, type UnaryRelationalNode, type Attribute, isRelationalNode, type PhysicalProperties } from './plan-node.js';
 import type { RelationType } from '../../common/datatype.js';
 import type { Scope } from '../scopes/scope.js';
 import { StatusCode } from '../../common/types.js';
@@ -15,9 +15,14 @@ import { quereusError } from '../../common/errors.js';
  * executing as soon as the parent emit reaches this node, ahead of the
  * consumer's first demand.
  *
- * computePhysical is not overridden — the default child-merge keeps
- * deterministic/idempotent/readonly from the source unchanged. No new
- * ordering/key/FD claims; no claims removed.
+ * The relational pass-through claims (ordering/fds/equivClasses/
+ * constantBindings/domainConstraints/monotonicOn) are propagated explicitly by
+ * `computePhysical` — the default child-merge only carries
+ * deterministic/idempotent/readonly/expectedLatencyMs/concurrencySafe and would
+ * otherwise silently drop them. Access-path-local claims
+ * (accessCapabilities/rangeBoundedOn) are NOT propagated: this is a
+ * single-input pass-through node, and those live only on the physical leaf
+ * where the access plan resolved.
  */
 export class EagerPrefetchNode extends PlanNode implements UnaryRelationalNode {
 	override readonly nodeType = PlanNodeType.EagerPrefetch;
@@ -71,6 +76,24 @@ export class EagerPrefetchNode extends PlanNode implements UnaryRelationalNode {
 
 	get estimatedRows(): number | undefined {
 		return this.source.estimatedRows;
+	}
+
+	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
+		const sourcePhysical = childrenPhysical[0];
+		return {
+			estimatedRows: this.estimatedRows,
+			// FIFO ring buffer: rows, order, and attribute IDs are identical at
+			// runtime, so every relational claim passes through verbatim.
+			ordering: sourcePhysical?.ordering,
+			fds: sourcePhysical?.fds,
+			equivClasses: sourcePhysical?.equivClasses,
+			constantBindings: sourcePhysical?.constantBindings,
+			domainConstraints: sourcePhysical?.domainConstraints,
+			monotonicOn: sourcePhysical?.monotonicOn,
+			// accessCapabilities/rangeBoundedOn are access-path-local — a
+			// pass-through node sits between the leaf iterator and the consumer,
+			// so they must NOT be propagated.
+		};
 	}
 
 	override toString(): string {
