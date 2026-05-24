@@ -274,10 +274,17 @@ export async function* runFanOutLookupJoinBatched(
 	let emitFrontier = 0;   // lowest seq not yet emitted
 	let outerDone = false;  // outer source exhausted
 	let aborted = false;    // teardown initiated (consumer return / error / completion)
+	// `errored` is a distinct flag from `firstError` so a branch that rejects
+	// with a falsy/`undefined` reason still propagates (don't eat exceptions) —
+	// mirrors ParallelDriver's `hadError` boolean.
+	let errored = false;
 	let firstError: unknown = undefined;
 
 	const recordError = (e: unknown): void => {
-		if (firstError === undefined) firstError = e;
+		if (!errored) {
+			errored = true;
+			firstError = e;
+		}
 		aborted = true;
 		signalEmit();
 		signalAdmit();
@@ -356,19 +363,25 @@ export async function* runFanOutLookupJoinBatched(
 			const settled = await Promise.allSettled(
 				branchForks.map((fork, i) => runBranch(i, fork)),
 			);
-			// Surface the first branch rejection; otherwise compose.
+			// Surface the first branch rejection; otherwise compose. Track the
+			// rejection with a boolean so a branch rejecting with `undefined`
+			// still propagates rather than being treated as a zero-row miss.
+			let hasBranchError = false;
 			let branchError: unknown = undefined;
 			const branchBuf: Row[][] = new Array(branchCount);
 			for (let i = 0; i < branchCount; i++) {
 				const s = settled[i];
 				if (s.status === 'rejected') {
-					if (branchError === undefined) branchError = s.reason;
+					if (!hasBranchError) {
+						hasBranchError = true;
+						branchError = s.reason;
+					}
 					branchBuf[i] = [];
 				} else {
 					branchBuf[i] = s.value;
 				}
 			}
-			if (branchError !== undefined) {
+			if (hasBranchError) {
 				recordError(branchError);
 				return;
 			}
@@ -449,7 +462,7 @@ export async function* runFanOutLookupJoinBatched(
 
 	try {
 		while (!(outerDone && emitFrontier >= nextSeq)) {
-			if (firstError !== undefined) throw firstError;
+			if (errored) throw firstError;
 			if (reorder.has(emitFrontier)) {
 				const entry = reorder.get(emitFrontier)!;
 				reorder.delete(emitFrontier);
@@ -462,7 +475,7 @@ export async function* runFanOutLookupJoinBatched(
 				await waitEmit();
 			}
 		}
-		if (firstError !== undefined) throw firstError;
+		if (errored) throw firstError;
 	} finally {
 		await cleanup();
 	}

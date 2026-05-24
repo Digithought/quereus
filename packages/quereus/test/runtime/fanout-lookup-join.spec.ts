@@ -787,6 +787,25 @@ describe('FanOutLookupJoin batched outer', () => {
 		expect(ctx.context.size).to.equal(0);
 	});
 
+	it('propagates a branch rejection even when the reason is undefined', async () => {
+		// A branch rejecting with `undefined` must abort the stream, not be
+		// silently treated as a zero-row miss (don't eat exceptions).
+		const ctx = makeRuntimeContext();
+		const branchRejectUndefined: FanOutLookupBranchFactory = () => (async function* () {
+			yield await Promise.reject(undefined) as unknown as Row;
+		})();
+		let threw = false;
+		try {
+			await collect(runFanOutLookupJoinBatched(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				[branchRejectUndefined], [left()], 8, 64,
+			));
+		} catch {
+			threw = true;
+		}
+		expect(threw, 'undefined-reason rejection must propagate, not be swallowed').to.equal(true);
+	});
+
 	it('cleans up on early consumer break', async () => {
 		const ctx = makeRuntimeContext();
 		const branchFactory: FanOutLookupBranchFactory = () => (async function* () {
