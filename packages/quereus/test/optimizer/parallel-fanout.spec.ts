@@ -397,6 +397,45 @@ describe('ruleFanOutLookupJoin', () => {
 			expect(joinCount(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(0);
 		});
 
+		forkExecTest('mixed cluster result correctness: subquery branch reads at the post-spine wide-row index', async () => {
+			// Outer (main_t: 2 cols) + spine branch (lk: 2 cols) places the subquery
+			// branch's single output column at wide index 4. This exercises the
+			// `wideIndex` accumulation across a preceding spine branch — the
+			// plan-shape `it` above never executes the plan.
+			await db.exec('create table lk (id integer primary key, name text) using hi_lat_memory');
+			await db.exec(`create table main_t (
+				id integer primary key,
+				lk_id integer not null references lk(id)
+			) using memory`);
+			await db.exec('create table c (id integer primary key, fk integer, v integer) using hi_lat_memory');
+			await db.exec("insert into lk values (1, 'Acme'), (2, 'Beta')");
+			await db.exec('insert into main_t values (1, 1), (2, 2)');
+			await db.exec('insert into c values (10, 1, 5), (11, 2, 7), (12, 2, 9)');
+
+			const sql =
+				`select m.id, lk.name,
+					(select count(*) from c where c.fk = m.id) as nc
+				 from main_t m
+				 left join lk on m.lk_id = lk.id`;
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan)).to.equal(true);
+			const enabled = await results(db, sql + ' order by m.id');
+
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({ ...before, disabledRules: new Set(['fanout-lookup-join']) });
+			let disabled: Record<string, SqlValue>[];
+			try {
+				disabled = await results(db, sql + ' order by m.id');
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+			expect(enabled).to.deep.equal(disabled);
+			expect(enabled).to.deep.equal([
+				{ id: 1, name: 'Acme', nc: 1 },
+				{ id: 2, name: 'Beta', nc: 2 },
+			]);
+		});
+
 		forkExecTest('result correctness: enabled vs disabled, empty children → 0 not NULL', async () => {
 			await setupSubqueryTables('hi_lat_memory');
 			// Confirm the rule fires for the enabled run.
@@ -462,6 +501,49 @@ describe('ruleFanOutLookupJoin', () => {
 				 from outer_t o`;
 			const plan = await planRows(db, sql);
 			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		});
+
+		/**
+		 * The subquery correlates to `lk.id` — a SPINE-branch output attribute, not
+		 * the outer table. At runtime the fan-out installs only the outer row's slot
+		 * before forking, so clustering this subquery would leave `lk.id`
+		 * unresolvable inside the branch (it errors with "No row context found").
+		 * The guard must reject it, dropping the cluster below minBranches (only the
+		 * lk join remains).
+		 */
+		async function setupSpineCorrelated(): Promise<string> {
+			await db.exec('create table lk (id integer primary key, name text) using hi_lat_memory');
+			await db.exec(`create table main_t (
+				id integer primary key,
+				lk_id integer not null references lk(id)
+			) using memory`);
+			await db.exec('create table c (id integer primary key, fk integer, v integer) using hi_lat_memory');
+			await db.exec("insert into lk values (1, 'Acme'), (2, 'Beta')");
+			await db.exec('insert into main_t values (1, 1), (2, 2)');
+			await db.exec('insert into c values (10, 1, 5), (11, 2, 7), (12, 2, 9)');
+			return `select m.id, lk.name,
+					(select count(*) from c where c.fk = lk.id) as nc
+				 from main_t m
+				 left join lk on m.lk_id = lk.id`;
+		}
+
+		it('correlated subquery referencing a spine-branch attribute is not clustered', async () => {
+			const sql = await setupSpineCorrelated();
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		});
+
+		// Execution is a fork path (correlated per-row subquery under ORDER BY's
+		// Sort→Project), so it hits the documented strict-fork false-positive — skip
+		// under strict-fork like the other execution cases. Regression guard for the
+		// "No row context found for column id" failure when the guard is absent.
+		forkExecTest('spine-correlated subquery still returns correct rows (guard regression)', async () => {
+			const sql = await setupSpineCorrelated();
+			const out = await results(db, sql + ' order by m.id');
+			expect(out).to.deep.equal([
+				{ id: 1, name: 'Acme', nc: 1 },
+				{ id: 2, name: 'Beta', nc: 2 },
+			]);
 		});
 
 		it('non-correlated subquery is not clustered', async () => {

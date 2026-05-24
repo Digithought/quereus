@@ -66,7 +66,7 @@ import { ColumnReferenceNode } from '../../nodes/reference.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { checkFkPkAlignment, extractTableSchema } from '../../util/key-utils.js';
 import { lookupCoveringFK, isRowPreservingPathToTable } from '../../util/ind-utils.js';
-import { isCorrelatedSubquery } from '../../cache/correlation-detector.js';
+import { collectExternalReferences } from '../../cache/correlation-detector.js';
 import { CapabilityDetectors } from '../../framework/characteristics.js';
 import { isAndOfColumnEqualities } from './rule-join-elimination.js';
 import { FanOutLookupJoinNode, type FanOutBranchSpec, type FanOutBranchMode } from '../../nodes/fanout-lookup-join-node.js';
@@ -191,9 +191,10 @@ export function ruleFanOutLookupJoin(node: PlanNode, context: OptContext): PlanN
 	// Subquery branches: correlated scalar-aggregate ScalarSubqueryNodes that
 	// appear directly as a projection node.
 	const subqueryBranches: RecognizedSubqueryBranch[] = [];
+	const outerAttrIds = new Set<number>(outerAttrs.map(a => a.id));
 	for (const proj of node.projections) {
 		if (!(proj.node instanceof ScalarSubqueryNode)) continue;
-		const recognized = recognizeSubqueryBranch(proj.node);
+		const recognized = recognizeSubqueryBranch(proj.node, outerAttrIds);
 		if (recognized) subqueryBranches.push(recognized);
 	}
 
@@ -330,17 +331,33 @@ function columnExprFor(name: string): AST.ColumnExpr {
 
 /**
  * Recognize a correlated scalar-aggregate subquery as an `atMostOne-left`
- * fan-out branch. Returns null when the subquery is not correlated, is not
- * aggregate-shaped with zero grouping keys beneath pass-through wrappers, or
- * does not expose exactly one output attribute.
+ * fan-out branch. Returns null when the subquery is not correlated, correlates
+ * to anything other than the outer subtree, is not aggregate-shaped with zero
+ * grouping keys beneath pass-through wrappers, or does not expose exactly one
+ * output attribute.
+ *
+ * The correlation must resolve *entirely* against `outerAttrIds`: at runtime
+ * the fan-out installs only the outer row's slot before forking each branch, so
+ * a subquery referencing a sibling spine-branch attribute (produced inside the
+ * fan-out, never installed as a slot) would fail to resolve its column at
+ * runtime. Rejecting it here keeps such a subquery as an ordinary correlated
+ * projection. (See `correlated subquery referencing a spine-branch attribute`
+ * in `parallel-fanout.spec.ts`.)
  *
  * The aggregate-shape test uses `CapabilityDetectors.isAggregating`, which
  * matches both the logical `AggregateNode` and the physical
  * `StreamAggregateNode` / `HashAggregateNode`, so it is robust to optimizer
  * pass ordering (the subquery root may still be logical at structural time).
  */
-function recognizeSubqueryBranch(scalarSubquery: ScalarSubqueryNode): RecognizedSubqueryBranch | null {
-	if (!isCorrelatedSubquery(scalarSubquery.subquery)) return null;
+function recognizeSubqueryBranch(
+	scalarSubquery: ScalarSubqueryNode,
+	outerAttrIds: ReadonlySet<number>,
+): RecognizedSubqueryBranch | null {
+	const external = collectExternalReferences(scalarSubquery.subquery);
+	if (external.size === 0) return null; // not correlated
+	for (const id of external) {
+		if (!outerAttrIds.has(id)) return null; // correlates beyond the outer subtree
+	}
 
 	// Descend pass-through wrappers (Project/Alias/Sort/LimitOffset) to the
 	// aggregate root.
