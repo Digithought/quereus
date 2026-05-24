@@ -18,6 +18,8 @@ Today the unique-constraint case is hardcoded: declaring `unique(x, y)` auto-cre
 
 This is lower priority than FK constraints, computed columns, and ALTER TABLE. The design below captures the key decisions; detailed planning (and likely a split into several plan/implement tickets — read-caching vs. constraint-covering are largely independent) should happen when this moves to plan stage.
 
+The implement stage should create a timeless `docs/materialized-views.md` reflecting what is actually built, register it in the docs index in `docs/architecture.md`, and cross-reference it from `docs/optimizer.md`, `docs/schema.md`, and `docs/incremental-maintenance.md` the way the shipped features already are — the design prose here graduates into that doc rather than living in two places.
+
 ### Foundations already in place
 
 - `ViewSchema` (`schema/view.ts`) stores `sql` + parsed `selectAst`; views are also registered as `TableSchema` with `isView: true` and `viewDefinition: AST.SelectStmt`. A backing table can reuse this bridge.
