@@ -2,8 +2,10 @@ import { expect } from 'chai';
 import {
 	runUnionAll,
 	runCrossProduct,
+	runZipByKey,
 	cartesianProduct,
 } from '../../src/runtime/emit/async-gather.js';
+import { createCollationRowComparator, BINARY_COLLATION } from '../../src/util/comparison.js';
 import { AsyncGatherNode } from '../../src/planner/nodes/async-gather-node.js';
 import { PlanNode, type Attribute, type RelationalPlanNode, type PhysicalProperties } from '../../src/planner/nodes/plan-node.js';
 import { PlanNodeType } from '../../src/planner/nodes/plan-node-type.js';
@@ -60,6 +62,25 @@ function makeAttr(name: string, sourceRelation = 'test.t'): Attribute {
 			isReadOnly: false,
 		},
 		sourceRelation,
+	};
+}
+
+/**
+ * Build an attribute with an explicit id and physical-type code, for zipByKey
+ * key-column tests where a shared key id (across branches) and/or an affinity
+ * mismatch must be exercised deliberately.
+ */
+function makeKeyAttr(id: number, name: string, physicalType: number, nullable = false): Attribute {
+	return {
+		id,
+		name,
+		type: {
+			typeClass: 'scalar',
+			logicalType: { name, physicalType } as never,
+			nullable,
+			isReadOnly: false,
+		},
+		sourceRelation: 'test.t',
 	};
 }
 
@@ -243,6 +264,101 @@ describe('AsyncGather', () => {
 			expect(rebuilt.combinator).to.deep.equal({ kind: 'crossProduct' });
 			expect(rebuilt.concurrencyCap).to.equal(7);
 			expect(rebuilt.preserveAttributeIds).to.equal(preserved);
+		});
+
+		it('zipByKey rejects empty keyAttrs', () => {
+			const a = new MockRelationalNode([makeAttr('k'), makeAttr('v1')]);
+			const b = new MockRelationalNode([makeAttr('k2'), makeAttr('v2')]);
+			expect(() => new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [] }, 4))
+				.to.throw(QuereusError, /requires >= 1 key/);
+		});
+
+		it('zipByKey rejects a keyAttr absent from some branch', () => {
+			const k = makeAttr('k');
+			const a = new MockRelationalNode([k, makeAttr('v1')]);
+			const b = new MockRelationalNode([makeAttr('other'), makeAttr('v2')]);
+			expect(() => new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [k.id] }, 4))
+				.to.throw(QuereusError, /not found in branch/);
+		});
+
+		it('zipByKey rejects key column affinity disagreement across branches', () => {
+			// Same key id in both branches but different physical storage class.
+			const ka = makeKeyAttr(910001, 'k', 1 /* INTEGER */);
+			const kb = makeKeyAttr(910001, 'k', 3 /* TEXT */);
+			const a = new MockRelationalNode([ka, makeAttr('v1')]);
+			const b = new MockRelationalNode([kb, makeAttr('v2')]);
+			expect(() => new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [910001] }, 4))
+				.to.throw(QuereusError, /affinity mismatch/);
+		});
+
+		it('zipByKey output: key attrs first (keyAttrs order), then branch non-key attrs (nullable)', () => {
+			const k = makeAttr('k');
+			const a1 = makeAttr('a1');
+			const b1 = makeAttr('b1');
+			// Key sits at index 0 in branch A but index 1 in branch B (position-independent).
+			const a = new MockRelationalNode([k, a1]);
+			const b = new MockRelationalNode([b1, k]);
+			const node = new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [k.id] }, 4);
+			expect(node.getAttributes().map(x => x.id)).to.deep.equal([k.id, a1.id, b1.id]);
+			const cols = node.getType().columns;
+			expect(cols).to.have.lengthOf(3);
+			// Key column is non-nullable (both branches non-nullable); non-key cols forced nullable.
+			expect(cols[0].type.nullable).to.equal(false);
+			expect(cols[1].type.nullable).to.equal(true, 'branch-A non-key must be nullable');
+			expect(cols[2].type.nullable).to.equal(true, 'branch-B non-key must be nullable');
+		});
+
+		it('zipByKey key nullability is OR across branches', () => {
+			// Branch B's key column is nullable → output key column nullable.
+			const ka = makeKeyAttr(920001, 'k', 1 /* INTEGER */, false);
+			const kb = makeKeyAttr(920001, 'k', 1 /* INTEGER */, true);
+			const a = new MockRelationalNode([ka, makeAttr('a1')]);
+			const b = new MockRelationalNode([kb, makeAttr('b1')]);
+			const node = new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [920001] }, 4);
+			expect(node.getType().columns[0].type.nullable).to.equal(true);
+		});
+
+		it('zipByKey getType keys are [[0..K-1]] and isSet is false', () => {
+			const k0 = makeAttr('k0');
+			const k1 = makeAttr('k1');
+			const a = new MockRelationalNode([k0, k1, makeAttr('a1')]);
+			const b = new MockRelationalNode([k0, k1, makeAttr('b1')]);
+			const node = new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [k0.id, k1.id] }, 4);
+			expect(node.getType().keys).to.deep.equal([[{ index: 0 }, { index: 1 }]]);
+			expect(node.getType().isSet).to.equal(false);
+		});
+
+		it('zipByKey drops fds/equivClasses/constantBindings/domainConstraints/ordering in physical', () => {
+			const k = makeAttr('k');
+			const a = new MockRelationalNode(
+				[k, makeAttr('a1')],
+				[[{ index: 0 }]],
+				{ deterministic: true, readonly: true, fds: [{ determinants: [0], dependents: [1] }] },
+			);
+			const b = new MockRelationalNode(
+				[k, makeAttr('b1')],
+				[[{ index: 0 }]],
+				{ deterministic: true, readonly: true, fds: [{ determinants: [0], dependents: [1] }] },
+			);
+			const node = new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [k.id] }, 4);
+			const phys = node.physical;
+			expect(phys.fds).to.equal(undefined);
+			expect(phys.equivClasses).to.equal(undefined);
+			expect(phys.constantBindings).to.equal(undefined);
+			expect(phys.domainConstraints).to.equal(undefined);
+			expect(phys.ordering).to.equal(undefined);
+		});
+
+		it('zipByKey withChildren rebuilds preserving the combinator (incl. keyAttrs)', () => {
+			const k = makeAttr('k');
+			const a = new MockRelationalNode([k, makeAttr('a1')]);
+			const b = new MockRelationalNode([k, makeAttr('b1')]);
+			const c = new MockRelationalNode([k, makeAttr('c1')]);
+			const node = new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [k.id] }, 5);
+			const rebuilt = node.withChildren([a, c]) as AsyncGatherNode;
+			expect(rebuilt).to.not.equal(node);
+			expect(rebuilt.combinator).to.deep.equal({ kind: 'zipByKey', keyAttrs: [k.id] });
+			expect(rebuilt.concurrencyCap).to.equal(5);
 		});
 	});
 
@@ -486,6 +602,125 @@ describe('AsyncGather', () => {
 			const factories = [50, 50, 50].map(d => rowSource([[1]], d));
 			const start = Date.now();
 			await collect(runCrossProduct(ctx, factories, 1));
+			const elapsed = Date.now() - start;
+			expect(elapsed).to.be.greaterThan(125, `expected serial production, got ${elapsed}ms`);
+		});
+	});
+
+	describe('zipByKey runtime', () => {
+		const cmp1 = createCollationRowComparator([BINARY_COLLATION]);
+		const cmp2 = createCollationRowComparator([BINARY_COLLATION, BINARY_COLLATION]);
+
+		it('two branches, full overlap → one row per key with both sides filled', async () => {
+			const ctx = makeRuntimeContext();
+			const factories = [
+				rowSource([[1, 'a1'], [2, 'a2']]),
+				rowSource([[1, 'b1'], [2, 'b2']]),
+			];
+			const out = await collect(runZipByKey(ctx, factories, [[0], [0]], [[1], [1]], cmp1, 2));
+			expect(out).to.deep.equal([[1, 'a1', 'b1'], [2, 'a2', 'b2']]);
+		});
+
+		it('key present in only one branch → other branch NULL-padded', async () => {
+			const ctx = makeRuntimeContext();
+			const factories = [
+				rowSource([[1, 'a1'], [2, 'a2']]),
+				rowSource([[2, 'b2'], [3, 'b3']]),
+			];
+			const out = await collect(runZipByKey(ctx, factories, [[0], [0]], [[1], [1]], cmp1, 2));
+			expect(out).to.deep.equal([
+				[1, 'a1', null],
+				[2, 'a2', 'b2'],
+				[3, null, 'b3'],
+			]);
+		});
+
+		it('three branches, partial overlap → correct NULL padding, one row per key', async () => {
+			const ctx = makeRuntimeContext();
+			const factories = [
+				rowSource([[1, 'a1']]),
+				rowSource([[1, 'b1'], [2, 'b2']]),
+				rowSource([[2, 'c2'], [3, 'c3']]),
+			];
+			const out = await collect(
+				runZipByKey(ctx, factories, [[0], [0], [0]], [[1], [1], [1]], cmp1, 3),
+			);
+			expect(out).to.deep.equal([
+				[1, 'a1', 'b1', null],
+				[2, null, 'b2', 'c2'],
+				[3, null, null, 'c3'],
+			]);
+			// Row width = K(1) + Σ non-key arities (1+1+1).
+			for (const r of out) expect(r).to.have.lengthOf(4);
+		});
+
+		it('empty branch → keys from other branches still emit (NULL-padded for empty one)', async () => {
+			const ctx = makeRuntimeContext();
+			const factories = [
+				rowSource([]),
+				rowSource([[1, 'b1']]),
+				rowSource([[2, 'c2']]),
+			];
+			const out = await collect(
+				runZipByKey(ctx, factories, [[0], [0], [0]], [[1], [1], [1]], cmp1, 3),
+			);
+			expect(out).to.deep.equal([
+				[1, null, 'b1', null],
+				[2, null, null, 'c2'],
+			]);
+		});
+
+		it('all-empty branches → no rows', async () => {
+			const ctx = makeRuntimeContext();
+			const factories = [rowSource([]), rowSource([])];
+			const out = await collect(runZipByKey(ctx, factories, [[0], [0]], [[1], [1]], cmp1, 2));
+			expect(out).to.deep.equal([]);
+		});
+
+		it('NULL-keyed rows from different branches do NOT merge', async () => {
+			const ctx = makeRuntimeContext();
+			const factories = [
+				rowSource([[null, 'a1']]),
+				rowSource([[null, 'b1']]),
+			];
+			const out = await collect(runZipByKey(ctx, factories, [[0], [0]], [[1], [1]], cmp1, 2));
+			expect(out).to.have.lengthOf(2);
+			// Arrival order is non-deterministic; assert as a set.
+			const set = new Set(out.map(r => JSON.stringify(r)));
+			expect(set.has(JSON.stringify([null, 'a1', null]))).to.equal(true);
+			expect(set.has(JSON.stringify([null, null, 'b1']))).to.equal(true);
+		});
+
+		it('multi-column composite key (K=2) merges correctly', async () => {
+			const ctx = makeRuntimeContext();
+			const factories = [
+				rowSource([['x', 1, 'a1'], ['x', 2, 'a2']]),
+				rowSource([['x', 1, 'b1'], ['y', 1, 'b2']]),
+			];
+			const out = await collect(
+				runZipByKey(ctx, factories, [[0, 1], [0, 1]], [[2], [2]], cmp2, 2),
+			);
+			expect(out).to.deep.equal([
+				['x', 1, 'a1', 'b1'],
+				['x', 2, 'a2', null],
+				['y', 1, null, 'b2'],
+			]);
+		});
+
+		it('drives branches concurrently with cap=3 (3 × 50ms ≈ one wave)', async () => {
+			const ctx = makeRuntimeContext();
+			const factories = [50, 50, 50].map((d, i) => rowSource([[i, `v${i}`]], d));
+			const start = Date.now();
+			await collect(runZipByKey(ctx, factories, [[0], [0], [0]], [[1], [1], [1]], cmp1, 3));
+			const elapsed = Date.now() - start;
+			expect(elapsed).to.be.lessThan(175, `expected single concurrent wave, got ${elapsed}ms`);
+		});
+
+		it('cap=1 serializes branches (3 × 50ms ≈ 150ms)', async () => {
+			const ctx = makeRuntimeContext();
+			const factories = [50, 50, 50].map((d, i) => rowSource([[i, `v${i}`]], d));
+			const start = Date.now();
+			await collect(runZipByKey(ctx, factories, [[0], [0], [0]], [[1], [1], [1]], cmp1, 1));
 			const elapsed = Date.now() - start;
 			expect(elapsed).to.be.greaterThan(125, `expected serial production, got ${elapsed}ms`);
 		});

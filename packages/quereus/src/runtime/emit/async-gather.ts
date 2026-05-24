@@ -4,6 +4,8 @@ import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import type { Row } from '../../common/types.js';
 import { emitCallFromPlan } from '../emitters.js';
 import { ParallelDriver } from '../parallel-driver.js';
+import { BTree } from 'inheritree';
+import { createCollationRowComparator, BINARY_COLLATION } from '../../util/comparison.js';
 
 /** Branch factory: invoked with a forked RuntimeContext, returns an async row stream. */
 export type AsyncGatherFactory = (innerCtx: RuntimeContext) => AsyncIterable<Row>;
@@ -87,6 +89,100 @@ export async function* runCrossProduct(
 	yield* cartesianProduct(buffers);
 }
 
+/** BTree entry for {@link runZipByKey}: the key tuple plus a per-branch row slot. */
+interface ZipEntry {
+	readonly key: Row;
+	/** Length N; `cells[b]` is branch b's row for this key, or undefined if absent. */
+	readonly cells: (Row | undefined)[];
+}
+
+/**
+ * Compose one output row from a key tuple and per-branch row slots:
+ * `[ key cells ] ++ for each branch b: (cells[b] ? its non-key cells : NULLs)`.
+ */
+function composeZipRow(
+	keyCells: Row,
+	cells: readonly (Row | undefined)[],
+	branchNonKeyIndices: readonly (readonly number[])[],
+): Row {
+	const out: Row = [...keyCells];
+	for (let b = 0; b < cells.length; b++) {
+		const cell = cells[b];
+		const nonKeyIx = branchNonKeyIndices[b];
+		if (cell) {
+			for (const ix of nonKeyIx) out.push(cell[ix]);
+		} else {
+			for (let j = 0; j < nonKeyIx.length; j++) out.push(null);
+		}
+	}
+	return out;
+}
+
+/**
+ * Async-iterate the `zipByKey` shape: a full N-way outer join on the shared key
+ * columns, implemented as an **eager hash-merge**. Forks N child views off
+ * `rctx`, drives the factories concurrently, and upserts each row into a `BTree`
+ * keyed by its key tuple. **Every branch is drained before the first row is
+ * yielded** (memory-bound, like {@link runCrossProduct}).
+ *
+ * NULL keys never merge (SQL `NULL = NULL` is unknown): each NULL-keyed row is
+ * buffered and emitted standalone (only its own branch's columns populated).
+ *
+ * Within-branch duplicate keys are **unspecified** in v1 — branches are assumed
+ * key-unique; a second write for the same key overwrites the first, and branch
+ * arrival order is non-deterministic.
+ *
+ * Exported for unit testing — production callers go through {@link emitAsyncGather}.
+ */
+export async function* runZipByKey(
+	rctx: RuntimeContext,
+	factories: ReadonlyArray<AsyncGatherFactory>,
+	branchKeyIndices: readonly (readonly number[])[],
+	branchNonKeyIndices: readonly (readonly number[])[],
+	keyComparator: (a: Row, b: Row) => number,
+	concurrencyCap: number,
+	driver: ParallelDriver = new ParallelDriver(),
+): AsyncIterable<Row> {
+	const n = factories.length;
+	const forks = driver.fork(rctx, n);
+	const tree = new BTree<Row, ZipEntry>(e => e.key, keyComparator);
+	const nullKeyed: { branch: number; value: Row }[] = [];
+
+	for await (const { branch, value } of driver.drive(factories, forks, { concurrency: concurrencyCap })) {
+		const keyRow: Row = branchKeyIndices[branch].map(ix => value[ix]);
+		if (keyRow.some(v => v === null)) {
+			// NULL key: never merges; emit standalone at the end.
+			nullKeyed.push({ branch, value });
+			continue;
+		}
+		const path = tree.find(keyRow);
+		if (path.on) {
+			tree.at(path)!.cells[branch] = value;
+		} else {
+			const cells = new Array<Row | undefined>(n).fill(undefined);
+			cells[branch] = value;
+			tree.insert({ key: keyRow, cells });
+		}
+	}
+
+	// Walk the tree in key order; the tree is no longer mutated, so a plain
+	// first()/moveNext() walk is safe (no safeIterate recovery needed).
+	const path = tree.first();
+	while (path.on) {
+		const entry = tree.at(path)!;
+		yield composeZipRow(entry.key, entry.cells, branchNonKeyIndices);
+		tree.moveNext(path);
+	}
+
+	// NULL-keyed rows: each emits standalone with only its branch's columns.
+	for (const { branch, value } of nullKeyed) {
+		const cells = new Array<Row | undefined>(n).fill(undefined);
+		cells[branch] = value;
+		const keyRow: Row = branchKeyIndices[branch].map(ix => value[ix]);
+		yield composeZipRow(keyRow, cells, branchNonKeyIndices);
+	}
+}
+
 /**
  * Emit an {@link AsyncGatherNode}.
  *
@@ -98,7 +194,11 @@ export async function* runCrossProduct(
  *   rows in memory, then yields the full N-ary Cartesian product. **All
  *   branches are materialised before the first row is yielded.**
  *
- * Both combinators inherit cancellation, error propagation, strict-fork
+ * - `zipByKey`: drives every branch concurrently, hash-merges rows by key tuple,
+ *   then yields one composed row per distinct key (full N-way outer join).
+ *   **All branches are materialised before the first row is yielded.**
+ *
+ * All combinators inherit cancellation, error propagation, strict-fork
  * bookkeeping, and consumer-break cleanup from `ParallelDriver.drive`.
  */
 export function emitAsyncGather(plan: AsyncGatherNode, ctx: EmissionContext): Instruction {
@@ -117,6 +217,31 @@ export function emitAsyncGather(plan: AsyncGatherNode, ctx: EmissionContext): In
 			params: childInstructions,
 			run: run as InstructionRun,
 			note: `async_gather(unionAll, N=${branchCount}, cap=${concurrencyCap})`,
+		};
+	}
+
+	if (plan.combinator.kind === 'zipByKey') {
+		const { branchKeyIndices, branchNonKeyIndices } = plan.getZipByKeyIndices();
+		const keyAttrs = plan.combinator.keyAttrs;
+		// Build the key comparator from children[0]'s key column collations (key
+		// columns share affinity across branches per the construction contract).
+		const child0Attrs = plan.children[0].getAttributes();
+		const keyCollations = keyAttrs.map((_id, k) => {
+			const attr = child0Attrs[branchKeyIndices[0][k]];
+			return attr.type.collationName ? ctx.resolveCollation(attr.type.collationName) : BINARY_COLLATION;
+		});
+		const keyComparator = createCollationRowComparator(keyCollations);
+
+		function run(
+			rctx: RuntimeContext,
+			...childFactories: AsyncGatherFactory[]
+		): AsyncIterable<Row> {
+			return runZipByKey(rctx, childFactories, branchKeyIndices, branchNonKeyIndices, keyComparator, concurrencyCap);
+		}
+		return {
+			params: childInstructions,
+			run: run as InstructionRun,
+			note: `async_gather(zipByKey, N=${branchCount}, cap=${concurrencyCap})`,
 		};
 	}
 
