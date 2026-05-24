@@ -61,7 +61,7 @@ describe('EagerPrefetch', () => {
 	});
 
 	describe('eager start', () => {
-		it('kicks the source synchronously on first iter.next()', async () => {
+		it('starts the source on construction, before any iter.next()', async () => {
 			const ctx = makeRuntimeContext();
 			let started = false;
 			const source = (_inner: RuntimeContext): AsyncIterable<Row> => (async function* () {
@@ -70,17 +70,15 @@ describe('EagerPrefetch', () => {
 				yield ['second'] as Row;
 			})();
 
-			const iter = prefetchAsyncIterable(ctx, source, 4)[Symbol.asyncIterator]();
-			// Body not yet running.
-			expect(started).to.equal(false, 'source must not run until iteration begins');
+			// EAGER contract: building the iterable forks and starts the pump
+			// immediately. The pump's first `childIter.next()` runs the source's
+			// body synchronously up to its first yield — so `started` flips to
+			// true at construction time, before any consumer `.next()`.
+			const iterable = prefetchAsyncIterable(ctx, source, 4);
+			expect(started).to.equal(true, 'pump must start the source eagerly on construction');
 
-			// Calling iter.next() must run the source's body synchronously up to
-			// its first yield, proving the pump is kicked eagerly. The async
-			// generator spec guarantees this.
-			const promise = iter.next();
-			expect(started).to.equal(true, 'pump must trigger the source synchronously on first next()');
-
-			const r = await promise;
+			const iter = iterable[Symbol.asyncIterator]();
+			const r = await iter.next();
 			expect(r.value).to.deep.equal(['first']);
 
 			// Drain to allow cleanup.
@@ -110,6 +108,53 @@ describe('EagerPrefetch', () => {
 
 			// Cleanup.
 			await iter.return?.();
+		});
+	});
+
+	describe('build/probe overlap (the headline win)', () => {
+		it("starts the probe's first fetch during the build window, not after it", async () => {
+			// Mirrors a BloomJoin: the consumer drains the "build" (a sleep) to
+			// completion before touching the probe. With eager-on-construction the
+			// probe's first network round-trip is already in flight while the build
+			// materializes; with the old lazy behavior it would not fire until the
+			// drain below begins (i.e. at ~buildMs).
+			const ctx = makeRuntimeContext();
+			const buildMs = 80;
+			const t0 = Date.now();
+			let firstFetchAt = -1;
+			const probeSource = (_inner: RuntimeContext): AsyncIterable<Row> => ({
+				[Symbol.asyncIterator]() {
+					let i = 0;
+					return {
+						async next(): Promise<IteratorResult<Row>> {
+							if (firstFetchAt < 0) firstFetchAt = Date.now() - t0;
+							await sleep(5);
+							if (i >= 3) return { done: true, value: undefined as unknown as Row };
+							return { done: false, value: [i++] as Row };
+						},
+					};
+				},
+			});
+
+			// Construct the prefetch — the pump starts now. Then simulate the slow
+			// build phase before draining the probe.
+			const iter = prefetchAsyncIterable(ctx, probeSource, 8)[Symbol.asyncIterator]();
+			await sleep(buildMs);
+
+			const out: Row[] = [];
+			while (true) {
+				const r = await iter.next();
+				if (r.done) break;
+				out.push(r.value);
+			}
+
+			expect(out).to.deep.equal([[0], [1], [2]]);
+			// Headline assertion: the probe's first fetch landed DURING the build
+			// window (well before it completed), proving the overlap. Wide CI band
+			// matching the other parallel wall-clock tests.
+			expect(firstFetchAt).to.be.greaterThanOrEqual(0, 'probe must have fetched');
+			expect(firstFetchAt).to.be.lessThan(buildMs / 2,
+				`probe first-fetch should overlap the build window (~0ms), got ${firstFetchAt}ms of a ${buildMs}ms build`);
 		});
 	});
 
@@ -329,8 +374,8 @@ describe('EagerPrefetch', () => {
 		});
 	});
 
-	describe('no work without consumption', () => {
-		it('does not invoke the source if the returned iterable is never iterated', async () => {
+	describe('eager construction', () => {
+		it('starts the source on construction even if the iterable is never iterated', async () => {
 			const ctx = makeRuntimeContext();
 			let started = false;
 			const source = (_inner: RuntimeContext): AsyncIterable<Row> => (async function* () {
@@ -338,11 +383,16 @@ describe('EagerPrefetch', () => {
 				yield [0] as Row;
 			})();
 
-			// Build the iterable but never call next(). Async-generator semantics
-			// guarantee the body hasn't run; pin that with a small idle wait.
-			const _iter = prefetchAsyncIterable(ctx, source, 4);
+			// EAGER contract (inverted from the old lazy behavior): building the
+			// iterable starts the pump immediately, so the source runs without any
+			// consumer demand. The pump fills the buffer then would block on
+			// back-pressure, so we must close it to avoid a dangling fork.
+			const iterable = prefetchAsyncIterable(ctx, source, 4);
 			await sleep(15);
-			expect(started).to.equal(false, 'source must not start until iteration begins');
+			expect(started).to.equal(true, 'source must start eagerly on construction');
+
+			// Clean up the now-running pump.
+			await iterable[Symbol.asyncIterator]().return?.(undefined);
 		});
 	});
 

@@ -104,13 +104,28 @@ export class BoundedPrefetchBuffer<T> {
 }
 
 /**
- * Core prefetch async generator. Forks `rctx`, immediately starts a detached
- * pump that drains the child iterator into a bounded buffer, and yields rows
- * to the consumer from that buffer.
+ * Core prefetch primitive. Forks `rctx` and **eagerly** — at call time, before
+ * the consumer's first `next()` — starts a detached pump that drains the child
+ * iterator into a bounded buffer. The returned `AsyncIterable<Row>` hands rows
+ * out of that buffer; its iterator owns teardown via `next()`/`return()`/
+ * `throw()`.
+ *
+ * Eager-on-call is the point: when a `BloomJoinNode` wraps its probe (`left`) in
+ * this, the scheduler invokes `run()` during arg-assembly — before the join's
+ * generator body drains the build (`right`) — so the probe's first fetch is
+ * already in flight while the build materializes.
+ *
+ * Cleanup (abort pump, close buffer, child `return()`, drop strict-fork
+ * counters) fires when the iterator reaches done, `return()`, or `throw()`.
+ * Because the fork counters are bumped at construction, a returned iterable that
+ * is **never iterated** leaks the pump (it fills the buffer then blocks forever)
+ * and leaves the counters bumped — every consumer must guarantee iterate-or-
+ * close. Today the only inserter is `rule-eager-prefetch-probe`, and
+ * `emitBloomJoin` closes the left iterator in a `finally` covering both phases.
  *
  * Exported for unit testing — production callers go through {@link emitEagerPrefetch}.
  */
-export async function* prefetchAsyncIterable(
+export function prefetchAsyncIterable(
 	rctx: RuntimeContext,
 	sourceCallback: (innerCtx: RuntimeContext) => AsyncIterable<Row>,
 	bufferSize: number,
@@ -119,7 +134,8 @@ export async function* prefetchAsyncIterable(
 	const [forkCtx] = driver.fork(rctx, 1);
 
 	// Manually bump strict-fork bookkeeping (ParallelDriver.drive does this
-	// internally, but we are using fork() directly).
+	// internally, but we are using fork() directly). The fork is "live" from
+	// construction — that is the intended eager semantics.
 	const parentTableState = bumpParentForkCounter(forkCtx.tableContexts);
 	const parentRowState = bumpParentForkCounter(forkCtx.context);
 
@@ -127,6 +143,7 @@ export async function* prefetchAsyncIterable(
 	const buf = new BoundedPrefetchBuffer<Row>(bufferSize);
 	const abort = new AbortController();
 
+	// EAGER: start the pump now, not on first next().
 	const pump = (async () => {
 		try {
 			while (!abort.signal.aborted) {
@@ -142,16 +159,13 @@ export async function* prefetchAsyncIterable(
 			buf.fail(e);
 		}
 	})();
-	// Detach; awaited in finally for clean shutdown.
+	// Detach; awaited in cleanup for clean shutdown.
 	void pump;
 
-	try {
-		while (true) {
-			const item = await buf.shift();
-			if (item.done) return;
-			yield item.value;
-		}
-	} finally {
+	let cleanedUp = false;
+	const cleanup = async (): Promise<void> => {
+		if (cleanedUp) return;
+		cleanedUp = true;
 		abort.abort();
 		buf.close();
 		try {
@@ -162,15 +176,44 @@ export async function* prefetchAsyncIterable(
 		await pump.catch(() => undefined);
 		dropParentForkCounter(parentTableState);
 		dropParentForkCounter(parentRowState);
-	}
+	};
+
+	return {
+		[Symbol.asyncIterator](): AsyncIterator<Row> {
+			return {
+				async next(): Promise<IteratorResult<Row>> {
+					try {
+						const item = await buf.shift();
+						if (item.done) {
+							await cleanup();
+							return { done: true, value: undefined as never };
+						}
+						return { done: false, value: item.value };
+					} catch (e) {
+						await cleanup();
+						throw e;
+					}
+				},
+				async return(value?: unknown): Promise<IteratorResult<Row>> {
+					await cleanup();
+					return { done: true, value: value as never };
+				},
+				async throw(err?: unknown): Promise<IteratorResult<Row>> {
+					await cleanup();
+					throw err;
+				},
+			};
+		},
+	};
 }
 
 /**
- * Emit an EagerPrefetchNode: forks the runtime context, immediately starts
- * pumping the child sub-tree into a bounded buffer, and yields rows from that
+ * Emit an EagerPrefetchNode: forks the runtime context and immediately starts
+ * pumping the child sub-tree into a bounded buffer, yielding rows from that
  * buffer to the parent emit.
  *
- * The body is an async generator, so the pump only starts on first `next()`.
+ * The pump starts on `run()` (emit / scheduler arg-assembly), not on the
+ * consumer's first `next()`.
  */
 export function emitEagerPrefetch(plan: EagerPrefetchNode, ctx: EmissionContext): Instruction {
 	const driver = new ParallelDriver();

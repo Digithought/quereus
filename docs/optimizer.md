@@ -1526,13 +1526,15 @@ where `concurrencyCap = min(tuning.parallel.concurrency, N)`. Practical conseque
 
 **Cost gate.** `node.right.physical.expectedLatencyMs ≥ tuning.parallel.prefetchProbeThresholdMs`. Like the fan-out and gather rules, `expectedLatencyMs` is 0 on every in-process / memory-vtab leaf, so the rule is **inert by design on local-only plans** (the `test/plan/` golden sweep is unaffected). The gate is on the build side specifically: if `left` were the slow one the consumer above the join takes that latency hit regardless, so prefetching it would not change first-row time meaningfully.
 
+**Concurrency gate.** Since the prefetch pump now starts on `run()` (see runtime.md § EagerPrefetchNode), the probe (`left`) subtree iterates **concurrently** with the build's for-await over `right`. If either side sits over a non-reentrant (`'serial'`) cursor, concurrent iteration corrupts state. The rule therefore only fires when **both** `node.left.physical.concurrencySafe === true` and `node.right.physical.concurrencySafe === true` — mirroring `rule-async-gather-union-all`'s strict `=== true` check (wrap only when *proven* safe; `undefined` blocks). Memory-vtab leaves declare `concurrencyMode = 'reentrant-reads'` → `concurrencySafe === true`, so local plans clear this gate (but remain blocked by the cost gate).
+
 **Skip predicates.** The wrap is suppressed when the probe is already pump-driven or pre-materialized: `left` is an `EagerPrefetchNode` (idempotence), a `Cache` (pre-materialized — a prefetch over a cache buys nothing), or an `AsyncGather` (already drives its branches concurrently). Pure-`nodeType` checks; no capability detector.
 
 **Pass placement.** Priority 15 in PostOptimization — after `mutating-subquery-cache` (10) and `asof-strategy-select` (11, finalizes leaf physical properties incl. `expectedLatencyMs`), and before `cte-optimization` (20) and `materialization-advisory` (30, so the advisory sees the prefetch-wrapped tree and does not re-wrap the probe in a Cache).
 
 **Tuning knobs** (`OptimizerTuning.parallel`): `prefetchProbeThresholdMs` (default 25 — shares the synthetic high-latency vtab fixture value) and `prefetchBufferSize` (default 64 — mirrors the `EagerPrefetchNode` constructor default).
 
-**Out of scope (follow-on backlog).** EagerPrefetch eager-start in `run()` (the current pump starts on first iteration, not on emit — see `tickets/backlog/parallel-eager-prefetch-eager-start`); a broad cost-driven gate independent of remoteness; merge / nested-loop / asof join shapes; wrapping the build side (consumed once linearly, no benefit); and wrapping arbitrary high-latency subtrees.
+**Out of scope (follow-on backlog).** A broad cost-driven gate independent of remoteness; merge / nested-loop / asof join shapes; wrapping the build side (consumed once linearly, no benefit); and wrapping arbitrary high-latency subtrees.
 
 ### Empty-relation folding
 

@@ -28,6 +28,14 @@
  *   - `left` is an `AsyncGather` — already drives its branches concurrently;
  *     inserting a prefetch buffer just adds latency-of-first-row.
  *
+ * Concurrency gate: as of the eager-start change, the prefetch pump begins on
+ * `run()` (scheduler arg-assembly), so the probe (`left`) subtree iterates
+ * **concurrently** with the build's for-await over `right`. If either side sits
+ * over a non-reentrant (`'serial'`) cursor, concurrent iteration corrupts state.
+ * We therefore only wrap when **both** `node.left` and `node.right` advertise
+ * `physical.concurrencySafe === true` (mirroring `rule-async-gather-union-all`'s
+ * strict `=== true` check — wrap only when *proven* safe; `undefined` blocks).
+ *
  * Idempotence: after the rewrite `left` is an `EagerPrefetchNode`, so a second
  * firing hits the first skip predicate and no-ops.
  */
@@ -50,6 +58,11 @@ export function ruleEagerPrefetchProbe(node: PlanNode, context: OptContext): Pla
 	if (probe.nodeType === PlanNodeType.EagerPrefetch) return null;
 	if (probe.nodeType === PlanNodeType.Cache) return null;
 	if (probe.nodeType === PlanNodeType.AsyncGather) return null;
+
+	// Concurrency gate: the eager pump iterates the probe concurrently with the
+	// build's for-await, so both sides must be proven concurrency-safe.
+	if (probe.physical.concurrencySafe !== true) return null;
+	if (node.right.physical.concurrencySafe !== true) return null;
 
 	// Cost gate: only fire when the build (right) side is high-latency. Inert
 	// on memory-vtab plans where expectedLatencyMs is 0 throughout.

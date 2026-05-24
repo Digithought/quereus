@@ -6,14 +6,22 @@ import { StatusCode } from '../../common/types.js';
 import { quereusError } from '../../common/errors.js';
 
 /**
- * Physical pass-through that forks the runtime context on emit and pumps its
- * child sub-tree into a bounded ring buffer immediately, so the consumer's
- * first await finds rows already in flight.
+ * Physical pass-through that forks the runtime context and pumps its child
+ * sub-tree into a bounded ring buffer **eagerly on `run()`** (emit / scheduler
+ * arg-assembly), not on the consumer's first demand. Inside a hash join this
+ * lets the probe's first fetch overlap the build phase's materialization.
  *
  * Rows, order, attribute IDs, keys, FDs, equivClasses, orderings, monotonicity
  * all pass through verbatim. The only effect is timing: the source starts
- * executing as soon as the parent emit reaches this node, ahead of the
+ * executing the moment the scheduler invokes this node's `run()`, ahead of the
  * consumer's first demand.
+ *
+ * Iterate-or-close contract: because the fork (and its strict-fork counter) is
+ * live from `run()`, any consumer of an EagerPrefetch MUST either iterate the
+ * returned stream to completion or call its iterator's `return()` — otherwise
+ * the pump leaks (fills the buffer, then blocks on back-pressure forever) and
+ * the fork counter stays bumped. `emitBloomJoin` honors this by closing the
+ * left iterator in a `finally` that wraps both the build and probe phases.
  *
  * The relational pass-through claims (ordering/fds/equivClasses/
  * constantBindings/domainConstraints/monotonicOn) are propagated explicitly by
