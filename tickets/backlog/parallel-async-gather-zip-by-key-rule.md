@@ -1,5 +1,5 @@
 description: Recognition rule that folds a chain of binary `JoinNode(joinType='full')` full-outer-joins sharing a common key column set (rooted under a `Project`) into a single N-ary `AsyncGatherNode({ kind: 'zipByKey', keyAttrs })`. Generalizes the existing `rule-async-gather-union-all` pattern to the zip combinator.
-prereq: parallel-async-gather-zip-by-key
+prereq: parallel-async-gather-zip-by-key-provenance
 files: packages/quereus/src/planner/rules/parallel/rule-async-gather-union-all.ts, packages/quereus/src/planner/nodes/async-gather-node.ts, packages/quereus/src/planner/nodes/join-node.ts
 ----
 
@@ -24,11 +24,14 @@ binary-join shape and rewrites it.
 ## What it produces
 
 A single `AsyncGatherNode({ kind: 'zipByKey', keyAttrs }, concurrencyCap, preserveAttributeIds)`
-where `keyAttrs` are the shared output attribute IDs of the equated key columns
-(the combinator contract requires each branch's key column to carry the shared
-ID — the rule arranges the per-branch projections so this holds), and
-`preserveAttributeIds` is the recognized subtree's output attribute list so
-downstream references continue to resolve.
+whose key representation is **whatever `parallel-async-gather-zip-by-key-provenance`
+settles on** (see prereq). The original "shared key attribute ID across branches"
+contract is *invalid*: two uncorrelated branches both originating the same key id
+trip the attribute-provenance validator, so the prereq replaces that contract
+(most likely with per-branch key refs + a gather-minted output key id). Do not
+build this rule against the shared-ID assumption — revisit this section after the
+prereq lands. `preserveAttributeIds` is still the recognized subtree's output
+attribute list so downstream references continue to resolve.
 
 ## Notes / open questions to resolve at plan/fix time
 

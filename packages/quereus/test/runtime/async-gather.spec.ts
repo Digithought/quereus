@@ -375,6 +375,23 @@ describe('AsyncGather', () => {
 			const node = new AsyncGatherNode(mockScope, [left, right], { kind: 'crossProduct' }, 4);
 			expect(() => validatePhysicalTree(node)).to.not.throw();
 		});
+
+		// KNOWN LIMITATION (tracked by plan ticket
+		// `parallel-async-gather-zip-by-key-provenance`): a zipByKey node requires
+		// the shared key attribute id to exist in *every* branch (else construction
+		// throws "not found in branch i"). But two independent branches both
+		// outputting that id means the attribute-provenance validator sees the id
+		// originated at two distinct nodes and throws. So no validly-constructed
+		// zipByKey node currently passes validatePhysicalTree. Skipped until the
+		// design conflict is resolved (special-case the validator, or redesign
+		// keyAttrs to per-branch column refs + a freshly-minted output key id).
+		it.skip('zipByKey passes full validation (BLOCKED: shared key id trips provenance)', () => {
+			const k = makeAttr('k');
+			const left = new MockRelationalNode([k, makeAttr('a')]);
+			const right = new MockRelationalNode([k, makeAttr('b')]);
+			const node = new AsyncGatherNode(mockScope, [left, right], { kind: 'zipByKey', keyAttrs: [k.id] }, 4);
+			expect(() => validatePhysicalTree(node)).to.not.throw();
+		});
 	});
 
 	describe('unionAll runtime', () => {
@@ -705,6 +722,25 @@ describe('AsyncGather', () => {
 				['x', 2, 'a2', null],
 				['y', 1, null, 'b2'],
 			]);
+		});
+
+		it('composite key with a NULL component is treated as NULL-keyed (no merge)', async () => {
+			// (x, NULL) and (x, NULL) must NOT merge: SQL `x = x AND NULL = NULL`
+			// is unknown, so each row emits standalone. Only the fully-non-NULL
+			// composite key (y, 1) is eligible for the tree.
+			const ctx = makeRuntimeContext();
+			const factories = [
+				rowSource([['x', null, 'a1'], ['y', 1, 'a2']]),
+				rowSource([['x', null, 'b1'], ['y', 1, 'b2']]),
+			];
+			const out = await collect(
+				runZipByKey(ctx, factories, [[0, 1], [0, 1]], [[2], [2]], cmp2, 2),
+			);
+			expect(out).to.have.lengthOf(3, 'two standalone NULL-composite rows + one merged (y,1)');
+			const set = new Set(out.map(r => JSON.stringify(r)));
+			expect(set.has(JSON.stringify(['x', null, 'a1', null]))).to.equal(true);
+			expect(set.has(JSON.stringify(['x', null, null, 'b1']))).to.equal(true);
+			expect(set.has(JSON.stringify(['y', 1, 'a2', 'b2']))).to.equal(true);
 		});
 
 		it('drives branches concurrently with cap=3 (3 × 50ms ≈ one wave)', async () => {
