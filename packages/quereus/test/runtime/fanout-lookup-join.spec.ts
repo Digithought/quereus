@@ -1,6 +1,7 @@
 import { expect } from 'chai';
 import {
 	runFanOutLookupJoin,
+	runFanOutLookupJoinBatched,
 	type FanOutLookupBranchDescriptor,
 	type FanOutLookupBranchFactory,
 } from '../../src/runtime/emit/fanout-lookup-join.js';
@@ -521,6 +522,394 @@ describe('FanOutLookupJoin', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Batched outer mode (runFanOutLookupJoinBatched)
+// ---------------------------------------------------------------------------
+
+describe('FanOutLookupJoin batched outer', () => {
+	const left = (outputColCount = 1): FanOutLookupBranchDescriptor =>
+		({ mode: 'atMostOne-left', outputColCount, concurrencySafe: true });
+
+	it('preserves outer order under out-of-order completion', async () => {
+		const ctx = makeRuntimeContext();
+		// Row 0 slowest, row 2 fastest — reverse completion order.
+		const branchFactory: FanOutLookupBranchFactory = (innerCtx) => (async function* () {
+			const seq = resolveAttribute(innerCtx, 1) as number;
+			await sleep(30 - seq * 10);
+			yield [`v${seq}`] as Row;
+		})();
+		const out = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter([[0], [1], [2]]), singleOuterDescriptor(),
+			[branchFactory], [left()], /*globalCap*/ 8, /*maxOuterReadAhead*/ 64,
+		));
+		expect(out).to.deep.equal([
+			[0, 'v0'],
+			[1, 'v1'],
+			[2, 'v2'],
+		]);
+	});
+
+	it('overlaps lookups across outer rows (wall-clock ≈ ceil(M/cap) × L)', async () => {
+		const ctx = makeRuntimeContext();
+		const M = 16;
+		const L = 40;
+		const cap = 8;
+		const branchFactory: FanOutLookupBranchFactory = () => (async function* () {
+			await sleep(L);
+			yield ['done'] as Row;
+		})();
+		const rows: Row[] = Array.from({ length: M }, (_, i) => [i] as Row);
+
+		const start = Date.now();
+		const out = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter(rows), singleOuterDescriptor(),
+			[branchFactory], [left()], cap, 64,
+		));
+		const elapsed = Date.now() - start;
+
+		expect(out).to.have.length(M);
+		// ceil(16/8) = 2 waves × 40ms ≈ 80ms (vs serial 16×40 = 640ms). Wide CI band.
+		expect(elapsed).to.be.lessThan(320,
+			`expected cross-row overlap (~${Math.ceil(M / cap) * L}ms), got ${elapsed}ms`);
+	});
+
+	it('serial mode on the same input is dramatically slower (contrast)', async () => {
+		const ctx = makeRuntimeContext();
+		const M = 8;
+		const L = 30;
+		const branchFactory: FanOutLookupBranchFactory = () => (async function* () {
+			await sleep(L);
+			yield ['done'] as Row;
+		})();
+		const rows: Row[] = Array.from({ length: M }, (_, i) => [i] as Row);
+
+		const start = Date.now();
+		await collect(runFanOutLookupJoin(
+			ctx, arrayOuter(rows), singleOuterDescriptor(),
+			[branchFactory], [left()], 8,
+		));
+		const elapsed = Date.now() - start;
+		// Serial drives one row at a time: ≈ M × L = 240ms. Lower-bound it well
+		// above the batched band so the contrast is meaningful.
+		expect(elapsed).to.be.greaterThan(M * L * 0.6,
+			`serial should be ≈ M×L (${M * L}ms), got ${elapsed}ms`);
+	});
+
+	it('respects the global in-flight budget across all rows', async () => {
+		const ctx = makeRuntimeContext();
+		const cap = 4;
+		let inFlight = 0;
+		let peak = 0;
+		// branchCount = 3 → readAhead = ceil(4/3) = 2 rows, i.e. up to 2×3 = 6
+		// branch tasks want to run, but the single global semaphore must hold
+		// concurrent branch bodies at `cap = 4`. (Read-ahead alone would allow 6.)
+		const makeBranch = (): FanOutLookupBranchFactory => () => (async function* () {
+			inFlight++;
+			peak = Math.max(peak, inFlight);
+			try {
+				await sleep(15);
+				yield ['x'] as Row;
+			} finally {
+				inFlight--;
+			}
+		})();
+		const factories = [makeBranch(), makeBranch(), makeBranch()];
+		const descriptors = [left(), left(), left()];
+		const rows: Row[] = Array.from({ length: 10 }, (_, i) => [i] as Row);
+
+		const out = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter(rows), singleOuterDescriptor(),
+			factories, descriptors, cap, 64,
+		));
+		expect(out).to.have.length(10);
+		expect(peak).to.be.at.most(cap, `global budget exceeded: peak=${peak}, cap=${cap}`);
+		expect(peak).to.be.greaterThan(1, 'expected real concurrency under the budget');
+	});
+
+	it('bounds outer read-ahead (backpressure from the consumer)', async () => {
+		const ctx = makeRuntimeContext();
+		const cap = 4;          // branchCount=1 → readAhead = ceil(4/1) = 4
+		let produced = 0;
+		const infiniteOuter = (async function* () {
+			for (let i = 0; i < 1_000_000; i++) {
+				produced++;
+				yield [i] as Row;
+			}
+		})();
+		const branchFactory: FanOutLookupBranchFactory = () => (async function* () {
+			await sleep(5);
+			yield ['x'] as Row;
+		})();
+
+		const iter = runFanOutLookupJoinBatched(
+			ctx, infiniteOuter, singleOuterDescriptor(),
+			[branchFactory], [left()], cap, 64,
+		)[Symbol.asyncIterator]();
+
+		// Consume just the first row, then stop demanding and let the pump settle.
+		const first = await iter.next();
+		expect(first.done).to.equal(false);
+		await sleep(60);
+
+		// readAhead = 4 rows ahead of the frontier. Frontier advanced ~1 (we
+		// consumed one), so at most ~ (1 + readAhead) + small slack pulled.
+		expect(produced).to.be.at.most(cap + 4,
+			`pump ran away: produced=${produced}, readAhead=${cap}`);
+
+		await iter.return?.();
+	});
+
+	it('isolates each row\'s outer binding (no shared-ref corruption)', async () => {
+		const ctx = makeRuntimeContext();
+		// Branch echoes its own outer key; with many rows concurrently in flight
+		// each composed row must carry its own key.
+		const branchFactory: FanOutLookupBranchFactory = (innerCtx) => (async function* () {
+			const k = resolveAttribute(innerCtx, 1) as number;
+			// Stagger so multiple rows overlap while bindings are live.
+			await sleep((k % 4) * 5);
+			yield [`saw-${k}`] as Row;
+		})();
+		const rows: Row[] = Array.from({ length: 12 }, (_, i) => [i] as Row);
+
+		const out = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter(rows), singleOuterDescriptor(),
+			[branchFactory], [left()], 8, 64,
+		));
+		expect(out).to.deep.equal(rows.map(r => [r[0], `saw-${r[0]}`]));
+	});
+
+	it('throws QuereusError(CONSTRAINT) on atMostOne violation', async () => {
+		const ctx = makeRuntimeContext();
+		const branchBad: FanOutLookupBranchFactory = () => (async function* () {
+			yield ['r1'] as Row;
+			yield ['r2'] as Row;
+		})();
+		let caught: unknown = undefined;
+		try {
+			await collect(runFanOutLookupJoinBatched(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				[branchBad], [left()], 8, 64,
+			));
+		} catch (e) {
+			caught = e;
+		}
+		expect(String((caught as Error)?.message ?? caught))
+			.to.match(/FanOutLookupJoin: branch 0 produced more than one row/);
+		expect((caught as { code?: number }).code).to.equal(19); // CONSTRAINT
+	});
+
+	it('drops outer rows when an atMostOne-inner branch misses', async () => {
+		const ctx = makeRuntimeContext();
+		const branchAlways: FanOutLookupBranchFactory = () => (async function* () { yield ['ok'] as Row; })();
+		const branchInner: FanOutLookupBranchFactory = (innerCtx) => (async function* () {
+			if ((resolveAttribute(innerCtx, 1) as number) === 2) yield ['hit'] as Row;
+		})();
+		const descriptors: FanOutLookupBranchDescriptor[] = [
+			{ mode: 'atMostOne-left', outputColCount: 1, concurrencySafe: true },
+			{ mode: 'atMostOne-inner', outputColCount: 1, concurrencySafe: true },
+		];
+		const out = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter([[1], [2], [3]]), singleOuterDescriptor(),
+			[branchAlways, branchInner], descriptors, 8, 64,
+		));
+		expect(out).to.deep.equal([[2, 'ok', 'hit']]);
+	});
+
+	it('NULL-pads zero-row atMostOne-left branches', async () => {
+		const ctx = makeRuntimeContext();
+		const branchHit: FanOutLookupBranchFactory = () => (async function* () { yield ['hit', 42] as Row; })();
+		const branchMiss: FanOutLookupBranchFactory = () => (async function* () { /* empty */ })();
+		const out = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+			[branchHit, branchMiss], [left(2), left(3)], 8, 64,
+		));
+		expect(out).to.deep.equal([[1, 'hit', 42, null, null, null]]);
+	});
+
+	it('serializes a shared serial connection across different outer rows', async () => {
+		const ctx = makeRuntimeContext();
+		const sharedConn = { connectionId: 'shared-batched' };
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const makeBranch = (): FanOutLookupBranchFactory => () => (async function* () {
+			inFlight++;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			try {
+				await sleep(10);
+				yield ['done'] as Row;
+			} finally {
+				inFlight--;
+			}
+		})();
+		// Two branches on the same non-concurrency-safe connection, many rows.
+		const factories = [makeBranch(), makeBranch()];
+		const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => ({
+			mode: 'atMostOne-left' as const,
+			outputColCount: 1,
+			concurrencySafe: false,
+			connectionKey: sharedConn,
+		}));
+		const rows: Row[] = Array.from({ length: 5 }, (_, i) => [i] as Row);
+
+		await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter(rows), singleOuterDescriptor(),
+			factories, descriptors, 8, 64,
+		));
+		expect(maxInFlight).to.equal(1,
+			`shared serial connection must serialize across rows: maxInFlight=${maxInFlight}`);
+	});
+
+	it('propagates a branch error and closes sibling iterators', async () => {
+		const ctx = makeRuntimeContext();
+		let siblingClosed = false;
+		const branchThrow: FanOutLookupBranchFactory = () => (async function* () {
+			yield Promise.reject(new Error('batched boom')) as unknown as Row;
+		})();
+		const branchSlow: FanOutLookupBranchFactory = () => (async function* () {
+			try {
+				await sleep(40);
+				yield ['done'] as Row;
+			} finally {
+				siblingClosed = true;
+			}
+		})();
+		let caught: unknown = undefined;
+		try {
+			await collect(runFanOutLookupJoinBatched(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				[branchThrow, branchSlow], [left(), left()], 8, 64,
+			));
+		} catch (e) {
+			caught = e;
+		}
+		expect(String((caught as Error)?.message ?? caught)).to.equal('batched boom');
+		expect(siblingClosed, 'sibling branch iterator must be closed').to.equal(true);
+		// All per-row slots closed on the error path.
+		expect(ctx.context.size).to.equal(0);
+	});
+
+	it('cleans up on early consumer break', async () => {
+		const ctx = makeRuntimeContext();
+		const branchFactory: FanOutLookupBranchFactory = () => (async function* () {
+			await sleep(5);
+			yield ['ok'] as Row;
+		})();
+		const rows: Row[] = Array.from({ length: 20 }, (_, i) => [i] as Row);
+
+		const unhandled: unknown[] = [];
+		const handler = (reason: unknown) => unhandled.push(reason);
+		process.on('unhandledRejection', handler);
+		try {
+			let count = 0;
+			for await (const _r of runFanOutLookupJoinBatched(
+				ctx, arrayOuter(rows), singleOuterDescriptor(),
+				[branchFactory], [left()], 8, 64,
+			)) {
+				count++;
+				if (count >= 2) break;
+			}
+			expect(count).to.equal(2);
+			await sleep(30);
+			expect(unhandled).to.have.lengthOf(0);
+			// Every forked per-row slot was closed on teardown.
+			expect(ctx.context.size).to.equal(0);
+		} finally {
+			process.off('unhandledRejection', handler);
+		}
+	});
+
+	it('completes correctly with an empty outer source', async () => {
+		const ctx = makeRuntimeContext();
+		let invocations = 0;
+		const branch: FanOutLookupBranchFactory = () => {
+			invocations++;
+			return (async function* () { yield ['x'] as Row; })();
+		};
+		const out = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter([]), singleOuterDescriptor(),
+			[branch], [left()], 8, 64,
+		));
+		expect(out).to.deep.equal([]);
+		expect(invocations).to.equal(0);
+		expect(ctx.context.size).to.equal(0);
+	});
+
+	it('nested batched-over-batched completes and respects each level\'s budget', async () => {
+		// Outer is itself a batched fan-out. Assert correctness and that peak
+		// concurrency at each level stays within that level's global cap.
+		const outerCtx = makeRuntimeContext();
+		const outerCap = 4;
+		const innerCap = 3;
+		let outerInFlight = 0, outerPeak = 0;
+		let innerInFlight = 0, innerPeak = 0;
+
+		// Inner (level-2) branch.
+		const innerBranch: FanOutLookupBranchFactory = () => (async function* () {
+			innerInFlight++;
+			innerPeak = Math.max(innerPeak, innerInFlight);
+			try {
+				await sleep(8);
+				yield ['inner'] as Row;
+			} finally {
+				innerInFlight--;
+			}
+		})();
+
+		// The level-1 outer is a batched fan-out producing rows [k, 'inner'].
+		const level1Outer = (rctx: RuntimeContext): AsyncIterable<Row> => runFanOutLookupJoinBatched(
+			rctx,
+			arrayOuter(Array.from({ length: 12 }, (_, i) => [i] as Row)),
+			singleOuterDescriptor(),
+			[innerBranch], [left()], innerCap, 64,
+		);
+
+		// Level-1 (top) branch, instrumented for the outer-level budget.
+		const topBranch: FanOutLookupBranchFactory = () => (async function* () {
+			outerInFlight++;
+			outerPeak = Math.max(outerPeak, outerInFlight);
+			try {
+				await sleep(8);
+				yield ['top'] as Row;
+			} finally {
+				outerInFlight--;
+			}
+		})();
+
+		const out = await collect(runFanOutLookupJoinBatched(
+			outerCtx,
+			level1Outer(outerCtx),
+			// outer rows are [k, 'inner'] (2 cols); descriptor still binds attr 1 → col 0
+			singleOuterDescriptor(),
+			[topBranch], [left()], outerCap, 64,
+		));
+
+		expect(out).to.have.length(12);
+		for (const row of out) {
+			expect(row[2]).to.equal('top');
+		}
+		expect(innerPeak).to.be.at.most(innerCap, `inner budget exceeded: ${innerPeak}`);
+		expect(outerPeak).to.be.at.most(outerCap, `outer budget exceeded: ${outerPeak}`);
+	});
+
+	it('rejects invalid globalCap / maxOuterReadAhead', async () => {
+		const ctx = makeRuntimeContext();
+		const f: FanOutLookupBranchFactory = () => (async function* () { yield ['x'] as Row; })();
+		let c1: unknown, c2: unknown;
+		try {
+			await collect(runFanOutLookupJoinBatched(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(), [f], [left()], 0, 64,
+			));
+		} catch (e) { c1 = e; }
+		try {
+			await collect(runFanOutLookupJoinBatched(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(), [f], [left()], 8, 0,
+			));
+		} catch (e) { c2 = e; }
+		expect(c1).to.be.instanceOf(RangeError);
+		expect(c2).to.be.instanceOf(RangeError);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // FanOutLookupJoinNode (plan-node) tests
 // ---------------------------------------------------------------------------
 
@@ -717,5 +1106,96 @@ describe('FanOutLookupJoinNode', () => {
 		expect(s).to.match(/cap=3/);
 		expect(s).to.match(/atMostOne-left/);
 		expect(s).to.match(/atMostOne-inner.*locked/);
+	});
+
+	it('defaults outerMode to serial and threads it through toString / attributes / withChildren', () => {
+		const outerAttrs = [makeAttr('outer_k')];
+		const outer = new MockRelNode({ attrs: outerAttrs });
+		const b0Attrs = [makeAttr('b0_x')];
+		const branchChild = new MockRelNode({ attrs: b0Attrs });
+		const branches: FanOutBranchSpec[] = [
+			{ child: branchChild, mode: 'atMostOne-left', outputAttrs: b0Attrs, concurrencySafe: true },
+		];
+
+		const serial = new FanOutLookupJoinNode(mockScope, outer, branches, 2);
+		expect(serial.outerMode).to.equal('serial');
+		expect(serial.toString()).to.not.match(/batched/);
+		expect(serial.getLogicalAttributes().outerMode).to.equal('serial');
+
+		const batched = new FanOutLookupJoinNode(mockScope, outer, branches, 2, undefined, 'batched');
+		expect(batched.outerMode).to.equal('batched');
+		expect(batched.toString()).to.match(/batched/);
+		expect(batched.getLogicalAttributes().outerMode).to.equal('batched');
+
+		// withChildren preserves the mode.
+		const replaced = batched.withChildren([outer, new MockRelNode({ attrs: b0Attrs })]) as FanOutLookupJoinNode;
+		expect(replaced.outerMode).to.equal('batched');
+	});
+
+	it('rejects an unknown outerMode', () => {
+		const outer = new MockRelNode({ attrs: [makeAttr('outer_k')] });
+		const branchChild = new MockRelNode({ attrs: [makeAttr('child_v')] });
+		const branches: FanOutBranchSpec[] = [
+			{ child: branchChild, mode: 'atMostOne-left', outputAttrs: branchChild.getAttributes(), concurrencySafe: true },
+		];
+		expect(() => new FanOutLookupJoinNode(
+			mockScope, outer, branches, 2, undefined, 'bogus' as unknown as 'serial',
+		)).to.throw(/unknown outerMode/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// emitFanOutLookupJoin — outerMode routing (note string distinguishes paths)
+// ---------------------------------------------------------------------------
+
+import { emitFanOutLookupJoin } from '../../src/runtime/emit/fanout-lookup-join.js';
+import { EmissionContext } from '../../src/runtime/emission-context.js';
+import { Database } from '../../src/core/database.js';
+import { ValuesNode } from '../../src/planner/nodes/values-node.js';
+import { LiteralNode } from '../../src/planner/nodes/scalar.js';
+import { EmptyScope } from '../../src/planner/scopes/empty.js';
+import type * as AST from '../../src/parser/ast.js';
+
+describe('emitFanOutLookupJoin outerMode routing', () => {
+	const emitScope = EmptyScope.instance;
+	const lit = (value: unknown): LiteralNode =>
+		new LiteralNode(emitScope, { type: 'literal', value } as unknown as AST.LiteralExpr);
+
+	function makeNode(outerMode: 'serial' | 'batched'): FanOutLookupJoinNode {
+		const outer = new ValuesNode(emitScope, [[lit(1)]], ['outer_k']);
+		const branchChild = new ValuesNode(emitScope, [[lit(10)]], ['b0_x']);
+		const branches: FanOutBranchSpec[] = [
+			{
+				child: branchChild,
+				mode: 'atMostOne-left',
+				outputAttrs: branchChild.getAttributes(),
+				concurrencySafe: true,
+			},
+		];
+		return new FanOutLookupJoinNode(emitScope, outer, branches, 8, undefined, outerMode);
+	}
+
+	it('serial mode routes to the serial run function', async () => {
+		const db = new Database();
+		try {
+			const inst = emitFanOutLookupJoin(makeNode('serial'), new EmissionContext(db));
+			expect(inst.note).to.match(/^fanout_lookup_join\(/);
+			expect(inst.note).to.not.match(/batched/);
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('batched mode routes to the batched run function and surfaces tuning knobs', async () => {
+		const db = new Database();
+		try {
+			const inst = emitFanOutLookupJoin(makeNode('batched'), new EmissionContext(db));
+			expect(inst.note).to.match(/^fanout_lookup_join_batched\(/);
+			// Defaults from DEFAULT_TUNING.parallel: globalCap=16, readAhead<=64.
+			expect(inst.note).to.match(/globalCap=16/);
+			expect(inst.note).to.match(/readAhead<=64/);
+		} finally {
+			await db.close();
+		}
 	});
 });

@@ -129,6 +129,24 @@ export interface OptimizerTuning {
 		/** Static cap on in-flight branches per outer row. Default 8. */
 		readonly concurrency: number;
 		/**
+		 * Global cap on concurrent branch lookups across *all* in-flight outer
+		 * rows in a `outerMode: 'batched'` fan-out lookup join. Distinct from
+		 * `concurrency` (the per-row serial cap): the batched driver shares a
+		 * single semaphore over this budget so a small per-row `branchCount` can
+		 * still saturate block I/O by admitting more outer rows ahead of the
+		 * emit frontier. Default 16.
+		 */
+		readonly outerBatchConcurrency: number;
+		/**
+		 * Hard clamp on the number of outer rows a batched fan-out lookup join
+		 * admits ahead of the emit frontier. Bounds the order-preserving reorder
+		 * buffer (and the number of forked per-row contexts) so a `branchCount`
+		 * of 1 cannot fork an unbounded number of contexts. The effective
+		 * read-ahead is `clamp(ceil(outerBatchConcurrency / branchCount), 1,
+		 * maxOuterReadAhead)`. Default 64.
+		 */
+		readonly maxOuterReadAhead: number;
+		/**
 		 * The slowest child of a UNION ALL chain must have at least this expected
 		 * first-row latency (in milliseconds) for `rule-async-gather-union-all`
 		 * to fold it into an `AsyncGatherNode`. Set high enough that local-only
@@ -206,6 +224,14 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 		// it is compared directly against `expectedLatencyMs * (N - cap)` savings.
 		branchSetupCost: 1.0,
 		concurrency: 8,
+		// Global in-flight budget for batched-outer fan-out lookup joins, shared
+		// across all in-flight outer rows. Larger than `concurrency` so a small
+		// per-row branch count can still saturate block I/O.
+		outerBatchConcurrency: 16,
+		// Hard clamp on outer rows admitted ahead of the emit frontier in a
+		// batched fan-out lookup join; bounds the reorder buffer and forked
+		// per-row contexts.
+		maxOuterReadAhead: 64,
 		// ≥ this many ms on the slowest child of a unionAll chain triggers the
 		// parallel gather. 25 ms matches the synthetic high-latency vtab fixture;
 		// memory-vtab plans declare 0 ms so they never cross this gate.

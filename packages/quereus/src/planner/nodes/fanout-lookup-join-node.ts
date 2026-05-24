@@ -29,6 +29,26 @@ import { propagateJoinFds } from './join-utils.js';
 export type FanOutBranchMode = 'atMostOne-left' | 'atMostOne-inner';
 
 /**
+ * How the node drives the outer side:
+ *
+ * - `serial` — drive one outer row at a time: fork its branches, run them
+ *   concurrently (bounded by `concurrencyCap`), compose, yield, then read the
+ *   next outer row. The N branches of one row overlap; the next row's lookups
+ *   do not begin until the current row is fully resolved. **Default.**
+ * - `batched` — pipeline lookups *across* outer rows: admit multiple outer
+ *   rows ahead of the emit frontier (bounded read-ahead with backpressure),
+ *   share a single global in-flight budget across all of them, and re-order
+ *   completed rows back into outer order before emitting. Saturates block I/O
+ *   when there are many outer rows but few branches per row.
+ *
+ * Output order is identical for both modes (outer order); only the internal
+ * scheduling differs. The recognition rule that *chooses* `batched` is a
+ * separate concern — nothing in the optimizer constructs a batched node yet,
+ * so `serial` keeps existing plans byte-for-byte unchanged.
+ */
+export type FanOutOuterMode = 'serial' | 'batched';
+
+/**
  * Per-branch specification for {@link FanOutLookupJoinNode}.
  *
  * `child` is a parameterized sub-plan that, for one outer row, produces the
@@ -99,8 +119,9 @@ export class FanOutLookupJoinNode extends PlanNode implements RelationalPlanNode
 		public readonly branches: readonly FanOutBranchSpec[],
 		public readonly concurrencyCap: number,
 		public readonly preserveAttributeIds?: readonly Attribute[],
+		public readonly outerMode: FanOutOuterMode = 'serial',
 	) {
-		FanOutLookupJoinNode.validateConstruction(outer, branches, concurrencyCap, preserveAttributeIds);
+		FanOutLookupJoinNode.validateConstruction(outer, branches, concurrencyCap, preserveAttributeIds, outerMode);
 		const branchCost = branches.reduce((acc, b) => acc + b.child.getTotalCost(), 0);
 		super(scope, outer.getTotalCost() + branchCost);
 		this.attributesCache = new Cached(() => this.buildAttributes());
@@ -111,7 +132,14 @@ export class FanOutLookupJoinNode extends PlanNode implements RelationalPlanNode
 		branches: readonly FanOutBranchSpec[],
 		concurrencyCap: number,
 		preserveAttributeIds: readonly Attribute[] | undefined,
+		outerMode: FanOutOuterMode,
 	): void {
+		if (outerMode !== 'serial' && outerMode !== 'batched') {
+			quereusError(
+				`FanOutLookupJoinNode: unknown outerMode '${String(outerMode)}'`,
+				StatusCode.INTERNAL,
+			);
+		}
 		if (branches.length < 1) {
 			quereusError(
 				`FanOutLookupJoinNode requires >= 1 branch, got ${branches.length}`,
@@ -300,6 +328,7 @@ export class FanOutLookupJoinNode extends PlanNode implements RelationalPlanNode
 			newBranches,
 			this.concurrencyCap,
 			this.preserveAttributeIds,
+			this.outerMode,
 		);
 	}
 
@@ -307,13 +336,15 @@ export class FanOutLookupJoinNode extends PlanNode implements RelationalPlanNode
 		const branchSummary = this.branches
 			.map((b, i) => `b${i}:${b.mode}${b.concurrencySafe ? '' : '/locked'}`)
 			.join(', ');
-		return `FANOUT_LOOKUP_JOIN(N=${this.branches.length}, cap=${this.concurrencyCap}) [${branchSummary}]`;
+		const modeSuffix = this.outerMode === 'batched' ? ', batched' : '';
+		return `FANOUT_LOOKUP_JOIN(N=${this.branches.length}, cap=${this.concurrencyCap}${modeSuffix}) [${branchSummary}]`;
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {
 		return {
 			branchCount: this.branches.length,
 			concurrencyCap: this.concurrencyCap,
+			outerMode: this.outerMode,
 			branches: this.branches.map(b => ({
 				mode: b.mode,
 				concurrencySafe: b.concurrencySafe,
