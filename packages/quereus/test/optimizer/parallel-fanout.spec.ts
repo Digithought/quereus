@@ -314,4 +314,167 @@ describe('ruleFanOutLookupJoin', () => {
 			db.optimizer.updateTuning(before);
 		}
 	});
+
+	// ----------------------------------------------------------------------
+	// Subquery-branch recognition: correlated scalar aggregates in the SELECT
+	// projection list cluster as `atMostOne-left` fan-out branches.
+	// ----------------------------------------------------------------------
+	describe('correlated scalar-aggregate subquery branches', () => {
+		// The 2-branch cases below sit at the cost-gate boundary: with N = cap the
+		// projected savings `(N - cap) × latency` is 0 and the gate rejects. Drop
+		// the cap to 1 so a 2-branch cluster surfaces a positive win
+		// `(2 - 1) × 25 = 25 > 2 × branchSetupCost`. (The outer `beforeEach` set
+		// cap=2 for the 3-branch spine tests.)
+		beforeEach(() => {
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				parallel: { ...before.parallel, concurrency: 1 },
+			});
+		});
+
+		/**
+		 * One outer table and two child tables. `a` has rows for k=1,2 but NONE
+		 * for k=3; `b` has rows for k=1 only. The k=3 / k=2 gaps exercise the
+		 * empty-children invariant (count→0, not NULL-filled).
+		 */
+		async function setupSubqueryTables(child: 'memory' | 'hi_lat_memory'): Promise<void> {
+			await db.exec(`create table outer_t (k integer primary key, label text) using memory`);
+			await db.exec(`create table a (id integer primary key, fk integer, v integer) using ${child}`);
+			await db.exec(`create table b (id integer primary key, fk integer) using ${child}`);
+			await db.exec("insert into outer_t values (1, 'one'), (2, 'two'), (3, 'three')");
+			await db.exec('insert into a values (10, 1, 100), (11, 1, 101), (12, 2, 200)');
+			await db.exec('insert into b values (20, 1), (21, 1)');
+		}
+
+		const subq2SQL =
+			`select o.k,
+				(select json_group_array(a.v) from a where a.fk = o.k) as xs,
+				(select count(*) from b where b.fk = o.k) as nb
+			 from outer_t o`;
+
+		/** Branch modes parsed from the fan-out node's logical properties. */
+		function fanOutBranchModes(rows: readonly PlanRow[]): string[] {
+			const fo = rows.find(r => r.op === 'FANOUTLOOKUPJOIN' || r.node_type === 'FanOutLookupJoin');
+			if (!fo || !fo.properties) return [];
+			const props = JSON.parse(fo.properties) as { branches?: { mode: string }[] };
+			return (props.branches ?? []).map(b => b.mode);
+		}
+
+		it('pure subquery cluster fires with 2 atMostOne-left branches', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			const plan = await planRows(db, subq2SQL);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+			expect(fanOutBranchModes(plan)).to.deep.equal(['atMostOne-left', 'atMostOne-left']);
+			// The branch children keep getting optimized after recognition — the
+			// count(*) / json_group_array aggregates appear under the fan-out.
+			expect(
+				plan.some(r => r.node_type.includes('Aggregate') || r.op.includes('AGGREGATE')),
+				`ops=${plan.map(r => r.op).join(',')}`,
+			).to.equal(true);
+		});
+
+		it('mixed cluster: one FK→PK join branch + one subquery branch', async () => {
+			await db.exec('create table lk (id integer primary key, name text) using hi_lat_memory');
+			await db.exec(`create table main_t (
+				id integer primary key,
+				lk_id integer not null references lk(id)
+			) using memory`);
+			await db.exec('create table c (id integer primary key, fk integer, v integer) using hi_lat_memory');
+			await db.exec("insert into lk values (1, 'Acme'), (2, 'Beta')");
+			await db.exec('insert into main_t values (1, 1), (2, 2)');
+			await db.exec('insert into c values (10, 1, 5), (11, 1, 7)');
+
+			const sql =
+				`select m.id, lk.name,
+					(select count(*) from c where c.fk = m.id) as nc
+				 from main_t m
+				 left join lk on m.lk_id = lk.id`;
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+			expect(fanOutBranchModes(plan)).to.deep.equal(['atMostOne-left', 'atMostOne-left']);
+			// The join collapsed into the fan-out — no surviving join op.
+			expect(joinCount(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(0);
+		});
+
+		forkExecTest('result correctness: enabled vs disabled, empty children → 0 not NULL', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			// Confirm the rule fires for the enabled run.
+			const plan = await planRows(db, subq2SQL);
+			expect(hasFanOut(plan)).to.equal(true);
+			const enabled = await results(db, subq2SQL + ' order by o.k');
+
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				disabledRules: new Set(['fanout-lookup-join']),
+			});
+			let disabled: Record<string, SqlValue>[];
+			try {
+				disabled = await results(db, subq2SQL + ' order by o.k');
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+
+			expect(enabled).to.deep.equal(disabled);
+			// k=3 matches no rows in a or b; the at-most-one branch must drive the
+			// aggregate to its one finalized row rather than NULL-filling.
+			const k3 = enabled.find(r => r.k === 3)!;
+			expect(k3.nb).to.equal(0); // count → 0, not NULL
+			// k=1 has two b rows.
+			expect(enabled.find(r => r.k === 1)!.nb).to.equal(2);
+		});
+
+		forkExecTest('attribute-ID stability: identical output columns enabled vs disabled', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				disabledRules: new Set(['fanout-lookup-join']),
+			});
+			let base: Record<string, SqlValue>[];
+			try {
+				base = await results(db, subq2SQL + ' order by o.k');
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+			const rewr = await results(db, subq2SQL + ' order by o.k');
+			const rewrittenPlan = await planRows(db, subq2SQL);
+			expect(hasFanOut(rewrittenPlan), 'rewrite must fire for the comparison').to.equal(true);
+			expect(Object.keys(base[0])).to.deep.equal(Object.keys(rewr[0]));
+		});
+
+		it('inert in-tree: plain memory vtab does not cluster subqueries', async () => {
+			await setupSubqueryTables('memory');
+			const plan = await planRows(db, subq2SQL);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		});
+
+		it('GROUP BY subquery is not routed into the fan-out', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			// First subquery has a GROUP BY (may yield >1 row) → rejected. With only
+			// the second subquery recognizable, the count drops below minBranches=2,
+			// so no fan-out forms.
+			const sql =
+				`select o.k,
+					(select count(*) from a where a.fk = o.k group by a.v) as x,
+					(select count(*) from b where b.fk = o.k) as y
+				 from outer_t o`;
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		});
+
+		it('non-correlated subquery is not clustered', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			// First subquery references no outer column → constant-per-query, not a
+			// per-row branch. Only the correlated one remains → below minBranches.
+			const sql =
+				`select o.k,
+					(select count(*) from a) as total_a,
+					(select count(*) from b where b.fk = o.k) as nb
+				 from outer_t o`;
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		});
+	});
 });

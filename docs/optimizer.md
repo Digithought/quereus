@@ -1466,13 +1466,26 @@ The anti-join-to-empty rewrite emits `EmptyRelationNode` carrying L's attribute 
 
 ### Fan-out lookup join (FK→PK)
 
-`rule-fanout-lookup-join.ts` (Structural pass priority 23, registered ahead of `join-elimination` at 24) clusters a Project-rooted chain of N FK→PK-aligned LEFT/INNER joins from a common outer into one physical `FanOutLookupJoinNode` (see `docs/runtime.md` § FanOutLookupJoinNode for the runtime). The recognition primitives are shared with `rule-join-elimination`:
+`rule-fanout-lookup-join.ts` (Structural pass priority 23, registered ahead of `join-elimination` at 24) clusters a Project-rooted set of N at-most-one, per-outer-row branches into one physical `FanOutLookupJoinNode` (see `docs/runtime.md` § FanOutLookupJoinNode for the runtime). Two branch kinds are recognized and combined into a single cluster:
+
+**1. Join-spine branches.** A chain of FK→PK-aligned LEFT/INNER joins from a common outer. The recognition primitives are shared with `rule-join-elimination`:
 
 - `isAndOfColumnEqualities` — the ON clause must be an AND of `colRef = colRef` atoms; any residual disqualifies the branch.
 - `checkFkPkAlignment` + `lookupCoveringFK` (`util/key-utils.ts`, `util/ind-utils.ts`) — verifies the join's equi-pairs match an FK on the outer's table referencing the lookup's PK, in the FK's declared positional order. INNER branches additionally require a non-null FK and a row-preserving path to the PK table (the same `isRowPreservingPathToTable` guard the join-elim rule uses).
-- The outer subtree must resolve to a single base table (`extractTableSchema`) so the FK column indices are well-defined — middle-of-chain joins that don't resolve to a single schema are not eligible.
+- When a spine is present the outer subtree must resolve to a single base table (`extractTableSchema`) so the FK column indices are well-defined — middle-of-chain joins that don't resolve to a single schema are not eligible. `extractTableSchema` is consulted **only** when there is a spine; pure-subquery clusters skip it.
 
-Each recognized branch becomes a `FanOutBranchSpec` whose `child` is the lookup wrapped in a `FilterNode` carrying the original equi-condition. At runtime, `FanOutLookupJoinNode` installs the outer row's slot on `rctx.context` before forking each branch, so the Filter's outer-side `ColumnReferenceNode` lookups resolve through the parent fork's snapshot.
+Each recognized spine branch becomes a `FanOutBranchSpec` whose `child` is the lookup wrapped in a `FilterNode` carrying the original equi-condition.
+
+**2. Subquery branches (correlated scalar aggregates).** A correlated scalar-aggregate `ScalarSubqueryNode` appearing *directly* as a projection node — e.g. `(select count(*) from c where c.fk = o.k)` or `(select json_group_array(...) from l where l.order_id = o.id)`. A scalar aggregate with no `GROUP BY` emits exactly one row per outer row regardless of how many child rows match (aggregate of the empty set is still one row — `count→0`, `json_group_array→null`), so relationally it is an `atMostOne-left` branch driven per outer row. This **subsumes** the once-proposed `array` branch mode — there is no new `FanOutBranchMode`; the JSON/array shape is whatever the query expresses. Recognition (`recognizeSubqueryBranch`):
+
+- the projection node must *be* a `ScalarSubqueryNode` (v1 does not dig into wrapping scalar expressions like `coalesce((subq), 0)`);
+- `isCorrelatedSubquery` must hold (non-correlated subqueries are constant-per-query and left alone);
+- beneath pass-through wrappers (Project/Alias/Sort/LimitOffset) the relational root must satisfy `CapabilityDetectors.isAggregating(root) && root.getGroupingKeys().length === 0` — this matches both the logical `AggregateNode` and the physical `StreamAggregate`/`HashAggregate`, so it is robust to pass ordering. A `GROUP BY` subquery (may yield >1 row) is rejected here;
+- the subquery's relational root exposes exactly one output column (it is a scalar subquery).
+
+Unlike spine branches (whose lookup table reference has a stable attribute count), a no-`GROUP-BY` aggregate's physical `StreamAggregate` exposes the **source columns** in addition to the aggregate (for HAVING access), so the subquery root's attribute count grows from 1 (logical) to N (physical) *after* this rule runs. To keep the branch's wide-row contribution invariant, the assembly wraps the subquery root in a stable single-column `ProjectNode` selecting the column-0 (scalar value) attribute; the branch `child` is that Project, not the aggregate verbatim. The matching projection in the surrounding Project is then rewritten from the `ScalarSubqueryNode` to a `ColumnReferenceNode` into the fan-out's wide row (resolved by attribute ID; the projection keeps its own `attributeId`/`alias`). This is fan-out-targeted recognition, **not** generic decorrelation — the WHERE-clause EXISTS/IN path (`rule-subquery-decorrelation.ts`) is untouched, and decorrelating a scalar aggregate to a build-side hash group-by would defeat the per-row streaming concurrency this rule exists to exploit.
+
+**Cluster layout & runtime.** Spine branches are ordered first (preserving left-deep order), then subquery branches. The outer is the deepest `.left` of the spine, or — with no spine — the bottom relational node beneath the chain wrappers. At runtime, `FanOutLookupJoinNode` installs the outer row's slot on `rctx.context` before forking each branch, so both a spine branch's Filter and a subquery branch's internal correlation predicate resolve their outer-side `ColumnReferenceNode`s through the parent fork's snapshot. Because the branch is driven to its one finalized aggregate row, the `atMostOne-left` zero-row NULL-fill path never fires for a subquery branch — an outer row with no matching children yields the aggregate's empty-set value (`count→0`), not NULL.
 
 **Cost gate.** The rule fires only when
 ```
@@ -1482,7 +1495,7 @@ where `concurrencyCap = min(tuning.parallel.concurrency, N)`. Practical conseque
 
 - `expectedLatencyMs == 0` ⇒ no rewrite. Local-only paths (memory vtab, in-process compute) leave the latency field at the default 0, so the gate is inert and `test/plan/`-style memory-vtab goldens never change shape under this rule. The gate becomes meaningful only when a remote-vtab plugin populates `VirtualTableModule.expectedLatencyMs` with a non-zero hint (`TableReferenceNode.computePhysical` reads it; the value propagates as `max(children)` through the subtree).
 - `concurrencyCap ≥ N` ⇒ savings clamps to 0 (or negative, treated as 0). Fan-out wins only when concurrency-bound; below that, the nested-loop chain is already an upper bound on wall-clock and a fresh round of branch setup is pure cost.
-- `N < tuning.parallel.minBranches` (default 2) ⇒ no rewrite; a single-branch fan-out has no parallelism to exploit.
+- `N < tuning.parallel.minBranches` (default 2) ⇒ no rewrite; a single-branch fan-out has no parallelism to exploit. `N` is the **combined** spine + subquery branch count, so a lone correlated subquery with no other branch never clusters.
 
 **Tuning knobs** (`OptimizerTuning.parallel`):
 
@@ -1492,7 +1505,7 @@ where `concurrencyCap = min(tuning.parallel.concurrency, N)`. Practical conseque
 
 **Relationship to `join-elimination`.** The fan-out rule runs first (priority 23). A successful cluster removes all eligible branches from the chain. If the rule abstains (branch count < `minBranches`, or the cost gate rejects), the remaining single-branch joins fall through to `join-elimination` at priority 24, which can still eliminate them individually when the non-preserved side isn't referenced upstream.
 
-**Out of scope for v1.** Aggregate-rooted recognition (analogous to `ruleJoinEliminationUnderAggregate`) is deferred to a follow-up backlog ticket. Connection-per-branch acquisition is not implemented — v1 always reuses the outer's connection, and `'serial'`-mode branches serialize through the per-connection lock; correctness is preserved but the parallelism payoff is module-mode-gated. Adaptive concurrency, latency-driven branch ordering, and the tighter per-branch equi-pair FD propagation in `FanOutLookupJoinNode.computePhysical` are all tracked as follow-ups.
+**Out of scope.** Subqueries nested inside a larger scalar expression (`coalesce((subq), 0)`, arithmetic on a subquery) are not recognized — v1 requires the projection node to *be* a `ScalarSubqueryNode` (tracked as backlog `parallel-fanout-aggregate-branch-wrapped-subquery`). The relational 1:n product case is `parallel-fanout-lookup-join-cross-mode`. Connection-per-branch acquisition is not implemented — v1 always reuses the outer's connection, and `'serial'`-mode branches serialize through the per-connection lock; correctness is preserved but the parallelism payoff is module-mode-gated. Adaptive concurrency, latency-driven branch ordering, and the tighter per-branch equi-pair FD propagation in `FanOutLookupJoinNode.computePhysical` are all tracked as follow-ups.
 
 ### Async gather UNION ALL
 
