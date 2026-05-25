@@ -112,9 +112,11 @@ export interface OptimizerTuning {
 
 	/**
 	 * Parallel-execution rule tuning. Consumed by `rule-fanout-lookup-join`
-	 * (the FK→PK fan-out recognition rule) and `rule-async-gather-union-all`
-	 * (the UNION ALL gather recognition rule). All values are unitless cost
-	 * comparators except `concurrency`, which is a row-time branch cap.
+	 * (the FK→PK fan-out recognition rule), `rule-async-gather-union-all`
+	 * (the UNION ALL gather recognition rule), and `rule-async-gather-zip-by-key`
+	 * (the full-outer-on-shared-key zip gather recognition rule). All values are
+	 * unitless cost comparators except `concurrency`, which is a row-time branch
+	 * cap.
 	 */
 	readonly parallel: {
 		/** Don't form a fan-out / gather below this branch count. Default 2. */

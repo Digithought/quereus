@@ -1538,7 +1538,35 @@ where `concurrencyCap = min(tuning.parallel.concurrency, N)`. Practical conseque
 
 **Relationship to `SetOperationNode.computePhysical`.** Both nodes drop the same set of relational invariants for `unionAll` (ordering, monotonicOn, FDs, ECs, constant bindings, domain constraints). The rewrite is therefore physical-properties-preserving for the consumer; downstream rules see identical properties whether they look at the SetOp tree or the post-rewrite gather.
 
-**Out of scope for v1.** The `crossProduct` combinator is opt-in only (no recognition rule yet); the `zipByKey` combinator is implemented but manual-construction only — its recognition rule is parked in the backlog (`parallel-async-gather-zip-by-key-rule`). The `materialization-advisory`-wraps-a-high-latency-child interaction is not patched here — if the advisory introduces a `CacheNode` over a remote-vtab branch *inside* the gather, the prefetch overlap is partially defeated (the cache materializes serially before the gather sees rows); follow-up if it surfaces in practice. The mixed-branches case (one slow, two local) currently fires the rule on the simple "max-of-children" gate; an adaptive per-branch decision is parked. Sort-above-gather under `QUEREUS_FORK_STRICT=1` trips the strict-fork contract due to a pre-existing interaction between the Sort emitter (mutates parent context) and AsyncGather (keeps forks live during yielding); the optimizer-spec for this rule skips that case under strict-fork and the rest of the suite is strict-fork clean.
+**Out of scope for v1.** The `crossProduct` combinator is opt-in only (no recognition rule yet); the `zipByKey` combinator has its own recognition rule (see *Async gather ZIP BY KEY* below). The `materialization-advisory`-wraps-a-high-latency-child interaction is not patched here — if the advisory introduces a `CacheNode` over a remote-vtab branch *inside* the gather, the prefetch overlap is partially defeated (the cache materializes serially before the gather sees rows); follow-up if it surfaces in practice. The mixed-branches case (one slow, two local) currently fires the rule on the simple "max-of-children" gate; an adaptive per-branch decision is parked. Sort-above-gather under `QUEREUS_FORK_STRICT=1` trips the strict-fork contract due to a pre-existing interaction between the Sort emitter (mutates parent context) and AsyncGather (keeps forks live during yielding); the optimizer-spec for this rule skips that case under strict-fork and the rest of the suite is strict-fork clean.
+
+### Async gather ZIP BY KEY
+
+`rule-async-gather-zip-by-key.ts` (PostOptimization pass priority 17) generalizes the UNION ALL fold to the `zipByKey` combinator. It recognizes a `ProjectNode` over a chain of binary full-outer `JoinNode`s that all equate the **same** key column set across every participating relation, and folds the whole shape into one N-ary `AsyncGatherNode({ kind: 'zipByKey', branchKeyAttrs, outputKeyAttrs })` (a symmetric N-way hash-merge — see `docs/runtime.md` § AsyncGatherNode). Binary `FULL JOIN` has **no runtime lowering of its own**, so this rewrite is its only execution path; a recognized full-outer-on-shared-key query that fails any gate simply stays a `JoinNode(full)` and errors at emit (`FULL JOIN is not supported`), exactly as before the rule existed.
+
+**Recognized shape (v1, deliberately strict).** The natural spelling
+
+```sql
+select coalesce(a.k, b.k, c.k) as k, a.av, b.bv, c.cv
+  from a full outer join b on a.k = b.k
+         full outer join c on a.k = c.k
+```
+
+builds as `Project[ coalesce(a.k,b.k,c.k) as k, a.av, b.bv, c.cv ]` over a left-deep `Join(full)` chain. The matcher requires:
+
+1. The full-join chain flattens (any nesting) into ≥ `minBranches` branches; each `ON` is a pure conjunction of column-ref equalities (any residual / non-equi conjunct blocks).
+2. Those equalities partition the branches' key columns into K equivalence classes ("key positions"), and **every branch contributes exactly one column to every class** (the shared-key precondition — a branch absent from any class would be a cross-product, not a zip).
+3. The projection list is exactly, in canonical order: K `coalesce(...)` calls (one per key position, argument set = that class's per-branch key attrs, defining key order), then bare column refs to every non-key column of branch 0, branch 1, … in branch + column order. This canonical order is precisely what the `zipByKey` emitter produces (`[K key cells][branch0 non-key][branch1 non-key]…`), so the gather replaces the `Project` outright with no reordering wrapper.
+
+**Gates** mirror the UNION ALL rule: `concurrencySafe === true` on every branch; the slowest branch's `expectedLatencyMs ≥ gatherThresholdMs` (inert on memory-vtab plans where it is 0); every branch uncorrelated (`isCorrelatedSubquery` false — the driver forks independent contexts). One extra gate is specific to keyed merge: **per key position, every branch's key column must share a collation** (absent = binary). The runtime key comparator derives solely from branch 0's collations, so a disagreement would silently apply branch 0's collation to all branches; the rule declines, and `AsyncGatherNode.validateZipByKey` additionally throws on mismatch so manual construction is guarded too.
+
+**Attribute provenance (Option A).** Each branch keeps its own key attr ids (`branchKeyAttrs[b]`, distinct per branch — provenance-clean), and the gather **mints** the K merged key ids (`outputKeyAttrs`) — which are exactly the ids the `Project` already minted for its `coalesce` outputs (computed expressions → fresh ids, disjoint from all child ids). `preserveAttributeIds` is the `Project`'s full output attribute list, which (because the canonical order matched) equals `[minted keys] ++ [each branch's non-key attrs]`, so downstream references to the coalesced key and the forwarded non-key columns continue to resolve.
+
+**Idempotence.** After the rewrite the matched node is an `AsyncGatherNode`, not a `ProjectNode`, so the `node instanceof ProjectNode` matcher rejects on a second firing.
+
+**Out of scope for v1.** Only symmetric `FULL OUTER` chains are recognized (`LEFT`/`RIGHT` outer chains are asymmetric and not zipByKey). Non-canonical projection orderings (key not first, reordered non-key columns, extra/derived columns) are not recognized — a reordering `Project` on top of the gather is future work. `USING` / `NATURAL` full joins are untested (the rule keys off an explicit `coalesce` projection over the equated columns). A note on representative non-determinism under a non-binary (case-insensitive) collation: even with the collation gate satisfied, the emitted merged-key value is whichever branch's row arrived first (arrival order is non-deterministic), which can differ from `coalesce`'s left-to-right pick when collation-equal values are byte-distinct — harmless under the default binary collation where equal keys are byte-identical.
+
+**Tuning knobs** (`OptimizerTuning.parallel`, shared with the UNION ALL and fan-out rules): `minBranches`, `concurrency` (→ `concurrencyCap`), `gatherThresholdMs`.
 
 ### Eager-prefetch probe wrap
 

@@ -31,6 +31,7 @@ import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js'
 import { ruleJoinElimination, ruleJoinEliminationUnderAggregate } from './rules/join/rule-join-elimination.js';
 import { ruleFanOutLookupJoin } from './rules/join/rule-fanout-lookup-join.js';
 import { ruleAsyncGatherUnionAll } from './rules/parallel/rule-async-gather-union-all.js';
+import { ruleAsyncGatherZipByKey } from './rules/parallel/rule-async-gather-zip-by-key.js';
 import { ruleEagerPrefetchProbe } from './rules/parallel/rule-eager-prefetch-probe.js';
 // Predicate pushdown rules
 // Core optimization rules
@@ -557,6 +558,22 @@ export class Optimizer {
 			nodeType: PlanNodeType.SetOperation,
 			phase: 'rewrite',
 			fn: ruleAsyncGatherUnionAll,
+			priority: 17
+		});
+
+		// Async-gather ZIP BY KEY fold: collapse a `Project` over a chain of
+		// binary full-outer `JoinNode`s sharing a common key set into one N-ary
+		// AsyncGatherNode(zipByKey). Same gates and placement rationale as
+		// `async-gather-union-all` (concurrencySafe + gatherThresholdMs +
+		// uncorrelated branches; inert on memory-vtab plans where
+		// expectedLatencyMs=0). Matches `Project` rather than `SetOperation`;
+		// the full-outer chain underneath has no other physical lowering, so it
+		// survives untouched to this pass.
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'async-gather-zip-by-key',
+			nodeType: PlanNodeType.Project,
+			phase: 'rewrite',
+			fn: ruleAsyncGatherZipByKey,
 			priority: 17
 		});
 

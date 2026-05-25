@@ -324,6 +324,20 @@ describe('AsyncGather', () => {
 				.to.throw(QuereusError, /affinity mismatch/);
 		});
 
+		it('zipByKey rejects key column collation disagreement across branches', () => {
+			// Same affinity (TEXT), but branch 1 declares a different collation.
+			// The runtime comparator derives from branch 0 only, so a mismatch
+			// would silently merge under the wrong collation — reject it.
+			const ka = makeKeyAttr(911001, 'k', 3 /* TEXT */);
+			const kbBase = makeKeyAttr(911002, 'k', 3 /* TEXT */);
+			const kb = { ...kbBase, type: { ...kbBase.type, collationName: 'NOCASE' } };
+			const a = new MockRelationalNode([ka, makeAttr('v1')]);
+			const b = new MockRelationalNode([kb, makeAttr('v2')]);
+			expect(() => new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[911001], [911002]], outputKeyAttrs: [PlanNode.nextAttrId()] }, 4))
+				.to.throw(QuereusError, /collation mismatch/);
+		});
+
 		it('zipByKey rejects duplicate ids within outputKeyAttrs', () => {
 			// K=2 composite key, but both output positions reuse the same minted id.
 			const ak0 = makeAttr('k0'); const ak1 = makeAttr('k1');

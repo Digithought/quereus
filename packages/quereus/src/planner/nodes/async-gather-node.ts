@@ -183,6 +183,12 @@ export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 	 * - per key position, affinity (physical storage class) agrees across all
 	 *   branches (the codebase has no distinct affinity field). Nullability may
 	 *   differ between branches; it gets OR'd in {@link getType}.
+	 * - per key position, the declared collation agrees across all branches. The
+	 *   runtime key comparator derives solely from branch 0's key-column
+	 *   collations, so a disagreement would let branch 0 win silently and merge
+	 *   (or fail to merge) rows under the wrong collation. Guarding it here means
+	 *   both the recognition rule and manual construction are protected. An
+	 *   absent `collationName` normalizes to the binary collation.
 	 */
 	private static validateZipByKey(
 		children: readonly RelationalPlanNode[],
@@ -256,15 +262,29 @@ export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 			}
 			resolved.push(indices);
 		}
-		// Key affinities must agree across branches, per key position.
+		// Key affinities AND collations must agree across branches, per key
+		// position. Affinity disagreement breaks the storage-class contract; a
+		// collation disagreement would silently defer to branch 0's collation in
+		// the runtime comparator (see {@link getZipByKeyType}/emitter).
 		const child0Cols = children[0].getType().columns;
+		const normCollation = (c: string | undefined): string => (c && c.length > 0 ? c.toUpperCase() : 'BINARY');
 		for (let pos = 0; pos < k; pos++) {
-			const baseAffinity = child0Cols[resolved[0][pos]].type.logicalType.physicalType;
+			const baseCol = child0Cols[resolved[0][pos]];
+			const baseAffinity = baseCol.type.logicalType.physicalType;
+			const baseCollation = normCollation(baseCol.type.collationName);
 			for (let i = 1; i < children.length; i++) {
-				const affinity = children[i].getType().columns[resolved[i][pos]].type.logicalType.physicalType;
+				const col = children[i].getType().columns[resolved[i][pos]];
+				const affinity = col.type.logicalType.physicalType;
 				if (affinity !== baseAffinity) {
 					quereusError(
 						`AsyncGatherNode(zipByKey): key position ${pos} affinity mismatch: branch 0 has ${baseAffinity}, branch ${i} has ${affinity}`,
+						StatusCode.ERROR,
+					);
+				}
+				const collation = normCollation(col.type.collationName);
+				if (collation !== baseCollation) {
+					quereusError(
+						`AsyncGatherNode(zipByKey): key position ${pos} collation mismatch: branch 0 has ${baseCollation}, branch ${i} has ${collation}`,
 						StatusCode.ERROR,
 					);
 				}
