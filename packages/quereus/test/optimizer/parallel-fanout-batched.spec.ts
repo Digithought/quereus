@@ -16,6 +16,7 @@
 import { expect } from 'chai';
 import { Database } from '../../src/core/database.js';
 import { MemoryTableModule } from '../../src/vtab/memory/module.js';
+import type { VtabConcurrencyMode } from '../../src/vtab/module.js';
 import type { SqlValue } from '../../src/common/types.js';
 
 interface PlanRow {
@@ -28,6 +29,19 @@ interface PlanRow {
 
 class HighLatencyMemoryModule extends MemoryTableModule {
 	readonly expectedLatencyMs = 25;
+}
+
+/**
+ * A memory module whose declared concurrency mode is `'serial'`, so its leaf
+ * resolves `physical.concurrencySafe === false` (see `getModuleConcurrencyMode`).
+ * `concurrencyMode` is narrowed to a literal on `MemoryTableModule`, so the
+ * override is applied at construction via a `readonly`-stripping cast rather
+ * than a field initializer.
+ */
+function makeSerialMemoryModule(): MemoryTableModule {
+	const mod = new MemoryTableModule();
+	(mod as { concurrencyMode: VtabConcurrencyMode }).concurrencyMode = 'serial';
+	return mod;
 }
 
 async function planRows(db: Database, sql: string): Promise<PlanRow[]> {
@@ -94,7 +108,10 @@ describe('ruleFanOutBatchedOuter', () => {
 		await db.close();
 	});
 
-	async function setup3Branches(using_lookup: 'memory' | 'hi_lat_memory'): Promise<void> {
+	async function setup3Branches(
+		using_lookup: 'memory' | 'hi_lat_memory',
+		outerModule = 'memory',
+	): Promise<void> {
 		await db.exec(`create table cust (id integer primary key, name text) using ${using_lookup}`);
 		await db.exec(`create table prod (id integer primary key, sku text) using ${using_lookup}`);
 		await db.exec(`create table region (id integer primary key, label text) using ${using_lookup}`);
@@ -105,7 +122,7 @@ describe('ruleFanOutBatchedOuter', () => {
 				product_id integer not null references prod(id),
 				region_id integer not null references region(id),
 				total real
-			) using memory`,
+			) using ${outerModule}`,
 		);
 		await db.exec("insert into cust values (1, 'Acme'), (2, 'Beta')");
 		await db.exec("insert into prod values (10, 'SKU-A'), (20, 'SKU-B')");
@@ -177,6 +194,20 @@ describe('ruleFanOutBatchedOuter', () => {
 		} finally {
 			db.optimizer.updateTuning(before);
 		}
+	});
+
+	it('does NOT flip when the outer is not concurrency-safe', async () => {
+		// The batched driver pumps the outer concurrently with live branch forks,
+		// so an outer over a `'serial'`-mode module can never be flipped — this is
+		// the gate the EagerPrefetch-isolation rationale rests on. Latency,
+		// cardinality (minRows=0 from beforeEach), and budget all pass here; only
+		// the concurrency gate should hold the node serial.
+		db.registerModule('serial_memory', makeSerialMemoryModule());
+		await setup3Branches('hi_lat_memory', 'serial_memory');
+		const plan = await planRows(db, fanout3SQL);
+		expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+		expect(fanOutOuterMode(plan)).to.equal('serial');
+		expect(hasEagerPrefetch(plan)).to.equal(false);
 	});
 
 	it('does NOT flip when outer cardinality is below batchedOuterMinRows', async () => {
