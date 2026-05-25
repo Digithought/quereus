@@ -222,12 +222,11 @@ export function emitAsyncGather(plan: AsyncGatherNode, ctx: EmissionContext): In
 
 	if (plan.combinator.kind === 'zipByKey') {
 		const { branchKeyIndices, branchNonKeyIndices } = plan.getZipByKeyIndices();
-		const keyAttrs = plan.combinator.keyAttrs;
 		// Build the key comparator from children[0]'s key column collations (key
 		// columns share affinity across branches per the construction contract).
 		const child0Attrs = plan.children[0].getAttributes();
-		const keyCollations = keyAttrs.map((_id, k) => {
-			const attr = child0Attrs[branchKeyIndices[0][k]];
+		const keyCollations = branchKeyIndices[0].map((colIx) => {
+			const attr = child0Attrs[colIx];
 			return attr.type.collationName ? ctx.resolveCollation(attr.type.collationName) : BINARY_COLLATION;
 		});
 		const keyComparator = createCollationRowComparator(keyCollations);

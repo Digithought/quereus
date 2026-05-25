@@ -36,14 +36,20 @@ import {
  *   attributes. **Materialises every branch in memory before yielding the
  *   first row** — see emitter docs in `runtime/emit/async-gather.ts`.
  *
- * - `zipByKey`: full N-way outer join on the shared key columns named by
- *   `keyAttrs` (a list of attribute IDs that every branch's key column carries
- *   verbatim). For each distinct key value present in any branch, emit exactly
- *   one composed row: the key columns once, then each branch's non-key columns
+ * - `zipByKey`: full N-way outer join on the key columns named **per branch** by
+ *   `branchKeyAttrs`. For each distinct key value present in any branch, emit
+ *   exactly one composed row: the K merged key columns once (carrying the
+ *   gather-minted `outputKeyAttrs` ids), then each branch's non-key columns
  *   (NULL when that branch has no row for that key). Implemented as an **eager
  *   hash-merge** over a `BTree` keyed by the key tuple — **drains every branch
  *   in memory before yielding the first row** (see emitter docs). It is *not*
  *   a chained binary full-outer-join lowering.
+ *
+ *   The gather genuinely **originates** the K merged key columns (their ids,
+ *   `outputKeyAttrs`, appear in no child — "branch0's key, or branch1's key, …,
+ *   whichever row is present") and **forwards** each branch's non-key ids (each
+ *   appears in exactly one child). This is provenance-clean by construction:
+ *   no id is output by two branches, so `validatePhysicalTree` passes.
  *
  * The discriminated-union shape is deliberate: future variants (e.g.
  * `mergeOrdered`) will attach per-combinator config without breaking the
@@ -52,13 +58,28 @@ import {
 export type AsyncGatherCombinator =
 	| { readonly kind: 'unionAll' }
 	| { readonly kind: 'crossProduct' }
-	| { readonly kind: 'zipByKey', readonly keyAttrs: readonly number[] };
+	| {
+		readonly kind: 'zipByKey',
+		/**
+		 * Per branch b, the attribute IDs of that branch's K key columns, in
+		 * key-position order. Distinct per branch (provenance-clean — each branch
+		 * originates its own key id). `length === children.length`; every inner
+		 * list has the same length K.
+		 */
+		readonly branchKeyAttrs: readonly (readonly number[])[],
+		/**
+		 * The K output key attribute IDs the gather mints (originates). One per
+		 * key position. Pairwise distinct and disjoint from every child's
+		 * attribute IDs. Output key columns sit at index 0..K-1, in this order.
+		 */
+		readonly outputKeyAttrs: readonly number[],
+	};
 
 /**
  * Per-branch column-index mapping for a `zipByKey` gather, resolved from the
- * shared {@link AsyncGatherCombinator.keyAttrs} list against each child's
- * attribute layout. Consumed by the node's type inference and by the runtime
- * emitter (via {@link AsyncGatherNode.getZipByKeyIndices}).
+ * per-branch {@link AsyncGatherCombinator.branchKeyAttrs} lists against each
+ * child's attribute layout. Consumed by the node's type inference and by the
+ * runtime emitter (via {@link AsyncGatherNode.getZipByKeyIndices}).
  */
 export interface ZipByKeyIndices {
 	/** Per branch, the column index of each key attribute, in `keyAttrs` order. */
@@ -145,35 +166,85 @@ export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 				}
 			}
 		} else if (combinator.kind === 'zipByKey') {
-			AsyncGatherNode.validateZipByKey(children, combinator.keyAttrs);
+			AsyncGatherNode.validateZipByKey(children, combinator.branchKeyAttrs, combinator.outputKeyAttrs);
 		}
 	}
 
 	/**
-	 * Validate a `zipByKey` combinator: the key list must be non-empty, every
-	 * key attribute must resolve in every branch, and the key columns must agree
-	 * on affinity across branches (compared via the logical type's physical
-	 * storage class — the codebase has no distinct affinity field). Nullability
-	 * may differ between branches; it gets OR'd in {@link getType}.
+	 * Validate a `zipByKey` combinator under the per-branch-refs representation:
+	 *
+	 * - `branchKeyAttrs` has one list per branch, all of the same non-empty
+	 *   length K.
+	 * - `outputKeyAttrs` has length K, its ids are pairwise distinct AND disjoint
+	 *   from every child attribute id (load-bearing: a collision would let the
+	 *   provenance walk treat an output key id as forwarded, breaking the
+	 *   origination contract this design relies on).
+	 * - each `branchKeyAttrs[b][k]` resolves in branch b.
+	 * - per key position, affinity (physical storage class) agrees across all
+	 *   branches (the codebase has no distinct affinity field). Nullability may
+	 *   differ between branches; it gets OR'd in {@link getType}.
 	 */
 	private static validateZipByKey(
 		children: readonly RelationalPlanNode[],
-		keyAttrs: readonly number[],
+		branchKeyAttrs: readonly (readonly number[])[],
+		outputKeyAttrs: readonly number[],
 	): void {
-		if (keyAttrs.length === 0) {
+		if (branchKeyAttrs.length !== children.length) {
+			quereusError(
+				`AsyncGatherNode(zipByKey): branchKeyAttrs has ${branchKeyAttrs.length} lists but there are ${children.length} branches`,
+				StatusCode.INTERNAL,
+			);
+		}
+		const k = branchKeyAttrs.length > 0 ? branchKeyAttrs[0].length : 0;
+		if (k === 0) {
 			quereusError(
 				'AsyncGatherNode(zipByKey) requires >= 1 key column',
 				StatusCode.ERROR,
 			);
 		}
-		// Resolve every key attribute in every branch (reject if any is absent).
+		for (let i = 0; i < branchKeyAttrs.length; i++) {
+			if (branchKeyAttrs[i].length !== k) {
+				quereusError(
+					`AsyncGatherNode(zipByKey): branch ${i} has ${branchKeyAttrs[i].length} key columns, expected ${k}`,
+					StatusCode.ERROR,
+				);
+			}
+		}
+		if (outputKeyAttrs.length !== k) {
+			quereusError(
+				`AsyncGatherNode(zipByKey): outputKeyAttrs has ${outputKeyAttrs.length} ids, expected ${k}`,
+				StatusCode.ERROR,
+			);
+		}
+		// outputKeyAttrs must be pairwise distinct AND disjoint from every child id.
+		const allChildIds = new Set<number>();
+		for (const child of children) {
+			for (const a of child.getAttributes()) allChildIds.add(a.id);
+		}
+		const seenOutput = new Set<number>();
+		for (const id of outputKeyAttrs) {
+			if (seenOutput.has(id)) {
+				quereusError(
+					`AsyncGatherNode(zipByKey): outputKeyAttrs contains duplicate id ${id}`,
+					StatusCode.ERROR,
+				);
+			}
+			seenOutput.add(id);
+			if (allChildIds.has(id)) {
+				quereusError(
+					`AsyncGatherNode(zipByKey): output key id ${id} collides with a child attribute id (the gather must originate it freshly)`,
+					StatusCode.ERROR,
+				);
+			}
+		}
+		// Resolve every per-branch key attribute in its own branch.
 		const resolved: number[][] = [];
 		for (let i = 0; i < children.length; i++) {
 			const attrs = children[i].getAttributes();
 			const idToIndex = new Map<number, number>();
 			attrs.forEach((a, ix) => idToIndex.set(a.id, ix));
 			const indices: number[] = [];
-			for (const id of keyAttrs) {
+			for (const id of branchKeyAttrs[i]) {
 				const ix = idToIndex.get(id);
 				if (ix === undefined) {
 					quereusError(
@@ -187,13 +258,13 @@ export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 		}
 		// Key affinities must agree across branches, per key position.
 		const child0Cols = children[0].getType().columns;
-		for (let k = 0; k < keyAttrs.length; k++) {
-			const baseAffinity = child0Cols[resolved[0][k]].type.logicalType.physicalType;
+		for (let pos = 0; pos < k; pos++) {
+			const baseAffinity = child0Cols[resolved[0][pos]].type.logicalType.physicalType;
 			for (let i = 1; i < children.length; i++) {
-				const affinity = children[i].getType().columns[resolved[i][k]].type.logicalType.physicalType;
+				const affinity = children[i].getType().columns[resolved[i][pos]].type.logicalType.physicalType;
 				if (affinity !== baseAffinity) {
 					quereusError(
-						`AsyncGatherNode(zipByKey): key attribute ${keyAttrs[k]} affinity mismatch: branch 0 has ${baseAffinity}, branch ${i} has ${affinity}`,
+						`AsyncGatherNode(zipByKey): key position ${pos} affinity mismatch: branch 0 has ${baseAffinity}, branch ${i} has ${affinity}`,
 						StatusCode.ERROR,
 					);
 				}
@@ -202,9 +273,9 @@ export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 	}
 
 	/**
-	 * Resolve the shared `keyAttrs` list against each child's attribute layout,
-	 * yielding per-branch key/non-key column indices. Memoised; only valid for a
-	 * `zipByKey` combinator.
+	 * Resolve each branch's own `branchKeyAttrs[b]` list against that branch's
+	 * attribute layout, yielding per-branch key/non-key column indices. Memoised;
+	 * only valid for a `zipByKey` combinator.
 	 */
 	private computeZipByKeyIndices(): ZipByKeyIndices {
 		if (this.combinator.kind !== 'zipByKey') {
@@ -213,15 +284,15 @@ export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 				StatusCode.INTERNAL,
 			);
 		}
-		const keyAttrs = this.combinator.keyAttrs;
-		const keySet = new Set(keyAttrs);
+		const branchKeyAttrs = this.combinator.branchKeyAttrs;
 		const branchKeyIndices: number[][] = [];
 		const branchNonKeyIndices: number[][] = [];
-		for (const child of this.children) {
-			const attrs = child.getAttributes();
+		for (let b = 0; b < this.children.length; b++) {
+			const attrs = this.children[b].getAttributes();
 			const idToIndex = new Map<number, number>();
 			attrs.forEach((a, ix) => idToIndex.set(a.id, ix));
-			branchKeyIndices.push(keyAttrs.map(id => idToIndex.get(id)!));
+			const keySet = new Set(branchKeyAttrs[b]);
+			branchKeyIndices.push(branchKeyAttrs[b].map(id => idToIndex.get(id)!));
 			const nonKey: number[] = [];
 			attrs.forEach((a, ix) => { if (!keySet.has(a.id)) nonKey.push(ix); });
 			branchNonKeyIndices.push(nonKey);
@@ -257,28 +328,33 @@ export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 	}
 
 	/**
-	 * Build the `zipByKey` output attribute layout: the deduped key attributes
-	 * first (taken from children[0], in keyAttrs order, nullability OR'd across
-	 * branches because a NULL-keyed row can surface), then each branch's non-key
+	 * Build the `zipByKey` output attribute layout: the K merged key attributes
+	 * first (type/nullability/collation derived from branch 0's key column at
+	 * position k, nullability OR'd across branches because a NULL-keyed row can
+	 * surface — but **carrying the gather-minted `outputKeyAttrs[k]` id**, since
+	 * the gather originates these merged columns), then each branch's non-key
 	 * attributes in declared order, each forced nullable (NULL when the branch is
-	 * absent for a key). Non-key attribute IDs are unique across branches (only
-	 * the key IDs are shared), so the concatenation has no ID collision.
+	 * absent for a key). Non-key attribute IDs are unique across branches and the
+	 * minted key ids are disjoint from all of them, so there is no ID collision.
 	 */
 	private buildZipByKeyAttributes(): readonly Attribute[] {
 		const { branchKeyIndices, branchNonKeyIndices } = this.getZipByKeyIndices();
-		const keyAttrs = (this.combinator as { keyAttrs: readonly number[] }).keyAttrs;
+		const { outputKeyAttrs } = this.combinator as { outputKeyAttrs: readonly number[] };
 		const childAttrs = this.children.map(c => c.getAttributes());
 		const out: Attribute[] = [];
-		// Key attributes from children[0], nullability OR'd across branches.
-		for (let k = 0; k < keyAttrs.length; k++) {
+		// Merged key attributes: type/collation from branch 0, nullability OR'd
+		// across branches, id from the gather-minted outputKeyAttrs.
+		for (let k = 0; k < outputKeyAttrs.length; k++) {
 			const baseAttr = childAttrs[0][branchKeyIndices[0][k]];
 			let nullable = baseAttr.type.nullable;
 			for (let b = 1; b < this.children.length; b++) {
 				nullable = nullable || childAttrs[b][branchKeyIndices[b][k]].type.nullable;
 			}
-			out.push(nullable === baseAttr.type.nullable
-				? baseAttr
-				: { ...baseAttr, type: { ...baseAttr.type, nullable: true } });
+			out.push({
+				...baseAttr,
+				id: outputKeyAttrs[k],
+				type: nullable === baseAttr.type.nullable ? baseAttr.type : { ...baseAttr.type, nullable: true },
+			});
 		}
 		// Non-key attributes per branch, forced nullable.
 		for (let b = 0; b < this.children.length; b++) {
@@ -380,11 +456,11 @@ export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 	 */
 	private getZipByKeyType(): RelationType {
 		const { branchKeyIndices, branchNonKeyIndices } = this.getZipByKeyIndices();
-		const keyAttrs = (this.combinator as { keyAttrs: readonly number[] }).keyAttrs;
+		const { outputKeyAttrs } = this.combinator as { outputKeyAttrs: readonly number[] };
 		const types = this.children.map(c => c.getType());
 		const columns: RelationType['columns'][number][] = [];
 		// Key columns from children[0], nullability OR'd across branches.
-		for (let k = 0; k < keyAttrs.length; k++) {
+		for (let k = 0; k < outputKeyAttrs.length; k++) {
 			const baseCol = types[0].columns[branchKeyIndices[0][k]];
 			let nullable = baseCol.type.nullable;
 			for (let b = 1; b < this.children.length; b++) {
@@ -401,7 +477,7 @@ export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 				columns.push(col.type.nullable ? col : { ...col, type: { ...col.type, nullable: true } });
 			}
 		}
-		const k = keyAttrs.length;
+		const k = outputKeyAttrs.length;
 		const keys: ColRef[][] = [Array.from({ length: k }, (_v, i) => ({ index: i }))];
 		return {
 			typeClass: 'relation',
@@ -548,7 +624,9 @@ export class AsyncGatherNode extends PlanNode implements RelationalPlanNode {
 			combinator: this.combinator.kind,
 			branchCount: this.children.length,
 			concurrencyCap: this.concurrencyCap,
-			...(this.combinator.kind === 'zipByKey' ? { keyAttrs: this.combinator.keyAttrs } : {}),
+			...(this.combinator.kind === 'zipByKey'
+				? { branchKeyAttrs: this.combinator.branchKeyAttrs, outputKeyAttrs: this.combinator.outputKeyAttrs }
+				: {}),
 		};
 	}
 }

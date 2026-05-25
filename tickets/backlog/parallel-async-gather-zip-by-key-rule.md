@@ -1,4 +1,4 @@
-description: Recognition rule that folds a chain of binary `JoinNode(joinType='full')` full-outer-joins sharing a common key column set (rooted under a `Project`) into a single N-ary `AsyncGatherNode({ kind: 'zipByKey', keyAttrs })`. Generalizes the existing `rule-async-gather-union-all` pattern to the zip combinator.
+description: Recognition rule that folds a chain of binary `JoinNode(joinType='full')` full-outer-joins sharing a common key column set (rooted under a `Project`) into a single N-ary `AsyncGatherNode({ kind: 'zipByKey', branchKeyAttrs, outputKeyAttrs })`. Generalizes the existing `rule-async-gather-union-all` pattern to the zip combinator.
 prereq: parallel-async-gather-zip-by-key-provenance
 files: packages/quereus/src/planner/rules/parallel/rule-async-gather-union-all.ts, packages/quereus/src/planner/nodes/async-gather-node.ts, packages/quereus/src/planner/nodes/join-node.ts
 ----

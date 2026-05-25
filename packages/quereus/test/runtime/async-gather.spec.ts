@@ -67,8 +67,8 @@ function makeAttr(name: string, sourceRelation = 'test.t'): Attribute {
 
 /**
  * Build an attribute with an explicit id and physical-type code, for zipByKey
- * key-column tests where a shared key id (across branches) and/or an affinity
- * mismatch must be exercised deliberately.
+ * key-column tests where a specific per-branch key id, nullability, and/or an
+ * affinity mismatch across branches must be exercised deliberately.
  */
 function makeKeyAttr(id: number, name: string, physicalType: number, nullable = false): Attribute {
 	return {
@@ -266,40 +266,58 @@ describe('AsyncGather', () => {
 			expect(rebuilt.preserveAttributeIds).to.equal(preserved);
 		});
 
-		it('zipByKey rejects empty keyAttrs', () => {
+		it('zipByKey rejects empty branchKeyAttrs', () => {
 			const a = new MockRelationalNode([makeAttr('k'), makeAttr('v1')]);
 			const b = new MockRelationalNode([makeAttr('k2'), makeAttr('v2')]);
-			expect(() => new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [] }, 4))
+			expect(() => new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', branchKeyAttrs: [[], []], outputKeyAttrs: [] }, 4))
 				.to.throw(QuereusError, /requires >= 1 key/);
 		});
 
-		it('zipByKey rejects a keyAttr absent from some branch', () => {
-			const k = makeAttr('k');
-			const a = new MockRelationalNode([k, makeAttr('v1')]);
+		it('zipByKey rejects a branch key attr absent from its branch', () => {
+			const ka = makeAttr('ka');
+			const a = new MockRelationalNode([ka, makeAttr('v1')]);
 			const b = new MockRelationalNode([makeAttr('other'), makeAttr('v2')]);
-			expect(() => new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [k.id] }, 4))
+			// branch 1's key ref names ka.id, which is not present in branch 1.
+			expect(() => new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[ka.id], [ka.id]], outputKeyAttrs: [PlanNode.nextAttrId()] }, 4))
 				.to.throw(QuereusError, /not found in branch/);
 		});
 
-		it('zipByKey rejects key column affinity disagreement across branches', () => {
-			// Same key id in both branches but different physical storage class.
-			const ka = makeKeyAttr(910001, 'k', 1 /* INTEGER */);
-			const kb = makeKeyAttr(910001, 'k', 3 /* TEXT */);
+		it('zipByKey rejects an output key id that collides with a child attribute id', () => {
+			const ka = makeAttr('ka');
+			const kb = makeAttr('kb');
 			const a = new MockRelationalNode([ka, makeAttr('v1')]);
 			const b = new MockRelationalNode([kb, makeAttr('v2')]);
-			expect(() => new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [910001] }, 4))
+			// outputKeyAttrs reuses a branch id (ka.id) instead of minting a fresh one.
+			expect(() => new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[ka.id], [kb.id]], outputKeyAttrs: [ka.id] }, 4))
+				.to.throw(QuereusError, /collides with a child attribute id/);
+		});
+
+		it('zipByKey rejects key column affinity disagreement across branches', () => {
+			// Distinct per-branch key ids, but different physical storage class.
+			const ka = makeKeyAttr(910001, 'k', 1 /* INTEGER */);
+			const kb = makeKeyAttr(910002, 'k', 3 /* TEXT */);
+			const a = new MockRelationalNode([ka, makeAttr('v1')]);
+			const b = new MockRelationalNode([kb, makeAttr('v2')]);
+			expect(() => new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[910001], [910002]], outputKeyAttrs: [PlanNode.nextAttrId()] }, 4))
 				.to.throw(QuereusError, /affinity mismatch/);
 		});
 
-		it('zipByKey output: key attrs first (keyAttrs order), then branch non-key attrs (nullable)', () => {
-			const k = makeAttr('k');
+		it('zipByKey output: key attrs first (minted outputKeyAttrs), then branch non-key attrs (nullable)', () => {
+			const ka = makeAttr('ka');
+			const kb = makeAttr('kb');
 			const a1 = makeAttr('a1');
 			const b1 = makeAttr('b1');
+			const outK = PlanNode.nextAttrId();
 			// Key sits at index 0 in branch A but index 1 in branch B (position-independent).
-			const a = new MockRelationalNode([k, a1]);
-			const b = new MockRelationalNode([b1, k]);
-			const node = new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [k.id] }, 4);
-			expect(node.getAttributes().map(x => x.id)).to.deep.equal([k.id, a1.id, b1.id]);
+			const a = new MockRelationalNode([ka, a1]);
+			const b = new MockRelationalNode([b1, kb]);
+			const node = new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[ka.id], [kb.id]], outputKeyAttrs: [outK] }, 4);
+			// Output key column carries the minted id, not either branch's key id.
+			expect(node.getAttributes().map(x => x.id)).to.deep.equal([outK, a1.id, b1.id]);
 			const cols = node.getType().columns;
 			expect(cols).to.have.lengthOf(3);
 			// Key column is non-nullable (both branches non-nullable); non-key cols forced nullable.
@@ -311,36 +329,40 @@ describe('AsyncGather', () => {
 		it('zipByKey key nullability is OR across branches', () => {
 			// Branch B's key column is nullable → output key column nullable.
 			const ka = makeKeyAttr(920001, 'k', 1 /* INTEGER */, false);
-			const kb = makeKeyAttr(920001, 'k', 1 /* INTEGER */, true);
+			const kb = makeKeyAttr(920002, 'k', 1 /* INTEGER */, true);
 			const a = new MockRelationalNode([ka, makeAttr('a1')]);
 			const b = new MockRelationalNode([kb, makeAttr('b1')]);
-			const node = new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [920001] }, 4);
+			const node = new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[920001], [920002]], outputKeyAttrs: [PlanNode.nextAttrId()] }, 4);
 			expect(node.getType().columns[0].type.nullable).to.equal(true);
 		});
 
 		it('zipByKey getType keys are [[0..K-1]] and isSet is false', () => {
-			const k0 = makeAttr('k0');
-			const k1 = makeAttr('k1');
-			const a = new MockRelationalNode([k0, k1, makeAttr('a1')]);
-			const b = new MockRelationalNode([k0, k1, makeAttr('b1')]);
-			const node = new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [k0.id, k1.id] }, 4);
+			const ak0 = makeAttr('k0'); const ak1 = makeAttr('k1');
+			const bk0 = makeAttr('k0'); const bk1 = makeAttr('k1');
+			const a = new MockRelationalNode([ak0, ak1, makeAttr('a1')]);
+			const b = new MockRelationalNode([bk0, bk1, makeAttr('b1')]);
+			const node = new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[ak0.id, ak1.id], [bk0.id, bk1.id]], outputKeyAttrs: [PlanNode.nextAttrId(), PlanNode.nextAttrId()] }, 4);
 			expect(node.getType().keys).to.deep.equal([[{ index: 0 }, { index: 1 }]]);
 			expect(node.getType().isSet).to.equal(false);
 		});
 
 		it('zipByKey drops fds/equivClasses/constantBindings/domainConstraints/ordering in physical', () => {
-			const k = makeAttr('k');
+			const ka = makeAttr('ka');
+			const kb = makeAttr('kb');
 			const a = new MockRelationalNode(
-				[k, makeAttr('a1')],
+				[ka, makeAttr('a1')],
 				[[{ index: 0 }]],
 				{ deterministic: true, readonly: true, fds: [{ determinants: [0], dependents: [1] }] },
 			);
 			const b = new MockRelationalNode(
-				[k, makeAttr('b1')],
+				[kb, makeAttr('b1')],
 				[[{ index: 0 }]],
 				{ deterministic: true, readonly: true, fds: [{ determinants: [0], dependents: [1] }] },
 			);
-			const node = new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [k.id] }, 4);
+			const node = new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[ka.id], [kb.id]], outputKeyAttrs: [PlanNode.nextAttrId()] }, 4);
 			const phys = node.physical;
 			expect(phys.fds).to.equal(undefined);
 			expect(phys.equivClasses).to.equal(undefined);
@@ -349,15 +371,23 @@ describe('AsyncGather', () => {
 			expect(phys.ordering).to.equal(undefined);
 		});
 
-		it('zipByKey withChildren rebuilds preserving the combinator (incl. keyAttrs)', () => {
-			const k = makeAttr('k');
-			const a = new MockRelationalNode([k, makeAttr('a1')]);
-			const b = new MockRelationalNode([k, makeAttr('b1')]);
-			const c = new MockRelationalNode([k, makeAttr('c1')]);
-			const node = new AsyncGatherNode(mockScope, [a, b], { kind: 'zipByKey', keyAttrs: [k.id] }, 5);
+		it('zipByKey withChildren rebuilds preserving the combinator (incl. outputKeyAttrs)', () => {
+			const ka = makeAttr('ka');
+			const kb = makeAttr('kb');
+			const a = new MockRelationalNode([ka, makeAttr('a1')]);
+			const b = new MockRelationalNode([kb, makeAttr('b1')]);
+			// Rebuilt branch-1 child must still carry the branch-1 key id (kb.id) so
+			// the verbatim combinator's branchKeyAttrs[1] resolves.
+			const c = new MockRelationalNode([kb, makeAttr('c1')]);
+			const outK = PlanNode.nextAttrId();
+			const node = new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[ka.id], [kb.id]], outputKeyAttrs: [outK] }, 5);
 			const rebuilt = node.withChildren([a, c]) as AsyncGatherNode;
 			expect(rebuilt).to.not.equal(node);
-			expect(rebuilt.combinator).to.deep.equal({ kind: 'zipByKey', keyAttrs: [k.id] });
+			// Combinator (and its minted outputKeyAttrs) is passed verbatim — stable across rebuild.
+			const reb = rebuilt.combinator as { kind: 'zipByKey'; outputKeyAttrs: readonly number[] };
+			expect(reb.kind).to.equal('zipByKey');
+			expect(reb.outputKeyAttrs).to.deep.equal([outK]);
 			expect(rebuilt.concurrencyCap).to.equal(5);
 		});
 	});
@@ -376,20 +406,17 @@ describe('AsyncGather', () => {
 			expect(() => validatePhysicalTree(node)).to.not.throw();
 		});
 
-		// KNOWN LIMITATION (tracked by plan ticket
-		// `parallel-async-gather-zip-by-key-provenance`): a zipByKey node requires
-		// the shared key attribute id to exist in *every* branch (else construction
-		// throws "not found in branch i"). But two independent branches both
-		// outputting that id means the attribute-provenance validator sees the id
-		// originated at two distinct nodes and throws. So no validly-constructed
-		// zipByKey node currently passes validatePhysicalTree. Skipped until the
-		// design conflict is resolved (special-case the validator, or redesign
-		// keyAttrs to per-branch column refs + a freshly-minted output key id).
-		it.skip('zipByKey passes full validation (BLOCKED: shared key id trips provenance)', () => {
-			const k = makeAttr('k');
-			const left = new MockRelationalNode([k, makeAttr('a')]);
-			const right = new MockRelationalNode([k, makeAttr('b')]);
-			const node = new AsyncGatherNode(mockScope, [left, right], { kind: 'zipByKey', keyAttrs: [k.id] }, 4);
+		it('zipByKey passes full validation (per-branch key refs + minted output key)', () => {
+			// Provenance-clean by construction: each branch originates its own key
+			// id (distinct ka/kb), and the gather mints a fresh outputKeyAttrs id
+			// that appears in no child. The provenance walk records the gather as
+			// the sole origin of the minted key and forwards each branch's non-key id.
+			const ka = makeAttr('ka');
+			const kb = makeAttr('kb');
+			const left = new MockRelationalNode([ka, makeAttr('a')]);
+			const right = new MockRelationalNode([kb, makeAttr('b')]);
+			const node = new AsyncGatherNode(mockScope, [left, right],
+				{ kind: 'zipByKey', branchKeyAttrs: [[ka.id], [kb.id]], outputKeyAttrs: [PlanNode.nextAttrId()] }, 4);
 			expect(() => validatePhysicalTree(node)).to.not.throw();
 		});
 	});
