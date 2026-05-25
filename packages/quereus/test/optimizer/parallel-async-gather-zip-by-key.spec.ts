@@ -224,6 +224,35 @@ describe('ruleAsyncGatherZipByKey', () => {
 		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
 	});
 
+	it('does NOT fold when a key column uses a non-binary collation', async () => {
+		// Both branches agree on NOCASE, but the emitter's merged-key value is
+		// whichever branch arrived first (non-deterministic) and can diverge from
+		// coalesce's left-to-right pick when collation-equal keys are byte-distinct
+		// ('A'/'a'). v1 gates non-binary key collations out entirely.
+		await db.exec('create table ca (k text primary key collate NOCASE, av text) using hi_lat_memory');
+		await db.exec('create table cb (k text primary key collate NOCASE, bv text) using hi_lat_memory');
+		await db.exec("insert into ca values ('x','a1')");
+		await db.exec("insert into cb values ('x','b1')");
+		const sql =
+			`select coalesce(ca.k, cb.k) as k, ca.av, cb.bv
+			   from ca full outer join cb on ca.k = cb.k`;
+		const plan = await planRows(db, sql);
+		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+	});
+
+	it('still folds when key columns are explicitly binary', async () => {
+		// Sanity: the binary-collation gate does not reject the common case.
+		await db.exec('create table ba (k text primary key collate BINARY, av text) using hi_lat_memory');
+		await db.exec('create table bb (k text primary key collate BINARY, bv text) using hi_lat_memory');
+		await db.exec("insert into ba values ('x','a1')");
+		await db.exec("insert into bb values ('y','b1')");
+		const sql =
+			`select coalesce(ba.k, bb.k) as k, ba.av, bb.bv
+			   from ba full outer join bb on ba.k = bb.k`;
+		const plan = await planRows(db, sql);
+		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+	});
+
 	it('does NOT fold when the key projection is not a coalesce over all branches', async () => {
 		// `a.k` alone (not coalesced) would mis-merge: a row present only in b/c
 		// would surface NULL for the key. The rule must decline to preserve

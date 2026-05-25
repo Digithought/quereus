@@ -59,10 +59,14 @@
  *     meet `tuning.parallel.gatherThresholdMs`. This is 0 on memory-vtab /
  *     in-process leaves, so the rule is inert by design on local-only plans
  *     (the golden-plan no-rewrite invariant).
- *   - **Collation agreement.** Per key position, every branch's equated key
- *     column must share a collation (the runtime comparator derives from branch
- *     0 only — a mismatch would silently apply branch 0's collation to all).
- *     Also enforced in `AsyncGatherNode.validateZipByKey` for manual builds.
+ *   - **Binary key collation.** Every key column on every branch must use the
+ *     binary collation. The runtime comparator derives from branch 0 only, and
+ *     the emitter's merged key value is whichever branch arrived first; under a
+ *     non-binary collation that value is non-deterministic and can diverge from
+ *     `coalesce`'s left-to-right pick (e.g. NOCASE merging `'A'`/`'a'`). Binary
+ *     keeps equal keys byte-identical, so the merged value is well-defined.
+ *     (`AsyncGatherNode.validateZipByKey` enforces the weaker *agreement*
+ *     invariant for manual builds; this rule is deliberately stricter.)
  *
  * ## Attribute provenance (Option A — per-branch refs + minted output keys)
  *
@@ -161,8 +165,20 @@ export function ruleAsyncGatherZipByKey(node: PlanNode, context: OptContext): Pl
 	// Collation agreement per key position (the runtime comparator uses branch
 	// 0's collation only). validateZipByKey also enforces this, but checking
 	// here lets us decline the rewrite gracefully rather than throw.
-	if (!collationsAgree(branches, branchKeyAttrs, k)) {
-		log('Aborting: key-column collation disagreement across branches');
+	//
+	// v1 requires *binary* collation on every key column — stricter than the
+	// agreement `validateZipByKey` enforces. Rationale: even when every branch
+	// agrees on a non-binary collation (e.g. NOCASE), the emitter merges
+	// collation-equal-but-byte-distinct keys ('A'/'a') into one BTree entry whose
+	// key cells come from whichever branch arrived first (concurrent, so
+	// non-deterministic). That diverges from `coalesce`'s deterministic
+	// left-to-right pick. Folding only binary keys keeps the merged value
+	// byte-identical across branches, so it is well-defined. Re-enabling
+	// non-binary collations needs a deterministic merged-key pick in the emitter
+	// (tracked separately) — until then a non-binary full-outer chain stays a
+	// JoinNode and errors at emit, exactly the pre-rule baseline.
+	if (!keyCollationsAllBinary(branches, branchKeyAttrs, k)) {
+		log('Aborting: a key column uses a non-binary collation (v1 binary-only)');
 		return null;
 	}
 
@@ -392,11 +408,14 @@ function branchesKeyUnique(
 }
 
 /**
- * Per key position, confirm every branch's key column declares the same
- * collation (absent collation = binary). Mirrors the comparator's branch-0
- * derivation so the rewrite never silently changes merge semantics.
+ * Confirm every branch's key column at every key position declares the binary
+ * collation (absent collation = binary). Binary collation makes equal keys
+ * byte-identical across branches, so the emitter's first-arrived merged-key
+ * value is well-defined regardless of branch arrival order. A non-binary
+ * collation (even one all branches agree on) would let the merged key value be
+ * non-deterministic — see the call site for the full rationale.
  */
-function collationsAgree(
+function keyCollationsAllBinary(
 	branches: readonly RelationalPlanNode[],
 	branchKeyAttrs: readonly (readonly number[])[],
 	k: number,
@@ -409,9 +428,8 @@ function collationsAgree(
 		return ix >= 0 ? norm(cols[ix].type.collationName) : 'BINARY';
 	};
 	for (let pos = 0; pos < k; pos++) {
-		const base = collationOf(branches[0], branchKeyAttrs[0][pos]);
-		for (let b = 1; b < branches.length; b++) {
-			if (collationOf(branches[b], branchKeyAttrs[b][pos]) !== base) return false;
+		for (let b = 0; b < branches.length; b++) {
+			if (collationOf(branches[b], branchKeyAttrs[b][pos]) !== 'BINARY') return false;
 		}
 	}
 	return true;
