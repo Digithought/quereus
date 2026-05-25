@@ -174,6 +174,24 @@ export interface OptimizerTuning {
 		 * already produces.
 		 */
 		readonly prefetchBufferSize: number;
+		/**
+		 * Per-branch row cap for `cross` (1:n) fan-out lookup-join branches.
+		 * `rule-fanout-lookup-join` refuses to fold a parameterized equi-lookup
+		 * that is *not* provably at-most-one into a `cross` branch when that
+		 * lookup's row estimate exceeds this — its Cartesian contribution could
+		 * blow memory, so the chain is left as a streaming nested-loop join.
+		 * At-most-one branches (FK→PK) are exempt: they contribute ≤1 row per
+		 * outer row. Default 10000.
+		 */
+		readonly maxCrossBranchRows: number;
+		/**
+		 * Whole-product cap for a `cross` fan-out lookup join:
+		 * `outer.estimatedRows × Π(cross-branch estimatedRows)`. Above this the
+		 * chain stays nested-loop. Unknown estimates are treated as *exceeding*
+		 * the cap (conservative) so a missing statistic never authorizes an
+		 * unbounded product. Default 1e6.
+		 */
+		readonly maxCrossProduct: number;
 	};
 }
 
@@ -244,5 +262,13 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 		// Ring-buffer size for the inserted EagerPrefetchNode; mirrors the node's
 		// own constructor default.
 		prefetchBufferSize: 64,
+		// Per-branch row cap for `cross` (1:n) fan-out branches; a lookup whose
+		// estimate exceeds this stays a nested-loop join. At-most-one branches
+		// are exempt.
+		maxCrossBranchRows: 10000,
+		// Whole-product cap for a cross fan-out (outer × Π cross-branch rows);
+		// unknown estimates count as exceeding it. Bounds the per-outer-row
+		// product replay the node materializes.
+		maxCrossProduct: 1_000_000,
 	}
 };

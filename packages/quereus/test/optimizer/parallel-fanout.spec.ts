@@ -559,4 +559,209 @@ describe('ruleFanOutLookupJoin', () => {
 			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
 		});
 	});
+
+	// ----------------------------------------------------------------------
+	// Cross (1:n) lookup branches: equi-lookups that are NOT provably
+	// at-most-one (no FK, or FK→non-unique) cluster as `cross` fan-out
+	// branches. The output is the Cartesian product per outer row, bounded by
+	// the `maxCrossBranchRows` / `maxCrossProduct` recognition guards.
+	// ----------------------------------------------------------------------
+	describe('cross (1:n) lookup branches', () => {
+		// A 2-branch cross cluster sits at the cost-gate boundary under the outer
+		// beforeEach cap=2 (N = cap ⇒ 0 savings). Drop the cap to 1 so 2 branches
+		// surface a positive win `(2 - 1) × 25 = 25 > 2 × branchSetupCost` (mirrors
+		// the subquery describe block).
+		beforeEach(() => {
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				parallel: { ...before.parallel, concurrency: 1 },
+			});
+		});
+
+		/**
+		 * One small outer table `p` and two child tables joined on a NON-key
+		 * column (`pid`, no FK) → data-driven 1:n cardinality:
+		 *   p=1 → b0∈{100,101}, b1∈{5}        (2 × 1 = 2 product rows)
+		 *   p=2 → b0∈{200},     b1∈{6,7}      (1 × 2 = 2 product rows)
+		 *   p=3 → no matches in either        (inner-drop, both branches empty)
+		 *   p=4 → b0∈{400},     b1∈{}         (inner-drop, ONE branch empty)
+		 */
+		async function setupCross(child: 'memory' | 'hi_lat_memory'): Promise<void> {
+			await db.exec(`create table p (id integer primary key, label text) using memory`);
+			await db.exec(`create table b0 (id integer primary key, pid integer, v integer) using ${child}`);
+			await db.exec(`create table b1 (id integer primary key, pid integer, w integer) using ${child}`);
+			await db.exec("insert into p values (1, 'one'), (2, 'two'), (3, 'three'), (4, 'four')");
+			await db.exec('insert into b0 values (10, 1, 100), (11, 1, 101), (12, 2, 200), (13, 4, 400)');
+			await db.exec('insert into b1 values (20, 1, 5), (21, 2, 6), (22, 2, 7)');
+		}
+
+		const crossSQL =
+			`select p.id, b0.v, b1.w
+			 from p
+			 join b0 on p.id = b0.pid
+			 join b1 on p.id = b1.pid`;
+
+		/** Branch modes parsed from the fan-out node's logical properties. */
+		function fanOutBranchModes(rows: readonly PlanRow[]): string[] {
+			const fo = rows.find(r => r.op === 'FANOUTLOOKUPJOIN' || r.node_type === 'FanOutLookupJoin');
+			if (!fo || !fo.properties) return [];
+			const props = JSON.parse(fo.properties) as { branches?: { mode: string }[] };
+			return (props.branches ?? []).map(b => b.mode);
+		}
+
+		it('clusters a 1:n inner chain as cross branches and collapses the joins', async () => {
+			await setupCross('hi_lat_memory');
+			const plan = await planRows(db, crossSQL);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+			expect(fanOutBranchModes(plan)).to.deep.equal(['cross', 'cross']);
+			expect(joinCount(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(0);
+		});
+
+		it('does NOT cluster on local-only (memory) 1:n chains', async () => {
+			// expectedLatencyMs=0 throughout → the cost gate rejects, same as the
+			// at-most-one local-only case.
+			await setupCross('memory');
+			const plan = await planRows(db, crossSQL);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		});
+
+		it('cross branch lookup is not wrapped in a CacheNode (re-executes per outer row)', async () => {
+			// Cross branches are correlated (parameterized by the outer row), so the
+			// materialization advisory must NOT cache them across outer rows — each
+			// outer row re-executes the lookup, exactly like an NLJ inner. (The
+			// advisory's correlated-subquery rule already excludes them; this is a
+			// regression guard on that behaviour.)
+			await setupCross('hi_lat_memory');
+			const plan = await planRows(db, crossSQL);
+			expect(hasFanOut(plan)).to.equal(true);
+			expect(
+				plan.some(r => r.op === 'CACHE' || r.node_type === 'Cache'),
+				`ops=${plan.map(r => r.op).join(',')}`,
+			).to.equal(false);
+		});
+
+		forkExecTest('cross fan-out returns the same multiset as the nested-loop chain', async () => {
+			await setupCross('hi_lat_memory');
+			const plan = await planRows(db, crossSQL);
+			expect(hasFanOut(plan)).to.equal(true);
+			const ordered = crossSQL + ' order by p.id, b0.v, b1.w';
+			const enabled = await results(db, ordered);
+
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				disabledRules: new Set(['fanout-lookup-join']),
+			});
+			let baseline: Record<string, SqlValue>[];
+			try {
+				baseline = await results(db, ordered);
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+
+			expect(enabled).to.deep.equal(baseline);
+			// p=3 (both branches empty) and p=4 (b1 branch empty) are dropped by
+			// inner-drop semantics — neither appears in the product.
+			expect(enabled).to.deep.equal([
+				{ id: 1, v: 100, w: 5 },
+				{ id: 1, v: 101, w: 5 },
+				{ id: 2, v: 200, w: 6 },
+				{ id: 2, v: 200, w: 7 },
+			]);
+		});
+
+		// The fan-out forms with default tuning (verified above); the guard-trip
+		// cases below tighten a cap so the same chain stays nested-loop. NOTE: the
+		// synthetic memory-vtab fixtures resolve `estimatedRows` to 0 (no row-count
+		// reaches the access plan), so the deterministic way to exercise the gate
+		// is a sub-zero cap (0 > -1). In production the same comparison rejects a
+		// real positive estimate that exceeds a positive cap.
+		it('guard trips: product cap below the cross product leaves a nested-loop chain', async () => {
+			await setupCross('hi_lat_memory');
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				parallel: { ...before.parallel, maxCrossProduct: -1 },
+			});
+			try {
+				const plan = await planRows(db, crossSQL);
+				expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+				expect(joinCount(plan)).to.be.greaterThan(0);
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+		});
+
+		it('guard trips: per-branch cap below the cross branch estimate leaves a nested-loop chain', async () => {
+			await setupCross('hi_lat_memory');
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				parallel: { ...before.parallel, maxCrossBranchRows: -1 },
+			});
+			try {
+				const plan = await planRows(db, crossSQL);
+				expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+				expect(joinCount(plan)).to.be.greaterThan(0);
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+		});
+
+		/**
+		 * A chain that mixes one at-most-one FK→PK branch (`m left join lk`) with
+		 * one cross 1:n branch (`join c on m.id = c.mid`, no FK) → a single
+		 * FanOutLookupJoin carrying both modes.
+		 */
+		async function setupMixed(): Promise<string> {
+			await db.exec('create table lk (id integer primary key, name text) using hi_lat_memory');
+			await db.exec(`create table m (
+				id integer primary key,
+				lk_id integer not null references lk(id)
+			) using memory`);
+			await db.exec('create table c (id integer primary key, mid integer, v integer) using hi_lat_memory');
+			await db.exec("insert into lk values (1, 'Acme'), (2, 'Beta')");
+			await db.exec('insert into m values (1, 1), (2, 2)');
+			await db.exec('insert into c values (10, 1, 100), (11, 1, 101), (12, 2, 200)');
+			return `select m.id, lk.name, c.v
+				 from m
+				 left join lk on m.lk_id = lk.id
+				 join c on m.id = c.mid`;
+		}
+
+		it('mixed chain: one FK→PK at-most-one branch + one cross branch → single fan-out', async () => {
+			const sql = await setupMixed();
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+			expect(fanOutBranchModes(plan)).to.deep.equal(['atMostOne-left', 'cross']);
+			expect(joinCount(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(0);
+		});
+
+		forkExecTest('mixed chain result equals the nested-loop chain', async () => {
+			const sql = await setupMixed();
+			const ordered = sql + ' order by m.id, c.v';
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan)).to.equal(true);
+			const enabled = await results(db, ordered);
+
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				disabledRules: new Set(['fanout-lookup-join']),
+			});
+			let baseline: Record<string, SqlValue>[];
+			try {
+				baseline = await results(db, ordered);
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+			expect(enabled).to.deep.equal(baseline);
+			expect(enabled).to.deep.equal([
+				{ id: 1, name: 'Acme', v: 100 },
+				{ id: 1, name: 'Acme', v: 101 },
+				{ id: 2, name: 'Beta', v: 200 },
+			]);
+		});
+	});
 });

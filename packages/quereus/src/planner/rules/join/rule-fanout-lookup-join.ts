@@ -1,12 +1,19 @@
 /**
- * Rule: Fan-out Lookup Join (FK→PK + correlated scalar-aggregate subqueries)
+ * Rule: Fan-out Lookup Join (FK→PK + 1:n cross + correlated scalar-aggregate
+ * subqueries)
  *
- * Clusters two kinds of at-most-one, per-outer-row branches into one
- * `FanOutLookupJoinNode` that drives them concurrently per outer row:
+ * Clusters per-outer-row branches into one `FanOutLookupJoinNode` that drives
+ * them concurrently per outer row. A branch is either *at-most-one* (≤1 row per
+ * outer row) or *cross* (data-driven 1:n, Cartesian product per outer row):
  *
- *   1. **Join-spine branches.** A chain of N LEFT/INNER nested-loop joins from
- *      a common outer where every join's non-preserved side is a parameterized
- *      FK→PK lookup matching the same alignment `ruleJoinElimination` trusts.
+ *   1. **Join-spine branches.** A chain of N LEFT/INNER/CROSS nested-loop joins
+ *      from a common outer where every join's non-preserved side is a
+ *      parameterized equi-lookup. FK→PK-aligned lookups become at-most-one
+ *      branches (matching the alignment `ruleJoinElimination` trusts); lookups
+ *      that are *not* provably at-most-one (no FK, or FK→non-unique) become
+ *      `cross` branches whose 1:n product is bounded by the row/product guards
+ *      (`tuning.parallel.maxCrossBranchRows` / `maxCrossProduct`). A chain may
+ *      legitimately mix both modes.
  *
  *   2. **Subquery branches.** Correlated scalar-aggregate `ScalarSubqueryNode`s
  *      in the SELECT projection list (e.g. `(select count(*) from c where
@@ -201,6 +208,15 @@ export function ruleFanOutLookupJoin(node: PlanNode, context: OptContext): PlanN
 	const totalBranches = spineBranches.length + subqueryBranches.length;
 	if (totalBranches < tuning.minBranches) return null;
 
+	// Memory-safety gate (before clustering): a `cross` branch's 1:n fan-out
+	// makes the output the Cartesian product of the outer side and every cross
+	// branch. Refuse to cluster when a per-branch estimate or the whole product
+	// blows the configured caps — the chain then stays a streaming nested-loop
+	// join. Subquery branches are always at-most-one, so only spine branches can
+	// be `cross`.
+	const crossLookups = spineBranches.filter(b => b.mode === 'cross').map(b => b.lookup);
+	if (!crossGuardsPass(outerSubtree, crossLookups, tuning)) return null;
+
 	// Cost gate over the COMBINED branch set. `expectedLatencyMs` is populated 0
 	// except on remote-vtab access plans (propagated up through the aggregate
 	// for subquery branches), so this skip keeps the rule inert for local chains.
@@ -394,19 +410,40 @@ function recognizeSubqueryBranch(
 }
 
 /**
- * Decide whether `join`'s `right` side is an FK→PK lookup eligible for branch
- * clustering. The FK side is sourced from `outerSchema` + `outerAttrs` — both
- * the equi-pair's left attribute and its `outerAttrs` membership are checked,
- * which is the safety net keeping per-join alignment honest in the presence
- * of intermediate joins in the chain (the join's own `.left` resolves to a
- * combined relation, so we cannot extract a single schema from it).
+ * Decide whether `join`'s `right` side is a parameterized equi-lookup eligible
+ * for branch clustering, and at what cardinality `mode`. The FK side is sourced
+ * from `outerSchema` + `outerAttrs` — both the equi-pair's left attribute and
+ * its `outerAttrs` membership are checked, which is the safety net keeping
+ * per-join alignment honest in the presence of intermediate joins in the chain
+ * (the join's own `.left` resolves to a combined relation, so we cannot extract
+ * a single schema from it).
+ *
+ * Two cardinality outcomes:
+ *
+ *   - **at-most-one** (`atMostOne-left` / `atMostOne-inner`) — the lookup is
+ *     FK→PK aligned, so each outer row matches ≤1 lookup row. INNER additionally
+ *     requires a covering NOT-NULL FK + a row-preserving path (else it would
+ *     drop or duplicate rows the cluster cannot account for — bail to preserve
+ *     the nested-loop join).
+ *
+ *   - **cross** — a clean parameterized equi-lookup whose FK→PK alignment is
+ *     *absent* (no FK, or FK→non-unique), so the per-outer-row cardinality is
+ *     data-driven (1:n). Only `inner` / `cross` join types qualify; a `left` 1:n
+ *     chain would need nullable-widened cross-left semantics and is out of scope
+ *     for v1 (we bail, leaving it a nested-loop left join). The unbounded
+ *     Cartesian product is gated by the caller's row/product guards.
+ *
+ * Aligned-but-not-at-most-one INNER lookups (nullable FK, non-row-preserving
+ * path) are *not* reclassified as `cross`: FK→PK is still ≤1 match, so the issue
+ * is inner-drop semantics, not cardinality. They bail (return null) exactly as
+ * before, so the chain falls back to a nested-loop join.
  */
 function recognizeBranch(
 	join: JoinNode,
 	outerSchema: TableSchema,
 	outerAttrs: readonly Attribute[],
 ): RecognizedBranch | null {
-	if (join.joinType !== 'left' && join.joinType !== 'inner') return null;
+	if (join.joinType !== 'left' && join.joinType !== 'inner' && join.joinType !== 'cross') return null;
 	if (!join.condition) return null;
 
 	const leftAttrs = join.left.getAttributes();
@@ -423,7 +460,8 @@ function recognizeBranch(
 	// Translate each equi-pair from "(left subtree column index, right column
 	// index)" to "(outer column index, right column index)". The left subtree
 	// may span multiple joins, but the equi-pair's left attribute must
-	// originate in the outer subtree for an FK→PK relationship to make sense.
+	// originate in the outer subtree so the lookup is parameterizable from the
+	// outer row (and, for FK→PK, so the relationship makes sense).
 	const outerCols: number[] = [];
 	const rightCols: number[] = [];
 	for (const p of pairs) {
@@ -438,18 +476,73 @@ function recognizeBranch(
 	const rightSchema = extractTableSchema(join.right);
 	if (!rightSchema) return null;
 
-	if (!checkFkPkAlignment(outerSchema, rightSchema, outerCols, rightCols)) {
-		return null;
+	// At-most-one path: FK→PK alignment guarantees ≤1 match per outer row.
+	if (checkFkPkAlignment(outerSchema, rightSchema, outerCols, rightCols)) {
+		if (join.joinType === 'left') {
+			return { lookup: join.right, mode: 'atMostOne-left', condition: join.condition };
+		}
+		if (join.joinType === 'inner') {
+			const match = lookupCoveringFK(outerSchema, rightSchema, outerCols, rightCols);
+			if (!match || match.nullable) return null;
+			if (!isRowPreservingPathToTable(join.right)) return null;
+			return { lookup: join.right, mode: 'atMostOne-inner', condition: join.condition };
+		}
+		// An aligned `cross` join type (unusual: a cross join carrying an
+		// equi-condition) falls through to the cross treatment below.
 	}
 
-	if (join.joinType === 'inner') {
-		const match = lookupCoveringFK(outerSchema, rightSchema, outerCols, rightCols);
-		if (!match || match.nullable) return null;
-		if (!isRowPreservingPathToTable(join.right)) return null;
+	// Cross path: a clean parameterized equi-lookup that is not provably
+	// at-most-one. INNER/CROSS only — a `left` 1:n chain is out of scope for v1.
+	if (join.joinType === 'inner' || join.joinType === 'cross') {
+		return { lookup: join.right, mode: 'cross', condition: join.condition };
 	}
 
-	const mode: FanOutBranchMode = join.joinType === 'left' ? 'atMostOne-left' : 'atMostOne-inner';
-	return { lookup: join.right, mode, condition: join.condition };
+	return null;
+}
+
+/**
+ * Cross-branch memory guard. A `cross` branch contributes a *data-driven* (1:n)
+ * row count, so the fan-out's output is the Cartesian product of the outer side
+ * and every cross branch. Left ungated, that product can be unbounded, so we
+ * refuse to cluster when:
+ *
+ *   - any cross branch's lookup estimate exceeds `maxCrossBranchRows`, or
+ *   - `outer.estimatedRows × Π(cross-branch estimatedRows)` exceeds
+ *     `maxCrossProduct`.
+ *
+ * Unknown estimates are treated as exceeding the cap (return `false`) so a
+ * missing statistic never authorizes an unbounded product — the chain then
+ * stays a streaming / re-executing nested-loop join, which is already
+ * memory-safe. At-most-one branches are not passed in (they contribute ≤1 row
+ * per outer row and never widen the product).
+ */
+function crossGuardsPass(
+	outer: RelationalPlanNode,
+	crossLookups: readonly RelationalPlanNode[],
+	tuning: { readonly maxCrossBranchRows: number; readonly maxCrossProduct: number },
+): boolean {
+	if (crossLookups.length === 0) return true;
+	const outerEst = rowEstimate(outer);
+	if (outerEst === undefined) return false;
+	let product = outerEst;
+	for (const lk of crossLookups) {
+		const est = rowEstimate(lk);
+		if (est === undefined) return false;
+		if (est > tuning.maxCrossBranchRows) return false;
+		product *= est;
+		if (product > tuning.maxCrossProduct) return false;
+	}
+	return true;
+}
+
+/**
+ * Best-available row estimate for a node: prefer the computed physical estimate
+ * (populated by the stats pass / `computePhysical`), falling back to the node's
+ * own `estimatedRows`. Returns `undefined` when neither is known — callers treat
+ * that conservatively.
+ */
+function rowEstimate(node: RelationalPlanNode): number | undefined {
+	return node.physical?.estimatedRows ?? node.estimatedRows;
 }
 
 function rebuildChain(chain: ReadonlyArray<ChainEntry>, bottom: RelationalPlanNode): RelationalPlanNode {
