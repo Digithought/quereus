@@ -16,14 +16,17 @@
  *      legitimately mix both modes.
  *
  *   2. **Subquery branches.** Correlated scalar-aggregate `ScalarSubqueryNode`s
- *      in the SELECT projection list (e.g. `(select count(*) from c where
- *      c.fk = o.k)`). A scalar aggregate with no GROUP BY emits exactly one row
+ *      found anywhere in the SELECT projection list — bare (`(select count(*)
+ *      from c where c.fk = o.k)`) or wrapped inside a scalar expression
+ *      (`coalesce((select sum(...) ...), 0)`, `json((select json_group_array(
+ *      ...) ...))`). A scalar aggregate with no GROUP BY emits exactly one row
  *      per outer row regardless of how many child rows match — relationally an
  *      `atMostOne-left` branch driven per outer row, exactly what the fan-out
  *      node already does. The subquery's relational root is used verbatim as
  *      the branch child (its correlation predicate is internal and resolves
- *      through `rctx.context`); only the projection's scalar reference is
- *      rewritten to a column reference into the fan-out's wide row.
+ *      through `rctx.context`); only the *inner* `ScalarSubqueryNode` is
+ *      rewritten to a column reference into the fan-out's wide row, leaving any
+ *      wrapping expression (`coalesce(<colref>, 0)`) intact.
  *
  * When the *combined* branch count clears `tuning.parallel.minBranches` AND the
  * projected latency win covers the per-branch setup overhead, the cluster
@@ -42,8 +45,8 @@
  *     to the PK table.
  *
  * Subquery branch eligibility:
- *   - the projection node is *exactly* a `ScalarSubqueryNode` (no wrapping
- *     scalar expression in v1),
+ *   - a `ScalarSubqueryNode` reached anywhere in a projection's scalar
+ *     expression tree (bare or wrapped — `collectScalarSubqueries` finds it),
  *   - the subquery is correlated,
  *   - beneath pass-through wrappers the relational root is aggregate-shaped
  *     with zero grouping keys (⇒ exactly one row per outer),
@@ -195,14 +198,27 @@ export function ruleFanOutLookupJoin(node: PlanNode, context: OptContext): PlanN
 		}
 	}
 
-	// Subquery branches: correlated scalar-aggregate ScalarSubqueryNodes that
-	// appear directly as a projection node.
+	// Subquery branches: correlated scalar-aggregate ScalarSubqueryNodes found
+	// anywhere in a projection's scalar expression tree — bare (`(subq)`) or
+	// wrapped inside a scalar expression (`coalesce((subq), 0)`, `json((subq))`).
+	// `collectScalarSubqueries` walks each projection's scalar tree without
+	// descending into a subquery's own relational body, so a nested inner
+	// subquery stays part of its enclosing branch child rather than clustering
+	// separately.
 	const subqueryBranches: RecognizedSubqueryBranch[] = [];
 	const outerAttrIds = new Set<number>(outerAttrs.map(a => a.id));
+	const seenSubqueries = new Set<ScalarSubqueryNode>();
 	for (const proj of node.projections) {
-		if (!(proj.node instanceof ScalarSubqueryNode)) continue;
-		const recognized = recognizeSubqueryBranch(proj.node, outerAttrIds);
-		if (recognized) subqueryBranches.push(recognized);
+		const candidates: ScalarSubqueryNode[] = [];
+		collectScalarSubqueries(proj.node, candidates);
+		for (const cand of candidates) {
+			if (seenSubqueries.has(cand)) continue;
+			const recognized = recognizeSubqueryBranch(cand, outerAttrIds);
+			if (recognized) {
+				seenSubqueries.add(cand);
+				subqueryBranches.push(recognized);
+			}
+		}
 	}
 
 	const totalBranches = spineBranches.length + subqueryBranches.length;
@@ -343,6 +359,61 @@ export function ruleFanOutLookupJoin(node: PlanNode, context: OptContext): PlanN
 /** Minimal synthetic AST.ColumnExpr for a rewritten projection column ref. */
 function columnExprFor(name: string): AST.ColumnExpr {
 	return { type: 'column', name };
+}
+
+/**
+ * Collect every `ScalarSubqueryNode` reachable in a projection's scalar
+ * expression tree, in deterministic pre-order. A recognized subquery is a leaf
+ * for this walk: we push it and do NOT descend into its relational body, so a
+ * subquery nested *inside* another subquery's correlation predicate remains part
+ * of its enclosing branch child rather than being clustered as its own branch.
+ * (The relational body is filtered out by the `typeClass === 'scalar'` guard
+ * regardless, but stopping early keeps the intent explicit.)
+ */
+function collectScalarSubqueries(expr: ScalarPlanNode, out: ScalarSubqueryNode[]): void {
+	if (expr instanceof ScalarSubqueryNode) {
+		out.push(expr);
+		return;
+	}
+	for (const child of expr.getChildren()) {
+		if (child.getType().typeClass === 'scalar') {
+			collectScalarSubqueries(child as ScalarPlanNode, out);
+		}
+	}
+}
+
+/**
+ * Rebuild a projection's scalar expression with each recognized
+ * `ScalarSubqueryNode` replaced by its `ColumnReferenceNode` into the fan-out's
+ * wide row, leaving the wrapping expression (`coalesce(<colref>, 0)`) intact.
+ * For a bare-subquery projection the root itself is in the map and is returned
+ * directly; for a wrapped subquery the tree is rebuilt via `withChildren` with
+ * only the matched inner node substituted. Returns the input unchanged when no
+ * descendant is a recognized subquery.
+ */
+function substituteSubqueries(
+	expr: ScalarPlanNode,
+	replacements: ReadonlyMap<ScalarSubqueryNode, ColumnReferenceNode>,
+): ScalarPlanNode {
+	if (expr instanceof ScalarSubqueryNode) {
+		return replacements.get(expr) ?? expr;
+	}
+	const children = expr.getChildren();
+	if (children.length === 0) return expr;
+
+	const newChildren: PlanNode[] = [];
+	let changed = false;
+	for (const child of children) {
+		if (child.getType().typeClass === 'scalar') {
+			const replaced = substituteSubqueries(child as ScalarPlanNode, replacements);
+			newChildren.push(replaced);
+			if (replaced !== child) changed = true;
+		} else {
+			newChildren.push(child);
+		}
+	}
+	if (!changed) return expr;
+	return expr.withChildren(newChildren) as ScalarPlanNode;
 }
 
 /**
@@ -588,14 +659,16 @@ function rebuildProject(
 ): ProjectNode {
 	const attributes = project.getAttributes();
 	const newProjections = project.projections.map((p, i) => {
-		// Substitute a recognized subquery projection with the column reference
-		// into the fan-out's wide row; keep the projection's own attributeId/alias.
-		const replacement =
-			subqueryReplacements && p.node instanceof ScalarSubqueryNode
-				? subqueryReplacements.get(p.node)
-				: undefined;
+		// Substitute recognized subquery node(s) anywhere in the projection's
+		// scalar tree with the column reference into the fan-out's wide row. A
+		// bare-subquery projection is replaced wholesale; a wrapped subquery has
+		// only its inner node swapped, leaving the wrapping expression intact. The
+		// projection keeps its own attributeId/alias.
+		const node = subqueryReplacements
+			? substituteSubqueries(p.node, subqueryReplacements)
+			: p.node;
 		return {
-			node: replacement ?? p.node,
+			node,
 			alias: p.alias,
 			attributeId: attributes[i].id,
 		};

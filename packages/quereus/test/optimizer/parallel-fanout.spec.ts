@@ -558,6 +558,124 @@ describe('ruleFanOutLookupJoin', () => {
 			const plan = await planRows(db, sql);
 			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
 		});
+
+		// ------------------------------------------------------------------
+		// Wrapped subqueries: a correlated scalar aggregate nested inside a
+		// scalar expression (coalesce / arithmetic) clusters as a branch, and
+		// the wrapping expression is preserved around the rewritten column ref.
+		// ------------------------------------------------------------------
+
+		// total_v: sum→null for an outer with no `a` rows, so coalesce(...,0)
+		// exercises the wrapper. nb: count→0 (never null) — coalesce is a no-op
+		// but still wraps the inner subquery node.
+		const wrapped2SQL =
+			`select o.k,
+				coalesce((select sum(a.v) from a where a.fk = o.k), 0) as total_v,
+				coalesce((select count(*) from b where b.fk = o.k), -1) as nb
+			 from outer_t o`;
+
+		it('clusters two wrapped (coalesce) subqueries as atMostOne-left branches', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			const plan = await planRows(db, wrapped2SQL);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+			expect(fanOutBranchModes(plan)).to.deep.equal(['atMostOne-left', 'atMostOne-left']);
+		});
+
+		it('clusters a mix of one wrapped + one bare subquery', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			const sql =
+				`select o.k,
+					coalesce((select sum(a.v) from a where a.fk = o.k), 0) as total_v,
+					(select count(*) from b where b.fk = o.k) as nb
+				 from outer_t o`;
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+			expect(fanOutBranchModes(plan)).to.deep.equal(['atMostOne-left', 'atMostOne-left']);
+		});
+
+		it('clusters two subqueries wrapped in a single projection expression', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			// Both subqueries live inside ONE projection (the `+` expression) — the
+			// per-projection walk must find both and cluster them as two branches.
+			const sql =
+				`select o.k,
+					coalesce((select sum(a.v) from a where a.fk = o.k), 0)
+						+ coalesce((select count(*) from b where b.fk = o.k), 0) as combined
+				 from outer_t o`;
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+			expect(fanOutBranchModes(plan)).to.deep.equal(['atMostOne-left', 'atMostOne-left']);
+		});
+
+		forkExecTest('wrapped subquery result correctness: enabled vs disabled, coalesce applies on empty', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			const plan = await planRows(db, wrapped2SQL);
+			expect(hasFanOut(plan)).to.equal(true);
+			const enabled = await results(db, wrapped2SQL + ' order by o.k');
+
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				disabledRules: new Set(['fanout-lookup-join']),
+			});
+			let disabled: Record<string, SqlValue>[];
+			try {
+				disabled = await results(db, wrapped2SQL + ' order by o.k');
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+
+			expect(enabled).to.deep.equal(disabled);
+			expect(enabled).to.deep.equal([
+				// k=1: sum(a.v) = 100+101 = 201; count(b) = 2
+				{ k: 1, total_v: 201, nb: 2 },
+				// k=2: sum(a.v) = 200; count(b) = 0 (coalesce(0,-1) = 0, not -1)
+				{ k: 2, total_v: 200, nb: 0 },
+				// k=3: no `a` rows ⇒ sum→null ⇒ coalesce→0; count(b)=0
+				{ k: 3, total_v: 0, nb: 0 },
+			]);
+		});
+
+		forkExecTest('two-subqueries-in-one-projection result correctness', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			const sql =
+				`select o.k,
+					coalesce((select sum(a.v) from a where a.fk = o.k), 0)
+						+ coalesce((select count(*) from b where b.fk = o.k), 0) as combined
+				 from outer_t o`;
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan)).to.equal(true);
+			const enabled = await results(db, sql + ' order by o.k');
+
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({ ...before, disabledRules: new Set(['fanout-lookup-join']) });
+			let disabled: Record<string, SqlValue>[];
+			try {
+				disabled = await results(db, sql + ' order by o.k');
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+			expect(enabled).to.deep.equal(disabled);
+			expect(enabled).to.deep.equal([
+				{ k: 1, combined: 203 }, // 201 + 2
+				{ k: 2, combined: 200 }, // 200 + 0
+				{ k: 3, combined: 0 },   // 0 + 0
+			]);
+		});
+
+		it('GROUP BY subquery wrapped in coalesce is still rejected', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			// The wrapped subquery has a GROUP BY (may yield >1 row) → rejected even
+			// though it is reached through the coalesce wrapper. Only the bare second
+			// subquery is recognizable, dropping below minBranches=2 → no fan-out.
+			const sql =
+				`select o.k,
+					coalesce((select count(*) from a where a.fk = o.k group by a.v), 0) as x,
+					(select count(*) from b where b.fk = o.k) as y
+				 from outer_t o`;
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		});
 	});
 
 	// ----------------------------------------------------------------------
