@@ -18,6 +18,12 @@ import { createStrictRowContextMap, wrapTableContextsStrict } from '../../src/ru
 import type { RuntimeContext } from '../../src/runtime/types.js';
 import type { Row } from '../../src/common/types.js';
 import type { RowDescriptor } from '../../src/planner/nodes/plan-node.js';
+import {
+	ConcurrencyTracker,
+	controllableSource,
+	makeDeferred,
+	type Deferred,
+} from '../util/controllable-source.js';
 
 const mockScope = { resolveSymbol: () => undefined } as unknown as Scope;
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -134,6 +140,19 @@ function rowSource(rows: Row[], delayMs = 0): (innerCtx: RuntimeContext) => Asyn
 			yield r;
 		}
 	})();
+}
+
+/**
+ * Single-row gated source for concurrency proofs. The branch parks at a gate
+ * (reporting into `tracker`) until released, so a test can assert how many
+ * branches are simultaneously in-flight without any wall-clock.
+ */
+function gatedSingleRow(
+	row: Row,
+	tracker: ConcurrencyTracker,
+	gate: Deferred,
+): (innerCtx: RuntimeContext) => AsyncIterable<Row> {
+	return controllableSource({ rows: [row], tracker, gates: [gate] }).factory;
 }
 
 describe('AsyncGather', () => {
@@ -488,34 +507,95 @@ describe('AsyncGather', () => {
 			expect(out).to.deep.equal([]);
 		});
 
-		it('drives branches concurrently with cap=N (~50ms for 3 branches × 50ms)', async () => {
+		it('drives branches concurrently with cap=N (peak in-flight reaches N)', async () => {
 			const ctx = makeRuntimeContext();
-			const factories = [50, 50, 50].map(d => rowSource([[1]], d));
-			const start = Date.now();
-			const out = await collect(runUnionAll(ctx, factories, 3));
-			const elapsed = Date.now() - start;
-			expect(out).to.have.lengthOf(3);
-			// One wave: 50ms target with broad jitter band.
-			expect(elapsed).to.be.lessThan(175, `expected single wave, got ${elapsed}ms`);
+			const n = 3;
+			const tracker = new ConcurrencyTracker();
+			const gates = Array.from({ length: n }, () => makeDeferred());
+			const factories = gates.map((g, i) => gatedSingleRow([i + 1] as Row, tracker, g));
+
+			const iter = runUnionAll(ctx, factories, n)[Symbol.asyncIterator]();
+			const firstPull = iter.next();
+			// All N branches park at their gate at once → cap=N admits true parallelism.
+			await tracker.waitForInFlight(n);
+			expect(tracker.peak).to.equal(n, 'cap=N must admit all branches concurrently');
+
+			for (const g of gates) g.resolve();
+			const out: Row[] = [];
+			let r = await firstPull;
+			while (!r.done) { out.push(r.value); r = await iter.next(); }
+			expect(out).to.have.lengthOf(n);
 		});
 
-		it('cap=1 serializes branches (~150ms for 3 × 50ms)', async () => {
+		it('cap=1 serializes branches (peak in-flight never exceeds 1)', async () => {
 			const ctx = makeRuntimeContext();
-			const factories = [50, 50, 50].map(d => rowSource([[1]], d));
-			const start = Date.now();
-			await collect(runUnionAll(ctx, factories, 1));
-			const elapsed = Date.now() - start;
-			expect(elapsed).to.be.greaterThan(125, `expected three serial waves, got ${elapsed}ms`);
+			const n = 3;
+			const tracker = new ConcurrencyTracker();
+			const gates = Array.from({ length: n }, () => makeDeferred());
+			const factories = gates.map((g, i) => gatedSingleRow([i] as Row, tracker, g));
+
+			// Pre-release every gate: cap=1 forces the driver to admit branches strictly
+			// one at a time regardless of gate readiness, so the peak in-flight the
+			// tracker observes is the deterministic proof of serialization.
+			for (const g of gates) g.resolve();
+			const out = await collect(runUnionAll(ctx, factories, 1));
+			expect(out).to.have.lengthOf(n);
+			expect(tracker.peak).to.equal(1, 'cap=1 must serialize: peak in-flight stays at 1');
 		});
 
-		it('concurrencyCap < N runs in waves (N=4, cap=2, ~100ms)', async () => {
+		it('concurrencyCap < N caps peak in-flight (N=4, cap=2)', async () => {
 			const ctx = makeRuntimeContext();
-			const factories = [50, 50, 50, 50].map(d => rowSource([[1]], d));
-			const start = Date.now();
-			await collect(runUnionAll(ctx, factories, 2));
-			const elapsed = Date.now() - start;
-			expect(elapsed).to.be.greaterThan(75, `expected ~2 waves, got ${elapsed}ms`);
-			expect(elapsed).to.be.lessThan(225, `expected ~2 waves, got ${elapsed}ms`);
+			const n = 4;
+			const cap = 2;
+			const tracker = new ConcurrencyTracker();
+			const gates = Array.from({ length: n }, () => makeDeferred());
+			const factories = gates.map((g, i) => gatedSingleRow([i] as Row, tracker, g));
+
+			const iter = runUnionAll(ctx, factories, cap)[Symbol.asyncIterator]();
+			const out: Row[] = [];
+			let pending = iter.next();
+			// Initial wave fills exactly the cap.
+			await tracker.waitForInFlight(cap);
+			expect(tracker.inFlight).to.equal(cap, 'initial wave fills the cap');
+			for (let i = 0; i < n; i++) {
+				gates[i].resolve();
+				const r = await pending;
+				expect(r.done).to.equal(false);
+				out.push(r.value);
+				pending = iter.next();
+			}
+			expect((await pending).done).to.equal(true);
+			expect(out).to.have.lengthOf(n);
+			expect(tracker.peak).to.be.at.most(cap, `peak in-flight must respect cap: ${tracker.peak}`);
+			expect(tracker.peak).to.be.greaterThan(1, 'expected real concurrency under the cap');
+		});
+
+		it('arrival order follows the order gates are released (deterministic interleave)', async () => {
+			// Two branches; release branch-1's row first, then branch-0's. The gather
+			// yields in arrival order, so the controlled release order fixes the
+			// interleave deterministically — no timer race.
+			const ctx = makeRuntimeContext();
+			const tracker = new ConcurrencyTracker();
+			const g0 = makeDeferred();
+			const g1 = makeDeferred();
+			const factories = [
+				gatedSingleRow(['a'] as Row, tracker, g0),
+				gatedSingleRow(['b'] as Row, tracker, g1),
+			];
+
+			const iter = runUnionAll(ctx, factories, 2)[Symbol.asyncIterator]();
+			const firstPull = iter.next();
+			await tracker.waitForInFlight(2); // both parked, neither has yielded yet
+
+			g1.resolve(); // branch 1 arrives first
+			const r0 = await firstPull;
+			expect(r0.value).to.deep.equal(['b']);
+
+			g0.resolve(); // branch 0 arrives second
+			const r1 = await iter.next();
+			expect(r1.value).to.deep.equal(['a']);
+
+			expect((await iter.next()).done).to.equal(true);
 		});
 
 		it('outer ordering is not preserved (multiset, not list)', async () => {
@@ -666,22 +746,37 @@ describe('AsyncGather', () => {
 			expect(set.size).to.equal(24);
 		});
 
-		it('drives the production phase concurrently (cap=3, 3 × 50ms ≈ 50ms)', async () => {
+		it('drives the production phase concurrently (cap=3, peak in-flight reaches 3)', async () => {
 			const ctx = makeRuntimeContext();
-			const factories = [50, 50, 50].map(d => rowSource([[1]], d));
-			const start = Date.now();
-			await collect(runCrossProduct(ctx, factories, 3));
-			const elapsed = Date.now() - start;
-			expect(elapsed).to.be.lessThan(175, `expected single concurrent wave, got ${elapsed}ms`);
+			const n = 3;
+			const tracker = new ConcurrencyTracker();
+			const gates = Array.from({ length: n }, () => makeDeferred());
+			const factories = gates.map((g, i) => gatedSingleRow([i] as Row, tracker, g));
+
+			// crossProduct drains every branch before yielding; collect in parallel and
+			// prove all branches were producing simultaneously before releasing them.
+			const done = collect(runCrossProduct(ctx, factories, n));
+			await tracker.waitForInFlight(n);
+			expect(tracker.peak).to.equal(n, 'cap=N must drive all branch productions concurrently');
+			for (const g of gates) g.resolve();
+			const out = await done;
+			expect(out).to.have.lengthOf(1); // 1×1×1 product
 		});
 
-		it('cap=1 serializes production (3 × 50ms ≈ 150ms)', async () => {
+		it('cap=1 serializes production (peak in-flight never exceeds 1)', async () => {
 			const ctx = makeRuntimeContext();
-			const factories = [50, 50, 50].map(d => rowSource([[1]], d));
-			const start = Date.now();
-			await collect(runCrossProduct(ctx, factories, 1));
-			const elapsed = Date.now() - start;
-			expect(elapsed).to.be.greaterThan(125, `expected serial production, got ${elapsed}ms`);
+			const n = 3;
+			const tracker = new ConcurrencyTracker();
+			const gates = Array.from({ length: n }, () => makeDeferred());
+			const factories = gates.map((g, i) => gatedSingleRow([i] as Row, tracker, g));
+
+			// Pre-release every gate: with cap=1 the driver still admits only one branch
+			// production at a time regardless of gate availability, so the peak in-flight
+			// the tracker observes is the deterministic proof of serialization.
+			const done = collect(runCrossProduct(ctx, factories, 1));
+			for (const g of gates) g.resolve();
+			await done;
+			expect(tracker.peak).to.equal(1, 'cap=1 must serialize production: peak stays at 1');
 		});
 	});
 
@@ -804,22 +899,35 @@ describe('AsyncGather', () => {
 			expect(set.has(JSON.stringify(['y', 1, 'a2', 'b2']))).to.equal(true);
 		});
 
-		it('drives branches concurrently with cap=3 (3 × 50ms ≈ one wave)', async () => {
+		it('drives branches concurrently with cap=3 (peak in-flight reaches 3)', async () => {
 			const ctx = makeRuntimeContext();
-			const factories = [50, 50, 50].map((d, i) => rowSource([[i, `v${i}`]], d));
-			const start = Date.now();
-			await collect(runZipByKey(ctx, factories, [[0], [0], [0]], [[1], [1], [1]], cmp1, 3));
-			const elapsed = Date.now() - start;
-			expect(elapsed).to.be.lessThan(175, `expected single concurrent wave, got ${elapsed}ms`);
+			const n = 3;
+			const tracker = new ConcurrencyTracker();
+			const gates = Array.from({ length: n }, () => makeDeferred());
+			// Distinct keys per branch so no merge collapses the row count.
+			const factories = gates.map((g, i) => gatedSingleRow([i, `v${i}`] as Row, tracker, g));
+
+			const done = collect(runZipByKey(ctx, factories, [[0], [0], [0]], [[1], [1], [1]], cmp1, n));
+			await tracker.waitForInFlight(n);
+			expect(tracker.peak).to.equal(n, 'cap=N must drive all branches concurrently');
+			for (const g of gates) g.resolve();
+			const out = await done;
+			expect(out).to.have.lengthOf(n); // three distinct keys → three rows
 		});
 
-		it('cap=1 serializes branches (3 × 50ms ≈ 150ms)', async () => {
+		it('cap=1 serializes branches (peak in-flight never exceeds 1)', async () => {
 			const ctx = makeRuntimeContext();
-			const factories = [50, 50, 50].map((d, i) => rowSource([[i, `v${i}`]], d));
-			const start = Date.now();
-			await collect(runZipByKey(ctx, factories, [[0], [0], [0]], [[1], [1], [1]], cmp1, 1));
-			const elapsed = Date.now() - start;
-			expect(elapsed).to.be.greaterThan(125, `expected serial production, got ${elapsed}ms`);
+			const n = 3;
+			const tracker = new ConcurrencyTracker();
+			const gates = Array.from({ length: n }, () => makeDeferred());
+			const factories = gates.map((g, i) => gatedSingleRow([i, `v${i}`] as Row, tracker, g));
+
+			const done = collect(runZipByKey(ctx, factories, [[0], [0], [0]], [[1], [1], [1]], cmp1, 1));
+			// Pre-release every gate: cap=1 forces the driver to run branches strictly
+			// one at a time, so peak in-flight is the deterministic serialization proof.
+			for (const g of gates) g.resolve();
+			await done;
+			expect(tracker.peak).to.equal(1, 'cap=1 must serialize: peak stays at 1');
 		});
 	});
 

@@ -4,6 +4,12 @@ import { RowContextMap, createRowSlot } from '../../src/runtime/context-helpers.
 import type { RuntimeContext } from '../../src/runtime/types.js';
 import type { RowDescriptor } from '../../src/planner/nodes/plan-node.js';
 import type { Row } from '../../src/common/types.js';
+import {
+	ConcurrencyTracker,
+	controllableSource,
+	type ControllableHooks,
+	type Deferred,
+} from '../util/controllable-source.js';
 
 /**
  * Build a minimal RuntimeContext suitable for the primitive's own unit tests.
@@ -22,58 +28,40 @@ function makeRuntimeContext(): RuntimeContext {
 	};
 }
 
-interface MockSourceOptions {
+interface GatedSourceOptions {
 	/** Number of rows to produce before completing. */
 	rows: number;
-	/** Delay in ms before each yield. */
-	delayMs?: number;
+	/** Per-yield gates; defaults to one auto-created gate per row. */
+	gates?: ReadonlyArray<Deferred>;
+	/** Shared concurrency tracker the branch reports into at each gate. */
+	tracker?: ConcurrencyTracker;
 	/** Row index (0-based) at which to throw instead of yielding. */
 	throwAtRow?: number;
 	/** Error to throw if `throwAtRow` triggers; default: a fresh Error. */
 	throwError?: Error;
 	/** Records iterator-lifecycle events for later assertion. */
-	hooks?: {
-		onStart?: () => void;
-		onReturn?: () => void;
-		onError?: (err: unknown) => void;
-		onComplete?: () => void;
-	};
+	hooks?: ControllableHooks;
 }
 
 /**
- * Async generator-based mock source. Each pre-yield delay simulates async I/O,
- * `throwAtRow` injects a deterministic failure, and `hooks` lets the test verify
- * that the iterator's `return()` was called on cancellation.
+ * Gate-driven source. Each row's emission blocks on a {@link Deferred} the test
+ * resolves, so interleavings are deterministic rather than timer-driven. While
+ * parked the branch counts as in-flight in the shared tracker, and `hooks` let
+ * the test verify the iterator's `return()` ran on cancellation.
  */
-function mockSource(opts: MockSourceOptions): (ctx: RuntimeContext) => AsyncIterable<Row> {
-	return (_ctx: RuntimeContext): AsyncIterable<Row> => {
-		return (async function* () {
-			opts.hooks?.onStart?.();
-			let completedNormally = false;
-			try {
-				for (let i = 0; i < opts.rows; i++) {
-					if (opts.delayMs && opts.delayMs > 0) {
-						await new Promise(r => setTimeout(r, opts.delayMs));
-					}
-					if (opts.throwAtRow !== undefined && i === opts.throwAtRow) {
-						const err = opts.throwError ?? new Error(`mock source threw at row ${i}`);
-						opts.hooks?.onError?.(err);
-						throw err;
-					}
-					yield [i] as Row;
-				}
-				completedNormally = true;
-				opts.hooks?.onComplete?.();
-			} finally {
-				// `onReturn` fires only when the generator's finally is triggered by
-				// something other than natural completion — i.e. an upstream return()
-				// or an in-iterator throw.
-				if (!completedNormally) {
-					opts.hooks?.onReturn?.();
-				}
-			}
-		})();
-	};
+function gatedSource(opts: GatedSourceOptions): {
+	factory: (ctx: RuntimeContext) => AsyncIterable<Row>;
+	gates: ReadonlyArray<Deferred>;
+} {
+	const handle = controllableSource({
+		rows: Array.from({ length: opts.rows }, (_, i) => [i] as Row),
+		gates: opts.gates,
+		tracker: opts.tracker,
+		throwAtRow: opts.throwAtRow,
+		throwError: opts.throwError,
+		hooks: opts.hooks,
+	});
+	return { factory: handle.factory, gates: handle.gates };
 }
 
 /** Collect all driven items into an array. */
@@ -215,38 +203,77 @@ describe('ParallelDriver', () => {
 	});
 
 	describe('drive() — concurrency', () => {
-		it('runs branches in parallel by default (unbounded concurrency)', async () => {
+		it('runs branches in parallel by default (all N reach their gate at once)', async () => {
 			const driver = new ParallelDriver();
 			const parent = makeRuntimeContext();
-			const forks = driver.fork(parent, 4);
-			const factories = [50, 50, 50, 50].map(d => mockSource({ rows: 1, delayMs: d }));
+			const n = 4;
+			const forks = driver.fork(parent, n);
 
-			const start = Date.now();
-			const items = await collect(driver.drive(factories, forks));
-			const elapsed = Date.now() - start;
+			const tracker = new ConcurrencyTracker();
+			const sources = Array.from({ length: n }, () => gatedSource({ rows: 1, tracker }));
+			const factories = sources.map(s => s.factory);
 
-			expect(items).to.have.lengthOf(4);
-			// Loose upper bound — wide enough to absorb timer / CI jitter while still
-			// proving the four 50ms waits ran in parallel (which would otherwise total ~200ms).
-			expect(elapsed).to.be.lessThan(150, `expected parallel run, got ${elapsed}ms`);
+			// Begin driving; do not release any gate yet.
+			const driven = driver.drive(factories, forks);
+			const iter = driven[Symbol.asyncIterator]();
+			const firstPull = iter.next();
+
+			// Deterministic proof of parallelism: all N branches are parked at their
+			// gate simultaneously — no wall-clock involved.
+			await tracker.waitForInFlight(n);
+			expect(tracker.inFlight).to.equal(n, 'all branches must be in-flight before any gate is released');
+			expect(tracker.peak).to.equal(n, 'peak concurrency must reach N (true parallelism)');
+
+			// Release every gate and drain.
+			for (const s of sources) for (const g of s.gates) g.resolve();
+			const items: Array<{ branch: number }> = [];
+			let r = await firstPull;
+			while (!r.done) {
+				items.push(r.value);
+				r = await iter.next();
+			}
+
+			expect(items).to.have.lengthOf(n);
 			expect(items.map(i => i.branch).sort((a, b) => a - b)).to.deep.equal([0, 1, 2, 3]);
 		});
 
-		it('respects concurrency cap', async () => {
+		it('respects concurrency cap (peak in-flight never exceeds cap)', async () => {
 			const driver = new ParallelDriver();
 			const parent = makeRuntimeContext();
-			const forks = driver.fork(parent, 4);
-			const factories = [50, 50, 50, 50].map(d => mockSource({ rows: 1, delayMs: d }));
+			const n = 4;
+			const cap = 2;
+			const forks = driver.fork(parent, n);
 
-			const start = Date.now();
-			const items = await collect(driver.drive(factories, forks, { concurrency: 2 }));
-			const elapsed = Date.now() - start;
+			const tracker = new ConcurrencyTracker();
+			const sources = Array.from({ length: n }, () => gatedSource({ rows: 1, tracker }));
+			const factories = sources.map(s => s.factory);
 
-			expect(items).to.have.lengthOf(4);
-			// concurrency=2 means two waves of two 50ms sleeps → roughly 100ms.
-			// Tolerance band: between one wave (50ms) and four waves (200ms), exclusive.
-			expect(elapsed).to.be.greaterThan(75, `expected ~2 waves, got ${elapsed}ms`);
-			expect(elapsed).to.be.lessThan(175, `expected ~2 waves, got ${elapsed}ms`);
+			const items: Array<{ branch: number }> = [];
+			// Drive with a cap; release gates incrementally so the driver must start a
+			// fresh branch only as an in-flight one finishes. The tracker proves the
+			// cap was honoured the whole way through, deterministically.
+			const driven = driver.drive(factories, forks, { concurrency: cap });
+			const iter = driven[Symbol.asyncIterator]();
+			let pending = iter.next();
+
+			// Initial wave: exactly `cap` branches parked.
+			await tracker.waitForInFlight(cap);
+			expect(tracker.inFlight).to.equal(cap, 'initial wave must fill exactly the cap');
+
+			for (let released = 0; released < n; released++) {
+				// Release the lowest-indexed still-gated branch.
+				sources[released].gates[0].resolve();
+				const r = await pending;
+				expect(r.done).to.equal(false);
+				items.push(r.value);
+				pending = iter.next();
+			}
+			const tail = await pending;
+			expect(tail.done).to.equal(true);
+
+			expect(items).to.have.lengthOf(n);
+			expect(tracker.peak).to.be.at.most(cap, `peak in-flight must never exceed cap: ${tracker.peak}`);
+			expect(items.map(i => i.branch).sort((a, b) => a - b)).to.deep.equal([0, 1, 2, 3]);
 		});
 	});
 
@@ -254,24 +281,38 @@ describe('ParallelDriver', () => {
 		it('cancels remaining branches and rejects with the original error', async () => {
 			const driver = new ParallelDriver();
 			const parent = makeRuntimeContext();
-			const forks = driver.fork(parent, 4);
+			const n = 4;
+			const forks = driver.fork(parent, n);
 
 			const returns = [false, false, false, false];
 			const sourceError = new Error('branch 1 boom');
+			const tracker = new ConcurrencyTracker();
 
-			const factories = [
-				mockSource({ rows: 5, delayMs: 20, hooks: { onReturn: () => { returns[0] = true; } } }),
-				mockSource({
-					rows: 5, delayMs: 20, throwAtRow: 2, throwError: sourceError,
+			// Branch 1 throws on its first gate; the siblings each park on their gate
+			// and are never released — so when branch 1 errors, branches 0/2/3 are
+			// provably still in-flight and must be return()-closed by the driver.
+			const sources = [
+				gatedSource({ rows: 1, tracker, hooks: { onReturn: () => { returns[0] = true; } } }),
+				gatedSource({
+					rows: 1, tracker, throwAtRow: 0, throwError: sourceError,
 					hooks: { onReturn: () => { returns[1] = true; } },
 				}),
-				mockSource({ rows: 5, delayMs: 20, hooks: { onReturn: () => { returns[2] = true; } } }),
-				mockSource({ rows: 5, delayMs: 20, hooks: { onReturn: () => { returns[3] = true; } } }),
+				gatedSource({ rows: 1, tracker, hooks: { onReturn: () => { returns[2] = true; } } }),
+				gatedSource({ rows: 1, tracker, hooks: { onReturn: () => { returns[3] = true; } } }),
 			];
+			const factories = sources.map(s => s.factory);
+
+			const drivePromise = collect(driver.drive(factories, forks));
+
+			// Wait until every branch is parked at its gate (deterministic), then fire
+			// branch 1's gate so it throws while the siblings are still in-flight.
+			await tracker.waitForInFlight(n);
+			expect(tracker.peak).to.equal(n, 'all siblings must be in-flight when branch 1 errors');
+			sources[1].gates[0].resolve();
 
 			let caught: unknown = undefined;
 			try {
-				await collect(driver.drive(factories, forks));
+				await drivePromise;
 			} catch (e) {
 				caught = e;
 			}
@@ -287,15 +328,26 @@ describe('ParallelDriver', () => {
 		it('closes every active branch when the consumer breaks early', async () => {
 			const driver = new ParallelDriver();
 			const parent = makeRuntimeContext();
-			const forks = driver.fork(parent, 3);
+			const n = 3;
+			const forks = driver.fork(parent, n);
 
 			const returns = [false, false, false];
-			const factories = [0, 1, 2].map(i =>
-				mockSource({
-					rows: 10, delayMs: 10,
+			const tracker = new ConcurrencyTracker();
+			// Each branch has two rows but only the first gate is released, so every
+			// branch is provably still mid-stream (a second row pending behind an
+			// unreleased gate) when the consumer breaks — the driver must
+			// return()-close all three live siblings.
+			const sources = [0, 1, 2].map(i =>
+				gatedSource({
+					rows: 2, tracker,
 					hooks: { onReturn: () => { returns[i] = true; } },
 				}),
 			);
+			const factories = sources.map(s => s.factory);
+
+			// Release each branch's first-row gate so they can each emit one row; the
+			// second row stays gated, guaranteeing none can complete on its own.
+			for (const s of sources) s.gates[0].resolve();
 
 			let count = 0;
 			for await (const _item of driver.drive(factories, forks)) {
@@ -316,10 +368,10 @@ describe('ParallelDriver', () => {
 
 			let started = 0;
 			const factories = [0, 1, 2].map(() =>
-				mockSource({
-					rows: 1, delayMs: 0,
+				gatedSource({
+					rows: 1,
 					hooks: { onStart: () => { started++; } },
-				}),
+				}).factory,
 			);
 
 			const controller = new AbortController();

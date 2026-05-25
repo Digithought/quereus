@@ -5,6 +5,7 @@ import { createStrictRowContextMap, wrapTableContextsStrict } from '../../src/ru
 import type { RuntimeContext } from '../../src/runtime/types.js';
 import type { Row } from '../../src/common/types.js';
 import type { RowDescriptor } from '../../src/planner/nodes/plan-node.js';
+import { makeDeferred } from '../util/controllable-source.js';
 
 function makeRuntimeContext(): RuntimeContext {
 	return {
@@ -89,9 +90,13 @@ describe('EagerPrefetch', () => {
 		it('pre-fetches additional rows while the consumer is busy elsewhere', async () => {
 			const ctx = makeRuntimeContext();
 			let yielded = 0;
+			// `allPulled` resolves the instant the source has produced its 5th row,
+			// which can only happen if the pump kept fetching without consumer demand.
+			const allPulled = makeDeferred();
 			const source = (_inner: RuntimeContext): AsyncIterable<Row> => (async function* () {
 				for (let i = 0; i < 5; i++) {
 					yielded++;
+					if (yielded === 5) allPulled.resolve();
 					yield [i] as Row;
 				}
 			})();
@@ -101,9 +106,9 @@ describe('EagerPrefetch', () => {
 			const first = await iter.next();
 			expect(first.value).to.deep.equal([0]);
 
-			// Simulate the consumer being busy. The pump should keep filling the buffer.
-			await sleep(20);
-			// With a buffer of 8 and 5 total rows, the pump should have pulled them all by now.
+			// The consumer stays idle; with a buffer of 8 the pump must drain all 5
+			// rows on its own. Awaiting `allPulled` proves the prefetch deterministically.
+			await allPulled.promise;
 			expect(yielded).to.equal(5, `pump did not pre-fetch: only ${yielded} of 5 rows yielded`);
 
 			// Cleanup.
@@ -113,22 +118,30 @@ describe('EagerPrefetch', () => {
 
 	describe('build/probe overlap (the headline win)', () => {
 		it("starts the probe's first fetch during the build window, not after it", async () => {
-			// Mirrors a BloomJoin: the consumer drains the "build" (a sleep) to
-			// completion before touching the probe. With eager-on-construction the
-			// probe's first network round-trip is already in flight while the build
-			// materializes; with the old lazy behavior it would not fire until the
-			// drain below begins (i.e. at ~buildMs).
+			// Mirrors a BloomJoin: the consumer drains the "build" to completion before
+			// touching the probe. With eager-on-construction the probe's first fetch is
+			// already in flight while the build materializes; the old lazy behavior would
+			// not fire it until the drain below began.
+			//
+			// Deterministic proof via event ordering: both the probe's first fetch and
+			// the build-complete marker append to a shared trace. Because the pump starts
+			// the probe synchronously on construction, the probe-first-fetch event is
+			// recorded before we ever signal the build complete — independent of timing.
 			const ctx = makeRuntimeContext();
-			const buildMs = 80;
-			const t0 = Date.now();
-			let firstFetchAt = -1;
+			const trace: string[] = [];
+			const firstFetchSeen = makeDeferred();
+
 			const probeSource = (_inner: RuntimeContext): AsyncIterable<Row> => ({
 				[Symbol.asyncIterator]() {
 					let i = 0;
+					let recorded = false;
 					return {
 						async next(): Promise<IteratorResult<Row>> {
-							if (firstFetchAt < 0) firstFetchAt = Date.now() - t0;
-							await sleep(5);
+							if (!recorded) {
+								recorded = true;
+								trace.push('probe-first-fetch');
+								firstFetchSeen.resolve();
+							}
 							if (i >= 3) return { done: true, value: undefined as unknown as Row };
 							return { done: false, value: [i++] as Row };
 						},
@@ -136,10 +149,12 @@ describe('EagerPrefetch', () => {
 				},
 			});
 
-			// Construct the prefetch — the pump starts now. Then simulate the slow
-			// build phase before draining the probe.
+			// Construct the prefetch — the eager pump issues the probe's first fetch now.
 			const iter = prefetchAsyncIterable(ctx, probeSource, 8)[Symbol.asyncIterator]();
-			await sleep(buildMs);
+			// The "build phase": wait until the probe has provably fetched, then mark the
+			// build done. Ordering is guaranteed by eager-on-construction, not by a clock.
+			await firstFetchSeen.promise;
+			trace.push('build-complete');
 
 			const out: Row[] = [];
 			while (true) {
@@ -149,49 +164,60 @@ describe('EagerPrefetch', () => {
 			}
 
 			expect(out).to.deep.equal([[0], [1], [2]]);
-			// Headline assertion: the probe's first fetch landed DURING the build
-			// window (well before it completed), proving the overlap. Wide CI band
-			// matching the other parallel wall-clock tests.
-			expect(firstFetchAt).to.be.greaterThanOrEqual(0, 'probe must have fetched');
-			expect(firstFetchAt).to.be.lessThan(buildMs / 2,
-				`probe first-fetch should overlap the build window (~0ms), got ${firstFetchAt}ms of a ${buildMs}ms build`);
+			// Headline assertion: the probe's first fetch was recorded before the build
+			// completed — the overlap, proven by event ordering rather than wall-clock.
+			expect(trace.indexOf('probe-first-fetch')).to.be.greaterThanOrEqual(0, 'probe must have fetched');
+			expect(trace.indexOf('probe-first-fetch'))
+				.to.be.lessThan(trace.indexOf('build-complete'),
+					'probe first-fetch must occur before build-complete (build/probe overlap)');
 		});
 	});
 
 	describe('back-pressure / bounded buffer', () => {
-		it('producer pauses when buffer fills and no one is consuming', async () => {
+		it('producer pauses when buffer fills and advances exactly one per consume', async () => {
 			const ctx = makeRuntimeContext();
 			const bufferSize = 3;
-			// "Infinite-ish" fast source.
+
+			// Each pull records its index into `produced` and resolves a per-index
+			// "pulled" deferred. The pump always pulls one more than what fits (buffer
+			// + the in-flight row whose push blocks), so awaiting a specific pulled[i]
+			// lets us observe the pump's exact progress deterministically — no sleeps.
 			let produced = 0;
+			const pulled: Array<ReturnType<typeof makeDeferred>> = Array.from({ length: 32 }, () => makeDeferred());
 			const source = (_inner: RuntimeContext): AsyncIterable<Row> => (async function* () {
 				for (let i = 0; i < 1_000_000; i++) {
 					produced++;
+					if (i < pulled.length) pulled[i].resolve();
 					yield [i] as Row;
 				}
 			})();
 
 			const iter = prefetchAsyncIterable(ctx, source, bufferSize)[Symbol.asyncIterator]();
-			// Trigger the pump by demanding the first row, then back off and let the
-			// pump race the source. With no further consumer demand the pump must
-			// stop after filling the buffer.
+
+			// Deliver the first row to the consumer. The pump then fills the buffer
+			// (bufferSize rows) plus pulls one more whose push blocks on the full buffer.
 			const first = await iter.next();
 			expect(first.done).to.equal(false);
-			await sleep(50);
 
-			// Pump can hold at most: 1 row already delivered to consumer + bufferSize
-			// rows in the buffer + 1 row in flight pulled from source but not yet pushed.
-			expect(produced).to.be.at.most(bufferSize + 2,
-				`pump ran away: produced=${produced}, buffer=${bufferSize}`);
+			// Wait until the pump has pulled exactly the row that must block on push:
+			// 1 delivered + bufferSize buffered + 1 in-flight = bufferSize + 2 pulls.
+			// Indices are 0-based, so the blocking pull is index bufferSize + 1.
+			await pulled[bufferSize + 1].promise;
+			// Yield once more so the now-full push settles into its awaiting state.
+			await Promise.resolve();
+			expect(produced).to.equal(bufferSize + 2,
+				`pump must pause after buffer fills: produced=${produced}, buffer=${bufferSize}`);
 
-			// Consume one more; pump should advance by ~1.
+			// Consume one more row; this frees one buffer slot, so the pump advances by
+			// exactly one pull — proven by the next pulled[] deferred resolving.
 			const producedSnapshot = produced;
 			await iter.next();
-			await sleep(20);
+			await pulled[bufferSize + 2].promise;
+			await Promise.resolve();
 			expect(produced).to.be.greaterThan(producedSnapshot,
-				'consuming a row should let the pump advance');
-			expect(produced).to.be.at.most(bufferSize + 4,
-				`after one shift, pump should advance by ~1, not unbounded: produced=${produced}`);
+				'consuming a row must let the pump advance');
+			expect(produced).to.equal(bufferSize + 3,
+				`after one shift the pump advances by exactly one: produced=${produced}`);
 
 			// Cleanup: cancel the infinite stream.
 			await iter.return?.();

@@ -1090,7 +1090,7 @@ Adding a new field to `RuntimeContext` requires adding it to `EXPECTED_FORK_POLI
 
 ### Strict-fork test mode
 
-Set `QUEREUS_FORK_STRICT=1` (or run `yarn test:fork-strict` from `packages/quereus`) to enable a Node-only proxy/subclass that wraps every `RuntimeContext.tableContexts` and `RuntimeContext.context` constructed at the five production sites (`Statement`, `Database._executeSingleStatement`, `DatabaseAssertions.executeResidualPerTuple`, `DeferredConstraintQueue.runDeferredRows`, `const-evaluator`) plus every fork's own maps. The wrapper throws a `strict-fork: parent context mutated ...` error if any `set` / `delete` / `clear` is invoked on a parent map while one of its forks is currently being driven by `ParallelDriver.drive()`.
+Set `QUEREUS_FORK_STRICT=1` (or run `yarn test:fork-strict` from `packages/quereus`, which the root `yarn check` gate also runs) to enable a Node-only proxy/subclass that wraps every `RuntimeContext.tableContexts` and `RuntimeContext.context` constructed at the five production sites (`Statement`, `Database._executeSingleStatement`, `DatabaseAssertions.executeResidualPerTuple`, `DeferredConstraintQueue.runDeferredRows`, `const-evaluator`) plus every fork's own maps. The wrapper throws a `strict-fork: parent context mutated ...` error if any `set` / `delete` / `clear` is invoked on a parent map while one of its forks is currently being driven by `ParallelDriver.drive()`.
 
 State is tracked per parent map (not globally) so concurrent unrelated drivers don't interfere and forks may freely mutate their own (fresh) maps. When the env flag is unset every helper is a no-op pass-through — production paths see vanilla `new RowContextMap()` / `new Map()`.
 

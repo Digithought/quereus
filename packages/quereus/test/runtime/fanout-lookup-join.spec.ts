@@ -10,6 +10,7 @@ import { createStrictRowContextMap, wrapTableContextsStrict } from '../../src/ru
 import type { RuntimeContext } from '../../src/runtime/types.js';
 import type { Row } from '../../src/common/types.js';
 import type { RowDescriptor } from '../../src/planner/nodes/plan-node.js';
+import { ConcurrencyTracker, makeDeferred, type Deferred } from '../util/controllable-source.js';
 
 function makeRuntimeContext(activeConnection?: object): RuntimeContext {
 	const ctx: RuntimeContext = {
@@ -57,6 +58,24 @@ function singleOuterDescriptor(): RowDescriptor {
 	const desc: RowDescriptor = [];
 	desc[1] = 0;
 	return desc;
+}
+
+/**
+ * A branch factory that parks on `gate` (counted in `tracker`) before yielding a
+ * single `['done']` row. Releasing the gate lets it proceed; holding all gates
+ * lets a test assert how many branches are simultaneously in-flight, replacing
+ * wall-clock latency with a deterministic concurrency proof.
+ */
+function gatedBranch(tracker: ConcurrencyTracker, gate: Deferred): FanOutLookupBranchFactory {
+	return () => (async function* () {
+		tracker.enter();
+		try {
+			await gate.promise;
+		} finally {
+			tracker.exit();
+		}
+		yield ['done'] as Row;
+	})();
 }
 
 const STRICT = process.env.QUEREUS_FORK_STRICT === '1' || process.env.QUEREUS_FORK_STRICT === 'true';
@@ -161,53 +180,54 @@ describe('FanOutLookupJoin', () => {
 	});
 
 	describe('concurrency', () => {
-		it('runs N branches in parallel within concurrencyCap', async () => {
+		it('runs N branches in parallel within concurrencyCap (peak in-flight reaches N)', async () => {
 			const ctx = makeRuntimeContext();
-			const branchLatencyMs = 50;
-			const makeSlow: () => FanOutLookupBranchFactory = () => () => (async function* () {
-				await sleep(branchLatencyMs);
-				yield ['done'] as Row;
-			})();
-			const factories: FanOutLookupBranchFactory[] = [makeSlow(), makeSlow(), makeSlow()];
+			const n = 3;
+			const tracker = new ConcurrencyTracker();
+			const gates = Array.from({ length: n }, () => makeDeferred());
+			const factories: FanOutLookupBranchFactory[] = gates.map(g => gatedBranch(tracker, g));
 			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => ({
 				mode: 'atMostOne-left' as const, outputColCount: 1, concurrencySafe: true,
 			}));
 
-			const start = Date.now();
-			const out = await collect(runFanOutLookupJoin(
+			const done = collect(runFanOutLookupJoin(
 				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
-				factories, descriptors, 3,
+				factories, descriptors, n,
 			));
-			const elapsed = Date.now() - start;
+			// All N branches park at their gate simultaneously → true parallelism.
+			await tracker.waitForInFlight(n);
+			expect(tracker.peak).to.equal(n, 'cap=N must run all branches concurrently');
+			for (const g of gates) g.resolve();
 
+			const out = await done;
 			expect(out).to.deep.equal([[1, 'done', 'done', 'done']]);
-			// 3 branches × 50ms serial would be ~150ms; concurrent should be ~50ms.
-			// Wall-clock is CI-flaky — use wide bands matching other parallel-driver tests.
-			expect(elapsed).to.be.lessThan(125, `expected parallel execution (~50ms), got ${elapsed}ms`);
 		});
 
-		it('respects concurrencyCap when cap < N', async () => {
+		it('respects concurrencyCap when cap < N (peak in-flight never exceeds cap)', async () => {
 			const ctx = makeRuntimeContext();
-			const branchLatencyMs = 50;
-			const makeSlow: () => FanOutLookupBranchFactory = () => () => (async function* () {
-				await sleep(branchLatencyMs);
-				yield ['done'] as Row;
-			})();
-			const factories: FanOutLookupBranchFactory[] = [makeSlow(), makeSlow(), makeSlow(), makeSlow()];
+			const n = 4;
+			const cap = 2;
+			const tracker = new ConcurrencyTracker();
+			const gates = Array.from({ length: n }, () => makeDeferred());
+			const factories: FanOutLookupBranchFactory[] = gates.map(g => gatedBranch(tracker, g));
 			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => ({
 				mode: 'atMostOne-left' as const, outputColCount: 1, concurrencySafe: true,
 			}));
 
-			const start = Date.now();
-			await collect(runFanOutLookupJoin(
+			const done = collect(runFanOutLookupJoin(
 				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
-				factories, descriptors, 2,
+				factories, descriptors, cap,
 			));
-			const elapsed = Date.now() - start;
+			// Initial wave fills exactly the cap; pre-release all gates so the driver
+			// runs the remaining branches in later waves, never exceeding the cap.
+			await tracker.waitForInFlight(cap);
+			expect(tracker.inFlight).to.equal(cap, 'initial wave fills exactly the cap');
+			for (const g of gates) g.resolve();
 
-			// 4 branches × 50ms with cap=2 → 2 waves → ~100ms.
-			expect(elapsed).to.be.greaterThan(75, `expected at least 2 waves (~100ms), got ${elapsed}ms`);
-			expect(elapsed).to.be.lessThan(225, `expected at most 2 waves (~100ms wide band), got ${elapsed}ms`);
+			const out = await done;
+			expect(out).to.deep.equal([[1, 'done', 'done', 'done', 'done']]);
+			expect(tracker.peak).to.be.at.most(cap, `peak in-flight must respect cap: ${tracker.peak}`);
+			expect(tracker.peak).to.be.greaterThan(1, 'expected real concurrency under the cap');
 		});
 	});
 
@@ -613,24 +633,24 @@ describe('FanOutLookupJoin', () => {
 			expect(out).to.deep.equal([[1, 'r1'], [1, 'r2'], [1, 'r3']]);
 		});
 
-		it('drives multiple cross branches concurrently within the cap', async () => {
+		it('drives multiple cross branches concurrently within the cap (peak in-flight reaches N)', async () => {
 			const ctx = makeRuntimeContext();
-			const branchLatencyMs = 50;
-			const makeSlow: () => FanOutLookupBranchFactory = () => () => (async function* () {
-				await sleep(branchLatencyMs);
-				yield ['done'] as Row;
-			})();
-			const factories: FanOutLookupBranchFactory[] = [makeSlow(), makeSlow(), makeSlow()];
+			const n = 3;
+			const tracker = new ConcurrencyTracker();
+			const gates = Array.from({ length: n }, () => makeDeferred());
+			const factories: FanOutLookupBranchFactory[] = gates.map(g => gatedBranch(tracker, g));
 			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => cross());
 
-			const start = Date.now();
-			const out = await collect(runFanOutLookupJoin(
+			const done = collect(runFanOutLookupJoin(
 				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
-				factories, descriptors, 3,
+				factories, descriptors, n,
 			));
-			const elapsed = Date.now() - start;
+			await tracker.waitForInFlight(n);
+			expect(tracker.peak).to.equal(n, 'cap=N must drive all cross branches concurrently');
+			for (const g of gates) g.resolve();
+
+			const out = await done;
 			expect(out).to.deep.equal([[1, 'done', 'done', 'done']]);
-			expect(elapsed).to.be.lessThan(125, `expected parallel cross drive (~50ms), got ${elapsed}ms`);
 		});
 	});
 });
@@ -662,50 +682,66 @@ describe('FanOutLookupJoin batched outer', () => {
 		]);
 	});
 
-	it('overlaps lookups across outer rows (wall-clock ≈ ceil(M/cap) × L)', async () => {
+	it('overlaps lookups across outer rows (peak in-flight reaches the global cap)', async () => {
 		const ctx = makeRuntimeContext();
 		const M = 16;
-		const L = 40;
 		const cap = 8;
+		const tracker = new ConcurrencyTracker();
+		const gate = makeDeferred();
+		// Every outer row's lookup parks on the shared gate. The batched driver runs
+		// up to `cap` of them at once across different outer rows; once `cap` are
+		// simultaneously parked we have proven cross-row overlap, then we release.
 		const branchFactory: FanOutLookupBranchFactory = () => (async function* () {
-			await sleep(L);
+			tracker.enter();
+			try {
+				await gate.promise;
+			} finally {
+				tracker.exit();
+			}
 			yield ['done'] as Row;
 		})();
 		const rows: Row[] = Array.from({ length: M }, (_, i) => [i] as Row);
 
-		const start = Date.now();
-		const out = await collect(runFanOutLookupJoinBatched(
+		const done = collect(runFanOutLookupJoinBatched(
 			ctx, arrayOuter(rows), singleOuterDescriptor(),
 			[branchFactory], [left()], cap, 64,
 		));
-		const elapsed = Date.now() - start;
+		// Deterministic proof of cross-row overlap: `cap` lookups for distinct outer
+		// rows are in flight simultaneously, far more than serial's one-at-a-time.
+		await tracker.waitForInFlight(cap);
+		expect(tracker.peak).to.equal(cap, 'batched mode must overlap lookups across outer rows up to the cap');
+		gate.resolve();
 
+		const out = await done;
 		expect(out).to.have.length(M);
-		// ceil(16/8) = 2 waves × 40ms ≈ 80ms (vs serial 16×40 = 640ms). Wide CI band.
-		expect(elapsed).to.be.lessThan(320,
-			`expected cross-row overlap (~${Math.ceil(M / cap) * L}ms), got ${elapsed}ms`);
+		expect(tracker.peak).to.be.at.most(cap, `global budget exceeded: peak=${tracker.peak}, cap=${cap}`);
 	});
 
-	it('serial mode on the same input is dramatically slower (contrast)', async () => {
+	it('serial mode on the same input never overlaps (peak in-flight stays at 1)', async () => {
 		const ctx = makeRuntimeContext();
 		const M = 8;
-		const L = 30;
+		const tracker = new ConcurrencyTracker();
+		// Serial mode drives one outer row at a time. Each lookup stays in-flight
+		// across an await (a real concurrency window); if any two outer rows overlapped
+		// the tracker would record peak >= 2. Serial mode guarantees they never do.
 		const branchFactory: FanOutLookupBranchFactory = () => (async function* () {
-			await sleep(L);
+			tracker.enter();
+			try {
+				await Promise.resolve();
+			} finally {
+				tracker.exit();
+			}
 			yield ['done'] as Row;
 		})();
 		const rows: Row[] = Array.from({ length: M }, (_, i) => [i] as Row);
 
-		const start = Date.now();
-		await collect(runFanOutLookupJoin(
+		const out = await collect(runFanOutLookupJoin(
 			ctx, arrayOuter(rows), singleOuterDescriptor(),
 			[branchFactory], [left()], 8,
 		));
-		const elapsed = Date.now() - start;
-		// Serial drives one row at a time: ≈ M × L = 240ms. Lower-bound it well
-		// above the batched band so the contrast is meaningful.
-		expect(elapsed).to.be.greaterThan(M * L * 0.6,
-			`serial should be ≈ M×L (${M * L}ms), got ${elapsed}ms`);
+		expect(out).to.have.length(M);
+		// Contrast with the batched overlap above: serial peak is 1, batched peak is `cap`.
+		expect(tracker.peak).to.equal(1, `serial mode must not overlap across outer rows: peak=${tracker.peak}`);
 	});
 
 	it('respects the global in-flight budget across all rows', async () => {
