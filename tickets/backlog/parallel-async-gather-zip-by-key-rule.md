@@ -23,15 +23,24 @@ binary-join shape and rewrites it.
 
 ## What it produces
 
-A single `AsyncGatherNode({ kind: 'zipByKey', keyAttrs }, concurrencyCap, preserveAttributeIds)`
-whose key representation is **whatever `parallel-async-gather-zip-by-key-provenance`
-settles on** (see prereq). The original "shared key attribute ID across branches"
-contract is *invalid*: two uncorrelated branches both originating the same key id
-trip the attribute-provenance validator, so the prereq replaces that contract
-(most likely with per-branch key refs + a gather-minted output key id). Do not
-build this rule against the shared-ID assumption — revisit this section after the
-prereq lands. `preserveAttributeIds` is still the recognized subtree's output
-attribute list so downstream references continue to resolve.
+A single `AsyncGatherNode({ kind: 'zipByKey', branchKeyAttrs, outputKeyAttrs }, concurrencyCap, preserveAttributeIds)`.
+The prereq (`parallel-async-gather-zip-by-key-provenance`) settled the key
+representation on **Option A** — per-branch key refs plus gather-minted output
+key IDs (the original "shared key attribute ID across branches" contract was
+invalid: two uncorrelated branches both originating the same key id trip the
+attribute-provenance validator):
+
+- `branchKeyAttrs[b]` — the attribute IDs of branch b's K key columns, in key
+  order. Distinct per branch (each branch originates its own key id; that is what
+  makes the tree provenance-clean).
+- `outputKeyAttrs` — the K output key attribute IDs the gather *mints*. These are
+  the merged/coalesced key columns the recognized `Project` surfaces (one per key
+  position). The rule mints them so that `preserveAttributeIds[0..K-1] === outputKeyAttrs`
+  — i.e. the gather originates exactly the attribute IDs the Project's coalesced
+  key outputs carried, so downstream references continue to resolve.
+
+`preserveAttributeIds` remains the recognized subtree's full output attribute list
+(the K minted key attrs followed by each branch's non-key attrs).
 
 ## Notes / open questions to resolve at plan/fix time
 
