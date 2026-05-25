@@ -82,7 +82,7 @@ export type AsyncGatherCombinator =
  * runtime emitter (via {@link AsyncGatherNode.getZipByKeyIndices}).
  */
 export interface ZipByKeyIndices {
-	/** Per branch, the column index of each key attribute, in `keyAttrs` order. */
+	/** Per branch, the column index of each key attribute, in `branchKeyAttrs[b]` order. */
 	readonly branchKeyIndices: readonly (readonly number[])[];
 	/** Per branch, the column indices of non-key columns, in declared order. */
 	readonly branchNonKeyIndices: readonly (readonly number[])[];

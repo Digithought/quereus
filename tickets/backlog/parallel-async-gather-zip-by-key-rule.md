@@ -53,3 +53,14 @@ attribute-provenance validator):
   block the rewrite or must be lifted to a post-filter).
 - Whether to also recognize `LEFT`/`RIGHT` outer chains (probably not for v1 —
   zipByKey is symmetric full-outer only).
+- Collation agreement on the merged key columns. `AsyncGatherNode` construction
+  only validates *affinity* (physical storage class) agreement across branches per
+  key position — **not collation**. The runtime key comparator derives solely from
+  branch 0's key-column collations (`branchKeyIndices[0]`), so if two branches
+  declare different collations on the same key position, branch 0 wins silently and
+  rows that should merge under one collation may not under another. With distinct
+  per-branch key ids this is now structurally possible. The rule must either (a)
+  only fire when all branches' equated key columns share a collation, or (b) decide
+  a coalescing collation and document branch-0-wins. Resolve when this rule lands;
+  if option (a), consider also adding the collation-agreement check to
+  `validateZipByKey` so manual construction is guarded too.

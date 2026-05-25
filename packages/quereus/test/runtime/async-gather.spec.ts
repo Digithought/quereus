@@ -305,6 +305,40 @@ describe('AsyncGather', () => {
 				.to.throw(QuereusError, /affinity mismatch/);
 		});
 
+		it('zipByKey rejects duplicate ids within outputKeyAttrs', () => {
+			// K=2 composite key, but both output positions reuse the same minted id.
+			const ak0 = makeAttr('k0'); const ak1 = makeAttr('k1');
+			const bk0 = makeAttr('k0'); const bk1 = makeAttr('k1');
+			const a = new MockRelationalNode([ak0, ak1, makeAttr('a1')]);
+			const b = new MockRelationalNode([bk0, bk1, makeAttr('b1')]);
+			const dup = PlanNode.nextAttrId();
+			expect(() => new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[ak0.id, ak1.id], [bk0.id, bk1.id]], outputKeyAttrs: [dup, dup] }, 4))
+				.to.throw(QuereusError, /duplicate id/);
+		});
+
+		it('zipByKey rejects branchKeyAttrs whose list count != branch count', () => {
+			// Three key-ref lists supplied for a 2-branch gather (INTERNAL guard).
+			const ka = makeAttr('ka');
+			const kb = makeAttr('kb');
+			const a = new MockRelationalNode([ka, makeAttr('v1')]);
+			const b = new MockRelationalNode([kb, makeAttr('v2')]);
+			expect(() => new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[ka.id], [kb.id], [ka.id]], outputKeyAttrs: [PlanNode.nextAttrId()] }, 4))
+				.to.throw(QuereusError, /branchKeyAttrs has 3 lists but there are 2 branches/);
+		});
+
+		it('zipByKey rejects branchKeyAttrs with inconsistent per-branch K', () => {
+			// Branch 0 declares a 2-column key, branch 1 only 1 column.
+			const ak0 = makeAttr('k0'); const ak1 = makeAttr('k1');
+			const bk0 = makeAttr('k0');
+			const a = new MockRelationalNode([ak0, ak1, makeAttr('a1')]);
+			const b = new MockRelationalNode([bk0, makeAttr('b1')]);
+			expect(() => new AsyncGatherNode(mockScope, [a, b],
+				{ kind: 'zipByKey', branchKeyAttrs: [[ak0.id, ak1.id], [bk0.id]], outputKeyAttrs: [PlanNode.nextAttrId(), PlanNode.nextAttrId()] }, 4))
+				.to.throw(QuereusError, /branch 1 has 1 key columns, expected 2/);
+		});
+
 		it('zipByKey output: key attrs first (minted outputKeyAttrs), then branch non-key attrs (nullable)', () => {
 			const ka = makeAttr('ka');
 			const kb = makeAttr('kb');
