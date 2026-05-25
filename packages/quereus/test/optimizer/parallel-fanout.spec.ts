@@ -676,6 +676,50 @@ describe('ruleFanOutLookupJoin', () => {
 			const plan = await planRows(db, sql);
 			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
 		});
+
+		it('clusters a cast-wrapped subquery (exercises CastNode.withChildren)', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			// `cast(...)` is a CastNode wrapper — a distinct withChildren path from
+			// the coalesce (ScalarFunctionCall) / `+` (BinaryOp) cases above.
+			const sql =
+				`select o.k,
+					cast((select count(*) from a where a.fk = o.k) as real) as ca,
+					(select count(*) from b where b.fk = o.k) as nb
+				 from outer_t o`;
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+			expect(fanOutBranchModes(plan)).to.deep.equal(['atMostOne-left', 'atMostOne-left']);
+		});
+
+		forkExecTest('wrapper mixing an outer column ref with a subquery resolves after rewrite', async () => {
+			await setupSubqueryTables('hi_lat_memory');
+			// The `mixed` projection references the OUTER column o.k *and* a subquery
+			// in one wrapper. After rewrite only the inner subquery becomes a wide-row
+			// colref; the o.k reference must still resolve against the wide row.
+			const sql =
+				`select o.k,
+					o.k * 10 + coalesce((select count(*) from b where b.fk = o.k), 0) as mixed,
+					coalesce((select sum(a.v) from a where a.fk = o.k), 0) as total_v
+				 from outer_t o`;
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan)).to.equal(true);
+			const enabled = await results(db, sql + ' order by o.k');
+
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({ ...before, disabledRules: new Set(['fanout-lookup-join']) });
+			let disabled: Record<string, SqlValue>[];
+			try {
+				disabled = await results(db, sql + ' order by o.k');
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+			expect(enabled).to.deep.equal(disabled);
+			expect(enabled).to.deep.equal([
+				{ k: 1, mixed: 12, total_v: 201 }, // 10 + 2 ; 100+101
+				{ k: 2, mixed: 20, total_v: 200 }, // 20 + 0 ; 200
+				{ k: 3, mixed: 30, total_v: 0 },   // 30 + 0 ; sum→null⇒0
+			]);
+		});
 	});
 
 	// ----------------------------------------------------------------------
