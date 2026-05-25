@@ -519,6 +519,120 @@ describe('FanOutLookupJoin', () => {
 			expect(caught).to.be.instanceOf(RangeError);
 		});
 	});
+
+	describe('cross mode', () => {
+		const cross = (outputColCount = 1): FanOutLookupBranchDescriptor =>
+			({ mode: 'cross', outputColCount, concurrencySafe: true });
+
+		it('a single cross branch yields one output row per branch row', async () => {
+			const ctx = makeRuntimeContext();
+			const branch: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['a'] as Row; yield ['b'] as Row; yield ['c'] as Row;
+			})();
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1], [2]]), singleOuterDescriptor(),
+				[branch], [cross()], 4,
+			));
+			expect(out).to.deep.equal([
+				[1, 'a'], [1, 'b'], [1, 'c'],
+				[2, 'a'], [2, 'b'], [2, 'c'],
+			]);
+		});
+
+		it('two cross branches emit the Cartesian product (outer, b0, b1)', async () => {
+			const ctx = makeRuntimeContext();
+			const b0: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['a'] as Row; yield ['b'] as Row; yield ['c'] as Row;
+			})();
+			const b1: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['x'] as Row; yield ['y'] as Row;
+			})();
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				[b0, b1], [cross(), cross()], 4,
+			));
+			// b0 is the outer loop, b1 the inner — matches the nested-loop chain.
+			expect(out).to.deep.equal([
+				[1, 'a', 'x'], [1, 'a', 'y'],
+				[1, 'b', 'x'], [1, 'b', 'y'],
+				[1, 'c', 'x'], [1, 'c', 'y'],
+			]);
+		});
+
+		it('an empty cross branch drops the outer row (inner-drop)', async () => {
+			const ctx = makeRuntimeContext();
+			const branchAlways: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['p'] as Row; yield ['q'] as Row;
+			})();
+			// Cross branch only matches outer row 2.
+			const branchCross: FanOutLookupBranchFactory = (innerCtx) => (async function* () {
+				if ((resolveAttribute(innerCtx, 1) as number) === 2) {
+					yield ['hit1'] as Row; yield ['hit2'] as Row;
+				}
+			})();
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1], [2], [3]]), singleOuterDescriptor(),
+				[branchAlways, branchCross], [cross(), cross()], 4,
+			));
+			expect(out).to.deep.equal([
+				[2, 'p', 'hit1'], [2, 'p', 'hit2'],
+				[2, 'q', 'hit1'], [2, 'q', 'hit2'],
+			]);
+		});
+
+		it('mixes a missed atMostOne-left (NULL pad) with a cross product', async () => {
+			const ctx = makeRuntimeContext();
+			const branchMiss: FanOutLookupBranchFactory = () => (async function* () { /* empty */ })();
+			const branchCross: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['x'] as Row; yield ['y'] as Row;
+			})();
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'atMostOne-left', outputColCount: 2, concurrencySafe: true },
+				cross(1),
+			];
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				[branchMiss, branchCross], descriptors, 4,
+			));
+			// NULL-pad factor (1 entry) × cross factor (2 entries) → 2 rows.
+			expect(out).to.deep.equal([
+				[1, null, null, 'x'],
+				[1, null, null, 'y'],
+			]);
+		});
+
+		it('a cross branch yielding >1 row does not throw', async () => {
+			const ctx = makeRuntimeContext();
+			const branch: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['r1'] as Row; yield ['r2'] as Row; yield ['r3'] as Row;
+			})();
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				[branch], [cross()], 1,
+			));
+			expect(out).to.deep.equal([[1, 'r1'], [1, 'r2'], [1, 'r3']]);
+		});
+
+		it('drives multiple cross branches concurrently within the cap', async () => {
+			const ctx = makeRuntimeContext();
+			const branchLatencyMs = 50;
+			const makeSlow: () => FanOutLookupBranchFactory = () => () => (async function* () {
+				await sleep(branchLatencyMs);
+				yield ['done'] as Row;
+			})();
+			const factories: FanOutLookupBranchFactory[] = [makeSlow(), makeSlow(), makeSlow()];
+			const descriptors: FanOutLookupBranchDescriptor[] = factories.map(() => cross());
+
+			const start = Date.now();
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				factories, descriptors, 3,
+			));
+			const elapsed = Date.now() - start;
+			expect(out).to.deep.equal([[1, 'done', 'done', 'done']]);
+			expect(elapsed).to.be.lessThan(125, `expected parallel cross drive (~50ms), got ${elapsed}ms`);
+		});
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -926,6 +1040,82 @@ describe('FanOutLookupJoin batched outer', () => {
 		expect(c1).to.be.instanceOf(RangeError);
 		expect(c2).to.be.instanceOf(RangeError);
 	});
+
+	const cross = (outputColCount = 1): FanOutLookupBranchDescriptor =>
+		({ mode: 'cross', outputColCount, concurrencySafe: true });
+
+	it('emits the cross product per outer row, in outer order', async () => {
+		const ctx = makeRuntimeContext();
+		// Reverse completion order so we exercise the reorder buffer with products.
+		const branch: FanOutLookupBranchFactory = (innerCtx) => (async function* () {
+			const k = resolveAttribute(innerCtx, 1) as number;
+			await sleep(30 - k * 10);
+			yield [`${k}a`] as Row; yield [`${k}b`] as Row;
+		})();
+		const out = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter([[0], [1], [2]]), singleOuterDescriptor(),
+			[branch], [cross()], /*globalCap*/ 8, /*maxOuterReadAhead*/ 64,
+		));
+		// Each outer row's two product rows must appear contiguously, in outer order.
+		expect(out).to.deep.equal([
+			[0, '0a'], [0, '0b'],
+			[1, '1a'], [1, '1b'],
+			[2, '2a'], [2, '2b'],
+		]);
+	});
+
+	it('matches the serial multiset for a two-branch cross product', async () => {
+		const ctx = makeRuntimeContext();
+		const b0: FanOutLookupBranchFactory = () => (async function* () {
+			yield ['a'] as Row; yield ['b'] as Row; yield ['c'] as Row;
+		})();
+		const b1: FanOutLookupBranchFactory = () => (async function* () {
+			yield ['x'] as Row; yield ['y'] as Row;
+		})();
+		const serialOut = await collect(runFanOutLookupJoin(
+			makeRuntimeContext(), arrayOuter([[1], [2]]), singleOuterDescriptor(),
+			[b0, b1], [cross(), cross()], 4,
+		));
+		const batchedOut = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter([[1], [2]]), singleOuterDescriptor(),
+			[b0, b1], [cross(), cross()], 8, 64,
+		));
+		expect(batchedOut).to.deep.equal(serialOut);
+	});
+
+	it('drops outer rows whose cross branch matched zero rows', async () => {
+		const ctx = makeRuntimeContext();
+		const branch: FanOutLookupBranchFactory = (innerCtx) => (async function* () {
+			if ((resolveAttribute(innerCtx, 1) as number) === 2) {
+				yield ['h1'] as Row; yield ['h2'] as Row;
+			}
+		})();
+		const out = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter([[1], [2], [3]]), singleOuterDescriptor(),
+			[branch], [cross()], 8, 64,
+		));
+		expect(out).to.deep.equal([[2, 'h1'], [2, 'h2']]);
+	});
+
+	it('emits all k>1 product rows of one outer contiguously before the next seq', async () => {
+		const ctx = makeRuntimeContext();
+		// Slowest row first: forces row 0 to complete after rows 1/2 but still emit
+		// its whole product block before theirs.
+		const branch: FanOutLookupBranchFactory = (innerCtx) => (async function* () {
+			const k = resolveAttribute(innerCtx, 1) as number;
+			await sleep(30 - k * 10);
+			for (let i = 0; i < 3; i++) yield [`${k}.${i}`] as Row;
+		})();
+		const out = await collect(runFanOutLookupJoinBatched(
+			ctx, arrayOuter([[0], [1], [2]]), singleOuterDescriptor(),
+			[branch], [cross()], 8, 64,
+		));
+		expect(out).to.deep.equal([
+			[0, '0.0'], [0, '0.1'], [0, '0.2'],
+			[1, '1.0'], [1, '1.1'], [1, '1.2'],
+			[2, '2.0'], [2, '2.1'], [2, '2.2'],
+		]);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -945,6 +1135,7 @@ const mockScope = { resolveSymbol: () => undefined } as unknown as Scope;
 // mock node sufficient for relation-style validation and plan-node interop.
 class MockRelNode extends PlanNode {
 	override readonly nodeType: PlanNodeType;
+	readonly estimatedRows?: number;
 	private readonly _attrs: readonly Attribute[];
 	private readonly _physicalOverride: Partial<PhysicalProperties>;
 	private readonly _type: RelationType;
@@ -954,9 +1145,11 @@ class MockRelNode extends PlanNode {
 		attrs: readonly Attribute[];
 		physical?: Partial<PhysicalProperties>;
 		columns?: RelationType['columns'];
+		estimatedRows?: number;
 	}) {
 		super(mockScope, 0.01);
 		this.nodeType = opts.nodeType ?? PlanNodeType.SeqScan;
+		this.estimatedRows = opts.estimatedRows;
 		this._attrs = opts.attrs;
 		this._physicalOverride = opts.physical ?? { deterministic: true, readonly: true };
 		this._type = {
@@ -1061,6 +1254,48 @@ describe('FanOutLookupJoinNode', () => {
 		];
 		const innerNode = new FanOutLookupJoinNode(mockScope, outer, innerBranches, 1);
 		expect(innerNode.getAttributes()[1].type.nullable).to.equal(false);
+		// A cross branch is inner — its outputs are not nullable-widened.
+		const crossBranches: FanOutBranchSpec[] = [
+			{ child: branchChild, mode: 'cross', outputAttrs: b0Attrs, concurrencySafe: true },
+		];
+		const crossNode = new FanOutLookupJoinNode(mockScope, outer, crossBranches, 1);
+		expect(crossNode.getAttributes()[1].type.nullable).to.equal(false);
+	});
+
+	it('multiplies estimatedRows by each cross branch fan-out', () => {
+		const outer = new MockRelNode({ attrs: [makeAttr('outer_k')], estimatedRows: 10 });
+		const b0Attrs = [makeAttr('b0_x')];
+		const b1Attrs = [makeAttr('b1_y')];
+		const cross0 = new MockRelNode({ attrs: b0Attrs, estimatedRows: 3 });
+		const cross1 = new MockRelNode({ attrs: b1Attrs, estimatedRows: 2 });
+		const branches: FanOutBranchSpec[] = [
+			{ child: cross0, mode: 'cross', outputAttrs: b0Attrs, concurrencySafe: true },
+			{ child: cross1, mode: 'cross', outputAttrs: b1Attrs, concurrencySafe: true },
+		];
+		const node = new FanOutLookupJoinNode(mockScope, outer, branches, 4);
+		expect(node.estimatedRows).to.equal(10 * 3 * 2);
+
+		// at-most-one branches keep a ×1 factor.
+		const amo = new MockRelNode({ attrs: b1Attrs, estimatedRows: 7 });
+		const mixed: FanOutBranchSpec[] = [
+			{ child: cross0, mode: 'cross', outputAttrs: b0Attrs, concurrencySafe: true },
+			{ child: amo, mode: 'atMostOne-left', outputAttrs: b1Attrs, concurrencySafe: true },
+		];
+		expect(new FanOutLookupJoinNode(mockScope, outer, mixed, 4).estimatedRows).to.equal(10 * 3);
+	});
+
+	it('leaves a cross branch unmultiplied when its child has no estimate', () => {
+		const outer = new MockRelNode({ attrs: [makeAttr('outer_k')], estimatedRows: 10 });
+		const b0Attrs = [makeAttr('b0_x')];
+		const crossNoEst = new MockRelNode({ attrs: b0Attrs }); // estimatedRows undefined
+		const branches: FanOutBranchSpec[] = [
+			{ child: crossNoEst, mode: 'cross', outputAttrs: b0Attrs, concurrencySafe: true },
+		];
+		expect(new FanOutLookupJoinNode(mockScope, outer, branches, 4).estimatedRows).to.equal(10);
+
+		// Undefined outer estimate ⇒ undefined overall.
+		const noOuter = new MockRelNode({ attrs: [makeAttr('outer_k')] });
+		expect(new FanOutLookupJoinNode(mockScope, noOuter, branches, 4).estimatedRows).to.equal(undefined);
 	});
 
 	it('passes validatePhysicalTree', () => {

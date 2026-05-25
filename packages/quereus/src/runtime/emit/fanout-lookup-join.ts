@@ -82,46 +82,100 @@ function resolveBranchFactories(
 }
 
 /**
- * Sentinel returned by {@link composeOuterRow} when an `atMostOne-inner` branch
- * matched zero rows: the outer row is dropped (INNER-join semantics) rather
- * than emitted.
- */
-export const DROP: unique symbol = Symbol('quereus.fanout-lookup-join.drop');
-
-/**
- * Compose one outer row plus its per-branch result buffers into a wide output
- * row, applying NULL padding for missed `atMostOne-left` branches, or signal a
- * drop when an `atMostOne-inner` branch missed.
+ * Compose one outer row plus its per-branch result buffers into the **list** of
+ * wide output rows it contributes — the n-ary Cartesian product across branches,
+ * prefixed by the outer row's columns.
  *
- * Each `branchBuf[i]` must already carry **at most one** row — the
- * at-most-one-per-branch invariant is the caller's responsibility (the serial
- * driver checks after `drive`; the batched driver checks per branch task).
+ * Per-branch factor rules (a factor is the list of column-slices a branch
+ * contributes to the product):
  *
+ * - `cross`: one factor entry per buffered row (1:n fan-out). An **empty**
+ *   buffer is an inner-drop — the whole product collapses to zero rows.
+ * - `atMostOne-inner`: empty buffer ⇒ inner-drop (zero rows); else the single
+ *   row.
+ * - `atMostOne-left`: empty buffer ⇒ a single NULL-pad factor entry (LEFT-join
+ *   semantics); else the single row.
+ *
+ * The product is emitted left-to-right (outer columns first, then branch 0,
+ * branch 1, …) with the right-most branch varying fastest — identical column
+ * order and row order to the chain of nested-loop joins this node replaces.
+ *
+ * `atMostOne-*` branch buffers must carry **at most one** row — that invariant
+ * is the caller's responsibility (both drivers assert it before composing);
+ * `cross` buffers may carry any number.
+ *
+ * Returns an empty array when any inner/cross branch dropped the outer row.
  * Shared by {@link runFanOutLookupJoin} and {@link runFanOutLookupJoinBatched}
  * so both compose identically.
  */
-export function composeOuterRow(
+export function composeOuterRows(
 	outerRow: Row,
 	branchBuf: ReadonlyArray<ReadonlyArray<Row>>,
 	branchDescriptors: ReadonlyArray<FanOutLookupBranchDescriptor>,
 	padLengths: ReadonlyArray<number>,
-): Row | typeof DROP {
+): Row[] {
+	// Per-branch factor lists. Every factor pushed here has length >= 1, so the
+	// product is empty only via an early inner-drop return below.
+	const factors: ReadonlyArray<Row>[] = [];
 	for (let i = 0; i < branchDescriptors.length; i++) {
-		if (branchBuf[i].length === 0 && branchDescriptors[i].mode === 'atMostOne-inner') {
-			return DROP;
-		}
-	}
-	const composed: Row = [...outerRow];
-	for (let i = 0; i < branchBuf.length; i++) {
 		const buf = branchBuf[i];
 		if (buf.length === 0) {
-			for (let k = 0; k < padLengths[i]; k++) composed.push(null);
+			if (branchDescriptors[i].mode === 'atMostOne-left') {
+				factors.push([new Array<unknown>(padLengths[i]).fill(null) as Row]);
+			} else {
+				// atMostOne-inner or cross with a zero-row match ⇒ drop the outer row.
+				return [];
+			}
 		} else {
-			const r = buf[0];
-			for (let k = 0; k < r.length; k++) composed.push(r[k]);
+			// cross contributes every row; atMostOne-* contributes its single row.
+			factors.push(buf);
 		}
 	}
-	return composed;
+
+	// Iterative odometer over the factor arrays — right-most factor varies
+	// fastest, so the outer-most branch is the outer loop (nested-loop order).
+	const result: Row[] = [];
+	const indices = new Array<number>(factors.length).fill(0);
+	for (;;) {
+		const composed: Row = [...outerRow];
+		for (let i = 0; i < factors.length; i++) {
+			const slice = factors[i][indices[i]];
+			for (let k = 0; k < slice.length; k++) composed.push(slice[k]);
+		}
+		result.push(composed);
+
+		let j = factors.length - 1;
+		for (; j >= 0; j--) {
+			if (++indices[j] < factors[j].length) break;
+			indices[j] = 0;
+		}
+		if (j < 0) break;
+	}
+	return result;
+}
+
+/** True when the branch's mode caps its per-outer-row output at one row. */
+function isAtMostOne(mode: FanOutBranchMode): boolean {
+	return mode === 'atMostOne-left' || mode === 'atMostOne-inner';
+}
+
+/**
+ * Enforce the at-most-one-per-branch invariant against collected buffers,
+ * scoped to `atMostOne-*` branches only (`cross` branches are exempt). Throws
+ * {@link QuereusError} with {@link StatusCode.CONSTRAINT} on violation.
+ */
+function assertAtMostOne(
+	branchBuf: ReadonlyArray<ReadonlyArray<Row>>,
+	branchDescriptors: ReadonlyArray<FanOutLookupBranchDescriptor>,
+): void {
+	for (let i = 0; i < branchDescriptors.length; i++) {
+		if (isAtMostOne(branchDescriptors[i].mode) && branchBuf[i].length > 1) {
+			throw new QuereusError(
+				`FanOutLookupJoin: branch ${i} produced more than one row for outer row (got ${branchBuf[i].length})`,
+				StatusCode.CONSTRAINT,
+			);
+		}
+	}
 }
 
 /**
@@ -170,19 +224,14 @@ export async function* runFanOutLookupJoin(
 			}
 
 			// atMostOne invariant — defensive guard for manually-constructed plans
-			// or future rules that don't statically enforce FK→PK alignment.
-			for (let i = 0; i < branchCount; i++) {
-				if (branchBuf[i].length > 1) {
-					throw new QuereusError(
-						`FanOutLookupJoin: branch ${i} produced more than one row for outer row (got ${branchBuf[i].length})`,
-						StatusCode.CONSTRAINT,
-					);
-				}
-			}
+			// or future rules that don't statically enforce FK→PK alignment. Only
+			// `atMostOne-*` branches are constrained; a `cross` branch legitimately
+			// yields more than one row.
+			assertAtMostOne(branchBuf, branchDescriptors);
 
-			const composed = composeOuterRow(outerRow, branchBuf, branchDescriptors, padLengths);
-			if (composed === DROP) continue;
-			yield composed;
+			for (const row of composeOuterRows(outerRow, branchBuf, branchDescriptors, padLengths)) {
+				yield row;
+			}
 		}
 	} finally {
 		outerSlot.close();
@@ -220,11 +269,13 @@ function deriveReadAhead(globalCap: number, branchCount: number, maxOuterReadAhe
  *   (the lock is taken on the wrapped factory's first pull): a lock-holder then
  *   always also holds a permit, so a permit-holder blocked on a lock waits on
  *   another permit-holder that will release — no deadlock.
- * - **Reorder buffer + in-order emit.** Completed rows land in a `seq`-keyed
- *   map; the generator yields `seq = emitFrontier` as soon as it lands,
- *   advancing the frontier (skipping DROP entries). Out-of-order completion,
- *   in-order emit — the external stream is identical to serial mode, so
- *   `computePhysical`'s ordering pass-through stays valid.
+ * - **Reorder buffer + in-order emit.** Each completed row lands in a `seq`-keyed
+ *   map as the (possibly empty) list of wide rows it produced; the generator
+ *   emits all of `seq = emitFrontier`'s rows contiguously as soon as they land,
+ *   then advances the frontier (an empty list is a dropped outer row). Window
+ *   accounting advances per `seq`, independent of product fan-out. Out-of-order
+ *   completion, in-order emit — the external stream is identical to serial mode,
+ *   so `computePhysical`'s ordering pass-through stays valid.
  *
  * Replay model: each admitted row re-executes its branch sub-plans against its
  * own forked context. A cached branch shared across outer rows is a correlated
@@ -263,8 +314,9 @@ export async function* runFanOutLookupJoinBatched(
 	// the (shared) active connection, so resolve once up front.
 	const wrappedFactories = resolveBranchFactories(rctx, branchFactories, branchDescriptors);
 
-	// Completed rows awaiting in-order emit: seq -> composed Row or DROP.
-	const reorder = new Map<number, Row | typeof DROP>();
+	// Completed rows awaiting in-order emit: seq -> the (possibly empty) list of
+	// wide rows the outer row produced. An empty list is a dropped outer row.
+	const reorder = new Map<number, Row[]>();
 	// Live branch iterators across all in-flight rows; cleanup return()s these.
 	const liveIters = new Set<AsyncIterator<Row>>();
 	// In-flight per-row jobs; cleanup awaits these so every row reaches teardown.
@@ -310,7 +362,9 @@ export async function* runFanOutLookupJoinBatched(
 		return new Promise<void>(resolve => { admitWaiter = resolve; });
 	}
 
-	// Run one branch to completion against its fork, collecting <=1 row.
+	// Run one branch to completion against its fork, collecting all its rows.
+	// The at-most-one invariant is enforced per outer row in `runRow` (scoped to
+	// `atMostOne-*` branches), so a `cross` branch's >1 rows pass through here.
 	// Permit-before-lock: acquire the global permit before the wrapped factory's
 	// first pull (which is where the connection lock is taken).
 	const runBranch = async (branchIdx: number, fork: RuntimeContext): Promise<Row[]> => {
@@ -325,12 +379,6 @@ export async function* runFanOutLookupJoinBatched(
 				const r = await iter.next();
 				if (r.done) break;
 				rows.push(r.value);
-			}
-			if (rows.length > 1) {
-				throw new QuereusError(
-					`FanOutLookupJoin: branch ${branchIdx} produced more than one row for outer row (got ${rows.length})`,
-					StatusCode.CONSTRAINT,
-				);
 			}
 			return rows;
 		} finally {
@@ -386,7 +434,8 @@ export async function* runFanOutLookupJoinBatched(
 				return;
 			}
 			if (aborted) return; // teardown in progress — result would never emit
-			const composed = composeOuterRow(outerRow, branchBuf, branchDescriptors, padLengths);
+			assertAtMostOne(branchBuf, branchDescriptors);
+			const composed = composeOuterRows(outerRow, branchBuf, branchDescriptors, padLengths);
 			reorder.set(seq, composed);
 			signalEmit();
 		} catch (e) {
@@ -468,8 +517,10 @@ export async function* runFanOutLookupJoinBatched(
 				reorder.delete(emitFrontier);
 				emitFrontier++;
 				signalAdmit(); // window opened
-				if (entry !== DROP) {
-					yield entry;
+				// Emit every product row for this outer row contiguously, in order,
+				// before advancing to the next seq. An empty list is a dropped row.
+				for (const row of entry) {
+					yield row;
 				}
 			} else {
 				await waitEmit();
@@ -488,9 +539,10 @@ export async function* runFanOutLookupJoinBatched(
  * branch is emitted as a callable so the runtime can invoke it per outer row
  * against a freshly-forked {@link RuntimeContext}.
  *
- * v1 supports only the `atMostOne-left` and `atMostOne-inner` branch modes
- * (validated at runtime via a `QuereusError(CONSTRAINT)` when a branch yields
- * more than one row). `array` / `cross` modes are deferred to a follow-up.
+ * Supports `atMostOne-left`, `atMostOne-inner`, and `cross` branch modes.
+ * `atMostOne-*` branches are validated at runtime via a `QuereusError(CONSTRAINT)`
+ * when they yield more than one row; a `cross` branch may yield any number and
+ * contributes a Cartesian factor. The `array` mode is deferred to a follow-up.
  */
 export function emitFanOutLookupJoin(plan: FanOutLookupJoinNode, ctx: EmissionContext): Instruction {
 	const outerInstruction = emitPlanNode(plan.outer, ctx);

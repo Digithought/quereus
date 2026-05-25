@@ -23,10 +23,15 @@ import { propagateJoinFds } from './join-utils.js';
  *   match emits NULLs for the branch's output columns and keeps the outer row.
  * - `atMostOne-inner` — like INNER JOIN: branch yields zero or one row; a
  *   zero-row match drops the outer row entirely.
+ * - `cross` — like an inner nested-loop join: the branch yields *n* rows per
+ *   outer row (data-driven cardinality) and the node emits one wide row per
+ *   `(outer, branch-row)` combination — the Cartesian product. A zero-row
+ *   branch drops the outer row entirely (inner-drop semantics), matching the
+ *   chain of inner nested-loop joins it replaces.
  *
- * `array` and `cross` modes are deferred to a follow-up backlog ticket.
+ * The `array` mode is deferred to a follow-up backlog ticket.
  */
-export type FanOutBranchMode = 'atMostOne-left' | 'atMostOne-inner';
+export type FanOutBranchMode = 'atMostOne-left' | 'atMostOne-inner' | 'cross';
 
 /**
  * How the node drives the outer side:
@@ -88,7 +93,8 @@ export interface FanOutBranchSpec {
  * assembles a wide result row.
  *
  * Replaces a chain of N nested-loop LEFT/INNER joins where each branch is a
- * key-aligned (FK→PK) lookup against an independent table. The runtime drives
+ * key-aligned (FK→PK) lookup against an independent table, or — for `cross`
+ * branches — an unconstrained 1:n inner nested-loop join. The runtime drives
  * the N branch factories through {@link ParallelDriver.drive}, bounded by
  * `concurrencyCap`.
  *
@@ -106,8 +112,9 @@ export interface FanOutBranchSpec {
  * per-branch equi-pair surface is added to {@link FanOutBranchSpec}, this can
  * tighten without changing the emitter.
  *
- * Outer ordering passes through; v1 emits rows in outer order. `array` and
- * `cross` branch modes are deferred to a follow-up.
+ * Outer ordering passes through; v1 emits rows in outer order (for `cross`
+ * branches, all product rows of one outer row are emitted contiguously before
+ * the next outer row). The `array` branch mode is deferred to a follow-up.
  */
 export class FanOutLookupJoinNode extends PlanNode implements RelationalPlanNode {
 	override readonly nodeType = PlanNodeType.FanOutLookupJoin;
@@ -273,12 +280,32 @@ export class FanOutLookupJoinNode extends PlanNode implements RelationalPlanNode
 			equivClasses: equiv.length > 0 ? equiv : undefined,
 			constantBindings: bindings.length > 0 ? bindings : undefined,
 			domainConstraints: domains.length > 0 ? domains : undefined,
-			estimatedRows: this.outer.estimatedRows,
+			estimatedRows: this.computeEstimatedRows(),
 		};
 	}
 
+	/**
+	 * Outer cardinality multiplied by each `cross` branch's per-outer-row fan-out
+	 * (at-most-one branches contribute a ×1 factor). A `cross` branch whose child
+	 * has no estimate falls back to ×1 for that branch rather than poisoning the
+	 * whole estimate to `undefined`. Returns `undefined` only when the outer side
+	 * itself has no estimate.
+	 */
+	private computeEstimatedRows(): number | undefined {
+		const outerEst = this.outer.estimatedRows;
+		if (outerEst === undefined) return undefined;
+		let est = outerEst;
+		for (const b of this.branches) {
+			if (b.mode === 'cross') {
+				const childEst = b.child.estimatedRows;
+				if (childEst !== undefined) est *= childEst;
+			}
+		}
+		return est;
+	}
+
 	get estimatedRows(): number | undefined {
-		return this.outer.estimatedRows;
+		return this.computeEstimatedRows();
 	}
 
 	getChildren(): readonly PlanNode[] {

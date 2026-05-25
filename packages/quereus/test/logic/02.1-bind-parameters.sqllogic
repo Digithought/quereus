@@ -111,10 +111,30 @@ select count(*) as cnt from bp where id = 5;
 -- Parameter in expression contexts
 -- ===================================
 
--- Arithmetic
--- params: [1, 100]
+-- Arithmetic — text-order binding.
+-- Positional `?` bind in SOURCE-TEXT order, NOT plan/resolution order. Here the
+-- projection `?` (first in the text) takes 100 and the WHERE `?` (second) takes 1,
+-- so we boost row id=1 (val 10) by 100. Under the OLD plan-order behaviour the
+-- WHERE `?` would have bound first (=100, no such id) yielding []; this case pins
+-- the text-order contract.
+-- params: [100, 1]
 select val + ? as boosted from bp where id = ?;
 → [{"boosted":110}]
+
+-- Discriminator — a projection `?` AND a WHERE `?` whose values differ, so the two
+-- binding orders give visibly different results. Text order: projection `?`=7,
+-- WHERE `?`=2 → boost row id=2 (val 20) → 27. Plan order would bind WHERE first
+-- (=7, no row) → [].
+-- params: [7, 2]
+select val + ? as boosted from bp where id = ?;
+→ [{"boosted":27}]
+
+-- Projection `?` mixed with a FROM/WHERE `in (?, ?)` — mirrors the codec import/
+-- export shape (a TVF/aggregate projection arg preceding WHERE-list args). Text
+-- order: tag `?`='T', then the in-list `?`s = 1, 3.
+-- params: ["T", 1, 3]
+select ? as tag, id from bp where id in (?, ?) order by id;
+→ [{"tag":"T","id":1},{"tag":"T","id":3}]
 
 -- Function call
 -- params: ["alp"]
