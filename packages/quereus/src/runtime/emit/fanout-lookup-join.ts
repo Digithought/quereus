@@ -1,6 +1,7 @@
-import type {
-	FanOutLookupJoinNode,
-	FanOutBranchMode,
+import {
+	isLeftBranchMode,
+	type FanOutLookupJoinNode,
+	type FanOutBranchMode,
 } from '../../planner/nodes/fanout-lookup-join-node.js';
 import type { Instruction, InstructionRun, RuntimeContext } from '../types.js';
 import type { Row } from '../../common/types.js';
@@ -91,6 +92,9 @@ function resolveBranchFactories(
  *
  * - `cross`: one factor entry per buffered row (1:n fan-out). An **empty**
  *   buffer is an inner-drop — the whole product collapses to zero rows.
+ * - `cross-left`: one factor entry per buffered row (1:n fan-out); an **empty**
+ *   buffer ⇒ a single NULL-pad factor entry, preserving the outer row (LEFT
+ *   semantics).
  * - `atMostOne-inner`: empty buffer ⇒ inner-drop (zero rows); else the single
  *   row.
  * - `atMostOne-left`: empty buffer ⇒ a single NULL-pad factor entry (LEFT-join
@@ -120,7 +124,8 @@ export function composeOuterRows(
 	for (let i = 0; i < branchDescriptors.length; i++) {
 		const buf = branchBuf[i];
 		if (buf.length === 0) {
-			if (branchDescriptors[i].mode === 'atMostOne-left') {
+			if (isLeftBranchMode(branchDescriptors[i].mode)) {
+				// atMostOne-left or cross-left: preserve the outer row with NULLs.
 				factors.push([new Array<unknown>(padLengths[i]).fill(null) as Row]);
 			} else {
 				// atMostOne-inner or cross with a zero-row match ⇒ drop the outer row.
@@ -539,10 +544,12 @@ export async function* runFanOutLookupJoinBatched(
  * branch is emitted as a callable so the runtime can invoke it per outer row
  * against a freshly-forked {@link RuntimeContext}.
  *
- * Supports `atMostOne-left`, `atMostOne-inner`, and `cross` branch modes.
- * `atMostOne-*` branches are validated at runtime via a `QuereusError(CONSTRAINT)`
- * when they yield more than one row; a `cross` branch may yield any number and
- * contributes a Cartesian factor. The `array` mode is deferred to a follow-up.
+ * Supports `atMostOne-left`, `atMostOne-inner`, `cross`, and `cross-left`
+ * branch modes. `atMostOne-*` branches are validated at runtime via a
+ * `QuereusError(CONSTRAINT)` when they yield more than one row; a `cross` /
+ * `cross-left` branch may yield any number and contributes a Cartesian factor
+ * (`cross-left` additionally NULL-pads + preserves the outer row when empty).
+ * The `array` mode is deferred to a follow-up.
  */
 export function emitFanOutLookupJoin(plan: FanOutLookupJoinNode, ctx: EmissionContext): Instruction {
 	const outerInstruction = emitPlanNode(plan.outer, ctx);

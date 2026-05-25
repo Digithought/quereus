@@ -32,10 +32,10 @@
  *     so cross-row overlap dominates the reorder-buffer + per-row-fork overhead.
  *     An unknown estimate fails the gate (never flip on a missing statistic).
  *
- * **Cross branches are out of scope.** A `cross` (1:n) branch's batched outer
+ * **Cross branches are out of scope.** A cross (1:n) branch's batched outer
  * mode is owned by `parallel-fanout-lookup-join-cross-mode`; this rule only
  * flips clusters whose branches are all `atMostOne-*`. A node carrying any
- * `cross` branch is left serial.
+ * `cross` or `cross-left` branch is left serial (both are 1:n cross factors).
  *
  * **Outer-source isolation (load-bearing correctness).** The batched driver
  * pumps the outer source *concurrently* with in-flight per-row branch forks —
@@ -73,7 +73,7 @@ import { createLogger } from '../../../common/logger.js';
 import type { OptContext } from '../../framework/context.js';
 import type { PlanNode, RelationalPlanNode } from '../../nodes/plan-node.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
-import { FanOutLookupJoinNode } from '../../nodes/fanout-lookup-join-node.js';
+import { FanOutLookupJoinNode, isCrossBranchMode } from '../../nodes/fanout-lookup-join-node.js';
 import { EagerPrefetchNode } from '../../nodes/eager-prefetch-node.js';
 
 const log = createLogger('optimizer:rule:fanout-batched-outer');
@@ -104,8 +104,9 @@ export function ruleFanOutBatchedOuter(node: PlanNode, context: OptContext): Pla
 	const branchCount = node.branches.length;
 
 	// Cross-branch batched outer is owned by the cross-mode ticket; only flip
-	// clusters whose branches are all at-most-one.
-	if (node.branches.some(b => b.mode === 'cross')) return null;
+	// clusters whose branches are all at-most-one. `cross-left` is a 1:n cross
+	// factor too, so it is excluded on the same grounds as `cross`.
+	if (node.branches.some(b => isCrossBranchMode(b.mode))) return null;
 
 	// Budget under-saturation: batched only helps when one row's branches leave
 	// global-budget headroom for *more* outer rows to fill.

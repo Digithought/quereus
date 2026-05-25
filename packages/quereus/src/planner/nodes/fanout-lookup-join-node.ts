@@ -28,10 +28,33 @@ import { propagateJoinFds } from './join-utils.js';
  *   `(outer, branch-row)` combination — the Cartesian product. A zero-row
  *   branch drops the outer row entirely (inner-drop semantics), matching the
  *   chain of inner nested-loop joins it replaces.
+ * - `cross-left` — like a LEFT nested-loop join with a data-driven 1:n match:
+ *   a non-empty branch contributes every row (Cartesian product, like `cross`),
+ *   but a zero-row branch emits one NULL-padded factor row so the outer row is
+ *   preserved (LEFT semantics). Its output attributes are nullable-widened, like
+ *   `atMostOne-left`.
  *
  * The `array` mode is deferred to a follow-up backlog ticket.
  */
-export type FanOutBranchMode = 'atMostOne-left' | 'atMostOne-inner' | 'cross';
+export type FanOutBranchMode = 'atMostOne-left' | 'atMostOne-inner' | 'cross' | 'cross-left';
+
+/**
+ * True when the branch preserves the outer row on an empty match (LEFT
+ * semantics) and therefore nullable-widens its output attributes. Shared by the
+ * node's attribute/type widening, the recognition rule's `preserveAttrs`
+ * widening, and the emit composer's empty-buffer NULL-pad path.
+ */
+export function isLeftBranchMode(mode: FanOutBranchMode): boolean {
+	return mode === 'atMostOne-left' || mode === 'cross-left';
+}
+
+/**
+ * True when the branch contributes a data-driven 1:n Cartesian factor (`cross`
+ * or `cross-left`). Used by the memory guard and the cardinality estimate.
+ */
+export function isCrossBranchMode(mode: FanOutBranchMode): boolean {
+	return mode === 'cross' || mode === 'cross-left';
+}
 
 /**
  * How the node drives the outer side:
@@ -188,7 +211,7 @@ export class FanOutLookupJoinNode extends PlanNode implements RelationalPlanNode
 		const out: Attribute[] = [];
 		for (const a of this.outer.getAttributes()) out.push(a);
 		for (const b of this.branches) {
-			const nullable = b.mode === 'atMostOne-left';
+			const nullable = isLeftBranchMode(b.mode);
 			for (const a of b.outputAttrs) {
 				if (nullable && !a.type.nullable) {
 					out.push({ ...a, type: { ...a.type, nullable: true } });
@@ -210,7 +233,7 @@ export class FanOutLookupJoinNode extends PlanNode implements RelationalPlanNode
 		const columns = [
 			...outerType.columns.map(col => col),
 			...this.branches.flatMap(b => {
-				const nullable = b.mode === 'atMostOne-left';
+				const nullable = isLeftBranchMode(b.mode);
 				return b.child.getType().columns.map(col =>
 					nullable && !col.type.nullable
 						? { ...col, type: { ...col.type, nullable: true } }
@@ -248,7 +271,7 @@ export class FanOutLookupJoinNode extends PlanNode implements RelationalPlanNode
 			const rightPhys = childrenPhysical[i + 1];
 			const branchCols = b.outputAttrs.length;
 			const totalCols = leftColCount + branchCols;
-			const joinType = b.mode === 'atMostOne-left' ? 'left' : 'inner';
+			const joinType = isLeftBranchMode(b.mode) ? 'left' : 'inner';
 
 			const leftPhys: PhysicalProperties = {
 				fds,
@@ -285,18 +308,20 @@ export class FanOutLookupJoinNode extends PlanNode implements RelationalPlanNode
 	}
 
 	/**
-	 * Outer cardinality multiplied by each `cross` branch's per-outer-row fan-out
-	 * (at-most-one branches contribute a ×1 factor). A `cross` branch whose child
-	 * has no estimate falls back to ×1 for that branch rather than poisoning the
-	 * whole estimate to `undefined`. Returns `undefined` only when the outer side
-	 * itself has no estimate.
+	 * Outer cardinality multiplied by each cross branch's per-outer-row fan-out
+	 * (`cross` and `cross-left`; at-most-one branches contribute a ×1 factor). A
+	 * cross branch whose child has no estimate falls back to ×1 for that branch
+	 * rather than poisoning the whole estimate to `undefined`. (A `cross-left`
+	 * branch preserves the outer row when empty, so its true factor is at least 1;
+	 * the child-estimate product is an upper-leaning approximation either way.)
+	 * Returns `undefined` only when the outer side itself has no estimate.
 	 */
 	private computeEstimatedRows(): number | undefined {
 		const outerEst = this.outer.estimatedRows;
 		if (outerEst === undefined) return undefined;
 		let est = outerEst;
 		for (const b of this.branches) {
-			if (b.mode === 'cross') {
+			if (isCrossBranchMode(b.mode)) {
 				const childEst = b.child.estimatedRows;
 				if (childEst !== undefined) est *= childEst;
 			}

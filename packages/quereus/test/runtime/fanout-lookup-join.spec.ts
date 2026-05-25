@@ -653,6 +653,94 @@ describe('FanOutLookupJoin', () => {
 			expect(out).to.deep.equal([[1, 'done', 'done', 'done']]);
 		});
 	});
+
+	describe('cross-left mode', () => {
+		const crossLeft = (outputColCount = 1): FanOutLookupBranchDescriptor =>
+			({ mode: 'cross-left', outputColCount, concurrencySafe: true });
+
+		it('a non-empty cross-left branch behaves like cross (1:n product)', async () => {
+			const ctx = makeRuntimeContext();
+			const branch: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['a'] as Row; yield ['b'] as Row;
+			})();
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1], [2]]), singleOuterDescriptor(),
+				[branch], [crossLeft()], 4,
+			));
+			expect(out).to.deep.equal([
+				[1, 'a'], [1, 'b'],
+				[2, 'a'], [2, 'b'],
+			]);
+		});
+
+		it('an empty cross-left branch NULL-pads and preserves the outer row', async () => {
+			const ctx = makeRuntimeContext();
+			// Branch matches only outer row 2; rows 1 and 3 are preserved with NULLs.
+			const branch: FanOutLookupBranchFactory = (innerCtx) => (async function* () {
+				if ((resolveAttribute(innerCtx, 1) as number) === 2) {
+					yield ['hit1'] as Row; yield ['hit2'] as Row;
+				}
+			})();
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1], [2], [3]]), singleOuterDescriptor(),
+				[branch], [crossLeft(1)], 4,
+			));
+			expect(out).to.deep.equal([
+				[1, null],
+				[2, 'hit1'], [2, 'hit2'],
+				[3, null],
+			]);
+		});
+
+		it('NULL-pads using the branch outputColCount width', async () => {
+			const ctx = makeRuntimeContext();
+			const branchMiss: FanOutLookupBranchFactory = () => (async function* () { /* empty */ })();
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				[branchMiss], [crossLeft(3)], 4,
+			));
+			expect(out).to.deep.equal([[1, null, null, null]]);
+		});
+
+		it('mixes a non-empty cross with an empty cross-left (cross product × NULL pad)', async () => {
+			const ctx = makeRuntimeContext();
+			const branchCross: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['x'] as Row; yield ['y'] as Row;
+			})();
+			const branchLeftMiss: FanOutLookupBranchFactory = () => (async function* () { /* empty */ })();
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'cross', outputColCount: 1, concurrencySafe: true },
+				crossLeft(2),
+			];
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				[branchCross, branchLeftMiss], descriptors, 4,
+			));
+			// cross factor (2 entries) × cross-left NULL-pad factor (1 entry) → 2 rows.
+			expect(out).to.deep.equal([
+				[1, 'x', null, null],
+				[1, 'y', null, null],
+			]);
+		});
+
+		it('an empty cross (inner) branch still drops the outer row even with a cross-left sibling', async () => {
+			const ctx = makeRuntimeContext();
+			const branchCrossMiss: FanOutLookupBranchFactory = () => (async function* () { /* empty */ })();
+			const branchLeft: FanOutLookupBranchFactory = () => (async function* () {
+				yield ['z'] as Row;
+			})();
+			const descriptors: FanOutLookupBranchDescriptor[] = [
+				{ mode: 'cross', outputColCount: 1, concurrencySafe: true },
+				crossLeft(1),
+			];
+			const out = await collect(runFanOutLookupJoin(
+				ctx, arrayOuter([[1]]), singleOuterDescriptor(),
+				[branchCrossMiss, branchLeft], descriptors, 4,
+			));
+			// The inner `cross` branch is empty ⇒ inner-drop collapses the whole row.
+			expect(out).to.deep.equal([]);
+		});
+	});
 });
 
 // ---------------------------------------------------------------------------

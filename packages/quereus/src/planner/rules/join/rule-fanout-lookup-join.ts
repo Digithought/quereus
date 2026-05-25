@@ -79,7 +79,7 @@ import { lookupCoveringFK, isRowPreservingPathToTable } from '../../util/ind-uti
 import { collectExternalReferences } from '../../cache/correlation-detector.js';
 import { CapabilityDetectors } from '../../framework/characteristics.js';
 import { isAndOfColumnEqualities } from './rule-join-elimination.js';
-import { FanOutLookupJoinNode, type FanOutBranchSpec, type FanOutBranchMode } from '../../nodes/fanout-lookup-join-node.js';
+import { FanOutLookupJoinNode, isCrossBranchMode, isLeftBranchMode, type FanOutBranchSpec, type FanOutBranchMode } from '../../nodes/fanout-lookup-join-node.js';
 import type { TableSchema } from '../../../schema/table.js';
 
 const log = createLogger('optimizer:rule:fanout-lookup-join');
@@ -229,8 +229,10 @@ export function ruleFanOutLookupJoin(node: PlanNode, context: OptContext): PlanN
 	// branch. Refuse to cluster when a per-branch estimate or the whole product
 	// blows the configured caps — the chain then stays a streaming nested-loop
 	// join. Subquery branches are always at-most-one, so only spine branches can
-	// be `cross`.
-	const crossLookups = spineBranches.filter(b => b.mode === 'cross').map(b => b.lookup);
+	// be cross (`cross` / `cross-left`). A `cross-left` branch still contributes a
+	// 1:n factor (its empty-match NULL-pad only adds the single preserved row), so
+	// it is gated identically to `cross`.
+	const crossLookups = spineBranches.filter(b => isCrossBranchMode(b.mode)).map(b => b.lookup);
 	if (!crossGuardsPass(outerSubtree, crossLookups, tuning)) return null;
 
 	// Cost gate over the COMBINED branch set. `expectedLatencyMs` is populated 0
@@ -297,13 +299,14 @@ export function ruleFanOutLookupJoin(node: PlanNode, context: OptContext): PlanN
 	}
 
 	// `preserveAttributeIds` pins the wide-row layout: outer attrs + each
-	// branch's output attrs (nullable-widened for atMostOne-left). The branch
-	// outputs are the lookups'/subqueries' own attributes, so any reference
-	// resolves by attribute ID regardless of wide-row position.
+	// branch's output attrs (nullable-widened for left-preserving branches —
+	// atMostOne-left / cross-left). The branch outputs are the lookups'/
+	// subqueries' own attributes, so any reference resolves by attribute ID
+	// regardless of wide-row position.
 	const preserveAttrs: Attribute[] = [];
 	for (const a of outerAttrs) preserveAttrs.push(a);
 	for (const spec of branchSpecs) {
-		const nullable = spec.mode === 'atMostOne-left';
+		const nullable = isLeftBranchMode(spec.mode);
 		for (const a of spec.outputAttrs) {
 			if (nullable && !a.type.nullable) {
 				preserveAttrs.push({ ...a, type: { ...a.type, nullable: true } });
@@ -497,12 +500,13 @@ function recognizeSubqueryBranch(
  *     drop or duplicate rows the cluster cannot account for — bail to preserve
  *     the nested-loop join).
  *
- *   - **cross** — a clean parameterized equi-lookup whose FK→PK alignment is
- *     *absent* (no FK, or FK→non-unique), so the per-outer-row cardinality is
- *     data-driven (1:n). Only `inner` / `cross` join types qualify; a `left` 1:n
- *     chain would need nullable-widened cross-left semantics and is out of scope
- *     for v1 (we bail, leaving it a nested-loop left join). The unbounded
- *     Cartesian product is gated by the caller's row/product guards.
+ *   - **cross** / **cross-left** — a clean parameterized equi-lookup whose
+ *     FK→PK alignment is *absent* (no FK, or FK→non-unique), so the
+ *     per-outer-row cardinality is data-driven (1:n). `inner` / `cross` join
+ *     types yield `cross` (inner-drop on an empty branch); a `left` join yields
+ *     `cross-left` (NULL-pad + preserve the outer row on an empty branch, with
+ *     nullable-widened branch outputs). The unbounded Cartesian product is gated
+ *     by the caller's row/product guards in both cases.
  *
  * Aligned-but-not-at-most-one INNER lookups (nullable FK, non-row-preserving
  * path) are *not* reclassified as `cross`: FK→PK is still ≤1 match, so the issue
@@ -563,9 +567,16 @@ function recognizeBranch(
 	}
 
 	// Cross path: a clean parameterized equi-lookup that is not provably
-	// at-most-one. INNER/CROSS only — a `left` 1:n chain is out of scope for v1.
+	// at-most-one (data-driven 1:n).
+	//   - INNER/CROSS ⇒ `cross` (inner-drop on an empty branch).
+	//   - LEFT ⇒ `cross-left` (NULL-pad + preserve the outer row on an empty
+	//     branch; branch output attributes are nullable-widened by the node /
+	//     `preserveAttrs`). Both contribute a 1:n factor gated by `crossGuardsPass`.
 	if (join.joinType === 'inner' || join.joinType === 'cross') {
 		return { lookup: join.right, mode: 'cross', condition: join.condition };
+	}
+	if (join.joinType === 'left') {
+		return { lookup: join.right, mode: 'cross-left', condition: join.condition };
 	}
 
 	return null;

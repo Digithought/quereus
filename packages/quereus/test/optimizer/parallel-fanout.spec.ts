@@ -926,4 +926,193 @@ describe('ruleFanOutLookupJoin', () => {
 			]);
 		});
 	});
+
+	// ----------------------------------------------------------------------
+	// Cross-left (LEFT 1:n) lookup branches: a LEFT join whose non-preserved
+	// side is a parameterized equi-lookup that is NOT provably at-most-one (no
+	// FK, or FK→non-unique) folds into a `cross-left` branch. Unlike `cross`,
+	// an outer row with zero matches is preserved once with NULL branch columns
+	// (LEFT semantics), and the branch output attributes are nullable-widened.
+	// ----------------------------------------------------------------------
+	describe('cross-left (LEFT 1:n) lookup branches', () => {
+		// Mirror the cross block: drop the cap to 1 so a 2-branch cluster surfaces
+		// a positive cost-gate win `(2 - 1) × 25 = 25 > 2 × branchSetupCost`.
+		beforeEach(() => {
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				parallel: { ...before.parallel, concurrency: 1 },
+			});
+		});
+
+		/** Branch modes parsed from the fan-out node's logical properties. */
+		function fanOutBranchModes(rows: readonly PlanRow[]): string[] {
+			const fo = rows.find(r => r.op === 'FANOUTLOOKUPJOIN' || r.node_type === 'FanOutLookupJoin');
+			if (!fo || !fo.properties) return [];
+			const props = JSON.parse(fo.properties) as { branches?: { mode: string }[] };
+			return (props.branches ?? []).map(b => b.mode);
+		}
+
+		/**
+		 * One small outer table `p` and two child tables LEFT-joined on a NON-key
+		 * column (`pid`, no FK) → data-driven 1:n cardinality with LEFT preservation:
+		 *   p=1 → b0∈{100,101}, b1∈{5}   (2 × 1 = 2 product rows)
+		 *   p=2 → b0∈{200},     b1∈{6,7} (1 × 2 = 2 product rows)
+		 *   p=3 → no matches in either   (preserved once, both branch cols NULL)
+		 *   p=4 → b0∈{400},     b1∈{}    (b0 product × NULL-padded b1 → 1 row)
+		 */
+		async function setupCrossLeft(child: 'memory' | 'hi_lat_memory'): Promise<void> {
+			await db.exec(`create table p (id integer primary key, label text) using memory`);
+			await db.exec(`create table b0 (id integer primary key, pid integer, v integer) using ${child}`);
+			await db.exec(`create table b1 (id integer primary key, pid integer, w integer) using ${child}`);
+			await db.exec("insert into p values (1, 'one'), (2, 'two'), (3, 'three'), (4, 'four')");
+			await db.exec('insert into b0 values (10, 1, 100), (11, 1, 101), (12, 2, 200), (13, 4, 400)');
+			await db.exec('insert into b1 values (20, 1, 5), (21, 2, 6), (22, 2, 7)');
+		}
+
+		const crossLeftSQL =
+			`select p.id, b0.v, b1.w
+			 from p
+			 left join b0 on p.id = b0.pid
+			 left join b1 on p.id = b1.pid`;
+
+		it('clusters a 1:n LEFT chain as cross-left branches and collapses the joins', async () => {
+			await setupCrossLeft('hi_lat_memory');
+			const plan = await planRows(db, crossLeftSQL);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+			expect(fanOutBranchModes(plan)).to.deep.equal(['cross-left', 'cross-left']);
+			expect(joinCount(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(0);
+		});
+
+		it('does NOT cluster on local-only (memory) 1:n LEFT chains', async () => {
+			await setupCrossLeft('memory');
+			const plan = await planRows(db, crossLeftSQL);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		});
+
+		forkExecTest('cross-left fan-out preserves empty-match outer rows with NULL branch columns', async () => {
+			await setupCrossLeft('hi_lat_memory');
+			const plan = await planRows(db, crossLeftSQL);
+			expect(hasFanOut(plan)).to.equal(true);
+			const ordered = crossLeftSQL + ' order by p.id, b0.v, b1.w';
+			const enabled = await results(db, ordered);
+
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				disabledRules: new Set(['fanout-lookup-join']),
+			});
+			let baseline: Record<string, SqlValue>[];
+			try {
+				baseline = await results(db, ordered);
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+
+			expect(enabled).to.deep.equal(baseline);
+			// p=3 (both branches empty) is preserved with NULL,NULL; p=4 (b1 empty)
+			// keeps its b0 row with a NULL b1 — neither is dropped (LEFT semantics).
+			expect(enabled).to.deep.equal([
+				{ id: 1, v: 100, w: 5 },
+				{ id: 1, v: 101, w: 5 },
+				{ id: 2, v: 200, w: 6 },
+				{ id: 2, v: 200, w: 7 },
+				{ id: 3, v: null, w: null },
+				{ id: 4, v: 400, w: null },
+			]);
+		});
+
+		it('guard trips: product cap below the cross product leaves a nested-loop chain', async () => {
+			await setupCrossLeft('hi_lat_memory');
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				parallel: { ...before.parallel, maxCrossProduct: -1 },
+			});
+			try {
+				const plan = await planRows(db, crossLeftSQL);
+				expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+				expect(joinCount(plan)).to.be.greaterThan(0);
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+		});
+
+		it('guard trips: per-branch cap below the cross-left branch estimate leaves a nested-loop chain', async () => {
+			await setupCrossLeft('hi_lat_memory');
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				parallel: { ...before.parallel, maxCrossBranchRows: -1 },
+			});
+			try {
+				const plan = await planRows(db, crossLeftSQL);
+				expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+				expect(joinCount(plan)).to.be.greaterThan(0);
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+		});
+
+		/**
+		 * A chain mixing all three relational modes:
+		 *   m left join lk  → atMostOne-left (FK→PK, NOT NULL)
+		 *   m join c        → cross           (inner, no FK)
+		 *   m left join d   → cross-left       (left, no FK)
+		 * c always matches (so the cross branch never drops); d misses for m=2 so
+		 * cross-left's NULL preservation shows.
+		 */
+		async function setupMixedLeft(): Promise<string> {
+			await db.exec('create table lk (id integer primary key, name text) using hi_lat_memory');
+			await db.exec(`create table m (
+				id integer primary key,
+				lk_id integer not null references lk(id)
+			) using memory`);
+			await db.exec('create table c (id integer primary key, mid integer, v integer) using hi_lat_memory');
+			await db.exec('create table d (id integer primary key, mid integer, w integer) using hi_lat_memory');
+			await db.exec("insert into lk values (1, 'Acme'), (2, 'Beta')");
+			await db.exec('insert into m values (1, 1), (2, 2)');
+			await db.exec('insert into c values (10, 1, 100), (11, 1, 101), (12, 2, 200)');
+			await db.exec('insert into d values (20, 1, 7)'); // no row for m=2
+			return `select m.id, lk.name, c.v, d.w
+				 from m
+				 left join lk on m.lk_id = lk.id
+				 join c on m.id = c.mid
+				 left join d on m.id = d.mid`;
+		}
+
+		it('mixed chain: atMostOne-left + cross + cross-left → single fan-out', async () => {
+			const sql = await setupMixedLeft();
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+			expect(fanOutBranchModes(plan)).to.deep.equal(['atMostOne-left', 'cross', 'cross-left']);
+			expect(joinCount(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(0);
+		});
+
+		forkExecTest('mixed chain result equals the nested-loop chain (incl. cross-left NULL pad)', async () => {
+			const sql = await setupMixedLeft();
+			const ordered = sql + ' order by m.id, c.v, d.w';
+			const plan = await planRows(db, sql);
+			expect(hasFanOut(plan)).to.equal(true);
+			const enabled = await results(db, ordered);
+
+			const before = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...before,
+				disabledRules: new Set(['fanout-lookup-join']),
+			});
+			let baseline: Record<string, SqlValue>[];
+			try {
+				baseline = await results(db, ordered);
+			} finally {
+				db.optimizer.updateTuning(before);
+			}
+			expect(enabled).to.deep.equal(baseline);
+			expect(enabled).to.deep.equal([
+				{ id: 1, name: 'Acme', v: 100, w: 7 },
+				{ id: 1, name: 'Acme', v: 101, w: 7 },
+				{ id: 2, name: 'Beta', v: 200, w: null },
+			]);
+		});
+	});
 });
