@@ -149,6 +149,28 @@ export interface OptimizerTuning {
 		 */
 		readonly maxOuterReadAhead: number;
 		/**
+		 * Minimum slowest-branch `expectedLatencyMs` for `rule-fanout-batched-outer`
+		 * to flip an already-formed `FanOutLookupJoinNode` from `serial` to
+		 * `batched` outer mode. Like `gatherThresholdMs` / `prefetchProbeThresholdMs`,
+		 * any positive value keeps the rule inert on memory-vtab plans (their leaves
+		 * declare `expectedLatencyMs = 0`), so the golden-plan sweep is unaffected.
+		 * Default 25 ms — matches the synthetic high-latency vtab fixture the other
+		 * parallel rules use.
+		 */
+		readonly batchedOuterThresholdMs: number;
+		/**
+		 * Minimum estimated outer-row count for `rule-fanout-batched-outer` to flip
+		 * to `batched`. Cross-row pipelining only amortizes the reorder-buffer +
+		 * per-row-fork overhead when outer rows clearly exceed the read-ahead window;
+		 * below this the serial per-row overlap is already an upper bound on
+		 * wall-clock. An unknown estimate (`undefined`) is treated as *failing* the
+		 * gate (conservative — never flip on a missing statistic). Synthetic
+		 * memory-vtab fixtures resolve `estimatedRows` to 0, so the default also keeps
+		 * the rule inert there independent of the latency gate. Default 256
+		 * (≈ 4× `maxOuterReadAhead`).
+		 */
+		readonly batchedOuterMinRows: number;
+		/**
 		 * The slowest child of a UNION ALL chain must have at least this expected
 		 * first-row latency (in milliseconds) for `rule-async-gather-union-all`
 		 * to fold it into an `AsyncGatherNode`. Set high enough that local-only
@@ -252,6 +274,14 @@ export const DEFAULT_TUNING: OptimizerTuning = {
 		// batched fan-out lookup join; bounds the reorder buffer and forked
 		// per-row contexts.
 		maxOuterReadAhead: 64,
+		// ≥ this many ms on the slowest branch flips a fan-out to batched outer
+		// mode. 25 ms matches the synthetic high-latency vtab fixture; memory-vtab
+		// plans declare 0 ms so the rule stays inert on local-only plans.
+		batchedOuterThresholdMs: 25,
+		// ≥ this many estimated outer rows required before batched is worthwhile;
+		// ≈ 4× maxOuterReadAhead. Unknown estimates fail the gate; memory-vtab
+		// fixtures resolve to 0 and never flip.
+		batchedOuterMinRows: 256,
 		// ≥ this many ms on the slowest child of a unionAll chain triggers the
 		// parallel gather. 25 ms matches the synthetic high-latency vtab fixture;
 		// memory-vtab plans declare 0 ms so they never cross this gate.

@@ -30,6 +30,7 @@ import { ruleJoinKeyInference } from './rules/join/rule-join-key-inference.js';
 import { ruleJoinGreedyCommute } from './rules/join/rule-join-greedy-commute.js';
 import { ruleJoinElimination, ruleJoinEliminationUnderAggregate } from './rules/join/rule-join-elimination.js';
 import { ruleFanOutLookupJoin } from './rules/join/rule-fanout-lookup-join.js';
+import { ruleFanOutBatchedOuter } from './rules/join/rule-fanout-batched-outer.js';
 import { ruleAsyncGatherUnionAll } from './rules/parallel/rule-async-gather-union-all.js';
 import { ruleAsyncGatherZipByKey } from './rules/parallel/rule-async-gather-zip-by-key.js';
 import { ruleEagerPrefetchProbe } from './rules/parallel/rule-eager-prefetch-probe.js';
@@ -595,6 +596,24 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleEagerPrefetchProbe,
 			priority: 15
+		});
+
+		// Fan-out batched-outer recognition: flip an already-formed
+		// `FanOutLookupJoinNode` from serial to batched outer mode when the per-row
+		// branch count under-saturates the global in-flight budget, the slowest
+		// branch is high-latency, and the outer cardinality is large enough for
+		// cross-row pipelining to pay off. Runs after physical selection (so leaf
+		// expectedLatencyMs / estimatedRows / concurrencySafe are final) and before
+		// `materialization-advisory` (priority 30) so the EagerPrefetch the rule
+		// wraps the outer in is already in place when the advisory walks the tree.
+		// Inert on memory-vtab plans (expectedLatencyMs = 0 AND estimatedRows = 0),
+		// so the golden-plan sweep is unaffected.
+		this.passManager.addRuleToPass(PassId.PostOptimization, {
+			id: 'fanout-batched-outer',
+			nodeType: PlanNodeType.FanOutLookupJoin,
+			phase: 'rewrite',
+			fn: ruleFanOutBatchedOuter,
+			priority: 16
 		});
 
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
