@@ -354,6 +354,44 @@ describe('ruleAsyncGatherZipByKey', () => {
 		]);
 	});
 
+	it('folds with an uncorrelated scalar subquery in the projection (no key ref)', async () => {
+		// A scalar subquery that references no consumed branch key is carried through
+		// the reordering Project unchanged (the `subtreeReferencesKey` relational-child
+		// path keeps it). The merged-key coalesce still rewrites; the gather folds.
+		await setup();
+		const sql =
+			`select coalesce(a.k, b.k) as k, a.av, b.bv, (select count(*) from c) as cc
+			   from a full outer join b on a.k = b.k`;
+		const plan = await planRows(db, sql);
+		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+		const rows = sortByK(await results(db, sql));
+		expect(rows).to.deep.equal([
+			{ k: 1, av: 'a1', bv: null, cc: 2 },
+			{ k: 2, av: 'a2', bv: 'b2', cc: 2 },
+			{ k: 3, av: null, bv: 'b3', cc: 2 },
+		]);
+	});
+
+	it('does NOT fold when a projection subquery references a consumed branch key', async () => {
+		// The subquery is correlated to `a.k`, a per-branch key the merge consumes
+		// into the single merged key — it cannot resolve above the gather. The
+		// `subtreeReferencesKey` guard declines the fold; the chain stays a binary
+		// FULL JOIN and errors at emit.
+		await setup();
+		const sql =
+			`select coalesce(a.k, b.k) as k, a.av, b.bv, (select count(*) from c where c.k = a.k) as cc
+			   from a full outer join b on a.k = b.k`;
+		const plan = await planRows(db, sql);
+		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		let threw = false;
+		try {
+			await results(db, sql);
+		} catch {
+			threw = true;
+		}
+		expect(threw, 'declined fold leaves an unsupported FULL JOIN that errors at emit').to.equal(true);
+	});
+
 	it('does NOT fold a USING(k) full join (no synthesized ON condition; out of scope)', async () => {
 		// USING / NATURAL full joins carry no explicit `ON` condition, so the chain
 		// walk declines them. They remain an unsupported binary FULL JOIN and error
