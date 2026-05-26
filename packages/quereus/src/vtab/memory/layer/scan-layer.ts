@@ -61,7 +61,12 @@ export async function* scanLayer(
 			if (plan.lowerBound) compositeStart.push(plan.lowerBound.value);
 			startKey = { value: compositeStart as BTreeKeyForPrimary };
 		} else if (plan.lowerBound) {
-			startKey = { value: plan.lowerBound.value as BTreeKeyForPrimary };
+			// Composite PKs store keys as arrays; wrap the scalar leading-column
+			// bound in a single-element array so the comparator's prefix handling
+			// positions the seek before all full keys sharing that prefix.
+			const isComposite = (schema.primaryKeyDefinition?.length ?? schema.columns.length) > 1;
+			const lb = isComposite ? [plan.lowerBound.value] : plan.lowerBound.value;
+			startKey = { value: lb as BTreeKeyForPrimary };
 		}
 
 		for await (const value of safeIterate(tree, !plan.descending, startKey)) {
@@ -128,7 +133,12 @@ export async function* scanLayer(
 			}
 		} else {
 			if (plan.lowerBound) {
-				startKey = { value: plan.lowerBound.value as BTreeKeyForIndex };
+				// Composite secondary indexes store array-shaped keys; wrap the
+				// scalar leading-column bound so the comparator's prefix handling
+				// positions the seek correctly (mirrors the primary branch).
+				const isComposite = (indexDef?.columns.length ?? 1) > 1;
+				const lb = isComposite ? [plan.lowerBound.value] : plan.lowerBound.value;
+				startKey = { value: lb as BTreeKeyForIndex };
 			}
 		}
 
