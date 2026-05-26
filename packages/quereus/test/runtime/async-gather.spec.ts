@@ -5,7 +5,7 @@ import {
 	runZipByKey,
 	cartesianProduct,
 } from '../../src/runtime/emit/async-gather.js';
-import { createCollationRowComparator, BINARY_COLLATION } from '../../src/util/comparison.js';
+import { createCollationRowComparator, BINARY_COLLATION, NOCASE_COLLATION } from '../../src/util/comparison.js';
 import { AsyncGatherNode } from '../../src/planner/nodes/async-gather-node.js';
 import { PlanNode, type Attribute, type RelationalPlanNode, type PhysicalProperties } from '../../src/planner/nodes/plan-node.js';
 import { PlanNodeType } from '../../src/planner/nodes/plan-node-type.js';
@@ -23,6 +23,7 @@ import {
 	controllableSource,
 	makeDeferred,
 	type Deferred,
+	type SourceEvent,
 } from '../util/controllable-source.js';
 
 const mockScope = { resolveSymbol: () => undefined } as unknown as Scope;
@@ -942,6 +943,33 @@ describe('AsyncGather', () => {
 			for (const g of gates) g.resolve();
 			await done;
 			expect(tracker.peak).to.equal(1, 'cap=1 must serialize: peak stays at 1');
+		});
+
+		it('merged key is deterministic under forced reverse arrival (lowest-index branch wins, matches coalesce)', async () => {
+			// NOCASE: 'A' (branch 0) and 'a' (branch 1) are collation-equal but
+			// byte-distinct. Force branch 1 to arrive FIRST so it seeds the BTree
+			// entry's key tuple with 'a', then let branch 0 arrive and merge in. The
+			// emitted merged key must still be branch 0's 'A' — composeMergedKeyCells
+			// picks the lowest-indexed present branch, matching coalesce(b0.k, b1.k),
+			// not the arrival-order winner. (Pre-fix this yielded the arrived-first 'a'.)
+			const cmpNoCase = createCollationRowComparator([NOCASE_COLLATION]);
+			const ctx = makeRuntimeContext();
+			const tracker = new ConcurrencyTracker();
+			const trace: SourceEvent[] = [];
+			const g0 = makeDeferred();
+			const g1 = makeDeferred();
+			const b0 = controllableSource({ branch: 0, rows: [['A', 'a1']], gates: [g0], tracker, trace });
+			const b1 = controllableSource({ branch: 1, rows: [['a', 'b1']], gates: [g1], tracker, trace });
+
+			const done = collect(
+				runZipByKey(ctx, [b0.factory, b1.factory], [[0], [0]], [[1], [1]], cmpNoCase, 2),
+			);
+			await tracker.waitForInFlight(2); // both parked at their gates
+			g1.resolve(); // branch 1 ('a') arrives first → seeds entry.key
+			while (!trace.some(e => e.kind === 'yielded' && e.branch === 1)) await sleep(0);
+			g0.resolve(); // branch 0 ('A') arrives second → merges into the same group
+			const out = await done;
+			expect(out).to.deep.equal([['A', 'a1', 'b1']]);
 		});
 	});
 
