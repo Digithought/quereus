@@ -90,6 +90,12 @@ INSERT INTO idx_d VALUES (1, 10, 'a', 'p'), (2, 20, 'b', 'q'), (3, 30, 'c', 'r')
 SELECT id FROM idx_d WHERE k >= 15 ORDER BY k;
 → [{"id":2},{"id":3}]
 
+-- Upper-bound range on the DESC-leading secondary index. An ascending physical
+-- walk over a DESC-leading composite index seeks from the upper bound; that
+-- scalar bound must be wrapped to match the array-shaped composite index keys.
+SELECT id FROM idx_d WHERE k <= 25 ORDER BY k;
+→ [{"id":1},{"id":2}]
+
 DROP TABLE idx_d;
 
 -- Composite PRIMARY KEY with a DESC leading column. The primary BTree is

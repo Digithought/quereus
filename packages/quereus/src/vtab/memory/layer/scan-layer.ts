@@ -56,12 +56,22 @@ export async function* scanLayer(
 
 		const isAscending = !plan.descending;
 		// When the leading PK column is DESC the BTree is physically ordered with
-		// that column descending, so an ascending physical scan must seek from the
-		// upper bound and terminate at the lower bound (mirrors the secondary
-		// branch). The synthesized all-columns fallback definition carries no
-		// `desc`, so the `?.` chain yields false there, which is correct.
+		// that column descending. The synthesized all-columns fallback definition
+		// carries no `desc`, so the `?.` chain yields false there, which is correct.
 		const isDescFirstColumn = schema.primaryKeyDefinition?.[0]?.desc === true;
 		const isComposite = (schema.primaryKeyDefinition?.length ?? schema.columns.length) > 1;
+
+		// Seek-start selection must depend on the *physical* walk direction, not just
+		// the key's declared direction. The four {isAscending}×{isDescFirstColumn}
+		// combinations each seek from one bound and terminate at the other:
+		//   ascending  + ASC-leading  → seek from lower, terminate at upper
+		//   ascending  + DESC-leading → seek from upper, terminate at lower
+		//   descending + ASC-leading  → seek from upper, terminate at lower
+		//   descending + DESC-leading → seek from lower, terminate at upper
+		// i.e. seek from the upper bound exactly when isAscending === isDescFirstColumn
+		// (and terminate at the complement). Absent the chosen bound we fall back to
+		// the tree end `safeIterate` picks for the direction.
+		const seekFromUpper = isAscending === isDescFirstColumn;
 
 		// Determine start key for range scans
 		let startKey: { value: BTreeKeyForPrimary } | undefined;
@@ -69,20 +79,15 @@ export async function* scanLayer(
 			const compositeStart = [...plan.equalityPrefix];
 			if (plan.lowerBound) compositeStart.push(plan.lowerBound.value);
 			startKey = { value: compositeStart as BTreeKeyForPrimary };
-		} else if (isDescFirstColumn) {
-			// DESC leading column: seek from the upper bound (tree start when absent).
-			// Composite PKs store array-shaped keys, so wrap the scalar bound so the
-			// comparator's prefix handling positions the seek correctly.
-			if (plan.upperBound) {
-				const ub = isComposite ? [plan.upperBound.value] : plan.upperBound.value;
-				startKey = { value: ub as BTreeKeyForPrimary };
-			}
-		} else if (plan.lowerBound) {
-			// Composite PKs store keys as arrays; wrap the scalar leading-column
+		} else {
+			// Composite PKs store array-shaped keys; wrap the scalar leading-column
 			// bound in a single-element array so the comparator's prefix handling
 			// positions the seek before all full keys sharing that prefix.
-			const lb = isComposite ? [plan.lowerBound.value] : plan.lowerBound.value;
-			startKey = { value: lb as BTreeKeyForPrimary };
+			const seekBound = seekFromUpper ? plan.upperBound : plan.lowerBound;
+			if (seekBound) {
+				const seekValue = isComposite ? [seekBound.value] : seekBound.value;
+				startKey = { value: seekValue as BTreeKeyForPrimary };
+			}
 		}
 
 		for await (const value of safeIterate(tree, isAscending, startKey)) {
@@ -100,19 +105,19 @@ export async function* scanLayer(
 						}
 					}
 					if (prefixMismatch) break;
-				} else if (isAscending) {
-					// Ascending physical scan past the relevant bound — early exit.
-					// DESC leading column terminates at the lower bound; ASC at the upper.
-					if (isDescFirstColumn && plan.lowerBound) {
-						const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
-						const cmp = compareSqlValues(keyForComparison, plan.lowerBound.value);
-						if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) {
-							break;
-						}
-					} else if (!isDescFirstColumn && plan.upperBound) {
-						const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
+				} else {
+					// Past the bound we terminate at — early exit. We seek from one end
+					// and terminate at the other, so this is the complement of
+					// seekFromUpper and holds for both physical walk directions.
+					const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
+					if (!seekFromUpper && plan.upperBound) {
 						const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
 						if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
+							break;
+						}
+					} else if (seekFromUpper && plan.lowerBound) {
+						const cmp = compareSqlValues(keyForComparison, plan.lowerBound.value);
+						if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) {
 							break;
 						}
 					}
@@ -145,24 +150,26 @@ export async function* scanLayer(
 		const indexDef = schema.indexes?.find(idx => idx.name === plan.indexName);
 		const isDescFirstColumn = indexDef?.columns[0]?.desc === true;
 
+		// Seek-from end depends on the physical walk direction (see the primary
+		// branch for the full rationale): seek from the upper bound exactly when
+		// isAscending === isDescFirstColumn, terminate at the complement. Composite
+		// secondary indexes store array-shaped keys, so wrap the scalar
+		// leading-column bound so the comparator's prefix handling positions the
+		// seek correctly (mirrors the primary branch).
+		const isComposite = (indexDef?.columns.length ?? 1) > 1;
+		const seekFromUpper = isAscending === isDescFirstColumn;
+
 		// Determine start key
 		let startKey: { value: BTreeKeyForIndex } | undefined;
 		if (plan.equalityPrefix) {
 			const compositeStart = [...plan.equalityPrefix];
 			if (plan.lowerBound) compositeStart.push(plan.lowerBound.value);
 			startKey = { value: compositeStart as BTreeKeyForIndex };
-		} else if (isDescFirstColumn) {
-			if (plan.upperBound) {
-				startKey = { value: plan.upperBound.value as BTreeKeyForIndex };
-			}
 		} else {
-			if (plan.lowerBound) {
-				// Composite secondary indexes store array-shaped keys; wrap the
-				// scalar leading-column bound so the comparator's prefix handling
-				// positions the seek correctly (mirrors the primary branch).
-				const isComposite = (indexDef?.columns.length ?? 1) > 1;
-				const lb = isComposite ? [plan.lowerBound.value] : plan.lowerBound.value;
-				startKey = { value: lb as BTreeKeyForIndex };
+			const seekBound = seekFromUpper ? plan.upperBound : plan.lowerBound;
+			if (seekBound) {
+				const seekValue = isComposite ? [seekBound.value] : seekBound.value;
+				startKey = { value: seekValue as BTreeKeyForIndex };
 			}
 		}
 
@@ -181,20 +188,19 @@ export async function* scanLayer(
 					if (prefixMismatch) break;
 					continue;
 				}
-				// Early termination: for ASC indexes break when past the relevant bound
-				if (isAscending) {
-					if (isDescFirstColumn && plan.lowerBound) {
-						const keyForComparison = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey[0] : indexEntry.indexKey;
-						const cmp = compareSqlValues(keyForComparison, plan.lowerBound.value);
-						if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) {
-							break;
-						}
-					} else if (!isDescFirstColumn && plan.upperBound) {
-						const keyForComparison = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey[0] : indexEntry.indexKey;
-						const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
-						if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
-							break;
-						}
+				// Early termination: break once the leading column passes the bound we
+				// terminate at (the complement of seekFromUpper; holds for both
+				// physical walk directions).
+				const keyForComparison = Array.isArray(indexEntry.indexKey) ? indexEntry.indexKey[0] : indexEntry.indexKey;
+				if (!seekFromUpper && plan.upperBound) {
+					const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
+					if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
+						break;
+					}
+				} else if (seekFromUpper && plan.lowerBound) {
+					const cmp = compareSqlValues(keyForComparison, plan.lowerBound.value);
+					if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) {
+						break;
 					}
 				}
 				continue;
