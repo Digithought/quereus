@@ -92,7 +92,11 @@ SELECT id FROM idx_d WHERE k >= 15 ORDER BY k;
 
 -- Upper-bound range on the DESC-leading secondary index. An ascending physical
 -- walk over a DESC-leading composite index seeks from the upper bound; that
--- scalar bound must be wrapped to match the array-shaped composite index keys.
+-- scalar bound is wrapped in a single-element array so the comparator positions
+-- the seek at the bound rather than at a tree extreme. NOTE: the pre-wrap scalar
+-- form was inefficient (a bare scalar sorts to one tree end, forcing a full
+-- forward scan) but still correct here — it landed at the start of the walk, so
+-- this case is a result-correctness assertion, not a row-drop regression guard.
 SELECT id FROM idx_d WHERE k <= 25 ORDER BY k;
 → [{"id":1},{"id":2}]
 
