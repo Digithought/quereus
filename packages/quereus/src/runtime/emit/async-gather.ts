@@ -97,6 +97,28 @@ interface ZipEntry {
 }
 
 /**
+ * Compose the merged key cells for a group **deterministically**: the
+ * lowest-indexed branch that has a row for this key supplies all K key cells.
+ *
+ * This matches `coalesce(b0.k, b1.k, …)`'s left-to-right first-non-null
+ * contract: every branch present for a (non-NULL) key has all its key columns
+ * non-null and collation-equal to the group key, so the first present branch
+ * wins every key position — independent of concurrent arrival order. Callers
+ * guarantee at least one branch is present.
+ */
+function composeMergedKeyCells(
+	cells: readonly (Row | undefined)[],
+	branchKeyIndices: readonly (readonly number[])[],
+): Row {
+	for (let b = 0; b < cells.length; b++) {
+		const cell = cells[b];
+		if (cell) return branchKeyIndices[b].map(ix => cell[ix]);
+	}
+	// Unreachable: a group always has at least one present branch.
+	return [];
+}
+
+/**
  * Compose one output row from a key tuple and per-branch row slots:
  * `[ key cells ] ++ for each branch b: (cells[b] ? its non-key cells : NULLs)`.
  */
@@ -128,9 +150,15 @@ function composeZipRow(
  * NULL keys never merge (SQL `NULL = NULL` is unknown): each NULL-keyed row is
  * buffered and emitted standalone (only its own branch's columns populated).
  *
+ * The merged key cells are **deterministic** regardless of concurrent branch
+ * arrival order: at emit time the lowest-indexed present branch supplies them
+ * (see {@link composeMergedKeyCells}), matching `coalesce`'s left-to-right pick
+ * even under a non-binary collation that makes collation-equal keys byte-distinct
+ * (NOCASE `'A'`/`'a'`). The `BTree` is still keyed by whichever key tuple arrived
+ * first, but that only drives comparison (collation-equal → identical merges).
+ *
  * Within-branch duplicate keys are **unspecified** in v1 — branches are assumed
- * key-unique; a second write for the same key overwrites the first, and branch
- * arrival order is non-deterministic.
+ * key-unique; a second write for the same key overwrites the first.
  *
  * Exported for unit testing — production callers go through {@link emitAsyncGather}.
  */
@@ -170,7 +198,8 @@ export async function* runZipByKey(
 	const path = tree.first();
 	while (path.on) {
 		const entry = tree.at(path)!;
-		yield composeZipRow(entry.key, entry.cells, branchNonKeyIndices);
+		const keyCells = composeMergedKeyCells(entry.cells, branchKeyIndices);
+		yield composeZipRow(keyCells, entry.cells, branchNonKeyIndices);
 		tree.moveNext(path);
 	}
 
@@ -178,8 +207,8 @@ export async function* runZipByKey(
 	for (const { branch, value } of nullKeyed) {
 		const cells = new Array<Row | undefined>(n).fill(undefined);
 		cells[branch] = value;
-		const keyRow: Row = branchKeyIndices[branch].map(ix => value[ix]);
-		yield composeZipRow(keyRow, cells, branchNonKeyIndices);
+		const keyCells = composeMergedKeyCells(cells, branchKeyIndices);
+		yield composeZipRow(keyCells, cells, branchNonKeyIndices);
 	}
 }
 

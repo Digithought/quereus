@@ -224,20 +224,32 @@ describe('ruleAsyncGatherZipByKey', () => {
 		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
 	});
 
-	it('does NOT fold when a key column uses a non-binary collation', async () => {
-		// Both branches agree on NOCASE, but the emitter's merged-key value is
-		// whichever branch arrived first (non-deterministic) and can diverge from
-		// coalesce's left-to-right pick when collation-equal keys are byte-distinct
-		// ('A'/'a'). v1 gates non-binary key collations out entirely.
+	it('folds an agreeing-NOCASE chain and merges keys deterministically (matches coalesce)', async () => {
+		// Both branches agree on NOCASE, and collation-equal keys are byte-distinct
+		// across branches ('A' in ca, 'a' in cb). The emitter now composes the
+		// merged key from the lowest-indexed present branch, matching coalesce's
+		// left-to-right pick — so the merged key is ca's 'A' (present), cb's 'a'
+		// never surfaces. The rule folds (agreement gate, not binary-only).
 		await db.exec('create table ca (k text primary key collate NOCASE, av text) using hi_lat_memory');
 		await db.exec('create table cb (k text primary key collate NOCASE, bv text) using hi_lat_memory');
-		await db.exec("insert into ca values ('x','a1')");
-		await db.exec("insert into cb values ('x','b1')");
+		await db.exec("insert into ca values ('A','a1')"); // present only in ca
+		await db.exec("insert into cb values ('a','b1')"); // collation-equal to 'A', byte-distinct
+		await db.exec("insert into cb values ('B','b2')"); // present only in cb
 		const sql =
 			`select coalesce(ca.k, cb.k) as k, ca.av, cb.bv
 			   from ca full outer join cb on ca.k = cb.k`;
 		const plan = await planRows(db, sql);
-		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+
+		// Deterministic across repeated runs despite concurrent branch arrival.
+		for (let i = 0; i < 5; i++) {
+			const rows = await results(db, sql);
+			const norm = rows.map(r => `${String(r.k)},${r.av ?? '-'},${r.bv ?? '-'}`).sort();
+			expect(norm, `run ${i}`).to.deep.equal([
+				'A,a1,b1', // 'A'/'a' merged; key = ca's 'A' (lowest present branch) == coalesce pick
+				'B,-,b2',  // present only in cb; key = cb's 'B' == coalesce(null,'B')
+			]);
+		}
 	});
 
 	it('still folds when key columns are explicitly binary', async () => {

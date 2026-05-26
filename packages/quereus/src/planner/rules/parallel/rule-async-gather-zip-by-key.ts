@@ -59,14 +59,16 @@
  *     meet `tuning.parallel.gatherThresholdMs`. This is 0 on memory-vtab /
  *     in-process leaves, so the rule is inert by design on local-only plans
  *     (the golden-plan no-rewrite invariant).
- *   - **Binary key collation.** Every key column on every branch must use the
- *     binary collation. The runtime comparator derives from branch 0 only, and
- *     the emitter's merged key value is whichever branch arrived first; under a
- *     non-binary collation that value is non-deterministic and can diverge from
- *     `coalesce`'s left-to-right pick (e.g. NOCASE merging `'A'`/`'a'`). Binary
- *     keeps equal keys byte-identical, so the merged value is well-defined.
- *     (`AsyncGatherNode.validateZipByKey` enforces the weaker *agreement*
- *     invariant for manual builds; this rule is deliberately stricter.)
+ *   - **Key collation agreement.** Every key column at a given key position must
+ *     declare the *same* collation across all branches (binary or not). The
+ *     runtime comparator derives from branch 0 only, so a disagreement would
+ *     compare keys under the wrong collation. Non-binary collations are allowed:
+ *     the emitter composes the merged key deterministically from the
+ *     lowest-indexed present branch (`composeMergedKeyCells`), matching
+ *     `coalesce`'s left-to-right pick even when collation-equal keys are
+ *     byte-distinct (e.g. NOCASE merging `'A'`/`'a'`). This mirrors the
+ *     *agreement* invariant `AsyncGatherNode.validateZipByKey` enforces (which
+ *     throws on a true mismatch); checking it here declines gracefully instead.
  *
  * ## Attribute provenance (Option A — per-branch refs + minted output keys)
  *
@@ -163,22 +165,19 @@ export function ruleAsyncGatherZipByKey(node: PlanNode, context: OptContext): Pl
 	if (maxLatency < tuning.gatherThresholdMs) return null;
 
 	// Collation agreement per key position (the runtime comparator uses branch
-	// 0's collation only). validateZipByKey also enforces this, but checking
-	// here lets us decline the rewrite gracefully rather than throw.
+	// 0's collation only). validateZipByKey also enforces this and *throws* on a
+	// mismatch, but checking here lets the rule decline the rewrite gracefully —
+	// the chain simply stays a JoinNode (which then errors at emit as an
+	// unsupported FULL JOIN, the pre-rule baseline) rather than aborting planning.
 	//
-	// v1 requires *binary* collation on every key column — stricter than the
-	// agreement `validateZipByKey` enforces. Rationale: even when every branch
-	// agrees on a non-binary collation (e.g. NOCASE), the emitter merges
-	// collation-equal-but-byte-distinct keys ('A'/'a') into one BTree entry whose
-	// key cells come from whichever branch arrived first (concurrent, so
-	// non-deterministic). That diverges from `coalesce`'s deterministic
-	// left-to-right pick. Folding only binary keys keeps the merged value
-	// byte-identical across branches, so it is well-defined. Re-enabling
-	// non-binary collations needs a deterministic merged-key pick in the emitter
-	// (tracked separately) — until then a non-binary full-outer chain stays a
-	// JoinNode and errors at emit, exactly the pre-rule baseline.
-	if (!keyCollationsAllBinary(branches, branchKeyAttrs, k)) {
-		log('Aborting: a key column uses a non-binary collation (v1 binary-only)');
+	// Non-binary collations are permitted as long as every branch agrees on the
+	// collation per key position. The emitter's merged key value is deterministic
+	// (lowest-indexed present branch supplies the key cells — see
+	// `composeMergedKeyCells`), matching `coalesce`'s left-to-right pick even when
+	// collation-equal keys are byte-distinct (e.g. NOCASE merging 'A'/'a'). The
+	// branch-0-derived comparator is correct because the collations agree.
+	if (!keyCollationsAgree(branches, branchKeyAttrs, k)) {
+		log('Aborting: key columns disagree on collation across branches');
 		return null;
 	}
 
@@ -408,14 +407,15 @@ function branchesKeyUnique(
 }
 
 /**
- * Confirm every branch's key column at every key position declares the binary
- * collation (absent collation = binary). Binary collation makes equal keys
- * byte-identical across branches, so the emitter's first-arrived merged-key
- * value is well-defined regardless of branch arrival order. A non-binary
- * collation (even one all branches agree on) would let the merged key value be
- * non-deterministic — see the call site for the full rationale.
+ * Confirm every branch's key column at every key position declares the **same**
+ * collation as branch 0's (absent collation = binary). The runtime comparator
+ * derives solely from branch 0's collations, so a disagreement would silently
+ * compare (and merge) keys under the wrong collation. Agreement is sufficient:
+ * the emitter's merged key value is deterministic (lowest-indexed present branch
+ * wins — see `composeMergedKeyCells`), so any agreed collation, binary or not,
+ * yields a well-defined merged key that matches `coalesce`.
  */
-function keyCollationsAllBinary(
+function keyCollationsAgree(
 	branches: readonly RelationalPlanNode[],
 	branchKeyAttrs: readonly (readonly number[])[],
 	k: number,
@@ -428,8 +428,9 @@ function keyCollationsAllBinary(
 		return ix >= 0 ? norm(cols[ix].type.collationName) : 'BINARY';
 	};
 	for (let pos = 0; pos < k; pos++) {
-		for (let b = 0; b < branches.length; b++) {
-			if (collationOf(branches[b], branchKeyAttrs[b][pos]) !== 'BINARY') return false;
+		const base = collationOf(branches[0], branchKeyAttrs[0][pos]);
+		for (let b = 1; b < branches.length; b++) {
+			if (collationOf(branches[b], branchKeyAttrs[b][pos]) !== base) return false;
 		}
 	}
 	return true;
