@@ -42,8 +42,10 @@
 	"peerDependencies": {
 		"@quereus/quereus": "workspace:^"
 	},
+	"dependencies": {
+		"@quereus/quereus": "workspace:^"
+	},
 	"devDependencies": {
-		"@quereus/quereus": "*",
 		"@types/mocha": "^10.0.10",
 		"@types/node": "^25.0.9",
 		"chai": "^6.2.2",

@@ -43,9 +43,11 @@
     "@quereus/isolation": "workspace:^",
     "@quereus/quereus": "workspace:^"
   },
+  "dependencies": {
+    "@quereus/isolation": "workspace:^",
+    "@quereus/quereus": "workspace:^"
+  },
   "devDependencies": {
-    "@quereus/isolation": "*",
-    "@quereus/quereus": "*",
     "@types/mocha": "^10.0.10",
     "@types/node": "^25.0.9",
     "chai": "^6.2.2",

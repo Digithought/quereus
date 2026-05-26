@@ -50,9 +50,11 @@
     "@quereus/quereus": "workspace:^",
     "@quereus/store": "workspace:^"
   },
+  "dependencies": {
+    "@quereus/quereus": "workspace:^",
+    "@quereus/store": "workspace:^"
+  },
   "devDependencies": {
-    "@quereus/quereus": "*",
-    "@quereus/store": "*",
     "@types/mocha": "^10.0.10",
     "@types/node": "^25.0.9",
     "chai": "^6.2.2",

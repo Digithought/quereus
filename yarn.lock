@@ -2158,7 +2158,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@quereus/isolation@workspace:packages/quereus-isolation"
   dependencies:
-    "@quereus/quereus": "npm:*"
+    "@quereus/quereus": "workspace:^"
     "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^25.0.9"
     chai: "npm:^6.2.2"
@@ -2176,8 +2176,8 @@ __metadata:
   resolution: "@quereus/plugin-indexeddb@workspace:packages/quereus-plugin-indexeddb"
   dependencies:
     "@quereus/isolation": "npm:*"
-    "@quereus/quereus": "npm:*"
-    "@quereus/store": "npm:*"
+    "@quereus/quereus": "workspace:^"
+    "@quereus/store": "workspace:^"
     "@types/chai": "npm:^5.2.3"
     "@types/mocha": "npm:^10.0.10"
     chai: "npm:^6.2.2"
@@ -2198,8 +2198,8 @@ __metadata:
   resolution: "@quereus/plugin-leveldb@workspace:packages/quereus-plugin-leveldb"
   dependencies:
     "@quereus/isolation": "npm:*"
-    "@quereus/quereus": "npm:*"
-    "@quereus/store": "npm:*"
+    "@quereus/quereus": "workspace:^"
+    "@quereus/store": "workspace:^"
     "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^25.0.9"
     chai: "npm:^6.2.2"
@@ -2219,7 +2219,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@quereus/plugin-loader@workspace:packages/plugin-loader"
   dependencies:
-    "@quereus/quereus": "npm:*"
+    "@quereus/quereus": "workspace:^"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.9"
     debug: "npm:^4.4.3"
@@ -2235,8 +2235,8 @@ __metadata:
   resolution: "@quereus/plugin-nativescript-sqlite@workspace:packages/quereus-plugin-nativescript-sqlite"
   dependencies:
     "@quereus/isolation": "npm:*"
-    "@quereus/quereus": "npm:*"
-    "@quereus/store": "npm:*"
+    "@quereus/quereus": "workspace:^"
+    "@quereus/store": "workspace:^"
     "@types/better-sqlite3": "npm:^7.6.13"
     "@types/chai": "npm:^5.2.3"
     "@types/mocha": "npm:^10.0.10"
@@ -2260,8 +2260,8 @@ __metadata:
   resolution: "@quereus/plugin-react-native-leveldb@workspace:packages/quereus-plugin-react-native-leveldb"
   dependencies:
     "@quereus/isolation": "npm:*"
-    "@quereus/quereus": "npm:*"
-    "@quereus/store": "npm:*"
+    "@quereus/quereus": "workspace:^"
+    "@quereus/store": "workspace:^"
     "@types/chai": "npm:^5.2.3"
     "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^25.0.9"
@@ -2278,7 +2278,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@quereus/quereus@npm:*, @quereus/quereus@workspace:^, @quereus/quereus@workspace:packages/quereus":
+"@quereus/quereus@workspace:^, @quereus/quereus@workspace:packages/quereus":
   version: 0.0.0-use.local
   resolution: "@quereus/quereus@workspace:packages/quereus"
   dependencies:
@@ -2414,12 +2414,12 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@quereus/store@npm:*, @quereus/store@workspace:^, @quereus/store@workspace:packages/quereus-store":
+"@quereus/store@workspace:^, @quereus/store@workspace:packages/quereus-store":
   version: 0.0.0-use.local
   resolution: "@quereus/store@workspace:packages/quereus-store"
   dependencies:
-    "@quereus/isolation": "npm:*"
-    "@quereus/quereus": "npm:*"
+    "@quereus/isolation": "workspace:^"
+    "@quereus/quereus": "workspace:^"
     "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^25.0.9"
     chai: "npm:^6.2.2"
@@ -2485,8 +2485,8 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@quereus/sync@workspace:packages/quereus-sync"
   dependencies:
-    "@quereus/quereus": "npm:*"
-    "@quereus/store": "npm:*"
+    "@quereus/quereus": "workspace:^"
+    "@quereus/store": "workspace:^"
     "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^25.0.9"
     chai: "npm:^6.2.2"
