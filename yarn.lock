@@ -2384,7 +2384,9 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@quereus/sample-plugins@workspace:packages/sample-plugins"
   dependencies:
+    "@quereus/quereus": "workspace:^"
     rimraf: "npm:^6.1.2"
+    typescript: "npm:^5.9.3"
   languageName: unknown
   linkType: soft
 
@@ -8420,6 +8422,7 @@ __metadata:
   dependencies:
     "@quereus/quereus": "workspace:^"
     "@types/vscode": "npm:^1.108.1"
+    esbuild: "npm:^0.27.2"
     rimraf: "npm:^6.1.2"
     typescript: "npm:^5.9.3"
     vscode-languageclient: "npm:^9.0.1"

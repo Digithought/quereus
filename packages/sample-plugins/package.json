@@ -35,7 +35,11 @@
   "engines": {
     "node": ">=18.0.0"
   },
+  "dependencies": {
+    "@quereus/quereus": "workspace:^"
+  },
   "devDependencies": {
-    "rimraf": "^6.1.2"
+    "rimraf": "^6.1.2",
+    "typescript": "^5.9.3"
   }
 }
