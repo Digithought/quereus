@@ -27,26 +27,35 @@
  * concurrently and hash-merges them by key. (Binary FULL JOIN has no runtime
  * lowering at all — this rewrite is the only execution path for it.)
  *
- * ## Recognized shape (v1, deliberately strict)
+ * ## Recognized shape
  *
  *   1. A `ProjectNode` whose `source` is a `JoinNode(joinType='full')`.
  *   2. The full-join chain flattens (any nesting) into ≥ `minBranches` leaf
  *      branches. Each join's `ON` condition is a pure conjunction of
  *      column-ref equalities (no residual / non-equi predicate — those block).
+ *      (`USING`/`NATURAL` full joins carry no synthesized `ON` condition, so the
+ *      chain walk declines them — out of scope; see *Out of scope* below.)
  *   3. Those equalities partition the branches' key columns into K equivalence
  *      classes ("key positions"), and **every branch contributes exactly one
  *      column to every class** (the shared-key precondition). A branch missing
  *      from any class would be a cross-product, not a zip — block.
- *   4. The projection list is exactly, in this canonical order:
- *        - K `coalesce(...)` calls, one per key position, whose argument set is
- *          exactly that class's per-branch key attrs (defines key order); then
- *        - bare column references to every non-key column of branch 0, then
- *          branch 1, … in branch + column order.
- *      This canonical order is what the `zipByKey` emitter produces
- *      (`[K key cells][branch0 non-key][branch1 non-key]…`), so the gather can
- *      replace the `Project` outright. Any other projection order/shape is not
- *      recognized in v1 (documented limitation — a reordering Project on top is
- *      future work).
+ *   4. The projection list must express, in **any order**:
+ *        - K merged keys, each a `coalesce(...)` whose argument set is exactly
+ *          one key class's per-branch key attrs; and
+ *        - the forwarded non-key column references it selects (a subset is fine),
+ *      plus arbitrary additional pure scalar expressions over those outputs
+ *      (e.g. `coalesce(a.k, b.k) * 10`). The only hard constraint: a branch *key*
+ *      column may appear **only** inside a recognizing full-group `coalesce` — a
+ *      bare/partial reference to it (e.g. `select a.k …`) blocks, because the
+ *      per-branch key is consumed into the single merged key and is unavailable
+ *      above the gather.
+ *
+ *   When the projection happens to be exactly the emitter's canonical order
+ *   (`[K coalesce calls][branch0 non-key][branch1 non-key]…`), the gather
+ *   replaces the `Project` outright (fast path). Otherwise the gather is built
+ *   in canonical layout and wrapped in a thin reordering `Project` that
+ *   reproduces the user's list (rewriting each full-group `coalesce` to a
+ *   reference to the gather's merged-key output).
  *
  * ## Gates (mirror `rule-async-gather-union-all`)
  *
@@ -90,14 +99,16 @@
 
 import { createLogger } from '../../../common/logger.js';
 import type { OptContext } from '../../framework/context.js';
-import type { PlanNode, RelationalPlanNode, Attribute } from '../../nodes/plan-node.js';
-import { ProjectNode } from '../../nodes/project-node.js';
+import { PlanNode, isRelationalNode } from '../../nodes/plan-node.js';
+import type { RelationalPlanNode, Attribute, ScalarPlanNode } from '../../nodes/plan-node.js';
+import { ProjectNode, type Projection } from '../../nodes/project-node.js';
 import { JoinNode } from '../../nodes/join-node.js';
 import { BinaryOpNode } from '../../nodes/scalar.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
 import { ScalarFunctionCallNode } from '../../nodes/function.js';
 import { AsyncGatherNode } from '../../nodes/async-gather-node.js';
 import { isCorrelatedSubquery } from '../../cache/correlation-detector.js';
+import type * as AST from '../../../parser/ast.js';
 
 const log = createLogger('optimizer:rule:async-gather-zip-by-key');
 
@@ -140,12 +151,13 @@ export function ruleAsyncGatherZipByKey(node: PlanNode, context: OptContext): Pl
 	if (!groups) return null;
 	const k = groups.length;
 
-	// (4) Match the projection list against the canonical zipByKey layout.
-	const matched = matchCanonicalProjections(node, branches, groups, branchOfAttr);
-	if (!matched) return null;
-	const { branchKeyAttrs, outputKeyAttrs } = matched;
+	// Per-branch key attr ids in key-group order — shared by the gates and the
+	// reordering path. Key-position order is layout-independent here; the
+	// canonical fast path derives its own coalesce-aligned order separately.
+	const branchKeyAttrs = branches.map((_branch, b) => groups.map(g => g.byBranch[b]));
 
-	// Gates.
+	// Gates (mirror rule-async-gather-union-all). These are projection-layout
+	// independent, so they run once before deciding canonical-vs-reordered.
 	for (const branch of branches) {
 		if (branch.physical.concurrencySafe !== true) {
 			log('Aborting: branch %s is not concurrencySafe', branch.id);
@@ -193,18 +205,179 @@ export function ruleAsyncGatherZipByKey(node: PlanNode, context: OptContext): Pl
 
 	const concurrencyCap = Math.max(1, Math.min(tuning.concurrency, branches.length));
 
+	// (4a) Fast path: the projection is exactly the canonical zipByKey layout, so
+	// the gather replaces the Project outright (no reordering wrapper).
+	const canonical = matchCanonicalProjections(node, branches, groups, branchOfAttr);
+	if (canonical) {
+		log(
+			'Folding canonical full-outer zip chain of %d branches (K=%d) into AsyncGather(zipByKey) (cap=%d, maxLatency=%d ms)',
+			branches.length, k, concurrencyCap, maxLatency,
+		);
+		return new AsyncGatherNode(
+			node.scope,
+			branches,
+			{ kind: 'zipByKey', branchKeyAttrs: canonical.branchKeyAttrs, outputKeyAttrs: canonical.outputKeyAttrs },
+			concurrencyCap,
+			node.getAttributes(),
+		);
+	}
+
+	// (4b) General path: arbitrary projection order / derived scalars over the
+	// merged-key and non-key outputs. Build the gather in its canonical layout
+	// and wrap it in a thin reordering Project reproducing the user's list.
+	const wrapped = buildReorderingGather(node, branches, groups, branchKeyAttrs, concurrencyCap);
+	if (!wrapped) {
+		log('Aborting: a projection references a branch key outside a full-group coalesce');
+		return null;
+	}
 	log(
-		'Folding full-outer zip chain of %d branches (K=%d) into AsyncGather(zipByKey) (cap=%d, maxLatency=%d ms)',
+		'Folding reordered full-outer zip chain of %d branches (K=%d) into AsyncGather(zipByKey)+Project (cap=%d, maxLatency=%d ms)',
 		branches.length, k, concurrencyCap, maxLatency,
 	);
+	return wrapped;
+}
 
-	return new AsyncGatherNode(
-		node.scope,
+/**
+ * Build the canonical `zipByKey` gather and wrap it in a reordering `Project`
+ * that reproduces the user's projection list against the gather's canonical
+ * output. Each `coalesce(<exactly one full key group>)` sub-expression is
+ * rewritten to a bare reference to that group's merged-key output; non-key
+ * column refs and arbitrary pure scalar expressions over those outputs are
+ * carried through unchanged. Returns null if any branch key column is
+ * referenced outside a recognized full-group coalesce — such a reference is
+ * unavailable above the gather, which consumes each per-branch key into the
+ * single merged key.
+ */
+function buildReorderingGather(
+	proj: ProjectNode,
+	branches: readonly RelationalPlanNode[],
+	groups: readonly KeyGroup[],
+	branchKeyAttrs: number[][],
+	concurrencyCap: number,
+): PlanNode | null {
+	// Mint the K merged-key output ids (key-group order) and build the gather in
+	// its natural [merged keys][branch non-key] layout. preserveAttributeIds is
+	// omitted so the node mints/forwards the canonical ids itself; the wrapper
+	// Project below restores the user's original output attribute ids.
+	const outputKeyAttrs = groups.map(() => PlanNode.nextAttrId());
+	const gather = new AsyncGatherNode(
+		proj.scope,
 		branches,
 		{ kind: 'zipByKey', branchKeyAttrs, outputKeyAttrs },
 		concurrencyCap,
-		node.getAttributes(),
 	);
+	const gatherAttrs = gather.getAttributes();
+
+	const keyAttrIds = new Set<number>();
+	for (const g of groups) for (const id of g.idSet) keyAttrIds.add(id);
+
+	const outAttrs = proj.getAttributes();
+	const newProjections: Projection[] = [];
+	for (let i = 0; i < proj.projections.length; i++) {
+		const rewritten = rewriteMergedKeyRefs(
+			proj.projections[i].node, groups, outputKeyAttrs, gatherAttrs, keyAttrIds,
+		);
+		if (!rewritten) return null;
+		newProjections.push({
+			node: rewritten,
+			alias: proj.projections[i].alias,
+			attributeId: outAttrs[i].id,
+		});
+	}
+
+	return new ProjectNode(
+		proj.scope,
+		gather,
+		newProjections,
+		undefined,
+		outAttrs,
+		proj.preserveInputColumns,
+	);
+}
+
+/**
+ * Rewrite a projection scalar expression for evaluation above the gather:
+ *   - `coalesce(<exactly one full key group's branch keys>)` → a bare reference
+ *     to that group's merged-key output (`outputKeyAttrs[gi]`);
+ *   - bare non-key column refs are forwarded unchanged (the gather forwards
+ *     their ids); arbitrary pure scalar structure is rebuilt around the above;
+ *   - any other reference to a branch *key* column blocks (returns null) — the
+ *     per-branch key is consumed into the merged key and is unavailable above.
+ * Returns the rewritten expression, or null to decline the whole rewrite.
+ */
+function rewriteMergedKeyRefs(
+	expr: ScalarPlanNode,
+	groups: readonly KeyGroup[],
+	outputKeyAttrs: readonly number[],
+	gatherAttrs: readonly Attribute[],
+	keyAttrIds: ReadonlySet<number>,
+): ScalarPlanNode | null {
+	// coalesce over exactly one full key group → merged-key reference.
+	if (expr instanceof ScalarFunctionCallNode && expr.expression.name.toLowerCase() === 'coalesce') {
+		const gi = matchFullGroupCoalesce(expr, groups);
+		if (gi >= 0) {
+			const attr = gatherAttrs[gi];
+			return new ColumnReferenceNode(
+				expr.scope,
+				{ type: 'column', name: attr.name } satisfies AST.ColumnExpr,
+				attr.type,
+				outputKeyAttrs[gi],
+				gi,
+			);
+		}
+		// Not a full-group coalesce — fall through to generic child recursion.
+	}
+
+	if (expr instanceof ColumnReferenceNode) {
+		// A stray reference to a branch key column cannot survive the merge.
+		if (keyAttrIds.has(expr.attributeId)) return null;
+		return expr;
+	}
+
+	const children = expr.getChildren();
+	if (children.length === 0) return expr;
+	const newChildren: PlanNode[] = [];
+	let changed = false;
+	for (const child of children) {
+		if (isRelationalNode(child)) {
+			// A relational child (e.g. a scalar subquery). Keep it only when it does
+			// not reference a consumed branch key column (conservative — such a
+			// reference would not resolve above the gather).
+			if (subtreeReferencesKey(child, keyAttrIds)) return null;
+			newChildren.push(child);
+			continue;
+		}
+		const rewritten = rewriteMergedKeyRefs(child as ScalarPlanNode, groups, outputKeyAttrs, gatherAttrs, keyAttrIds);
+		if (!rewritten) return null;
+		if (rewritten !== child) changed = true;
+		newChildren.push(rewritten);
+	}
+	return changed ? (expr.withChildren(newChildren) as ScalarPlanNode) : expr;
+}
+
+/**
+ * If `call`'s operands are exactly one key group's branch key columns (as bare
+ * column references), return that group's index; otherwise -1.
+ */
+function matchFullGroupCoalesce(call: ScalarFunctionCallNode, groups: readonly KeyGroup[]): number {
+	const argIds: number[] = [];
+	for (const operand of call.operands) {
+		if (!(operand instanceof ColumnReferenceNode)) return -1;
+		argIds.push(operand.attributeId);
+	}
+	return groups.findIndex(g => g.idSet.size === argIds.length && argIds.every(id => g.idSet.has(id)));
+}
+
+/**
+ * Walk a plan subtree (relational + scalar children) for any column reference
+ * to a key attr id the merge consumes.
+ */
+function subtreeReferencesKey(node: PlanNode, keyAttrIds: ReadonlySet<number>): boolean {
+	if (node instanceof ColumnReferenceNode && keyAttrIds.has(node.attributeId)) return true;
+	for (const child of node.getChildren()) {
+		if (subtreeReferencesKey(child, keyAttrIds)) return true;
+	}
+	return false;
 }
 
 /**
@@ -316,10 +489,13 @@ interface MatchedProjections {
 }
 
 /**
- * Verify the projection list is exactly the canonical zipByKey layout:
+ * Fast-path detector: is the projection list *exactly* the canonical zipByKey
+ * layout
  *   [ K coalesce(group) calls ] ++ [ branch0 non-key refs, branch1 non-key refs, … ]
- * and, if so, derive `branchKeyAttrs` (ordered to match the coalesce order) and
- * `outputKeyAttrs` (the coalesce output attr ids). Returns null on any mismatch.
+ * so the gather can replace the `Project` outright with no reordering wrapper?
+ * If so, derive `branchKeyAttrs` (ordered to match the coalesce order) and
+ * `outputKeyAttrs` (the coalesce output attr ids). Returns null on any mismatch —
+ * the caller then tries the general reordering path (`buildReorderingGather`).
  */
 function matchCanonicalProjections(
 	proj: ProjectNode,

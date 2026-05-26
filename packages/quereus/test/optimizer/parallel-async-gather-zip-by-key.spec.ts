@@ -277,4 +277,97 @@ describe('ruleAsyncGatherZipByKey', () => {
 		const plan = await planRows(db, sql);
 		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
 	});
+
+	// --- Arbitrary projection order / derivations (reordering Project wrapper) ---
+
+	it('folds a reordered projection (key not first) with a reordering Project', async () => {
+		// The merged key sits between the non-key columns; the non-canonical order
+		// folds via a gather + thin reordering Project (binary FULL JOIN has no
+		// other lowering, so a correct result proves the wrapper works).
+		await setup();
+		const sql =
+			`select a.av, coalesce(a.k, b.k) as k, b.bv
+			   from a full outer join b on a.k = b.k`;
+		const plan = await planRows(db, sql);
+		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+		// The reordering wrapper survives (non-canonical → Project on top of gather).
+		expect(countOp(plan, 'PROJECT', 'Project'), 'reordering Project present').to.be.greaterThan(0);
+		const rows = sortByK(await results(db, sql));
+		expect(rows).to.deep.equal([
+			{ av: 'a1', k: 1, bv: null },
+			{ av: 'a2', k: 2, bv: 'b2' },
+			{ av: null, k: 3, bv: 'b3' },
+		]);
+	});
+
+	it('folds a 3-branch chain with reordered + subset non-key columns', async () => {
+		// Only c's non-key column is selected, and the key is not first.
+		await setup();
+		const sql =
+			`select c.cv, coalesce(a.k, b.k, c.k) as k
+			   from a full outer join b on a.k = b.k
+			          full outer join c on a.k = c.k`;
+		const plan = await planRows(db, sql);
+		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+		const rows = sortByK(await results(db, sql));
+		expect(rows).to.deep.equal([
+			{ cv: 'c1', k: 1 },
+			{ cv: null, k: 2 },
+			{ cv: 'c3', k: 3 },
+		]);
+	});
+
+	it('folds a derived scalar expression over the merged key', async () => {
+		// `coalesce(a.k,b.k) * 10` is a pure scalar over the merged-key output —
+		// the rewriter replaces the inner coalesce with a merged-key reference.
+		await setup();
+		const sql =
+			`select coalesce(a.k, b.k) as k, coalesce(a.k, b.k) * 10 as k10, a.av, b.bv
+			   from a full outer join b on a.k = b.k`;
+		const plan = await planRows(db, sql);
+		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+		const rows = sortByK(await results(db, sql));
+		expect(rows).to.deep.equal([
+			{ k: 1, k10: 10, av: 'a1', bv: null },
+			{ k: 2, k10: 20, av: 'a2', bv: 'b2' },
+			{ k: 3, k10: 30, av: null, bv: 'b3' },
+		]);
+	});
+
+	it('folds a reordered composite (K=2) key with both coalesces moved', async () => {
+		await db.exec('create table p (k1 integer, k2 integer, pv text, primary key (k1, k2)) using hi_lat_memory');
+		await db.exec('create table q (k1 integer, k2 integer, qv text, primary key (k1, k2)) using hi_lat_memory');
+		await db.exec("insert into p values (1,1,'p11'),(1,2,'p12')");
+		await db.exec("insert into q values (1,2,'q12'),(2,2,'q22')");
+		// Non-key columns first, key coalesces reordered (k2 before k1).
+		const sql =
+			`select p.pv, q.qv, coalesce(p.k2, q.k2) as k2, coalesce(p.k1, q.k1) as k1
+			   from p full outer join q on p.k1 = q.k1 and p.k2 = q.k2`;
+		const plan = await planRows(db, sql);
+		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(true);
+		const rows = await results(db, sql);
+		const norm = rows.map(r => `${r.k1},${r.k2},${r.pv ?? '-'},${r.qv ?? '-'}`).sort();
+		expect(norm).to.deep.equal([
+			'1,1,p11,-',
+			'1,2,p12,q12',
+			'2,2,-,q22',
+		]);
+	});
+
+	it('does NOT fold a USING(k) full join (no synthesized ON condition; out of scope)', async () => {
+		// USING / NATURAL full joins carry no explicit `ON` condition, so the chain
+		// walk declines them. They remain an unsupported binary FULL JOIN and error
+		// at emit — this test pins the documented non-support.
+		await setup();
+		const sql = 'select * from a full outer join b using (k)';
+		const plan = await planRows(db, sql);
+		expect(hasAsyncGather(plan), `ops=${plan.map(r => r.op).join(',')}`).to.equal(false);
+		let threw = false;
+		try {
+			await results(db, sql);
+		} catch {
+			threw = true;
+		}
+		expect(threw, 'unsupported FULL JOIN errors at emit/execution').to.equal(true);
+	});
 });
