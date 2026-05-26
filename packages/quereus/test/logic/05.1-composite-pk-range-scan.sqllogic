@@ -91,3 +91,52 @@ SELECT id FROM idx_d WHERE k >= 15 ORDER BY k;
 → [{"id":2},{"id":3}]
 
 DROP TABLE idx_d;
+
+-- Composite PRIMARY KEY with a DESC leading column. The primary BTree is
+-- physically ordered with the leading column descending, so an ascending
+-- physical scan must seek from the upper bound and terminate at the lower
+-- bound. Previously the primary branch lacked this handling and dropped every
+-- matching row for a leading-column lower-bound range.
+CREATE TABLE td (a INTEGER, b INTEGER, v TEXT, PRIMARY KEY (a DESC, b));
+INSERT INTO td VALUES (10, 0, 'x'), (20, 0, 'y'), (30, 0, 'z');
+
+-- The originally reported failing query.
+SELECT a FROM td WHERE a >= 15 ORDER BY a;
+→ [{"a":20},{"a":30}]
+
+-- Inclusive lower bound on an exact key.
+SELECT a FROM td WHERE a >= 20 ORDER BY a;
+→ [{"a":20},{"a":30}]
+
+-- Exclusive lower bound on an exact key.
+SELECT a FROM td WHERE a > 20 ORDER BY a;
+→ [{"a":30}]
+
+-- Leading-column range (lower + upper bound).
+SELECT a FROM td WHERE a >= 15 AND a < 30 ORDER BY a;
+→ [{"a":20}]
+
+-- Descending output over a DESC-leading PK with a leading-column bound.
+SELECT a FROM td WHERE a >= 15 ORDER BY a DESC;
+→ [{"a":30},{"a":20}]
+
+-- Descending output combined with a leading-column range.
+SELECT a FROM td WHERE a >= 15 AND a < 30 ORDER BY a DESC;
+→ [{"a":20}]
+
+DROP TABLE td;
+
+-- Three-column composite PRIMARY KEY with a DESC leading column.
+CREATE TABLE td3 (a INTEGER, b TEXT, c INTEGER, v TEXT, PRIMARY KEY (a DESC, b, c));
+INSERT INTO td3 VALUES (100, 'n', 0, 'a'), (300, 'n', 0, 'a'), (500, 'n', 0, 'a'), (700, 'n', 0, 'a');
+
+SELECT a FROM td3 WHERE a >= 250 ORDER BY a;
+→ [{"a":300},{"a":500},{"a":700}]
+
+SELECT a FROM td3 WHERE a >= 250 AND a < 600 ORDER BY a;
+→ [{"a":300},{"a":500}]
+
+SELECT count(*) AS n FROM td3 WHERE a >= 250 AND a < 600;
+→ [{"n":2}]
+
+DROP TABLE td3;

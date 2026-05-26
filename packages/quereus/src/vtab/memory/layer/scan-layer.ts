@@ -54,22 +54,38 @@ export async function* scanLayer(
 			return;
 		}
 
+		const isAscending = !plan.descending;
+		// When the leading PK column is DESC the BTree is physically ordered with
+		// that column descending, so an ascending physical scan must seek from the
+		// upper bound and terminate at the lower bound (mirrors the secondary
+		// branch). The synthesized all-columns fallback definition carries no
+		// `desc`, so the `?.` chain yields false there, which is correct.
+		const isDescFirstColumn = schema.primaryKeyDefinition?.[0]?.desc === true;
+		const isComposite = (schema.primaryKeyDefinition?.length ?? schema.columns.length) > 1;
+
 		// Determine start key for range scans
 		let startKey: { value: BTreeKeyForPrimary } | undefined;
 		if (plan.equalityPrefix) {
 			const compositeStart = [...plan.equalityPrefix];
 			if (plan.lowerBound) compositeStart.push(plan.lowerBound.value);
 			startKey = { value: compositeStart as BTreeKeyForPrimary };
+		} else if (isDescFirstColumn) {
+			// DESC leading column: seek from the upper bound (tree start when absent).
+			// Composite PKs store array-shaped keys, so wrap the scalar bound so the
+			// comparator's prefix handling positions the seek correctly.
+			if (plan.upperBound) {
+				const ub = isComposite ? [plan.upperBound.value] : plan.upperBound.value;
+				startKey = { value: ub as BTreeKeyForPrimary };
+			}
 		} else if (plan.lowerBound) {
 			// Composite PKs store keys as arrays; wrap the scalar leading-column
 			// bound in a single-element array so the comparator's prefix handling
 			// positions the seek before all full keys sharing that prefix.
-			const isComposite = (schema.primaryKeyDefinition?.length ?? schema.columns.length) > 1;
 			const lb = isComposite ? [plan.lowerBound.value] : plan.lowerBound.value;
 			startKey = { value: lb as BTreeKeyForPrimary };
 		}
 
-		for await (const value of safeIterate(tree, !plan.descending, startKey)) {
+		for await (const value of safeIterate(tree, isAscending, startKey)) {
 			const row = value as Row;
 			const primaryKey = primaryKeyExtractorFromRow(row);
 			if (!planAppliesToKey(plan, primaryKey, primaryKeyComparator)) {
@@ -84,13 +100,21 @@ export async function* scanLayer(
 						}
 					}
 					if (prefixMismatch) break;
-				}
-				// Ascending scan past upper bound — early exit
-				if (!plan.descending && plan.upperBound && !plan.equalityPrefix) {
-					const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
-					const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
-					if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
-						break;
+				} else if (isAscending) {
+					// Ascending physical scan past the relevant bound — early exit.
+					// DESC leading column terminates at the lower bound; ASC at the upper.
+					if (isDescFirstColumn && plan.lowerBound) {
+						const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
+						const cmp = compareSqlValues(keyForComparison, plan.lowerBound.value);
+						if (cmp < 0 || (cmp === 0 && plan.lowerBound.op === IndexConstraintOp.GT)) {
+							break;
+						}
+					} else if (!isDescFirstColumn && plan.upperBound) {
+						const keyForComparison = Array.isArray(primaryKey) ? primaryKey[0] : primaryKey;
+						const cmp = compareSqlValues(keyForComparison, plan.upperBound.value);
+						if (cmp > 0 || (cmp === 0 && plan.upperBound.op === IndexConstraintOp.LT)) {
+							break;
+						}
 					}
 				}
 				continue;
