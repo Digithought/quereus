@@ -643,3 +643,42 @@ FROM range_null ORDER BY id;
 
 DROP TABLE range_slide;
 DROP TABLE range_null;
+
+-- =============================================================================
+-- Window function nested inside an arithmetic / scalar projection expression.
+--
+-- Regression: a window function wrapped in a binary/scalar expression
+-- (e.g. `1000 - row_number() over (...)`) must keep the surrounding expression
+-- and substitute the window result back in — not collapse to the bare window
+-- column nor drop the projection entirely.
+-- =============================================================================
+
+CREATE TABLE nested_w (id INTEGER PRIMARY KEY, val INTEGER);
+INSERT INTO nested_w VALUES (1, 10), (2, 20), (3, 30);
+
+-- Literal minus window fn: arithmetic must actually apply (999, 998, 997).
+SELECT id, 1000 - ROW_NUMBER() OVER (ORDER BY id) AS v FROM nested_w ORDER BY id;
+→ [{"id":1,"v":999},{"id":2,"v":998},{"id":3,"v":997}]
+
+-- Window fn on the left of the operator.
+SELECT id, ROW_NUMBER() OVER (ORDER BY id) + 5 AS v FROM nested_w ORDER BY id;
+→ [{"id":1,"v":6},{"id":2,"v":7},{"id":3,"v":8}]
+
+-- Window fn nested inside a scalar function call.
+SELECT id, ABS(1 - ROW_NUMBER() OVER (ORDER BY id)) AS v FROM nested_w ORDER BY id;
+→ [{"id":1,"v":0},{"id":2,"v":1},{"id":3,"v":2}]
+
+-- Two different window functions in one arithmetic expression.
+-- rn (order by id) = 1,2,3 ; rank (order by val desc) = 3,2,1 ; rn-rank = -2,0,2.
+SELECT id, ROW_NUMBER() OVER (ORDER BY id) - RANK() OVER (ORDER BY val DESC) AS v
+FROM nested_w ORDER BY id;
+→ [{"id":1,"v":-2},{"id":2,"v":0},{"id":3,"v":2}]
+
+-- Mixed: plain columns + a window-wrapped column + a top-level window column.
+SELECT id, val,
+       1000 - ROW_NUMBER() OVER (ORDER BY id) AS adj,
+       ROW_NUMBER() OVER (ORDER BY id) AS rn
+FROM nested_w ORDER BY id;
+→ [{"id":1,"val":10,"adj":999,"rn":1},{"id":2,"val":20,"adj":998,"rn":2},{"id":3,"val":30,"adj":997,"rn":3}]
+
+DROP TABLE nested_w;
