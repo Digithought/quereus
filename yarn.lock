@@ -2438,7 +2438,7 @@ __metadata:
   resolution: "@quereus/sync-client@workspace:packages/quereus-sync-client"
   dependencies:
     "@quereus/quereus": "workspace:^"
-    "@quereus/sync": "npm:*"
+    "@quereus/sync": "workspace:^"
     "@types/mocha": "npm:^10.0.10"
     "@types/node": "npm:^25.0.9"
     chai: "npm:^6.2.2"
@@ -2481,7 +2481,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@quereus/sync@npm:*, @quereus/sync@workspace:^, @quereus/sync@workspace:packages/quereus-sync":
+"@quereus/sync@workspace:^, @quereus/sync@workspace:packages/quereus-sync":
   version: 0.0.0-use.local
   resolution: "@quereus/sync@workspace:packages/quereus-sync"
   dependencies:
