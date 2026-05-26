@@ -140,3 +140,34 @@ SELECT count(*) AS n FROM td3 WHERE a >= 250 AND a < 600;
 → [{"n":2}]
 
 DROP TABLE td3;
+
+-- DESC-leading PK with DUPLICATE leading-column values. The early-termination
+-- break keys off the leading column only, so it must not truncate sibling rows
+-- that share the boundary value, nor break early while still inside the range.
+CREATE TABLE tdup (a INTEGER, b INTEGER, v TEXT, PRIMARY KEY (a DESC, b));
+INSERT INTO tdup VALUES (20, 1, 'p'), (20, 2, 'q'), (10, 1, 'r'), (30, 1, 's');
+
+-- Lower bound only: both a=20 rows must come through (no premature break at the
+-- first a=20 row), and the scan must stop once it drops below 15.
+SELECT a, b FROM tdup WHERE a >= 15 ORDER BY a, b;
+→ [{"a":20,"b":1},{"a":20,"b":2},{"a":30,"b":1}]
+
+-- Exclusive lower bound landing on a duplicated leading value: every a=20 row is
+-- excluded, the break fires only after exhausting them.
+SELECT a, b FROM tdup WHERE a > 20 ORDER BY a, b;
+→ [{"a":30,"b":1}]
+
+-- Inclusive lower bound on the duplicated value keeps all a=20 rows.
+SELECT count(*) AS n FROM tdup WHERE a >= 20;
+→ [{"n":3}]
+
+-- Upper-bound-only range over a DESC-leading PK (no lower bound → the DESC
+-- early-termination guard never fires; correctness rests on planAppliesToKey).
+SELECT a, b FROM tdup WHERE a < 25 ORDER BY a, b;
+→ [{"a":10,"b":1},{"a":20,"b":1},{"a":20,"b":2}]
+
+-- Inclusive upper bound on an exact (duplicated) key.
+SELECT a, b FROM tdup WHERE a <= 20 ORDER BY a, b;
+→ [{"a":10,"b":1},{"a":20,"b":1},{"a":20,"b":2}]
+
+DROP TABLE tdup;
