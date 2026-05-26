@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo packages/quereus-vscode/client/out packages/quereus-vscode/server/dist",
+    "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo packages/quereus-vscode/client/out packages/quereus-vscode/server/dist packages/quereus-vscode/*/*.tsbuildinfo",
     "bump": "bumpp --recursive",
     "gh-release": "gh release create v$(node -p \"require('./package.json').version\") --generate-notes",
     "check": "yarn lint && yarn build && yarn test:full && yarn test:fork-strict",
