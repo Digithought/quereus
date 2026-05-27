@@ -103,13 +103,26 @@ describe('Monotonic LIMIT/OFFSET pushdown rule', () => {
 
 		it('multi-key ORDER BY keeps LIMITOFFSET', async () => {
 			await createTable();
-			// Use an expression for the trailing key so `ruleOrderByFdPruning`
-			// (which only prunes bare-column keys functionally determined by the
-			// leading keys) leaves the multi-key sort intact and the pushdown
-			// rule's multi-key bail is exercised.
-			const ops = await getPlanOps(db, "SELECT id FROM t ORDER BY id, v || 'x' LIMIT 5 OFFSET 100");
-			expect(ops).to.not.include('ORDINALSLICE');
-			expect(ops).to.include('LIMITOFFSET');
+			// `ruleOrderByFdPruning` would otherwise prune the trailing key here:
+			// the leading `id` is a unique key, so the rows are totally ordered and
+			// `v || 'x'` is a no-op tiebreaker. Disable that rule so a genuine
+			// multi-key sort reaches the pushdown rule and exercises its multi-key
+			// bail (the behavior under test).
+			const baseTuning = db.optimizer.tuning;
+			db.optimizer.updateTuning({
+				...baseTuning,
+				disabledRules: new Set([
+					...(baseTuning.disabledRules ?? []),
+					'orderby-fd-pruning',
+				]),
+			});
+			try {
+				const ops = await getPlanOps(db, "SELECT id FROM t ORDER BY id, v || 'x' LIMIT 5 OFFSET 100");
+				expect(ops).to.not.include('ORDINALSLICE');
+				expect(ops).to.include('LIMITOFFSET');
+			} finally {
+				db.optimizer.updateTuning(baseTuning);
+			}
 		});
 
 		it('WHERE clause (residual filter) keeps LIMITOFFSET', async () => {

@@ -41,7 +41,18 @@ export class SetOperationNode extends PlanNode implements BinaryRelationalNode {
 
   getType(): RelationType {
     const leftType = this.left.getType();
-    return { ...leftType, isSet: this.op !== 'unionAll' } as RelationType;
+    const isSet = this.op !== 'unionAll';
+    // Key survival across set operations:
+    //  - intersect / except: the result is a subset of the left rows, so every
+    //    left key still holds on the result.
+    //  - union / unionAll: the right side can reintroduce a value the left key
+    //    made unique (and UNION ALL duplicates rows outright), so left keys do
+    //    NOT survive. Set-ness of UNION/INTERSECT/EXCEPT is carried by `isSet`
+    //    (the all-columns key) instead — copying `leftType.keys` here would
+    //    over-claim (e.g. `select a,… from ta union select d,… from tb` has a
+    //    non-unique first column).
+    const keys = (this.op === 'intersect' || this.op === 'except') ? leftType.keys : [];
+    return { ...leftType, isSet, keys } as RelationType;
   }
 
   getChildren(): readonly PlanNode[] {

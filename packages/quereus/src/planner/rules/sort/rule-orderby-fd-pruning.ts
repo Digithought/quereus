@@ -12,6 +12,14 @@
  * preceding keys pin every value of that column to a single value per group,
  * the trailing key cannot reorder anything.
  *
+ * Whole-tail pruning: once the retained leading bare-column keys form a
+ * superkey of the source (`isUnique` over the unified key surface — declared
+ * keys, FD-derived keys, or the all-columns/`isSet` key), the rows are totally
+ * ordered and *every* remaining key (bare or not) is a no-op tiebreaker, so the
+ * whole tail drops. This is what prunes the redundant trailing keys of an
+ * all-columns-key set source whose ORDER BY lists a key followed by more
+ * columns.
+ *
  * Sort-key matcher semantics: only bare `ColumnReferenceNode` keys
  * participate in either direction of the reasoning. A non-bare-column key
  * contributes nothing to `determined` (we can't prove what expression values
@@ -39,7 +47,7 @@ import type { PlanNode } from '../../nodes/plan-node.js';
 import type { OptContext as _OptContext } from '../../framework/context.js';
 import { SortNode, type SortKey } from '../../nodes/sort.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
-import { computeClosure, expandEcsToFds } from '../../util/fd-utils.js';
+import { computeClosure, expandEcsToFds, isUnique, keysOf } from '../../util/fd-utils.js';
 
 const log = createLogger('optimizer:rule:orderby-fd-pruning');
 
@@ -53,15 +61,26 @@ export function ruleOrderByFdPruning(node: PlanNode, _context: _OptContext): Pla
 	const sourceFds = sourcePhysical.fds ?? [];
 	const sourceEcs = sourcePhysical.equivClasses ?? [];
 
-	if (sourceFds.length === 0 && sourceEcs.length === 0) return null;
+	// Proceed when there is any reasoning material: FDs, ECs, or a declared/
+	// `isSet`-derived key surface (the latter lets us prune trailing keys via
+	// `isUnique` even on sources that carry no physical FDs).
+	if (sourceFds.length === 0 && sourceEcs.length === 0 && keysOf(source).length === 0) return null;
 
 	const combinedFds = expandEcsToFds(sourceEcs, sourceFds);
 
 	const survivors: SortKey[] = [];
 	const determined = new Set<number>();
+	const leadingCols: number[] = [];
 	let dropped = 0;
+	let totallyOrdered = false;
 
 	for (const key of node.sortKeys) {
+		if (totallyOrdered) {
+			// The retained leading keys already form a superkey of the source, so
+			// rows are totally ordered — every remaining key is a no-op tiebreaker.
+			dropped++;
+			continue;
+		}
 		const expr = key.expression;
 		if (!(expr instanceof ColumnReferenceNode)) {
 			// Non-bare-column keys are opaque: they neither contribute to nor
@@ -82,9 +101,15 @@ export function ruleOrderByFdPruning(node: PlanNode, _context: _OptContext): Pla
 		}
 		survivors.push(key);
 		determined.add(srcIdx);
+		leadingCols.push(srcIdx);
 		// Re-close under FDs so subsequent trailing keys can drop.
 		const closure = computeClosure(determined, combinedFds);
 		for (const x of closure) determined.add(x);
+		// Once the retained leading bare-column keys form a superkey, the whole
+		// remaining tail is redundant.
+		if (isUnique(leadingCols, source)) {
+			totallyOrdered = true;
+		}
 	}
 
 	if (dropped === 0) return null;

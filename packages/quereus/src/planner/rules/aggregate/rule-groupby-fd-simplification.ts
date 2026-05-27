@@ -13,11 +13,17 @@
  *
  *   - candidate set = bare `ColumnReferenceNode` GROUP BY output indices
  *   - ECs expand to bi-directional FDs over those indices
+ *   - source keys read through the unified `keysOf` surface (declared keys,
+ *     FD-derived keys, and the all-columns/`isSet` key) are mapped into the
+ *     aggregate-output space and added as key FDs — this closes the gap where
+ *     a source carries a declared key (or is only known a set via `isSet`)
+ *     that `propagateAggregateFds` never materialized as a physical FD
  *   - `minimalCover` returns the surviving indices; the rest are dropped
  *
- * Soundness: aggregate-output FDs only survive for bare-column GROUP BYs
- * (per `propagateAggregateFds`), and EC-derived FDs from `WHERE a = b` are
- * sound because every surviving row has equal values on the EC members.
+ * Soundness: a mapped source key `K` makes each group a single source row, so
+ * every dropped (functionally-determined) column has one value per group and
+ * `MIN(col)` recovers it. EC-derived FDs from `WHERE a = b` are sound because
+ * every surviving row has equal values on the EC members.
  *
  * Rewrite preserves the output schema (positions may shift, attribute IDs do
  * not): kept GROUP BYs come first, then the picker MIN aggregates re-emitting
@@ -26,12 +32,12 @@
  */
 
 import { createLogger } from '../../../common/logger.js';
-import type { PlanNode, ScalarPlanNode, Attribute } from '../../nodes/plan-node.js';
+import type { PlanNode, ScalarPlanNode, Attribute, FunctionalDependency } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { AggregateNode, type AggregateExpression } from '../../nodes/aggregate-node.js';
 import { AggregateFunctionCallNode } from '../../nodes/aggregate-function.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
-import { expandEcsToFds, minimalCover } from '../../util/fd-utils.js';
+import { expandEcsToFds, keysOf, minimalCover, superkeyToFd } from '../../util/fd-utils.js';
 import { isAggregateFunctionSchema } from '../../../schema/function.js';
 import type * as AST from '../../../parser/ast.js';
 
@@ -58,7 +64,40 @@ export function ruleGroupByFdSimplification(node: PlanNode, context: OptContext)
 
 	const sourceFds = node.physical.fds ?? [];
 	const ecs = node.physical.equivClasses ?? [];
-	const combinedFds = expandEcsToFds(ecs, sourceFds);
+
+	// Map source-output column index → aggregate-output index for bare-column
+	// GROUP BYs (the same mapping `propagateAggregateFds` walks). Used to lift
+	// the source's keys into aggregate-output space.
+	const aggCols = aggAttrs.length;
+	const srcToOut = new Map<number, number>();
+	const sourceAttrIndex = node.source.getAttributeIndex();
+	node.groupBy.forEach((gb, outIdx) => {
+		if (gb instanceof ColumnReferenceNode) {
+			const srcIdx = sourceAttrIndex.get(gb.attributeId);
+			if (srcIdx !== undefined && !srcToOut.has(srcIdx)) srcToOut.set(srcIdx, outIdx);
+		}
+	});
+
+	// Lift each source key (declared / FD-derived / all-columns-`isSet`) whose
+	// every column survives as a bare GROUP BY column into a key FD on the
+	// aggregate output. A source key makes each group a single source row, so
+	// these columns functionally determine the rest — letting `minimalCover`
+	// collapse the GROUP BY onto them.
+	const keyFds: FunctionalDependency[] = [];
+	for (const srcKey of keysOf(node.source)) {
+		const mapped: number[] = [];
+		let ok = true;
+		for (const c of srcKey) {
+			const out = srcToOut.get(c);
+			if (out === undefined) { ok = false; break; }
+			mapped.push(out);
+		}
+		if (!ok) continue;
+		const keyFd = superkeyToFd(mapped, aggCols);
+		if (keyFd) keyFds.push(keyFd);
+	}
+
+	const combinedFds = expandEcsToFds(ecs, keyFds.length > 0 ? [...sourceFds, ...keyFds] : sourceFds);
 
 	const cover = minimalCover(candidateSet, combinedFds);
 	if (cover.size === candidateSet.size) return null;

@@ -6,7 +6,8 @@
  */
 
 import { createLogger } from '../../common/logger.js';
-import type { ConstantBinding, ConstantValue, DomainConstraint, FunctionalDependency, GuardClause, GuardPredicate, ScalarPlanNode } from '../nodes/plan-node.js';
+import type { ConstantBinding, ConstantValue, DomainConstraint, FunctionalDependency, GuardClause, GuardPredicate, PhysicalProperties, ScalarPlanNode } from '../nodes/plan-node.js';
+import type { RelationType } from '../../common/datatype.js';
 import { ColumnReferenceNode, ParameterReferenceNode } from '../nodes/reference.js';
 import { BetweenNode, BinaryOpNode, CastNode, CollateNode, LiteralNode, UnaryOpNode } from '../nodes/scalar.js';
 import { InNode } from '../nodes/subquery.js';
@@ -674,6 +675,154 @@ export function isAssertedKey(
 		// Determinants closure must cover all columns.
 		if (isSuperkey(new Set(fd.determinants), fds, columnCount)) return true;
 	}
+	return false;
+}
+
+// ---------------------------------------------------------------------------
+// Unified uniqueness read surface (keysOf / isUnique)
+// ---------------------------------------------------------------------------
+
+/**
+ * The minimal slice of a relational plan node needed to read its uniqueness
+ * facts. `getType()` supplies the declared `keys`, the `isSet` flag, and the
+ * output column count; `physical?.fds` supplies the derived FD surface.
+ */
+export interface KeyRel {
+	getType(): RelationType;
+	physical?: PhysicalProperties;
+}
+
+/**
+ * Normalize a list of candidate keys to the minimal, deduped set:
+ *   - each key is sorted and de-duplicated internally,
+ *   - duplicate keys collapse,
+ *   - any key that is a (non-strict) superset of another retained key is
+ *     dropped — only minimal keys survive.
+ *
+ * The empty key `[]` (proven ≤1-row) is a subset of every other key, so when
+ * present it subsumes them all and is the sole survivor.
+ */
+function normalizeKeys(keys: readonly (readonly number[])[]): number[][] {
+	const sorted = keys.map(k => Array.from(new Set(k)).sort((a, b) => a - b));
+	const uniq: number[][] = [];
+	const seen = new Set<string>();
+	for (const k of sorted) {
+		const sig = k.join(',');
+		if (seen.has(sig)) continue;
+		seen.add(sig);
+		uniq.push(k);
+	}
+	const result: number[][] = [];
+	for (const k of uniq) {
+		const kSet = new Set(k);
+		const subsumed = uniq.some(other =>
+			other !== k &&
+			other.length < k.length &&
+			other.every(c => kSet.has(c)),
+		);
+		if (!subsumed) result.push(k);
+	}
+	return result;
+}
+
+function allColumns(columnCount: number): number[] {
+	const cols: number[] = [];
+	for (let i = 0; i < columnCount; i++) cols.push(i);
+	return cols;
+}
+
+/**
+ * Canonical minimal candidate keys of a relation, each a sorted readonly
+ * `number[]` of output column indices, normalized and deduped. This is the
+ * single uniqueness read path — it reconciles all three surfaces a uniqueness
+ * fact can live on (declared `RelationType.keys`, the `PhysicalProperties.fds`
+ * FD set, and `RelationType.isSet`) so consumers never have to "check all
+ * three" by hand.
+ *
+ * Keys are gathered cheap → expensive:
+ *   1. Declared `keys` (mapped to column indices). The empty key `[]`
+ *      (TableDee / ≤1-row) is preserved as an empty entry and subsumes all.
+ *   2. The `∅ → all_cols` FD (`hasSingletonFd`) ⇒ the empty key `[]`.
+ *   3. FD-derived keys via `deriveKeysFromFds`.
+ *   4. All-columns fallback: if nothing smaller was found AND the relation is
+ *      a set (`getType().isSet`), the all-columns key `[0..n-1]`.
+ *
+ * Result is `[]` (no entries) ⟺ the relation is a bag (no provable key).
+ *
+ * **Enumeration bound (soundness vs completeness):** deriving minimal keys
+ * from a general FD set is the candidate-key enumeration problem (NP-hard in
+ * column count). We do NOT enumerate column subsets — `deriveKeysFromFds`
+ * seeds one candidate per existing FD and minimizes within it, and the
+ * declared keys + all-columns fallback are always emitted regardless of
+ * FD-enumeration cost. Over-capping here costs **completeness only** (a real
+ * key may go unlisted), never **soundness** (a listed key always holds). Use
+ * `isUnique` for the soundness-critical "is this set a superkey?" question —
+ * it additionally consults FD closure, which can prove a superkey absent from
+ * this minimal list.
+ */
+export function keysOf(rel: KeyRel): readonly (readonly number[])[] {
+	const type = rel.getType();
+	const columnCount = type.columns.length;
+	const fds = rel.physical?.fds;
+
+	const keys: number[][] = [];
+
+	// 1. Declared keys (RelationType.keys). An empty ColRef[] ⇒ the empty key.
+	for (const key of type.keys) {
+		keys.push(key.map(ref => ref.index));
+	}
+
+	// 2. `∅ → all_cols` ⇒ at-most-one-row ⇒ the empty key.
+	if (hasSingletonFd(fds, columnCount)) {
+		keys.push([]);
+	}
+
+	// 3. FD-derived keys (already bounded to FDs with det.length < columnCount).
+	for (const k of deriveKeysFromFds(fds, columnCount)) {
+		keys.push(k);
+	}
+
+	const normalized = normalizeKeys(keys);
+
+	// 4. All-columns fallback, gated on set-ness. Only when nothing smaller was
+	// found — a set always has the all-columns key, but it is the weakest one.
+	if (normalized.length === 0 && type.isSet && columnCount > 0) {
+		return [allColumns(columnCount)];
+	}
+
+	return normalized;
+}
+
+/**
+ * True iff `cols` is a superkey of `rel` — i.e., the relation has at most one
+ * row per distinct `cols` tuple. The soundness-critical uniqueness predicate.
+ *
+ * Returns true iff any of:
+ *   - `cols` is a (non-strict) superset of some `keysOf(rel)` entry (covers
+ *     declared keys, the ≤1-row empty key, FD-derived keys, and the
+ *     all-columns/set key), OR
+ *   - `cols` is a **proper subset** of the columns whose FD closure covers all
+ *     columns (`isSuperkey`) — this proves a superkey even when it is absent
+ *     from the minimal `keysOf` list.
+ *
+ * The closure branch is deliberately restricted to proper subsets: the closure
+ * of the full column set is trivially the full set, so without the guard a bag
+ * would be falsely reported unique on its all-columns set. The all-columns case
+ * is handled soundly by the `keysOf` branch above, which gates it on `isSet`.
+ */
+export function isUnique(cols: readonly number[], rel: KeyRel): boolean {
+	const type = rel.getType();
+	const columnCount = type.columns.length;
+	const colSet = new Set(cols);
+
+	for (const key of keysOf(rel)) {
+		if (key.every(c => colSet.has(c))) return true;
+	}
+
+	if (colSet.size < columnCount && isSuperkey(colSet, rel.physical?.fds, columnCount)) {
+		return true;
+	}
+
 	return false;
 }
 

@@ -94,14 +94,20 @@ describe('ruleOrderByFdPruning', () => {
 		}
 	});
 
-	it("Expression trailing key: ORDER BY pk, name || 'x' → unchanged", async () => {
+	it("Expression trailing tiebreaker dropped after a unique leading key: ORDER BY pk DESC, name || 'x' → ORDER BY pk DESC", async () => {
+		// `pk` is a unique key, so ordering by it is already total — the trailing
+		// `name || 'x'` can never break a tie (there are none) and is a no-op
+		// tiebreaker, even though it is a non-bare expression. Whole-tail pruning
+		// drops it. `pk DESC` keeps the Sort observable (the IndexScan only serves
+		// ASC).
 		await db.exec(
 			'CREATE TABLE x (pk INTEGER PRIMARY KEY, name TEXT) USING memory',
 		);
-		const plan = db.getPlan("SELECT pk, name FROM x ORDER BY pk, name || 'x'");
+		const plan = db.getPlan("SELECT pk, name FROM x ORDER BY pk DESC, name || 'x'");
 		const sort = findFirstSort(plan);
-		expect(sort, 'sort survives — second key is a non-bare expression').to.not.equal(undefined);
-		expect(sort!.sortKeys, 'non-bare trailing key cannot be dropped').to.have.length(2);
+		expect(sort, 'sort survives (DESC cannot be served by the source)').to.not.equal(undefined);
+		expect(sort!.sortKeys, 'trailing tiebreaker dropped once the leading unique key totally orders').to.have.length(1);
+		expect(sort!.sortKeys[0].direction).to.equal('desc');
 	});
 
 	it('Three-key partial drop: ORDER BY pk DESC, name, email → ORDER BY pk DESC', async () => {

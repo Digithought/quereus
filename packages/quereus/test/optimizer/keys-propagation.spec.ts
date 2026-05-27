@@ -259,11 +259,30 @@ describe('Key propagation and estimatedRows reduction', () => {
 				expect(indices(out)).to.deep.equal([[2]]);
 			});
 
-			it('INNER union of both sides (equiPairs ignored for the union)', () => {
+			it('INNER key=key join (equi-pair covers both keys) → both sides survive', () => {
 				const leftKeys: ColRef[][] = [[{ index: 0 }]];
 				const rightKeys: ColRef[][] = [[{ index: 0 }]];
+				// Equi-pair {0,0} covers both the left key {0} and the right key {0},
+				// so each side matches ≤ 1 row on the other — both keys survive.
 				const out = combineJoinKeys(leftKeys, rightKeys, 'inner', 2, [{ left: 0, right: 0 }]);
 				expect(indices(out)).to.deep.equal([[0], [2]]);
+			});
+
+			it('INNER without coverage (equi-pair on a non-key column) → []', () => {
+				// Equi-pair binds left col 1 = right col 1, neither of which is the
+				// key (col 0). A left row can match many right rows and vice-versa, so
+				// neither side's key survives — an unconditional union would be unsound.
+				const leftKeys: ColRef[][] = [[{ index: 0 }]];
+				const rightKeys: ColRef[][] = [[{ index: 0 }]];
+				const out = combineJoinKeys(leftKeys, rightKeys, 'inner', 2, [{ left: 1, right: 1 }]);
+				expect(out).to.deep.equal([]);
+			});
+
+			it('CROSS join (no equi-pairs) → [] (full-row set-ness carried by isSet)', () => {
+				const leftKeys: ColRef[][] = [[{ index: 0 }]];
+				const rightKeys: ColRef[][] = [[{ index: 0 }]];
+				const out = combineJoinKeys(leftKeys, rightKeys, 'cross', 2);
+				expect(out).to.deep.equal([]);
 			});
 
 			it('SEMI returns left keys unchanged', () => {
@@ -278,6 +297,45 @@ describe('Key propagation and estimatedRows reduction', () => {
 				const out = combineJoinKeys(leftKeys, rightKeys, 'full', 2, [{ left: 0, right: 0 }]);
 				expect(out).to.deep.equal([]);
 			});
+		});
+	});
+
+	describe('Projection isSet soundness', () => {
+		async function nodeTypes(sql: string): Promise<string> {
+			const rows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval('SELECT json_group_array(node_type) AS types FROM query_plan(?)', [sql])) {
+				rows.push(r as Record<string, unknown>);
+			}
+			return String(rows[0].types as unknown as string);
+		}
+
+		it('DISTINCT is NOT eliminated when a projection drops the key (bag output)', async () => {
+			// dup_t has a PK `id` but `cat` repeats. `select cat` projects away the
+			// key, so the projection is a bag — DISTINCT must survive, and must
+			// actually deduplicate.
+			await db.exec('CREATE TABLE dup_t (id INTEGER PRIMARY KEY, cat TEXT) USING memory');
+			await db.exec("INSERT INTO dup_t VALUES (1,'a'),(2,'a'),(3,'b')");
+
+			const types = await nodeTypes('SELECT DISTINCT cat FROM dup_t');
+			expect(types, 'DISTINCT over a key-dropping projection must NOT be eliminated').to.include('Distinct');
+
+			const cats: string[] = [];
+			for await (const r of db.eval('SELECT cat FROM dup_t GROUP BY cat')) cats.push((r as { cat: string }).cat);
+			const distinctCats: string[] = [];
+			for await (const r of db.eval('SELECT DISTINCT cat FROM dup_t')) distinctCats.push((r as { cat: string }).cat);
+			expect(distinctCats.sort()).to.deep.equal(cats.sort());
+			expect(distinctCats).to.have.length(2);
+		});
+
+		it('outer DISTINCT eliminated over an inner DISTINCT (set preserved through all-column projection)', async () => {
+			await db.exec('CREATE TABLE dd (id INTEGER PRIMARY KEY, x INTEGER, y INTEGER) USING memory');
+			await db.exec('INSERT INTO dd VALUES (1,1,1),(2,1,1),(3,2,3)');
+			// Inner `select distinct x, y` is a set on (x,y). The outer projection
+			// keeps both columns, so the set survives and the outer DISTINCT is a
+			// no-op — it should be eliminated.
+			const types = await nodeTypes('SELECT DISTINCT x, y FROM (SELECT DISTINCT x, y FROM dd)');
+			const distinctCount = (types.match(/Distinct/g) ?? []).length;
+			expect(distinctCount, 'only the inner DISTINCT should remain').to.equal(1);
 		});
 	});
 

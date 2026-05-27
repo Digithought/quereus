@@ -169,7 +169,18 @@ function joinPairsCoverKey(
 /**
  * Combine unique keys across a join (logical `RelationType.keys` form).
  *
- * - `inner` / `cross`: union of left and right keys (right indices shifted by `leftColumnCount`).
+ * Soundness mirrors `analyzeJoinKeyCoverage`: a side's key survives the join
+ * only when each of its rows matches ≤ 1 row on the other side — i.e. the
+ * equi-pairs cover a unique key of the *opposite* side. An unconditional union
+ * would be unsound: a plain cross/inner join duplicates one side's key values
+ * for every matching row on the other side (`ta CROSS JOIN tb` repeats `ta`'s
+ * PK once per `tb` row, so `ta`'s PK is not a key of the product).
+ *
+ * - `inner` / `cross`: left keys survive iff a right-side key is covered; right
+ *   keys (shifted by `leftColumnCount`) survive iff a left-side key is covered.
+ *   A key=key join covers both, so both survive. A bare cross join covers
+ *   neither, so the result is `[]` — set-ness of the full product is carried by
+ *   `RelationType.isSet` instead.
  * - `left`: if `equiPairs` cover any right-side key, return left keys unchanged
  *   (each left row matches ≤ 1 right row, so left's keys survive). Otherwise `[]`.
  * - `right`: symmetric — if `equiPairs` cover any left-side key, return right's
@@ -177,8 +188,8 @@ function joinPairsCoverKey(
  * - `full`: `[]` (both sides may be null-padded).
  * - `semi` / `anti`: return left keys (left-only output, no null-padding).
  *
- * `equiPairs` is optional; when omitted, the LEFT/RIGHT branches conservatively
- * return `[]` (the previous behaviour).
+ * `equiPairs` is optional; when omitted, the LEFT/RIGHT and inner/cross branches
+ * conservatively return `[]` (no coverage can be proven).
  */
 export function combineJoinKeys(
 	leftKeys: ReadonlyArray<ReadonlyArray<ColRef>>,
@@ -191,11 +202,20 @@ export function combineJoinKeys(
 		case 'inner':
 		case 'cross': {
 			const result: ColRef[][] = [];
-			for (const key of leftKeys) {
-				result.push(key.map(c => ({ index: c.index, desc: c.desc })));
+			const leftEqSet = new Set<number>((equiPairs ?? []).map(p => p.left));
+			const rightEqSet = new Set<number>((equiPairs ?? []).map(p => p.right));
+			// Left's keys survive only when each left row matches ≤ 1 right row,
+			// i.e. the equi-pairs cover a right-side key.
+			if (joinPairsCoverKey(rightKeys, rightEqSet)) {
+				for (const key of leftKeys) {
+					result.push(key.map(c => ({ index: c.index, desc: c.desc })));
+				}
 			}
-			for (const key of rightKeys) {
-				result.push(key.map(c => ({ index: c.index + leftColumnCount, desc: c.desc })));
+			// Symmetrically for the right side.
+			if (joinPairsCoverKey(leftKeys, leftEqSet)) {
+				for (const key of rightKeys) {
+					result.push(key.map(c => ({ index: c.index + leftColumnCount, desc: c.desc })));
+				}
 			}
 			return result;
 		}

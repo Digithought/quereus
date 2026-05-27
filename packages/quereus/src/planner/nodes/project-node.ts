@@ -83,18 +83,33 @@ export class ProjectNode extends PlanNode implements UnaryRelationalNode, Projec
 				};
 			});
 
+			const { map } = deriveProjectionColumnMap(
+				this.source.getAttributes(),
+				this.projections.map((p, outIndex) => ({ expr: p.node, outIndex })),
+			);
+			const projectedKeys = projectKeys(sourceType.keys, map);
+
+			// `isSet` soundness: a projection can drop row-distinguishing columns,
+			// turning a set into a bag (`select x from <set on (x,y)>` may repeat
+			// x). So we may NOT simply inherit `sourceType.isSet`. The projection
+			// output is still a set iff either:
+			//   - a declared source key survives the projection (`projectedKeys`
+			//     non-empty) — the surviving key keeps rows distinct, OR
+			//   - the source is a set AND every source column survives in the
+			//     output (the all-columns key survives — projection is row-
+			//     injective). `map` holds one entry per surviving source column.
+			// This is conservative (loses completeness, never soundness): an
+			// injectively-derived key that only `computePhysical` recognizes is not
+			// counted here.
+			const isSet = projectedKeys.length > 0
+				|| (sourceType.isSet && map.size === sourceType.columns.length);
+
 			return {
 				typeClass: 'relation',
 				isReadOnly: sourceType.isReadOnly,
-				isSet: sourceType.isSet,
+				isSet,
 				columns,
-				keys: (() => {
-					const { map } = deriveProjectionColumnMap(
-						this.source.getAttributes(),
-						this.projections.map((p, outIndex) => ({ expr: p.node, outIndex })),
-					);
-					return projectKeys(sourceType.keys, map);
-				})(),
+				keys: projectedKeys,
 				// TODO: propagate row constraints that don't have projected off columns
 				rowConstraints: [],
 			} satisfies RelationType;
