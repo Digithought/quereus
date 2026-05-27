@@ -288,6 +288,35 @@ Bindings have two cadences:
 
 When a per-row generated value also serves as a **join key shared across base tables** — the surrogate that an n-way decomposition joins on — the single captured per-row value threads through every branch of the fan-out. Because it is resolved at the envelope *before* propagation reaches the branches, every branch references one already-captured binding: there is no "which branch generates first" ordering question, and the branches cannot diverge. This is what makes an insert into a relation backed by a shared-surrogate decomposition well-defined — one generation, captured, shared across the fan-out.
 
+**Worked example.** A logical `User(name, email)` is decomposed over two base relations that share a surrogate `rid`. The surrogate has nowhere to come from in the logical row, so it is a **generated default** on the anchor; the second relation inherits it through the join-key equivalence class:
+
+```sql
+-- basis: two relations sharing a surrogate `rid`; the anchor generates it per row
+create table u_core    (rid int primary key default next_rid(), name text) using mem();
+create table u_contact (rid int primary key, email text) using mem();
+
+-- the lens get
+create view User as
+  select c.name, k.email
+  from u_core c
+  left join u_contact k on k.rid = c.rid;
+```
+
+Now a two-row insert through the lens:
+
+```sql
+insert into User (name, email)
+  values ('Ada', 'ada@x.io'), ('Lin', 'lin@x.io');
+```
+
+Propagation, per top-level row:
+
+1. `next_rid()` is a **per-row** generator, so the envelope resolves it once for each produced row — say `rid = 1001` for Ada, `rid = 1002` for Lin — and records both in the captured context.
+2. The join predicate `k.rid = c.rid` puts `u_core.rid` and `u_contact.rid` in one equivalence class, so the captured `rid` is the value used for *both* base inserts of that row. No second `next_rid()` call fires; the branch does not re-generate.
+3. The emitted base operations are therefore `u_core(rid=1001, name='Ada')` + `u_contact(rid=1001, email='ada@x.io')`, then the `1002` pair for Lin.
+
+Contrast the cadences: had the example also carried `created int default now_ms()`, that **per-statement** binding would resolve *once* and stamp the same value onto both rows, whereas `rid` differs per row. And because `(1001, 1002)` live in the recorded context, replaying the statement re-emits byte-identical base rows — the insert is deterministic-given-context even though `next_rid()` is not deterministic in isolation.
+
 Per-column `default_for` tags may reference context bindings; bindings evaluate per their cadence and are reused across every per-base operation that consumes them.
 
 ## Diagnostics

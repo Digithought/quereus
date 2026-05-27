@@ -55,6 +55,16 @@ Three properties of the generated join are load-bearing for correctness:
 - **Advertisements can be primary, not supplementary.** Name/type/structure matching works only when the basis surfaces logical column names. When a decomposition does not — generic value-columns, EAV triples, column-family layouts — the module advertisement is the *sole* alignment source and must carry enough to map each basis relation to the logical column(s) it backs. The advertisement also informs the **`put`** direction, not only `get`: it tells propagation the fan-out shape and the shared key (below), so an insert through the generated lens reaches every member of the decomposition.
 - **Optional components are outer-joined.** A logical row may lack a value for a column that lives in a separate basis relation. The generated body must preserve such a row, so the mapper outer-joins optional components onto the relation that establishes row identity (the preserved side) and inner-joins only mandatory (`not null`) components. Inner-joining everywhere would silently drop rows missing an optional component.
 - **The shared key need not be a logical key.** A module may join its basis relations on a **surrogate** key and carry the logical key as an ordinary value column. This is a deliberate choice with a consequence: when the shared key is a surrogate, evolution of the logical key (rename, retype, reshape) is a mapping-level edit, because the basis already treats the logical key as a value; when the shared key *is* the logical key, the same evolution is basis-invasive. A surrogate is supplied at insert by a generated default captured in mutation context (see [view-updateability §Mutation Context](view-updateability.md#mutation-context)) and threaded across the decomposition's branches as one value.
+- **The empty key (singleton) is the degenerate case, not a special path.** A logical table with `primary key ()` holds 0-or-1 rows. The primary key always decomposes to an existence relation whose arity equals the PK's arity, so a zero-arity PK yields a zero-column, 0-or-1-row existence relation — a basis singleton. The key-equi-join that stitches columns onto the anchor is a conjunction of per-key-column equalities; over a zero-column key that conjunction is empty, hence vacuously `true`, so the generated join reduces to `on true`:
+
+  ```sql
+  -- normal table: key = (id)            singleton: key = ()
+  from   b_pk      x                     from   b_config__exists x   -- 0-or-1 row, no key, no value
+  left join b_col1 c1 on c1.id = x.id    left join b_config_theme  t on true
+  left join b_col2 c2 on c2.id = x.id    left join b_config_locale l on true;
+  ```
+
+  `left join … on true` is a left Cartesian product; with the anchor 0-or-1 row and each column relation 0-or-1 row, the result is 0-or-1 row — the singleton's cardinality. There is no surrogate to generate (with at most one row there is nothing to distinguish), and the existence anchor still matters for the same reason the multi-row PK store does: it lets the singleton exist with every column null, rather than collapsing "row exists" into "some column is set." The mandatory-column elision applies identically — a `not null` column's relation can serve as the anchor, dropping the separate existence relation.
 
 ## Sparse Overrides
 
