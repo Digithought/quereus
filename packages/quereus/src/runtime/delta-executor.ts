@@ -153,6 +153,17 @@ export class DeltaExecutor {
 			}
 
 			const cols = binding.kind === 'row' ? binding.keyColumns : binding.groupColumns;
+
+			// An empty 'row' key means the reference is provably ≤1-row (keysOf
+			// returned the empty key). There are no key columns to fetch tuples
+			// for, and a per-tuple seek with cols=[] is ill-defined; re-evaluate
+			// this relation globally instead. Sound and equivalent for a ≤1-row
+			// table (scanning it whole is the same as seeking its single row).
+			if (binding.kind === 'row' && cols.length === 0) {
+				globalRelations.add(relKey);
+				continue;
+			}
+
 			const pkIndices = sub.pkIndicesByBase.get(base);
 			if (!pkIndices) {
 				// No PK known for this base — can't fetch tuples; fall back to global.

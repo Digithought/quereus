@@ -90,13 +90,17 @@ export function extractBindings(plan: PlanNode | RelationalPlanNode): PlanBindin
 		}
 		const pkIndices = tableRef.tableSchema.primaryKeyDefinition.map(d => d.index);
 		const covered = extractCoveredKeysForTable(plan as RelationalPlanNode, relKey);
-		const chosen = chooseRowKey(pkIndices, covered);
-		if (chosen.length === 0) {
-			// Classification said 'row' but no covered key — defensive fallback.
+		if (covered.length === 0) {
+			// Classification said 'row' but nothing is covered — defensive fallback.
 			perRelation.set(relKey, { kind: 'global' });
-		} else {
-			perRelation.set(relKey, { kind: 'row', keyColumns: chosen });
+			continue;
 		}
+		// `chooseRowKey` may legitimately return the empty key `[]` when the
+		// reference is provably ≤1-row (keysOf yielded the empty key, which sorts
+		// first by length). An empty `keyColumns` means "≤1 row, no key filter
+		// needed" — downstream consumers treat it as a sound full/global scan.
+		const chosen = chooseRowKey(pkIndices, covered);
+		perRelation.set(relKey, { kind: 'row', keyColumns: chosen });
 	}
 
 	return { perRelation, relationToBase };

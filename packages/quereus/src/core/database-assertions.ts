@@ -552,6 +552,10 @@ export class AssertionEvaluator {
 				: conjunct;
 		}
 
+		// No predicate built ⇒ `keyColumns` was empty (a ≤1-row 'row' binding).
+		// Leave the TableReferenceNode unwrapped: scanning the ≤1-row table whole
+		// is exactly the seek. (The delta executor also demotes such bindings to a
+		// global re-evaluation, so this residual is normally never dispatched.)
 		if (!predicate) return null;
 
 		return new FilterNode(scope, relational, predicate);

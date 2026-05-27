@@ -439,6 +439,13 @@ function buildScopeForMode(
 		return { kind: 'full' };
 	}
 	if (mode.kind === 'row') {
+		// Empty key columns ⇒ the reference is provably ≤1-row (keysOf yielded
+		// the empty key). There are no key columns to pin a per-row watch on, so
+		// the whole (single-row) table is in scope. 'full' is the sound
+		// projection — equivalent for a ≤1-row table.
+		if (mode.keyColumns.length === 0) {
+			return { kind: 'full' };
+		}
 		const keyNames = mode.keyColumns.map(colName);
 		const values = extractRowKeyValues(plan, relKey, mode.keyColumns, unboundParams);
 		// If the binding-extractor classified this as 'row' but we couldn't

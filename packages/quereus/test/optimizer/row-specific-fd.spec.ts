@@ -72,6 +72,29 @@ describe('analyzeRowSpecific: FD-closure-aware classification', () => {
 			const result = analyze(db, "select * from t where v = 'x'");
 			expect(findFor(result, 'main.t').cls).to.equal('global');
 		});
+
+		it('classifies equality on an FD-derived key (no declared key) as row', async () => {
+			// No PRIMARY KEY / UNIQUE, so `relType.keys` is empty — the old
+			// declared-keys-only path classifies this 'global'. `CHECK (a = b)`
+			// puts FDs {a}→{b} and {b}→{a} on the reference's physical.fds, so
+			// `keysOf` derives candidate keys {a} and {b}. Equality on `a` then
+			// covers an FD-derived key ⇒ 'row'. This is the candidate-key sourcing
+			// gap the ticket closes (provable only through physical.fds).
+			await db.exec("CREATE TABLE t (a INTEGER, b INTEGER, CHECK (a = b)) USING memory");
+			const result = analyze(db, 'select * from t where a = 5');
+			expect(findFor(result, 'main.t').cls).to.equal('row');
+		});
+
+		it('classifies a ≤1-row reference (empty key via singleton FD) as row', async () => {
+			// `CHECK (a = 1 AND b = 2)` pins every column to a constant, so the
+			// reference carries the `∅ → all_cols` singleton FD ⇒ `keysOf` returns
+			// the empty key `[]` (≤1-row). With no equality constraints at all, the
+			// empty key is trivially covered ⇒ 'row' (old path: 'global', since
+			// declared keys are empty).
+			await db.exec("CREATE TABLE t (a INTEGER, b INTEGER, CHECK (a = 1 AND b = 2)) USING memory");
+			const result = analyze(db, 'select * from t');
+			expect(findFor(result, 'main.t').cls).to.equal('row');
+		});
 	});
 
 	describe("'group' classification on aggregate", () => {

@@ -75,6 +75,29 @@ describe('extractBindings: BindingMode per TableReference', () => {
 		expect(cols.length).to.be.greaterThan(0);
 	});
 
+	it("emits 'row' with empty keyColumns for a ≤1-row reference (empty key)", async () => {
+		// `CHECK (a = 1 AND b = 2)` pins every column, so the reference carries the
+		// `∅ → all_cols` singleton FD and `keysOf` returns the empty key `[]`.
+		// extractBindings must emit `{ kind: 'row', keyColumns: [] }` (today: the
+		// old declared-keys-only path would yield 'global').
+		await db.exec("CREATE TABLE t (a INTEGER, b INTEGER, CHECK (a = 1 AND b = 2)) USING memory");
+		const result = analyze(db, 'select * from t');
+		const entry = findFor(result, 'main.t');
+		expect(entry.mode!.kind).to.equal('row');
+		expect((entry.mode as { kind: 'row'; keyColumns: number[] }).keyColumns).to.deep.equal([]);
+	});
+
+	it("emits 'row' on an FD-derived key (no declared key) via CHECK-induced FDs", async () => {
+		// No PK/UNIQUE ⇒ empty declared keys. CHECK (a = b) makes both columns
+		// FD-derived keys, so equality on `a` covers a key ⇒ 'row'.
+		await db.exec("CREATE TABLE t (a INTEGER, b INTEGER, CHECK (a = b)) USING memory");
+		const result = analyze(db, 'select * from t where a = 5');
+		const entry = findFor(result, 'main.t');
+		expect(entry.mode!.kind).to.equal('row');
+		const cols = (entry.mode as { kind: 'row'; keyColumns: number[] }).keyColumns;
+		expect(cols.length).to.be.greaterThan(0);
+	});
+
 	it("emits 'group' with groupColumns when GROUP BY pk covers PK", async () => {
 		await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT) USING memory');
 		const result = analyze(db, 'select count(*) from t group by id');

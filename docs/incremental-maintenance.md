@@ -111,9 +111,21 @@ type BindingMode =
 ```
 
 - `'row'` picks the table's primary key when it's among the covered keys,
-  else the lex-min covered key (by length then by joined indices). Coverage
-  uses FD closure under the table's local FDs and FK→PK / equality-derived
-  ECs.
+  else the lex-min covered key (by length then by joined indices). Candidate
+  keys come from the unified `keysOf` surface (`planner/util/fd-utils.ts`) —
+  declared `RelationType.keys`, FD-derived keys, the `∅ → all_cols` ≤1-row
+  empty key `[]`, and the all-columns set key — not declared keys alone. A
+  reference whose uniqueness is provable only through its `physical.fds` (e.g.
+  an FD-derived key or a singleton ≤1-row FD on a no-PK table) therefore
+  classifies `'row'` rather than `'global'`. Coverage then expands the
+  equality-covered column set under FD closure (local FDs + FK→PK /
+  equality-derived ECs) and checks each candidate key against it.
+  - An **empty `keyColumns`** (`{ kind: 'row'; keyColumns: [] }`) means
+    "≤1 row, no key filter needed". Downstream consumers treat it as a sound
+    full/global scan: the delta executor re-evaluates that relation globally,
+    `change-scope` reports a `full` watch scope, and the assertion residual
+    leaves the `TableReferenceNode` unwrapped. All three are equivalent for a
+    ≤1-row table.
 - `'group'` reads the minimal `GROUP BY` column subset from
   `analyzeRowSpecific.groupKeys`. It already lives in the table reference's
   output-column space.

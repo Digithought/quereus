@@ -16,7 +16,7 @@ import { getSyncLiteral } from '../../parser/utils.js';
 import type { ConstraintOp, PredicateConstraint as VtabPredicateConstraint, RangeSpec as VtabRangeSpec } from '../../vtab/best-access-plan.js';
 import { TableReferenceNode, ColumnReferenceNode as _ColumnRef } from '../nodes/reference.js';
 import { CapabilityDetectors } from '../framework/characteristics.js';
-import { computeClosure, expandEcsToFds } from '../util/fd-utils.js';
+import { computeClosure, expandEcsToFds, keysOf, type KeyRel } from '../util/fd-utils.js';
 
 const log = createLogger('planner:analysis:constraint-extractor');
 
@@ -84,6 +84,16 @@ export interface TableInfo {
 	columnIndexMap: Map<number, number>; // attributeId -> columnIndex
   /** Logical unique keys for the relation, expressed as output column indexes */
   uniqueKeys?: number[][];
+  /**
+   * Minimal candidate keys from the unified `keysOf` surface — declared keys,
+   * FD-derived keys, the `∅ → all_cols` ≤1-row empty key `[]`, and the
+   * all-columns set key — normalized and deduped. This is the key source for
+   * delta-binding coverage so uniqueness provable only through `physical.fds`
+   * (not declared `RelationType.keys`) still classifies a reference as
+   * 'row'/'group'. `uniqueKeys` is retained unchanged for the other callers
+   * that build their own `TableInfo` (filter.ts, project-node.ts).
+   */
+  candidateKeys?: number[][];
   /** Functional dependencies on the relation's output columns (from physical properties). */
   fds?: readonly FunctionalDependency[];
   /** Equivalence classes over the relation's output columns (from physical properties). */
@@ -153,12 +163,15 @@ export function extractConstraints(
   const coveredKeysByTable = new Map<string, number[][]>();
   for (const [rel, constraints] of constraintsByTable) {
     const tInfo = tableInfos.find(t => t.relationKey === rel || t.relationName === rel);
-    if (!tInfo || !tInfo.uniqueKeys || tInfo.uniqueKeys.length === 0) {
+    // Prefer candidateKeys (unified keysOf surface) over declared uniqueKeys so
+    // FD-derived and ≤1-row empty keys are not skipped by the old guard.
+    const candidateKeys = tInfo?.candidateKeys ?? tInfo?.uniqueKeys ?? [];
+    if (!tInfo || candidateKeys.length === 0) {
       coveredKeysByTable.set(rel, []);
       continue;
     }
     coveredKeysByTable.set(rel, computeCoveredKeysForConstraints(
-      constraints, tInfo.uniqueKeys, tInfo.fds, tInfo.equivClasses
+      constraints, candidateKeys, tInfo.fds, tInfo.equivClasses
     ));
   }
 
@@ -938,8 +951,10 @@ export function extractCoveredKeysForTable(
     const constraints: PredicateConstraint[] = extractConstraintsForTable(plan, targetTableRelationKey);
     const tInfos = createTableInfosFromPlan(plan).filter(info => info.relationKey === targetTableRelationKey);
     if (tInfos.length === 0) return [];
-    const uniqueKeys = tInfos[0].uniqueKeys ?? [];
-    return computeCoveredKeysForConstraints(constraints, uniqueKeys, tInfos[0].fds, tInfos[0].equivClasses);
+    // Source candidate keys from the unified `keysOf` surface (candidateKeys),
+    // falling back to declared uniqueKeys only if it is somehow absent.
+    const candidateKeys = tInfos[0].candidateKeys ?? tInfos[0].uniqueKeys ?? [];
+    return computeCoveredKeysForConstraints(constraints, candidateKeys, tInfos[0].fds, tInfos[0].equivClasses);
 }
 
 /**
@@ -1195,7 +1210,10 @@ function classifyForAggregate(
         }
 
         const tInfo = tableInfos.find(t => t.relationKey === relKey);
-        if (!tInfo || !tInfo.uniqueKeys || tInfo.uniqueKeys.length === 0) {
+        // Group-key coverage uses the unified candidate-key surface (declared +
+        // FD-derived + ≤1-row), mirroring the equality-coverage path.
+        const candidateKeys = tInfo?.candidateKeys ?? tInfo?.uniqueKeys ?? [];
+        if (!tInfo || candidateKeys.length === 0) {
             classifications.set(relKey, 'global');
             continue;
         }
@@ -1221,7 +1239,7 @@ function classifyForAggregate(
             });
         };
 
-        const coversAnyKey = tInfo.uniqueKeys.some(keyCoveredInSourceSpace);
+        const coversAnyKey = candidateKeys.some(keyCoveredInSourceSpace);
         if (!coversAnyKey) {
             classifications.set(relKey, 'global');
             continue;
@@ -1237,7 +1255,7 @@ function classifyForAggregate(
             const trial = new Set<number>(minimalSourceCols);
             trial.delete(c);
             const trialClosure = computeClosure(trial, closureFds);
-            const stillCovers = tInfo.uniqueKeys.some(key => {
+            const stillCovers = candidateKeys.some(key => {
                 if (key.length === 0) return true;
                 return key.every(tcol => {
                     const scol = tableColToSourceCol.get(tcol);
@@ -1363,6 +1381,14 @@ export function createTableInfoFromNode(node: RelationalPlanNode, relationName?:
 	const fds = physical?.fds;
 	const equivClasses = physical?.equivClasses;
 
+	// Candidate keys come from the unified `keysOf` surface, which reconciles
+	// declared keys, FD-derived keys, the `∅ → all_cols` ≤1-row empty key, and
+	// the all-columns set key. This is what lets a reference whose uniqueness is
+	// provable only through `physical.fds` (e.g. an FD-derived key or a singleton
+	// FD on a no-PK table) classify as 'row'/'group' rather than 'global'.
+	// `node` already satisfies KeyRel (getType() + physical?).
+	const candidateKeys = keysOf(node as unknown as KeyRel).map(k => [...k]);
+
 	const relName = relationName || node.toString();
 	const relationKey = `${relName}#${node.id ?? 'unknown'}`;
 
@@ -1372,6 +1398,7 @@ export function createTableInfoFromNode(node: RelationalPlanNode, relationName?:
 		attributes: attributes.map(attr => ({ id: attr.id, name: attr.name })),
 		columnIndexMap,
 		uniqueKeys,
+		candidateKeys,
 		fds,
 		equivClasses
 	};

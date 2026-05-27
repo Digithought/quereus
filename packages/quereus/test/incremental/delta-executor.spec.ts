@@ -92,6 +92,34 @@ describe('DeltaExecutor: dispatch semantics', () => {
 		expect(calls[0].global).to.deep.equal([]);
 	});
 
+	it("demotes an empty-key 'row' binding to global re-evaluation", async () => {
+		// A `{ kind: 'row', keyColumns: [] }` binding marks a provably ≤1-row
+		// reference. There are no key columns to fetch per-tuple, so the executor
+		// re-evaluates the relation globally (sound: scanning a ≤1-row table whole
+		// equals seeking its single row). getChangedTuples is never consulted.
+		const ctx = new MockCtx();
+		ctx.setChanged('main.t', [[1], [2]]);
+		let fetched = false;
+		const origFetch = ctx.getChangedTuples.bind(ctx);
+		ctx.getChangedTuples = (base, cols, pk) => { fetched = true; return origFetch(base, cols, pk); };
+		const exec = new DeltaExecutor(ctx);
+		const calls: RecordedCall[] = [];
+		const sub = makeSub({
+			id: 'sub1',
+			dependencies: ['main.t'],
+			bindings: [['main.t#1', { kind: 'row', keyColumns: [] }]],
+			relationToBase: [['main.t#1', 'main.t']],
+			pkIndicesByBase: [['main.t', [0]]],
+			apply: record(calls, 'sub1'),
+		});
+		exec.register(sub);
+		await exec.runAll();
+		expect(calls).to.have.length(1);
+		expect(calls[0].perRelation).to.deep.equal([]);
+		expect(calls[0].global).to.deep.equal(['main.t#1']);
+		expect(fetched).to.equal(false);
+	});
+
 	it("dispatches 'group' bindings with de-duplicated tuples", async () => {
 		const ctx = new MockCtx();
 		// Caller-shape tuples: getChangedTuples already de-dupes in the real
