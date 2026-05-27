@@ -252,3 +252,58 @@ SELECT amount FROM ledger WHERE id = 1;
 DROP ASSERTION ledger_no_deletes;
 DROP TABLE ledger;
 -- run
+
+-- ===================================
+-- Deferred CHECK across tables with datetime coercion (GitHub #25)
+-- The deferred subquery compares new.* against an already-coerced stored row.
+-- A datetime column rewrites its value on parse, so the comparison must run
+-- coerced-vs-coerced or it spuriously fails.
+-- ===================================
+
+CREATE TABLE Parent (Id TEXT, TS datetime, PRIMARY KEY (Id, TS)) USING memory;
+CREATE TABLE Child (
+  Id TEXT PRIMARY KEY,
+  ParentTS datetime,
+  CONSTRAINT ParentExists CHECK (
+    EXISTS (SELECT 1 FROM Parent P WHERE P.TS = new.ParentTS)
+  )
+) USING memory;
+
+-- Parent.TS coerced from numeric literal to the datetime logical representation
+INSERT INTO Parent VALUES ('p1', 1700000000000);
+COMMIT;
+
+-- Positive: matching parent (numeric literal coerces to the same value) → OK
+BEGIN;
+INSERT INTO Child VALUES ('c1', 1700000000000);
+COMMIT;
+-- run
+
+SELECT count(*) FROM Child;
+→ [{ "count(*)": 1 }]
+
+-- Negative: no matching parent → deferred CHECK still fires at commit
+BEGIN;
+INSERT INTO Child VALUES ('c2', 1800000000000);
+COMMIT;
+-- error: CHECK constraint failed: ParentExists
+
+-- Verify the failed row did not land
+SELECT count(*) FROM Child;
+→ [{ "count(*)": 1 }]
+
+-- Alternate textual representation on both sides locks in coerced-vs-coerced
+INSERT INTO Parent VALUES ('p2', '2023-11-14T22:13:20+00:00[UTC]');
+COMMIT;
+
+BEGIN;
+INSERT INTO Child VALUES ('c3', '2023-11-14T22:13:20+00:00[UTC]');
+COMMIT;
+-- run
+
+SELECT count(*) FROM Child;
+→ [{ "count(*)": 2 }]
+
+DROP TABLE Child;
+DROP TABLE Parent;
+-- run

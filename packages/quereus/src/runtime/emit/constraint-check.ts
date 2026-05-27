@@ -13,6 +13,7 @@ import { withAsyncRowContext, createRowSlot } from '../context-helpers.js';
 import { expressionToString } from '../../emit/ast-stringify.js';
 import { composeCombinedDescriptor } from '../descriptor-helpers.js';
 import { sqlValuesEqual } from '../../util/comparison.js';
+import { validateAndParse } from '../../types/validation.js';
 
 interface ConstraintMetadataEntry {
 	schema: RowConstraintSchema;
@@ -336,7 +337,7 @@ async function checkCheckConstraints(
 			rctx.db._queueDeferredConstraintRow(
 				metadata.baseTable,
 				metadata.constraintName,
-				row.slice() as Row,
+				coerceNewSection(row, tableSchema),
 				metadata.flatRowDescriptor,
 				evaluator,
 				activeConnectionId,
@@ -372,6 +373,38 @@ async function checkCheckConstraints(
 		}
 	}
 	return { skip: false };
+}
+
+/**
+ * Snapshot the flat OLD/NEW row for deferred evaluation, coercing the NEW
+ * section (indices n..2n-1) to the declared column logical types.
+ *
+ * The insert pipeline defers type conversion to the storage layer's
+ * validateAndParse, so the row reaching this node still holds raw NEW values.
+ * Deferred CHECK subqueries compare these against already-coerced stored rows
+ * in other tables, so we coerce NEW here to keep coerced-vs-coerced equality at
+ * commit time (GitHub #25).
+ *
+ * OLD values (0..n-1) are NULL on INSERT or read from already-coerced stored
+ * rows on UPDATE, so they are left untouched. A per-cell parse failure falls
+ * back to the raw value, preserving the existing error semantics — the row's
+ * own performInsert remains the authoritative place that throws MISMATCH.
+ */
+function coerceNewSection(row: Row, tableSchema: TableSchema): Row {
+	const numCols = tableSchema.columns.length;
+	const snapshot = row.slice() as Row;
+	for (let i = 0; i < numCols; i++) {
+		const newIndex = numCols + i;
+		if (newIndex >= snapshot.length) break;
+		const column = tableSchema.columns[i];
+		const value = snapshot[newIndex] as SqlValue;
+		try {
+			snapshot[newIndex] = validateAndParse(value, column.logicalType, column.name);
+		} catch {
+			// Keep the raw value; downstream performInsert reports the error as today.
+		}
+	}
+	return snapshot;
 }
 
 function generateDefaultConstraintName(tableSchema: TableSchema, constraint: RowConstraintSchema): string {
