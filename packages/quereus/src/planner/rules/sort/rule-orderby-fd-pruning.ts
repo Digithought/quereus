@@ -12,6 +12,14 @@
  * preceding keys pin every value of that column to a single value per group,
  * the trailing key cannot reorder anything.
  *
+ * Whole-Sort elimination (degenerate empty-key case): a source proven to hold
+ * ≤1 row (the empty key `[]` present in `keysOf`, i.e. `isUnique([], source)`)
+ * is trivially totally ordered, so the *entire* ORDER BY is a no-op regardless
+ * of how many keys it has — even a single-key sort. The rule drops the SortNode
+ * outright (returns its source) before the trailing-key logic runs. This is the
+ * "0 leading keys already form a superkey" case that the front-to-back loop
+ * cannot express (it always retains the first key before checking `isUnique`).
+ *
  * Whole-tail pruning: once the retained leading bare-column keys form a
  * superkey of the source (`isUnique` over the unified key surface — declared
  * keys, FD-derived keys, or the all-columns/`isSet` key), the rows are totally
@@ -53,6 +61,18 @@ const log = createLogger('optimizer:rule:orderby-fd-pruning');
 
 export function ruleOrderByFdPruning(node: PlanNode, _context: _OptContext): PlanNode | null {
 	if (!(node instanceof SortNode)) return null;
+
+	// Whole-Sort elimination: a provably ≤1-row source is trivially totally
+	// ordered, so the ORDER BY is a pure no-op no matter how many keys it lists.
+	// `isUnique([], source)` is true iff the empty key is present in the unified
+	// key surface (a `∅ → all_cols` singleton FD, a declared empty key, etc.).
+	// Drop the SortNode entirely — must run before the `< 2` guard so single-key
+	// sorts over a singleton source are eliminated too.
+	if (isUnique([], node.source)) {
+		log('Eliminating ORDER BY over provably ≤1-row source');
+		return node.source;
+	}
+
 	if (node.sortKeys.length < 2) return null;
 
 	const source = node.source;

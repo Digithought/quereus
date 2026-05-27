@@ -135,7 +135,9 @@ describe('ruleOrderByFdPruning', () => {
 	});
 
 	it('Single-key: ORDER BY a is a no-op', async () => {
-		// Single-key sorts must hit the `< 2` guard and return null.
+		// Single-key sorts over a multi-row source must hit the `< 2` guard and
+		// return null (the source is not provably ≤1-row, so the whole-Sort
+		// elimination does not apply either).
 		await db.exec(
 			'CREATE TABLE s (a INTEGER PRIMARY KEY, b INTEGER, c INTEGER) USING memory',
 		);
@@ -145,6 +147,38 @@ describe('ruleOrderByFdPruning', () => {
 		if (sort) {
 			expect(sort.sortKeys).to.have.length(1);
 		}
+	});
+
+	it('Singleton source, single key: ORDER BY over scalar aggregate → Sort eliminated', async () => {
+		// A scalar aggregate (no GROUP BY) produces exactly one row and carries the
+		// `∅ → all_cols` singleton FD, so the empty key is in `keysOf` and the
+		// single-key ORDER BY is a no-op. The whole-Sort elimination fires even
+		// though `sortKeys.length < 2`.
+		await db.exec('CREATE TABLE t (a INTEGER, b INTEGER) USING memory');
+		const plan = db.getPlan('SELECT c FROM (SELECT count(*) AS c FROM t) ORDER BY c');
+		const sorts = findAllSorts(plan);
+		expect(sorts, 'Sort over a ≤1-row source must be eliminated').to.have.length(0);
+	});
+
+	it('Singleton source, multi key: ORDER BY a, b over scalar aggregate → Sort eliminated', async () => {
+		await db.exec('CREATE TABLE t (a INTEGER, b INTEGER) USING memory');
+		const plan = db.getPlan(
+			'SELECT mn, mx FROM (SELECT min(a) AS mn, max(b) AS mx FROM t) ORDER BY mn, mx',
+		);
+		const sorts = findAllSorts(plan);
+		expect(sorts, 'multi-key Sort over a ≤1-row source must be eliminated').to.have.length(0);
+	});
+
+	it('Behavioral correctness: ORDER BY over singleton source preserves the row', async () => {
+		await db.exec('CREATE TABLE t (a INTEGER, b INTEGER) USING memory');
+		await db.exec('INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)');
+		const out: { c: number }[] = [];
+		for await (const r of db.eval(
+			'SELECT c FROM (SELECT count(*) AS c FROM t) ORDER BY c',
+		)) {
+			out.push(r as unknown as { c: number });
+		}
+		expect(out).to.deep.equal([{ c: 3 }]);
 	});
 
 	it("Source attributes preserved (sort doesn't own them)", async () => {
