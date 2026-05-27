@@ -807,7 +807,7 @@ function alterTableToString(stmt: AST.AlterTableStmt): string {
 function analyzeToString(stmt: AST.AnalyzeStmt): string {
 	if (stmt.schemaName && stmt.tableName) return `analyze ${quoteIdentifier(stmt.schemaName)}.${quoteIdentifier(stmt.tableName)}`;
 	if (stmt.tableName) return `analyze ${quoteIdentifier(stmt.tableName)}`;
-	if (stmt.schemaName) return `analyze ${quoteIdentifier(stmt.schemaName)}`;
+	if (stmt.schemaName) return `analyze ${quoteIdentifier(stmt.schemaName)}.*`;
 	return 'analyze';
 }
 

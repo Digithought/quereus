@@ -639,13 +639,11 @@ const pragmaArb: fc.Arbitrary<AST.PragmaStmt> = fc.tuple(identArb, fc.option(int
 		return p;
 	});
 
-// Note: schema-name-only is not representable in the parser surface
-// (`analyze foo` always parses as tableName, not schemaName) and the
-// stringifier's `if (stmt.schemaName) return ...` branch produces SQL
-// the parser can't undo. Treated as a known gap — see the review handoff.
 const analyzeArb: fc.Arbitrary<AST.AnalyzeStmt> = fc.oneof(
 	fc.constant<AST.AnalyzeStmt>({ type: 'analyze' }),
 	identArb.map(tableName => ({ type: 'analyze' as const, tableName })),
+	// schema-only shape (`analyze schema.*`) — round-trips via the ASTERISK surface
+	identArb.map(schemaName => ({ type: 'analyze' as const, schemaName })),
 	fc.tuple(identArb, identArb).map(([schemaName, tableName]) => ({
 		type: 'analyze' as const,
 		schemaName,
@@ -848,6 +846,13 @@ describe('AST round-trip property: transactional + misc', () => {
 
 	it('ANALYZE round-trips structurally', () => {
 		fc.assert(fc.property(analyzeArb, checkRoundTrip), { numRuns: 50 });
+	});
+
+	it('ANALYZE schema.* parses to the schema-only shape', () => {
+		const stmt = parse('ANALYZE main.*') as AST.AnalyzeStmt;
+		expect(stmt.type).to.equal('analyze');
+		expect(stmt.schemaName).to.equal('main');
+		expect(stmt.tableName).to.equal(undefined);
 	});
 });
 

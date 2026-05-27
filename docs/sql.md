@@ -3084,6 +3084,9 @@ analyze products;
 
 -- Analyze a table in a specific schema
 analyze main.products;
+
+-- Analyze every table in a specific schema
+analyze main.*;
 ```
 
 `ANALYZE` returns one row per table with columns `table` (text) and `rows` (integer).
@@ -3572,7 +3575,7 @@ release_stmt       = "release" [ "savepoint" ] savepoint_name ;
 pragma_stmt        = "pragma" pragma_name [ "=" pragma_value ] ;
 
 /* ANALYZE statement */
-analyze_stmt       = "analyze" [ [ schema_name "." ] table_name ] ;
+analyze_stmt       = "analyze" [ ( [ schema_name "." ] table_name ) | ( schema_name "." "*" ) ] ;
 
 pragma_value       = signed_number | name | string_literal ;
 

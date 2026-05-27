@@ -120,6 +120,16 @@ describe('Emit: missing statement types', () => {
 			expect(result).to.include('main');
 			expect(result).to.include('users');
 		});
+
+		it('should stringify schema-only analyze as schema.* (round-trippable)', () => {
+			const node: AnalyzeStmt = { type: 'analyze', schemaName: 'main' };
+			const result = astToString(node);
+			// Emits `analyze main.*` — the `.*` surface is what re-parses to the
+			// schema-only shape (not `analyze main`, which would parse as a table).
+			expect(result).to.not.equal('[analyze]');
+			expect(result).to.include('main');
+			expect(result).to.include('.*');
+		});
 	});
 
 	describe('createAssertion', () => {

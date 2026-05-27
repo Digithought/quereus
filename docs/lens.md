@@ -80,6 +80,8 @@ A view predicate is a read-time filter, not a write-time invariant ([view-update
 
 This realizes the principle that **a constraint is a logical claim, and the structure that enforces it is an optional physical optimization** — see [Materialized Views](#relationship-to-materialized-views).
 
+**A logical `unique` (or primary key) creates no structure.** Declaring `unique(x, y)` in a logical schema contributes a key/FD to the optimizer and an enforced boundary constraint — but it does **not** auto-create an index. This is a deliberate departure from the legacy behavior where `unique(...)` eagerly built a secondary BTree at declaration time (`LayerManager.ensureUniqueConstraintIndexes`), fusing the logical claim with a physical structure. In the layered model the two are separated: the constraint is logical, and any covering index is an explicit, independent **basis-layer** declaration (a materialized view with `order by`). With no such structure the constraint is still correct — enforced by the commit-time `DeltaExecutor` scan — just not O(log n). Whether to add the covering index is a physical-tuning decision made against the basis, never a side effect of the logical declaration.
+
 ## Validation: lens laws as the completeness check
 
 Because the logical spec and the lens body are authored (or generated) independently, the lens layer **proves they agree**. Each constraint in the logical spec plays one of two roles, decided by whether the lens body already guarantees it:
@@ -166,6 +168,7 @@ The lens layer introduces no new runtime: at execution time a logical table is a
 | Topic | Quereus | Rationale |
 |---|---|---|
 | Logical-table indexes | Not allowed. | Indexes are basis-layer materialized views; logical is embodiment-free. |
+| Auto-index for `unique` / PK | Never. | The legacy eager BTree (`ensureUniqueConstraintIndexes`) is replaced: the constraint is logical, any covering index is a separate basis-layer declaration. |
 | `with check option` on a lens | Not a separate feature. | Constraints are attached from the logical spec and enforced at the lens boundary; predicates remain read-time filters. |
 | Separate lens algebra | None. | Relational algebra is the lens vocabulary in both directions. |
 | Deployment orchestration | Out of scope. | Quereus exposes generate / diff / hash / emit-DDL ingredients; the application assembles the deployment. |

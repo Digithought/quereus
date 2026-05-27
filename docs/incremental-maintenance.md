@@ -1,12 +1,14 @@
 # Incremental Maintenance
 
 Quereus exposes a single, reusable change-driven kernel that runs at every COMMIT.
-Assertions are its first consumer; keyed derived relations — materialized views
-and covering structures (indexes / unique-constraint enforcement) — plus reactive
-signals and triggers will plug into the same surface without reinventing change
-capture or binding-key analysis. The [lens layer](lens.md) routes set-level
-constraint enforcement to this kernel when no covering structure is present, and
-maintains covering structures through it when one is.
+Two consumers are live today: **assertions** (pre-commit, can roll the commit
+back) and **`Database.watch` reactive signals** (post-commit, fire-and-forget).
+Still to come — keyed derived relations: materialized views and covering
+structures (indexes / unique-constraint enforcement), plus triggers — all of
+which plug into the same surface without reinventing change capture or
+binding-key analysis. The [lens layer](lens.md) routes set-level constraint
+enforcement to this kernel when no covering structure is present, and maintains
+covering structures through it when one is.
 
 ## Pipeline at a glance
 
@@ -27,11 +29,11 @@ DML emitter ──recordInsert/Update/Delete(row, pkIndices)──► Transactio
                             ┌─────────────────────┬──────────┴────────┐
                             │                     │                   │
                             ▼                     ▼                   ▼
-                  AssertionEvaluator     [future] MV /         [future] signals
-                  (residual scheduler    covering-structure
-                   per tuple)             refresh
-                                         (delete-then-upsert
-                                          per binding tuple)
+                  AssertionEvaluator     Database.watch       [future] MV /
+                  (residual scheduler    (post-commit          covering-structure
+                   per tuple,             reactive signals)     refresh
+                   pre-commit)                                  (delete-then-upsert
+                                                                 per binding tuple)
 ```
 
 The kernel is decoupled from any specific consumer. A `DeltaSubscription`
@@ -87,8 +89,12 @@ binding tuples exceeds `tuning.deltaPerRowFallbackRatio × estimatedRows(base)`,
 the kernel demotes that relation to global re-evaluation.
 
 The kernel runs only at top-level COMMIT — savepoints are seen indirectly via
-the merged change log. Exceptions from `apply` propagate unchanged, causing
-the COMMIT path to roll back.
+the merged change log. How an `apply` exception is handled is the consumer's
+choice, not the kernel's: the kernel surfaces it unchanged. The assertion
+consumer registers its executor on the pre-commit path, so a thrown violation
+propagates and rolls the COMMIT back; the `Database.watch` consumer runs its
+executor *after* commit and swallows handler errors (logged, never fatal) —
+the transaction has already durably committed by then.
 
 ## BindingMode
 
@@ -141,11 +147,34 @@ On first reference to an assertion at COMMIT time:
 `DROP ASSERTION` or schema changes invalidate the cached entry — including
 dispatch handle, capture demand, and residual schedulers.
 
+## Second consumer: Database.watch
+
+`Database.watch(scope, handler)` registers a post-commit reactive callback
+against a public, JSON-serializable `ChangeScope` (see
+[Change-scope Documentation](change-scope.md)). The watcher manager
+(`src/core/database-watchers.ts`) owns its own `DeltaExecutor` and is the
+reference example of the plug-in pattern below:
+
+- `subscriptionFromChangeScope` (in `delta-executor.ts`) translates the public
+  `ChangeScope` into a `DeltaSubscription`, mapping each watch to a
+  `BindingMode` (`full` → `global`, `rows`/`rowsByGroup` → `row`/`group` with
+  literal-value narrowing, `groups` → `group`) and registering capture demand
+  for any non-PK key/group columns.
+- The manager runs its executor **after** commit, so a throwing handler is
+  logged and dropped rather than rolling anything back.
+- Schema changes (`table_removed` / `table_modified`) invalidate affected
+  subscriptions; `unsubscribe()` releases the kernel registration and all
+  capture-spec demand.
+
+Watchers prove the kernel is genuinely consumer-neutral: same binding
+extraction, same capture demand, same cost fallback — only the commit-phase
+placement and error policy differ from assertions.
+
 ## Plug-in pattern for future consumers
 
-A new consumer follows the same shape (today the kernel is owned by the
-`AssertionEvaluator`; the keyed-derived-relation ticket will surface a shared
-registration path on `Database` — see
+A new consumer follows the same shape — `Database.watch` (above) is the live
+template; the keyed-derived-relation ticket will surface a shared registration
+path on `Database` (see
 [`tickets/backlog/known/updatable-views.md`](../tickets/backlog/known/updatable-views.md)):
 
 ```ts
@@ -197,8 +226,9 @@ const dispose = deltaExecutor.register({
 ## Cross-references
 
 - Optimizer surface: [Optimizer § Binding-aware Delta Planning](optimizer.md#binding-aware-delta-planning-reusable)
+- Public reactive API: [Change-scope Documentation](change-scope.md)
 - Layered schemas / lenses: [Lenses and Layered Schemas](lens.md)
-- Source: `src/planner/analysis/binding-extractor.ts`, `src/runtime/delta-executor.ts`, `src/core/database-transaction.ts`, `src/core/database-assertions.ts`
+- Source: `src/planner/analysis/binding-extractor.ts`, `src/runtime/delta-executor.ts`, `src/core/database-transaction.ts`, `src/core/database-assertions.ts`, `src/core/database-watchers.ts`
 - Keyed derived relations / covering structures (planned consumer): `tickets/backlog/known/updatable-views.md`
 - Cross-process reactive transport: out of scope here; see the sync packages
   under `packages/quereus-sync-*`.

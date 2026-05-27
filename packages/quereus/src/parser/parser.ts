@@ -2684,7 +2684,7 @@ export class Parser {
 	}
 
 	/**
-	 * Parse ANALYZE statement: ANALYZE [schema.]table | ANALYZE
+	 * Parse ANALYZE statement: ANALYZE [schema.]table | ANALYZE schema.* | ANALYZE
 	 */
 	private analyzeStatement(startToken: Token): AST.AnalyzeStmt {
 		// ANALYZE with no arguments → analyze all tables
@@ -2692,9 +2692,13 @@ export class Parser {
 			return { type: 'analyze', loc: _createLoc(startToken, this.previous()) };
 		}
 
-		// Parse optional schema.table or just table
+		// Parse optional schema.table, schema.* (all tables in schema), or just table
 		const name1 = this.consumeIdentifier([], "Expected table name after ANALYZE.");
 		if (this.match(TokenType.DOT)) {
+			// ANALYZE schema.* → analyze every table in the schema (schema-only shape)
+			if (this.match(TokenType.ASTERISK)) {
+				return { type: 'analyze', schemaName: name1, loc: _createLoc(startToken, this.previous()) };
+			}
 			const name2 = this.consumeIdentifier([], "Expected table name after schema qualifier.");
 			return { type: 'analyze', schemaName: name1, tableName: name2, loc: _createLoc(startToken, this.previous()) };
 		}
