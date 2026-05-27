@@ -304,6 +304,28 @@ COMMIT;
 SELECT count(*) FROM Child;
 → [{ "count(*)": 2 }]
 
+-- UPDATE shares the deferred-queue call site, so NEW is coerced there too.
+-- p3 stored from a numeric literal; the matching deferred-CHECK UPDATE below
+-- uses a numeric literal as well (datetime coercion is not canonical across
+-- input representations — see ticket datetime-coercion-not-canonical — so this
+-- stays within the coerced-vs-coerced scope this fix actually addresses).
+INSERT INTO Parent VALUES ('p3', 1500000000000);
+COMMIT;
+
+BEGIN;
+UPDATE Child SET ParentTS = 1500000000000 WHERE Id = 'c1';
+COMMIT;
+-- run
+
+-- Negative UPDATE: no matching parent → deferred CHECK still fires at commit
+BEGIN;
+UPDATE Child SET ParentTS = 1900000000000 WHERE Id = 'c1';
+COMMIT;
+-- error: CHECK constraint failed: ParentExists
+
+SELECT count(*) FROM Child;
+→ [{ "count(*)": 2 }]
+
 DROP TABLE Child;
 DROP TABLE Parent;
 -- run
