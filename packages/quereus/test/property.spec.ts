@@ -4,11 +4,18 @@ import * as fc from 'fast-check';
 import { Database } from '../src/core/database.js';
 import { compareSqlValues } from '../src/util/comparison.js';
 import { safeJsonStringify } from '../src/util/serialization.js';
-import type { SqlValue } from '../src/common/types.js';
+import type { Row, SqlValue } from '../src/common/types.js';
 import { Parser } from '../src/parser/parser.js';
 import { QuereusError } from '../src/common/errors.js';
 import { assertTableSchemaEqual, assertProbeEquivalent } from './util/schema-equivalence.js';
 import { keysOf } from '../src/planner/util/fd-utils.js';
+import { type PlanNode, type RelationalPlanNode, isRelationalNode } from '../src/planner/nodes/plan-node.js';
+import { EmissionContext } from '../src/runtime/emission-context.js';
+import { emitPlanNode } from '../src/runtime/emitters.js';
+import { Scheduler } from '../src/runtime/scheduler.js';
+import { createStrictRowContextMap, wrapTableContextsStrict } from '../src/runtime/strict-fork.js';
+import { isAsyncIterable } from '../src/runtime/utils.js';
+import type { RuntimeContext } from '../src/runtime/types.js';
 
 describe('Property-Based Tests', () => {
 	let db: Database;
@@ -1527,8 +1534,13 @@ describe('Property-Based Tests', () => {
 	//
 	// Soundness, not completeness: a *missing* key is fine; a *false* key is not.
 	//
-	// Tier 1 (here) asserts at the result node for every shape. Tier 2 (isolated
-	// per-node materialization) is deferred to `backlog/key-soundness-harness-tier2`.
+	// Tier 1 asserts at the top result node for every shape. Tier 2 walks every
+	// relational node in the *optimized* plan tree, materializes each node in
+	// isolation (emit + Scheduler.run), and runs the same assertions on that
+	// node's own rows — pinning the soundness of each operator's getType() /
+	// computePhysical independent of whether a shape surfaces it at the top.
+	// Tier 2 is best-effort: correlated / parameterized inner nodes cannot emit
+	// standalone, so emission/run failures *skip* rather than fail the test.
 	describe('Key Soundness', () => {
 		/** Stable, type-aware signature for a tuple of SqlValues. */
 		function tupleSig(values: SqlValue[]): string {
@@ -1540,9 +1552,51 @@ describe('Property-Based Tests', () => {
 		}
 
 		/**
-		 * Throws on the first contradiction between the claimed uniqueness facts
-		 * and the actual rows. Shared by the property below and the negative
-		 * self-test that proves it fails loudly.
+		 * Positional core of the soundness check: throws on the first
+		 * contradiction between the claimed uniqueness facts and the actual rows,
+		 * where each row is a tuple of values ordered to match the node's columns
+		 * and each key is a list of column indices. Shared by Tier 1 (result node,
+		 * via the record adapter below) and Tier 2 (isolated per-node rows).
+		 */
+		function checkKeysAndSet(
+			label: string,
+			keys: readonly (readonly number[])[],
+			isSet: boolean,
+			rows: readonly SqlValue[][],
+		): void {
+			for (const key of keys) {
+				if (key.length === 0) {
+					// The empty key claims at-most-one-row.
+					if (rows.length > 1) {
+						throw new Error(`over-claim: empty key claims ≤1 row but ${label} returned ${rows.length}`);
+					}
+					continue;
+				}
+				const seen = new Set<string>();
+				for (const row of rows) {
+					const sig = tupleSig(key.map(i => row[i]));
+					if (seen.has(sig)) {
+						throw new Error(`over-claim: key [${key}] is not unique on ${label} (duplicate ${sig})`);
+					}
+					seen.add(sig);
+				}
+			}
+			if (isSet) {
+				const seen = new Set<string>();
+				for (const row of rows) {
+					const sig = tupleSig(row);
+					if (seen.has(sig)) {
+						throw new Error(`over-claim: isSet=true but full rows are not distinct on ${label}`);
+					}
+					seen.add(sig);
+				}
+			}
+		}
+
+		/**
+		 * Record adapter over {@link checkKeysAndSet}: projects each row-object to
+		 * a positional tuple in `cols` order. Shared by the Tier-1 property below
+		 * and the negative self-test that proves the check fails loudly.
 		 */
 		function checkNoOverClaim(
 			q: string,
@@ -1551,33 +1605,114 @@ describe('Property-Based Tests', () => {
 			cols: readonly string[],
 			rows: readonly Record<string, SqlValue>[],
 		): void {
-			for (const key of keys) {
-				if (key.length === 0) {
-					// The empty key claims at-most-one-row.
-					if (rows.length > 1) {
-						throw new Error(`over-claim: empty key claims ≤1 row but \`${q}\` returned ${rows.length}`);
-					}
-					continue;
-				}
-				const seen = new Set<string>();
-				for (const row of rows) {
-					const sig = tupleSig(key.map(i => row[cols[i]]));
-					if (seen.has(sig)) {
-						throw new Error(`over-claim: key [${key}] is not unique on \`${q}\` (duplicate ${sig})`);
-					}
-					seen.add(sig);
-				}
+			const positional = rows.map(row => cols.map(c => row[c]));
+			checkKeysAndSet(`\`${q}\``, keys, isSet, positional);
+		}
+
+		// Query shapes spanning the node zoo, shared by both tiers. Output column
+		// names are kept distinct so the row-object lookup by name is unambiguous.
+		const queries = [
+			'select a, b, c from ta',                                            // bare scan (set on [a])
+			'select b, c from ta',                                               // projection drops the key (bag)
+			'select b from ta',                                                  // single-column key-dropping projection
+			'select distinct b, c from ta',                                      // DISTINCT (set on all cols)
+			'select distinct b from ta',
+			'select b, count(*) as n from ta group by b',                        // GROUP BY (key on group col)
+			'select a, b, c from ta group by a, b, c',                           // all-columns GROUP BY
+			'select b, c from ta group by b, c',
+			'select a, b, c from ta order by b',                                 // ORDER BY
+			'select a, b, c from ta order by b limit 3',                         // LIMIT
+			'select a, b, c from ta union all select d, e, e from tb',           // UNION ALL (bag)
+			'select a, b, c from ta union select d, e, e from tb',               // UNION (set)
+			'select b, c from ta intersect select e, e from tb',                 // INTERSECT (set)
+			'select b, c from ta except select e, e from tb',                    // EXCEPT (set)
+			'select ta.a as ja, tb.d as jd, ta.b as jb from ta join tb on ta.b = tb.d', // inner join
+			'select ta.a as la, tb.d as ld from ta left join tb on ta.b = tb.d', // left join
+			'select ta.a as xa, tb.d as xd, ta.c as xc from ta cross join tb',   // cross join
+			'select x, y from (select distinct b as x, c as y from ta)',         // projection over inner DISTINCT
+			'select distinct x, y from (select distinct b as x, c as y from ta)',// nested DISTINCT
+		];
+
+		const rowArbA = fc.record({
+			a: fc.integer({ min: 1, max: 8 }),
+			b: fc.integer({ min: 1, max: 3 }),
+			c: fc.integer({ min: 1, max: 3 }),
+		});
+		const rowArbB = fc.record({
+			d: fc.integer({ min: 1, max: 8 }),
+			e: fc.integer({ min: 1, max: 3 }),
+		});
+
+		/** Create the two source tables (fresh `db` per `beforeEach`). */
+		async function createTables(): Promise<void> {
+			await db.exec('create table ta (a integer primary key, b integer, c integer) using memory');
+			await db.exec('create table tb (d integer primary key, e integer) using memory');
+		}
+
+		/** Replace table contents with the generated rows, deduped by PK. */
+		async function seedTables(rowsA: { a: number; b: number; c: number }[], rowsB: { d: number; e: number }[]): Promise<void> {
+			await db.exec('delete from ta');
+			await db.exec('delete from tb');
+			const seenA = new Set<number>();
+			for (const r of rowsA) {
+				if (seenA.has(r.a)) continue;
+				seenA.add(r.a);
+				await db.exec(`insert into ta values (${r.a}, ${r.b}, ${r.c})`);
 			}
-			if (isSet) {
-				const seen = new Set<string>();
-				for (const row of rows) {
-					const sig = tupleSig(cols.map(c => row[c]));
-					if (seen.has(sig)) {
-						throw new Error(`over-claim: isSet=true but full rows are not distinct on \`${q}\``);
-					}
-					seen.add(sig);
-				}
+			const seenB = new Set<number>();
+			for (const r of rowsB) {
+				if (seenB.has(r.d)) continue;
+				seenB.add(r.d);
+				await db.exec(`insert into tb values (${r.d}, ${r.e})`);
 			}
+		}
+
+		/** Collect every relational node in a plan tree, deduped by node id. */
+		function collectRelationalNodes(rootNode: PlanNode): RelationalPlanNode[] {
+			const out: RelationalPlanNode[] = [];
+			const seen = new Set<string>();
+			const stack: PlanNode[] = [rootNode];
+			while (stack.length > 0) {
+				const n = stack.pop()!;
+				if (seen.has(n.id)) continue;
+				seen.add(n.id);
+				if (isRelationalNode(n)) out.push(n);
+				for (const child of n.getChildren()) stack.push(child);
+			}
+			return out;
+		}
+
+		/**
+		 * Emit + run a single relational node in isolation and collect its rows as
+		 * positional tuples (column order matches `node.getType().columns`). Mirrors
+		 * `scheduler_program` (func/builtins/explain.ts) and the runtime-context
+		 * construction in `Database._executeSingleStatement`. Throws if the node
+		 * cannot emit/run standalone (e.g. correlated / parameterized) — Tier 2
+		 * treats that as a skip.
+		 */
+		async function materializeNode(node: RelationalPlanNode): Promise<SqlValue[][]> {
+			const emissionContext = new EmissionContext(db);
+			const rootInstruction = emitPlanNode(node, emissionContext);
+			const scheduler = new Scheduler(rootInstruction);
+			const runtimeCtx: RuntimeContext = {
+				db,
+				stmt: undefined,
+				params: {},
+				context: createStrictRowContextMap(),
+				tableContexts: wrapTableContextsStrict(new Map()),
+				tracer: undefined,
+				enableMetrics: false,
+			};
+			const output = scheduler.run(runtimeCtx);
+			const resolved = output instanceof Promise ? await output : output;
+			if (!isAsyncIterable(resolved)) {
+				throw new Error('node did not produce a row stream');
+			}
+			const rows: SqlValue[][] = [];
+			for await (const row of resolved as AsyncIterable<Row>) {
+				rows.push(row as SqlValue[]);
+			}
+			return rows;
 		}
 
 		it('the soundness check fails loudly on an injected over-claim', () => {
@@ -1593,63 +1728,14 @@ describe('Property-Based Tests', () => {
 		});
 
 		it('keysOf / isSet never over-claim on materialized result rows', async () => {
-			await db.exec('create table ta (a integer primary key, b integer, c integer) using memory');
-			await db.exec('create table tb (d integer primary key, e integer) using memory');
-
-			// Query shapes spanning the node zoo. Output column names are kept
-			// distinct so the row-object lookup by name is unambiguous.
-			const queries = [
-				'select a, b, c from ta',                                            // bare scan (set on [a])
-				'select b, c from ta',                                               // projection drops the key (bag)
-				'select b from ta',                                                  // single-column key-dropping projection
-				'select distinct b, c from ta',                                      // DISTINCT (set on all cols)
-				'select distinct b from ta',
-				'select b, count(*) as n from ta group by b',                        // GROUP BY (key on group col)
-				'select a, b, c from ta group by a, b, c',                           // all-columns GROUP BY
-				'select b, c from ta group by b, c',
-				'select a, b, c from ta order by b',                                 // ORDER BY
-				'select a, b, c from ta order by b limit 3',                         // LIMIT
-				'select a, b, c from ta union all select d, e, e from tb',           // UNION ALL (bag)
-				'select a, b, c from ta union select d, e, e from tb',               // UNION (set)
-				'select b, c from ta intersect select e, e from tb',                 // INTERSECT (set)
-				'select b, c from ta except select e, e from tb',                    // EXCEPT (set)
-				'select ta.a as ja, tb.d as jd, ta.b as jb from ta join tb on ta.b = tb.d', // inner join
-				'select ta.a as la, tb.d as ld from ta left join tb on ta.b = tb.d', // left join
-				'select ta.a as xa, tb.d as xd, ta.c as xc from ta cross join tb',   // cross join
-				'select x, y from (select distinct b as x, c as y from ta)',         // projection over inner DISTINCT
-				'select distinct x, y from (select distinct b as x, c as y from ta)',// nested DISTINCT
-			];
-
-			const rowArbA = fc.record({
-				a: fc.integer({ min: 1, max: 8 }),
-				b: fc.integer({ min: 1, max: 3 }),
-				c: fc.integer({ min: 1, max: 3 }),
-			});
-			const rowArbB = fc.record({
-				d: fc.integer({ min: 1, max: 8 }),
-				e: fc.integer({ min: 1, max: 3 }),
-			});
+			await createTables();
 
 			await fc.assert(fc.asyncProperty(
 				fc.array(rowArbA, { minLength: 0, maxLength: 12 }),
 				fc.array(rowArbB, { minLength: 0, maxLength: 12 }),
 				fc.constantFrom(...queries),
 				async (rowsA, rowsB, q) => {
-					await db.exec('delete from ta');
-					await db.exec('delete from tb');
-					// Dedup by PK before insert (a/d are PRIMARY KEY).
-					const seenA = new Set<number>();
-					for (const r of rowsA) {
-						if (seenA.has(r.a)) continue;
-						seenA.add(r.a);
-						await db.exec(`insert into ta values (${r.a}, ${r.b}, ${r.c})`);
-					}
-					const seenB = new Set<number>();
-					for (const r of rowsB) {
-						if (seenB.has(r.d)) continue;
-						seenB.add(r.d);
-						await db.exec(`insert into tb values (${r.d}, ${r.e})`);
-					}
+					await seedTables(rowsA, rowsB);
 
 					const block = db.getPlan(q) as any;
 					const root = block.getRelations?.()[0];
@@ -1664,6 +1750,54 @@ describe('Property-Based Tests', () => {
 					checkNoOverClaim(q, keys, isSet, cols, rows);
 				},
 			), { numRuns: 50 });
+		});
+
+		// Tier 2: walk every relational node in the optimized tree and assert the
+		// invariants on each node's own materialized rows. Best-effort — nodes that
+		// cannot emit/run standalone (correlated / parameterized inner nodes) are
+		// skipped. A skip never fails the test; only an actual over-claim does.
+		it('keysOf / isSet never over-claim on any isolated inner node (Tier 2)', async () => {
+			await createTables();
+
+			let checkedNodes = 0;
+			let skippedNodes = 0;
+
+			await fc.assert(fc.asyncProperty(
+				fc.array(rowArbA, { minLength: 0, maxLength: 12 }),
+				fc.array(rowArbB, { minLength: 0, maxLength: 12 }),
+				fc.constantFrom(...queries),
+				async (rowsA, rowsB, q) => {
+					await seedTables(rowsA, rowsB);
+
+					const block = db.getPlan(q) as unknown as PlanNode;
+					const nodes = collectRelationalNodes(block);
+
+					for (const node of nodes) {
+						const type = node.getType();
+						const keys = keysOf(node);
+						const isSet = type.isSet;
+						// Nothing claimed ⇒ nothing to contradict; skip the isolated run.
+						if (keys.length === 0 && !isSet) continue;
+
+						let rows: SqlValue[][];
+						try {
+							rows = await materializeNode(node);
+						} catch {
+							// Correlated / parameterized inner nodes won't emit/run
+							// standalone — this tier is a bonus, not a gate.
+							skippedNodes++;
+							continue;
+						}
+
+						checkedNodes++;
+						checkKeysAndSet(`${node.nodeType}[${node.id}] of \`${q}\``, keys, isSet, rows);
+					}
+				},
+			), { numRuns: 50 });
+
+			// Sanity: across the shape zoo at least some inner nodes must have
+			// materialized, or the tier is silently a no-op.
+			expect(checkedNodes, `Tier 2 checked no inner nodes (skipped ${skippedNodes})`).to.be.greaterThan(0);
 		});
 	});
 
