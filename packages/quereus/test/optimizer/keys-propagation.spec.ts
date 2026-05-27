@@ -446,10 +446,19 @@ describe('Key propagation and estimatedRows reduction', () => {
 			expect(hasSingletonFd(phys!.fds, 2), 'expected singleton ∅→all FD for LIMIT 1 OFFSET 1').to.equal(true);
 		});
 
-		it('DISTINCT eliminated over a LIMIT 1 source', async () => {
+		it('DISTINCT eliminated when its source is a ≤1-row LIMIT', async () => {
 			await setup();
-			const types = await nodeTypesOf('SELECT DISTINCT * FROM t LIMIT 1');
-			expect(types, 'DISTINCT over a ≤1-row LIMIT source must be eliminated').to.not.include('Distinct');
+			// `select v from t` drops the PK ⇒ a bag. Wrapping it in LIMIT 1 makes the
+			// subquery ≤1-row, so the singleton ∅→all FD lets the outer DISTINCT drop.
+			// The DISTINCT must sit *above* the LIMIT for the FD to drive elimination
+			// (`select distinct * from t limit 1` puts Distinct *below* Limit, where the
+			// FD is irrelevant — and there it's eliminated only because t has a PK).
+			const withLimit = await nodeTypesOf('SELECT DISTINCT * FROM (SELECT v FROM t LIMIT 1) s');
+			expect(withLimit, 'DISTINCT over a ≤1-row LIMIT subquery must be eliminated').to.not.include('Distinct');
+			// Control: without the LIMIT the subquery is a bag, so DISTINCT must remain —
+			// proving the singleton FD (not some unrelated rewrite) caused the drop above.
+			const noLimit = await nodeTypesOf('SELECT DISTINCT * FROM (SELECT v FROM t) s');
+			expect(noLimit, 'DISTINCT over a non-singleton bag must be retained').to.include('Distinct');
 		});
 
 		it('CROSS JOIN with a LIMIT 1 side preserves the other side keys', async () => {
