@@ -73,13 +73,15 @@ describe('analyzeRowSpecific: FD-closure-aware classification', () => {
 			expect(findFor(result, 'main.t').cls).to.equal('global');
 		});
 
-		it('classifies equality on an FD-derived key (no declared key) as row', async () => {
-			// No PRIMARY KEY / UNIQUE, so `relType.keys` is empty — the old
-			// declared-keys-only path classifies this 'global'. `CHECK (a = b)`
-			// puts FDs {a}→{b} and {b}→{a} on the reference's physical.fds, so
-			// `keysOf` derives candidate keys {a} and {b}. Equality on `a` then
-			// covers an FD-derived key ⇒ 'row'. This is the candidate-key sourcing
-			// gap the ticket closes (provable only through physical.fds).
+		it('classifies equality on an FD-derived key as row', async () => {
+			// Quereus synthesizes an implicit all-columns PK for a no-PK table, so
+			// `relType.keys` already carries {a,b} and the classification was 'row'
+			// before candidate-key sourcing. `CHECK (a = b)` additionally puts FDs
+			// {a}→{b} and {b}→{a} on the reference's physical.fds, so `keysOf`
+			// derives the tighter candidate keys {a} and {b}. Equality on `a`
+			// covers them ⇒ 'row'. Because every FD-derived key is a superkey,
+			// this path can never flip global→row — it refines the *chosen* key
+			// (see binding-extractor.spec.ts); here we guard classification stability.
 			await db.exec("CREATE TABLE t (a INTEGER, b INTEGER, CHECK (a = b)) USING memory");
 			const result = analyze(db, 'select * from t where a = 5');
 			expect(findFor(result, 'main.t').cls).to.equal('row');
@@ -88,9 +90,11 @@ describe('analyzeRowSpecific: FD-closure-aware classification', () => {
 		it('classifies a ≤1-row reference (empty key via singleton FD) as row', async () => {
 			// `CHECK (a = 1 AND b = 2)` pins every column to a constant, so the
 			// reference carries the `∅ → all_cols` singleton FD ⇒ `keysOf` returns
-			// the empty key `[]` (≤1-row). With no equality constraints at all, the
-			// empty key is trivially covered ⇒ 'row' (old path: 'global', since
-			// declared keys are empty).
+			// the empty key `[]` (≤1-row), which subsumes the implicit all-columns
+			// PK. The empty key is trivially covered ⇒ 'row'. (The implicit all-cols
+			// PK is also covered via ∅→all_cols closure, so the pre-change path
+			// classified this 'row' too; this guards that the candidate-key
+			// migration preserves the classification.)
 			await db.exec("CREATE TABLE t (a INTEGER, b INTEGER, CHECK (a = 1 AND b = 2)) USING memory");
 			const result = analyze(db, 'select * from t');
 			expect(findFor(result, 'main.t').cls).to.equal('row');

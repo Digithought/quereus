@@ -114,10 +114,15 @@ type BindingMode =
   else the lex-min covered key (by length then by joined indices). Candidate
   keys come from the unified `keysOf` surface (`planner/util/fd-utils.ts`) —
   declared `RelationType.keys`, FD-derived keys, the `∅ → all_cols` ≤1-row
-  empty key `[]`, and the all-columns set key — not declared keys alone. A
-  reference whose uniqueness is provable only through its `physical.fds` (e.g.
-  an FD-derived key or a singleton ≤1-row FD on a no-PK table) therefore
-  classifies `'row'` rather than `'global'`. Coverage then expands the
+  empty key `[]`, and the all-columns set key — not declared keys alone. This
+  lets the binder pick a *tighter* key than the declared one: an FD-derived key
+  (e.g. `{a}` from `CHECK (a = b)`) subsumes the all-columns key, so a covering
+  equality binds on the single column instead of the full row. (Note: because
+  every base table carries Quereus' implicit all-columns PK, and every
+  FD-derived key is a superkey that is covered exactly when the all-columns key
+  is, this sourcing does **not** flip the `'row'`/`'global'` classification on
+  the equality path — it refines the chosen key and normalizes ≤1-row
+  references to the empty key, below.) Coverage then expands the
   equality-covered column set under FD closure (local FDs + FK→PK /
   equality-derived ECs) and checks each candidate key against it.
   - An **empty `keyColumns`** (`{ kind: 'row'; keyColumns: [] }`) means

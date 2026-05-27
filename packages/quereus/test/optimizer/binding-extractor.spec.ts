@@ -77,9 +77,11 @@ describe('extractBindings: BindingMode per TableReference', () => {
 
 	it("emits 'row' with empty keyColumns for a ≤1-row reference (empty key)", async () => {
 		// `CHECK (a = 1 AND b = 2)` pins every column, so the reference carries the
-		// `∅ → all_cols` singleton FD and `keysOf` returns the empty key `[]`.
-		// extractBindings must emit `{ kind: 'row', keyColumns: [] }` (today: the
-		// old declared-keys-only path would yield 'global').
+		// `∅ → all_cols` singleton FD and `keysOf` returns the empty key `[]` (which
+		// subsumes the implicit all-columns PK). extractBindings must emit
+		// `{ kind: 'row', keyColumns: [] }`. (The pre-change declared-keys path also
+		// classified this 'row', but bound on the all-columns key `[0, 1]`; the
+		// empty key is the new ≤1-row normalization.)
 		await db.exec("CREATE TABLE t (a INTEGER, b INTEGER, CHECK (a = 1 AND b = 2)) USING memory");
 		const result = analyze(db, 'select * from t');
 		const entry = findFor(result, 'main.t');
@@ -87,15 +89,19 @@ describe('extractBindings: BindingMode per TableReference', () => {
 		expect((entry.mode as { kind: 'row'; keyColumns: number[] }).keyColumns).to.deep.equal([]);
 	});
 
-	it("emits 'row' on an FD-derived key (no declared key) via CHECK-induced FDs", async () => {
-		// No PK/UNIQUE ⇒ empty declared keys. CHECK (a = b) makes both columns
-		// FD-derived keys, so equality on `a` covers a key ⇒ 'row'.
+	it("emits 'row' on an FD-derived key and chooses the tighter (sub-PK) key", async () => {
+		// A no-PK table still has Quereus' implicit all-columns PK ({a,b}), so the
+		// classification was already 'row' before candidate-key sourcing. What the
+		// keysOf migration changes is the *chosen* key: CHECK (a = b) makes both
+		// {a} and {b} FD-derived (superkey) candidate keys, which subsume the
+		// implicit all-columns key. Equality on `a` then binds on the single
+		// column `[0]` instead of the full `[0, 1]` — a strictly tighter residual.
 		await db.exec("CREATE TABLE t (a INTEGER, b INTEGER, CHECK (a = b)) USING memory");
 		const result = analyze(db, 'select * from t where a = 5');
 		const entry = findFor(result, 'main.t');
 		expect(entry.mode!.kind).to.equal('row');
 		const cols = (entry.mode as { kind: 'row'; keyColumns: number[] }).keyColumns;
-		expect(cols.length).to.be.greaterThan(0);
+		expect(cols).to.deep.equal([0]);
 	});
 
 	it("emits 'group' with groupColumns when GROUP BY pk covers PK", async () => {
