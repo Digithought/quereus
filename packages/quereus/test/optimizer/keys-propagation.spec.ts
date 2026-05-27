@@ -297,6 +297,118 @@ describe('Key propagation and estimatedRows reduction', () => {
 				const out = combineJoinKeys(leftKeys, rightKeys, 'full', 2, [{ left: 0, right: 0 }]);
 				expect(out).to.deep.equal([]);
 			});
+
+			describe('empty-key (≤1-row) coverage', () => {
+				const emptyKey: ColRef[] = [];
+
+				it('INNER with ≤1-row left (empty key) and no equiPairs → right keys survive (shifted)', () => {
+					// left is ≤1-row, so it caps the right side at one matching row per
+					// left row; right's key survives even without equi-pairs.
+					const out = combineJoinKeys([emptyKey], [[{ index: 0 }]], 'inner', 1);
+					expect(indices(out)).to.deep.equal([[1]]);
+				});
+
+				it('CROSS with ≤1-row right (empty key) and no equiPairs → left keys survive', () => {
+					const out = combineJoinKeys([[{ index: 0 }]], [emptyKey], 'cross', 2);
+					expect(indices(out)).to.deep.equal([[0]]);
+				});
+
+				it('INNER both ≤1-row → output advertises the empty key (deduped)', () => {
+					const out = combineJoinKeys([emptyKey], [emptyKey], 'inner', 1);
+					expect(indices(out)).to.deep.equal([[]]);
+				});
+
+				it('LEFT with ≤1-row right (empty key) and no equiPairs → left keys survive', () => {
+					// The early-return-on-empty-equiPairs guard is gone: a ≤1-row right
+					// covers regardless of equi-pairs.
+					const out = combineJoinKeys([[{ index: 0 }]], [emptyKey], 'left', 2);
+					expect(indices(out)).to.deep.equal([[0]]);
+				});
+
+				it('LEFT both ≤1-row → output advertises the empty key', () => {
+					const out = combineJoinKeys([emptyKey], [emptyKey], 'left', 1);
+					expect(indices(out)).to.deep.equal([[]]);
+				});
+
+				it('RIGHT with ≤1-row left (empty key) and no equiPairs → right keys survive (shifted)', () => {
+					const out = combineJoinKeys([emptyKey], [[{ index: 0 }]], 'right', 2);
+					expect(indices(out)).to.deep.equal([[2]]);
+				});
+
+				it('SEMI with ≤1-row left → empty key passes through', () => {
+					const out = combineJoinKeys([emptyKey], [], 'semi', 1, [{ left: 0, right: 0 }]);
+					expect(indices(out)).to.deep.equal([[]]);
+				});
+
+				it('FULL both ≤1-row → still [] (two non-matching ≤1-row sides → two rows)', () => {
+					const out = combineJoinKeys([emptyKey], [emptyKey], 'full', 1, [{ left: 0, right: 0 }]);
+					expect(out).to.deep.equal([]);
+				});
+			});
+		});
+	});
+
+	describe('Empty-key (≤1-row) join coverage', () => {
+		type Fd = { determinants: number[]; dependents: number[] };
+
+		async function joinPhysicalAny(sql: string): Promise<{ fds?: Fd[]; estimatedRows?: number } | undefined> {
+			const rows: Array<{ op: string; physical: string | null }> = [];
+			for await (const r of db.eval('SELECT op, physical FROM query_plan(?)', [sql])) {
+				rows.push(r as unknown as { op: string; physical: string | null });
+			}
+			const row = rows.find(r => r.op.includes('JOIN'));
+			if (!row?.physical) return undefined;
+			return JSON.parse(row.physical);
+		}
+
+		/** True iff some FD is the singleton `∅ → all_cols` (the ≤1-row marker). */
+		function hasSingletonFd(fds: Fd[] | undefined, totalCols: number): boolean {
+			if (!fds) return false;
+			return fds.some(fd => fd.determinants.length === 0 && fd.dependents.length >= totalCols);
+		}
+
+		async function nodeTypesOf(sql: string): Promise<string> {
+			const rows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval('SELECT json_group_array(node_type) AS types FROM query_plan(?)', [sql])) {
+				rows.push(r as Record<string, unknown>);
+			}
+			return String(rows[0].types as unknown as string);
+		}
+
+		it('CROSS JOIN with a ≤1-row scalar-aggregate side preserves the other side keys', async () => {
+			await setup();
+			// (select count(*) ...) is ≤1-row (scalar aggregate, no GROUP BY ⇒ ∅→all FD).
+			// t's PK survives on the 3-col join output as a key-encoding FD.
+			const phys = await joinPhysicalAny('SELECT * FROM t CROSS JOIN (SELECT count(*) AS c FROM t) agg');
+			expect(phys, 'expected join physical').to.not.equal(undefined);
+			expect(hasKeyFd(phys!.fds, 3), 't PK should survive as a key-encoding FD').to.equal(true);
+		});
+
+		it('CROSS JOIN with a PK-constant-bound ≤1-row side preserves the other side keys', async () => {
+			await setup();
+			await db.exec("CREATE TABLE w (wid INTEGER PRIMARY KEY, n TEXT) USING memory");
+			await db.exec("INSERT INTO w VALUES (1,'x'),(2,'y')");
+			// (select * from w where wid = 1) is ≤1-row (full-PK equality ⇒ ∅→all closure).
+			const phys = await joinPhysicalAny('SELECT * FROM t CROSS JOIN (SELECT * FROM w WHERE wid = 1) s');
+			expect(phys, 'expected join physical').to.not.equal(undefined);
+			expect(hasKeyFd(phys!.fds, 4), 't PK should survive as a key-encoding FD').to.equal(true);
+		});
+
+		it('JOIN of two ≤1-row sides reports the empty key (singleton ∅→all FD)', async () => {
+			await setup();
+			const phys = await joinPhysicalAny(
+				'SELECT * FROM (SELECT count(*) AS a FROM t) x CROSS JOIN (SELECT count(*) AS b FROM t) y',
+			);
+			expect(phys, 'expected join physical').to.not.equal(undefined);
+			expect(hasSingletonFd(phys!.fds, 2), 'expected singleton ∅→all FD on a ≤1-row join').to.equal(true);
+		});
+
+		it('DISTINCT eliminated over a join of two ≤1-row sides', async () => {
+			await setup();
+			const types = await nodeTypesOf(
+				'SELECT DISTINCT * FROM (SELECT count(*) AS a FROM t) x CROSS JOIN (SELECT count(*) AS b FROM t) y',
+			);
+			expect(types, 'DISTINCT over a ≤1-row join must be eliminated').to.not.include('Distinct');
 		});
 	});
 

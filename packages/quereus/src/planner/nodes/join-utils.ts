@@ -187,7 +187,13 @@ export function propagateJoinFds(
 
 	const opts = { keyHints: preservedKeys };
 
-	/** Layer `preservedKeys` onto `fds` as `key → all_other_join_cols` FDs. */
+	/**
+	 * Layer `preservedKeys` onto `fds` as `key → all_other_join_cols` FDs. An
+	 * empty key `[]` (a ≤1-row join output) maps to the singleton `∅ → all_cols`
+	 * FD via `superkeyToFd([], totalColumnCount)`, so emitting `[]` in
+	 * `preservedKeys` is sufficient to propagate at-most-one-row. Duplicate keys
+	 * (e.g. two `[]` entries) collapse in `addFd`.
+	 */
 	const withKeyFds = (fds: ReadonlyArray<FunctionalDependency>): ReadonlyArray<FunctionalDependency> => {
 		let out = fds;
 		for (const key of preservedKeys) {

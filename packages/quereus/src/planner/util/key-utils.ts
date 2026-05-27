@@ -5,7 +5,7 @@ import type { TableSchema } from '../../schema/table.js';
 import { resolveReferencedColumns } from '../../schema/table.js';
 import { ColumnReferenceNode, ParameterReferenceNode } from '../nodes/reference.js';
 import { LiteralNode } from '../nodes/scalar.js';
-import { isSuperkey } from './fd-utils.js';
+import { isSuperkey, isUnique, keysOf, type KeyRel } from './fd-utils.js';
 
 /**
  * Project unique keys through a projection mapping.
@@ -158,12 +158,30 @@ export function deriveProjectionColumnMap(
  * Test whether any key in `keys` has all of its columns covered by `eqIndices`.
  * A covered key means each row in the source side maps to ≤ 1 row in the join's
  * equi-pair partner, so the partner side's keys survive null-padding (LEFT/RIGHT).
+ *
+ * The empty key `[]` (a ≤1-row / TableDee side) is unconditional coverage:
+ * `[].every(...)` is vacuously true regardless of `eqIndices`, so a ≤1-row side
+ * always caps the partner at one matching row. (There is no `k.length > 0`
+ * guard — a length-0 key is the single most powerful uniqueness fact.)
  */
 function joinPairsCoverKey(
 	keys: ReadonlyArray<ReadonlyArray<{ index: number }>>,
 	eqIndices: Set<number>,
 ): boolean {
-	return keys.some(k => k.length > 0 && k.every(c => eqIndices.has(c.index)));
+	return keys.some(k => k.every(c => eqIndices.has(c.index)));
+}
+
+/** Drop structurally-duplicate keys (e.g. two `[]` entries from both sides being ≤1-row). */
+function dedupeKeys(keys: ColRef[][]): ColRef[][] {
+	const seen = new Set<string>();
+	const out: ColRef[][] = [];
+	for (const k of keys) {
+		const sig = k.map(c => `${c.index}:${c.desc ?? ''}`).join(',');
+		if (seen.has(sig)) continue;
+		seen.add(sig);
+		out.push(k);
+	}
+	return out;
 }
 
 /**
@@ -188,8 +206,20 @@ function joinPairsCoverKey(
  * - `full`: `[]` (both sides may be null-padded).
  * - `semi` / `anti`: return left keys (left-only output, no null-padding).
  *
+ * **Empty-key (≤1-row) coverage.** A length-0 entry in either side's `keys`
+ * means that side is ≤1-row. `joinPairsCoverKey` treats it as unconditional
+ * coverage (a ≤1-row side caps the partner at one match regardless of
+ * `equiPairs`), so the LEFT/RIGHT/inner/cross branches still run their coverage
+ * check with an empty eq-set — they no longer early-return `[]` just because
+ * `equiPairs` is empty. When *both* sides are ≤1-row, the (inner/cross/left/
+ * right) result advertises the empty key `[]`, i.e. the join is itself ≤1-row.
+ * Full outer stays `[]` (two non-matching ≤1-row sides produce two padded rows).
+ * This is the logical-key layer only; FD-provable ≤1-row-ness flows through the
+ * physical path (`analyzeJoinKeyCoverage` → `propagateJoinFds`).
+ *
  * `equiPairs` is optional; when omitted, the LEFT/RIGHT and inner/cross branches
- * conservatively return `[]` (no coverage can be proven).
+ * only preserve keys via an empty-key (≤1-row) side, since no equi-pair coverage
+ * can be proven.
  */
 export function combineJoinKeys(
 	leftKeys: ReadonlyArray<ReadonlyArray<ColRef>>,
@@ -205,7 +235,7 @@ export function combineJoinKeys(
 			const leftEqSet = new Set<number>((equiPairs ?? []).map(p => p.left));
 			const rightEqSet = new Set<number>((equiPairs ?? []).map(p => p.right));
 			// Left's keys survive only when each left row matches ≤ 1 right row,
-			// i.e. the equi-pairs cover a right-side key.
+			// i.e. the equi-pairs cover a right-side key (or right is ≤1-row).
 			if (joinPairsCoverKey(rightKeys, rightEqSet)) {
 				for (const key of leftKeys) {
 					result.push(key.map(c => ({ index: c.index, desc: c.desc })));
@@ -217,19 +247,23 @@ export function combineJoinKeys(
 					result.push(key.map(c => ({ index: c.index + leftColumnCount, desc: c.desc })));
 				}
 			}
-			return result;
+			// When both sides are ≤1-row their empty keys both push through above,
+			// advertising the join's own empty key; dedupe the redundant pair.
+			return dedupeKeys(result);
 		}
 		case 'left': {
-			if (!equiPairs || equiPairs.length === 0) return [];
-			const rightEqSet = new Set<number>(equiPairs.map(p => p.right));
+			// No early-return on missing equiPairs: a ≤1-row right side covers
+			// regardless of equi-pairs (joinPairsCoverKey recognizes the empty key).
+			const rightEqSet = new Set<number>((equiPairs ?? []).map(p => p.right));
 			if (!joinPairsCoverKey(rightKeys, rightEqSet)) return [];
-			return leftKeys.map(key => key.map(c => ({ index: c.index, desc: c.desc })));
+			// left's keys survive; if left is also ≤1-row its empty key carries here,
+			// advertising the join's ≤1-row-ness when both sides are ≤1-row.
+			return dedupeKeys(leftKeys.map(key => key.map(c => ({ index: c.index, desc: c.desc }))));
 		}
 		case 'right': {
-			if (!equiPairs || equiPairs.length === 0) return [];
-			const leftEqSet = new Set<number>(equiPairs.map(p => p.left));
+			const leftEqSet = new Set<number>((equiPairs ?? []).map(p => p.left));
 			if (!joinPairsCoverKey(leftKeys, leftEqSet)) return [];
-			return rightKeys.map(key => key.map(c => ({ index: c.index + leftColumnCount, desc: c.desc })));
+			return dedupeKeys(rightKeys.map(key => key.map(c => ({ index: c.index + leftColumnCount, desc: c.desc }))));
 		}
 		case 'semi':
 		case 'anti':
@@ -287,17 +321,33 @@ export function analyzeJoinKeyCoverage(
 	const leftColCount = leftType?.columns.length ?? leftColumnCount;
 	const rightColCount = rightType?.columns.length ?? 0;
 
-	// Logical keys on each side, as column-index arrays.
+	// Logical keys on each side, as column-index arrays. Used only as the
+	// fallback when the side's logical type is unavailable (param allows
+	// `undefined`); otherwise the unified `keysOf` / `isUnique` surface is read.
 	const leftLogicalKeys = (leftType?.keys ?? []).map(k => k.map(c => c.index));
 	const rightLogicalKeys = (rightType?.keys ?? []).map(k => k.map(c => c.index));
 
+	// Unified uniqueness read surface per side: declared keys + FD-derived keys +
+	// the empty (≤1-row) key, all in one place. Built only when the logical type
+	// is present; `keysOf`/`isUnique` need it for column count and declared keys.
+	const leftRel: KeyRel | undefined = leftType ? { getType: () => leftType, physical: leftPhys } : undefined;
+	const rightRel: KeyRel | undefined = rightType ? { getType: () => rightType, physical: rightPhys } : undefined;
+
+	// Surviving keys on each side, sourced from `keysOf` (declared + FD-derived +
+	// empty key) so FD-only keys flow through; falls back to logical keys when the
+	// type is unavailable. Right indices are shifted by `leftColumnCount`.
+	const leftKeys = leftRel ? keysOf(leftRel).map(k => k.slice()) : leftLogicalKeys;
+	const rightKeysShifted = (rightRel ? keysOf(rightRel).map(k => k.slice()) : rightLogicalKeys)
+		.map(k => k.map(i => i + leftColumnCount));
+
 	if (joinType === 'semi' || joinType === 'anti') {
 		// Left's keys survive (output is the left shape). Preserved-key list mirrors
-		// left's logical keys; the propagateJoinFds layer materializes them as FDs.
+		// left's keys; the propagateJoinFds layer materializes them as FDs. A ≤1-row
+		// left side carries its empty key here, so the semi/anti output stays ≤1-row.
 		return {
 			leftKeyCovered: false,
 			rightKeyCovered: false,
-			preservedKeys: leftLogicalKeys.map(k => k.slice()),
+			preservedKeys: leftKeys.map(k => k.slice()),
 			estimatedRows: undefined,
 		};
 	}
@@ -313,26 +363,30 @@ export function analyzeJoinKeyCoverage(
 		return keys.some(key => key.length > 0 && key.every(idx => eqSet.has(idx)));
 	}
 
-	const leftKeyCovered =
-		coversLogicalKey(leftLogicalKeys, leftEqSet) ||
-		isSuperkey(leftEqSet, leftPhys?.fds, leftColCount);
-	const rightKeyCovered =
-		coversLogicalKey(rightLogicalKeys, rightEqSet) ||
-		isSuperkey(rightEqSet, rightPhys?.fds, rightColCount);
+	// A side's key is "covered" when the equi-pairs are a superkey of it. The
+	// single `isUnique` call folds the old `coversLogicalKey || isSuperkey` pair
+	// AND adds empty-key recognition: a ≤1-row side has `[]` in `keysOf`, and
+	// `[] ⊆ anything`, so `isUnique` reports it covered regardless of equi-pairs.
+	const leftKeyCovered = leftRel
+		? isUnique(equiPairs.map(p => p.left), leftRel)
+		: coversLogicalKey(leftLogicalKeys, leftEqSet) || isSuperkey(leftEqSet, leftPhys?.fds, leftColCount);
+	const rightKeyCovered = rightRel
+		? isUnique(equiPairs.map(p => p.right), rightRel)
+		: coversLogicalKey(rightLogicalKeys, rightEqSet) || isSuperkey(rightEqSet, rightPhys?.fds, rightColCount);
 
-	// Surviving "physical" keys on each side: union of logical keys and any
-	// non-trivial key sets the FD closure makes apparent. We use logical keys
-	// (the schema/type-level claim) — they're the source of truth for "this
-	// relation has a key on these columns". Physical FDs may have additional
-	// implied keys but enumerating them costs more than it saves here.
-	const leftKeys = leftLogicalKeys;
-	const rightKeysShifted = rightLogicalKeys.map(k => k.map(i => i + leftColumnCount));
+	// ≤1-row sides: `isUnique([], rel)` is true iff the relation is at-most-one-row.
+	const leftIsSingleton = leftRel ? isUnique([], leftRel) : false;
+	const rightIsSingleton = rightRel ? isUnique([], rightRel) : false;
+
 	const preservedKeys: number[][] = [];
 	let estimatedRows: number | undefined = undefined;
 
 	if (joinType === 'inner' || joinType === 'cross') {
 		if (rightKeyCovered) preservedKeys.push(...leftKeys.map(k => k.slice()));
 		if (leftKeyCovered) preservedKeys.push(...rightKeysShifted.map(k => k.slice()));
+		// Both sides ≤1-row ⇒ the join is ≤1-row: emit the empty key, which
+		// `propagateJoinFds` → `superkeyToFd([])` materializes as `∅ → all_cols`.
+		if (leftIsSingleton && rightIsSingleton) preservedKeys.push([]);
 
 		// Cardinality reduction: when a key is covered, result rows ≤ the other side's rows
 		if (rightKeyCovered && typeof leftRows === 'number') estimatedRows = leftRows;
@@ -346,12 +400,15 @@ export function analyzeJoinKeyCoverage(
 			preservedKeys.push(...leftKeys.map(k => k.slice()));
 			if (typeof leftRows === 'number') estimatedRows = leftRows;
 		}
+		// Both sides ≤1-row ⇒ ≤1 matching row per ≤1 left row ⇒ join is ≤1-row.
+		if (leftIsSingleton && rightIsSingleton) preservedKeys.push([]);
 	} else if (joinType === 'right') {
 		// Symmetric to LEFT.
 		if (leftKeyCovered) {
 			preservedKeys.push(...rightKeysShifted.map(k => k.slice()));
 			if (typeof rightRows === 'number') estimatedRows = rightRows;
 		}
+		if (leftIsSingleton && rightIsSingleton) preservedKeys.push([]);
 	}
 
 	return { leftKeyCovered, rightKeyCovered, preservedKeys, estimatedRows };
