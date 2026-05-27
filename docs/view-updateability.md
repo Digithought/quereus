@@ -71,7 +71,7 @@ The rules below apply identically to view bodies, CTE bodies, subqueries in `fro
 3. **FD reconstruction** — a column functionally determined by other surviving / supplied columns is reconstructed symbolically from the FD's right-hand side.
 4. **EC propagation** — a column in an equivalence class with a supplied column or a constant takes the EC representative's value.
 5. The view's `default_for` tag (expression over surviving columns).
-6. The base column's declared `default`.
+6. The base column's declared `default` — including a **generated default** (sequence, surrogate allocator, clock read), which resolves through the mutation-context envelope (§Mutation Context) at per-row cadence and, when the column is a shared join key, threads the one captured value through every branch of the decomposition.
 7. For nullable columns, `null`.
 
 If a `not null` column has no value after this chain, the insert is rejected with a structured diagnostic naming the column.
@@ -277,7 +277,18 @@ Constraint enforcement runs at end-of-statement under the prevailing conflict-re
 
 ## Mutation Context
 
-The `with context` envelope (see [Sequential ID Generation](architecture.md#sequential-id-generation)) wraps the entire view-mediated mutation. Non-deterministic bindings captured at the envelope are stable across the per-base operations emitted by propagation, ensuring replayability of complex multi-table inserts. Per-column `default_for` tags may reference context bindings; bindings evaluate once per statement and are reused across every per-base operation that consumes them.
+The `with context` envelope (see [Sequential ID Generation](architecture.md#sequential-id-generation)) wraps the entire view-mediated mutation. It is also the mechanism by which **generated values enter at the propagation boundary while DML stays deterministic**.
+
+Determinism in Quereus means a statement's effect is a pure function of database state and *captured context* — non-deterministic inputs are not forbidden, they are captured once at the envelope, recorded, and replayed identically. A view-mediated mutation frequently needs a value present at neither the user-visible relation nor the inserted row: a surrogate key that several base tables share, a sequence value, a creation timestamp. Such a value is supplied by a **generated default** on the base column (a sequence, a surrogate allocator, a clock read), evaluated through the context envelope and recorded with the statement. The propagation is therefore deterministic-given-context, and the generation is a context concern, identical to how sequential IDs and captured timestamps already work. No layer above introduces non-determinism — it consumes the escape valve the engine already provides.
+
+Bindings have two cadences:
+
+- **Per-statement** — a captured `now`, a bound parameter. Evaluated once; stable across every row and every base operation the statement emits (transaction-time semantics).
+- **Per-row** — a sequence, a surrogate allocator. Evaluated once *per top-level row produced*, so a multi-row insert mints a distinct value per row. The captured context records the per-row values, preserving replay.
+
+When a per-row generated value also serves as a **join key shared across base tables** — the surrogate that an n-way decomposition joins on — the single captured per-row value threads through every branch of the fan-out. Because it is resolved at the envelope *before* propagation reaches the branches, every branch references one already-captured binding: there is no "which branch generates first" ordering question, and the branches cannot diverge. This is what makes an insert into a relation backed by a shared-surrogate decomposition well-defined — one generation, captured, shared across the fan-out.
+
+Per-column `default_for` tags may reference context bindings; bindings evaluate per their cadence and are reused across every per-base operation that consumes them.
 
 ## Diagnostics
 
