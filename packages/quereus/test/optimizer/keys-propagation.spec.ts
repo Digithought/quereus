@@ -431,6 +431,61 @@ describe('Key propagation and estimatedRows reduction', () => {
 			expect(distinctRows).to.deep.equal(plainRows);
 		});
 
+		it('LIMIT 1 emits the singleton ∅→all FD on the LIMITOFFSET physical', async () => {
+			await setup();
+			// t is (id, v) ⇒ 2 cols. A constant LIMIT 1 is provably ≤1-row.
+			const phys = await physicalFor('SELECT * FROM t LIMIT 1', 'LIMITOFFSET');
+			expect(phys, 'expected LIMITOFFSET physical').to.not.equal(undefined);
+			expect(hasSingletonFd(phys!.fds, 2), 'expected singleton ∅→all FD for LIMIT 1').to.equal(true);
+		});
+
+		it('OFFSET k LIMIT 1 still emits the singleton (offset only removes rows)', async () => {
+			await setup();
+			const phys = await physicalFor('SELECT * FROM t LIMIT 1 OFFSET 1', 'LIMITOFFSET');
+			expect(phys, 'expected LIMITOFFSET physical').to.not.equal(undefined);
+			expect(hasSingletonFd(phys!.fds, 2), 'expected singleton ∅→all FD for LIMIT 1 OFFSET 1').to.equal(true);
+		});
+
+		it('DISTINCT eliminated over a LIMIT 1 source', async () => {
+			await setup();
+			const types = await nodeTypesOf('SELECT DISTINCT * FROM t LIMIT 1');
+			expect(types, 'DISTINCT over a ≤1-row LIMIT source must be eliminated').to.not.include('Distinct');
+		});
+
+		it('CROSS JOIN with a LIMIT 1 side preserves the other side keys', async () => {
+			await setup();
+			// (select * from t limit 1) is ≤1-row, so t's PK survives on the 4-col join.
+			const phys = await joinPhysicalAny('SELECT * FROM t CROSS JOIN (SELECT * FROM t LIMIT 1) s');
+			expect(phys, 'expected join physical').to.not.equal(undefined);
+			expect(hasKeyFd(phys!.fds, 4), 't PK should survive as a key-encoding FD').to.equal(true);
+		});
+
+		it('parameterized LIMIT ? does NOT emit the singleton (not constant at plan time)', async () => {
+			await setup();
+			const phys = await physicalFor('SELECT * FROM t LIMIT ?', 'LIMITOFFSET');
+			// A LIMITOFFSET node should exist but carry no ≤1-row singleton FD.
+			if (phys !== undefined) {
+				expect(hasSingletonFd(phys.fds, 2), 'parameterized LIMIT must not emit the singleton').to.equal(false);
+			}
+		});
+
+		it('correlated LATERAL with LIMIT 1 is not commuted (singleton FD must not reorder a correlated right)', async () => {
+			// The LIMIT 1 right side now advertises the ∅→all singleton FD, which marks
+			// it as a ≤1-row "preferred driver" for join-greedy-commute. But it is
+			// correlated against the left (t2.id = t.id), so commuting it to the outer
+			// position would evaluate `t.id` before t is in scope. The commute rule must
+			// skip correlated inputs; the query must still return one row per t row.
+			await setup();
+			const sql = 'SELECT t.id, x.v FROM t CROSS JOIN LATERAL (SELECT v FROM t t2 WHERE t2.id = t.id LIMIT 1) x ORDER BY t.id';
+			const rows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval(sql)) rows.push(r as Record<string, unknown>);
+			expect(rows).to.deep.equal([
+				{ id: 1, v: 'a' },
+				{ id: 2, v: 'b' },
+				{ id: 3, v: 'c' },
+			]);
+		});
+
 		it('≤1-row CROSS JOIN preserving the other side keys returns correct rows', async () => {
 			// The key-preserving plan from the scalar-aggregate case must still
 			// emit one output row per t row (3), each carrying the aggregate value.

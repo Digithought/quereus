@@ -6,6 +6,8 @@ import { formatExpression } from '../../util/plan-formatter.js';
 import { quereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import type { LimitCapable } from '../framework/characteristics.js';
+import { CastNode, CollateNode, LiteralNode } from './scalar.js';
+import { mergeFds, singletonFd } from '../util/fd-utils.js';
 
 /**
  * Represents a LIMIT/OFFSET operation.
@@ -56,12 +58,45 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode, Li
 		return [this.source];
 	}
 
+	/**
+	 * Resolve the LIMIT expression to a compile-time-constant numeric value, or
+	 * `undefined` when it is not a known constant. Peels `CastNode`/`CollateNode`
+	 * to find a `LiteralNode`, mirroring `literalSqlValueOf` in `fd-utils.ts`.
+	 *
+	 * `Number(value)` coercion matches the emitter (`runtime/emit/limit-offset.ts`).
+	 * A literal NULL means "no limit" (the emitter treats it as `Infinity`), so it
+	 * is reported as non-constant. A non-finite / non-numeric literal is likewise
+	 * not constant-known. A parameter / expression / subquery limit stays
+	 * undefined — those are unknown at plan time.
+	 */
+	private constantLimit(): number | undefined {
+		if (this.limit === undefined) return undefined;
+		let cur: ScalarPlanNode = this.limit;
+		while (cur instanceof CastNode || cur instanceof CollateNode) {
+			cur = cur.operand;
+		}
+		if (!(cur instanceof LiteralNode)) return undefined;
+		const v = cur.expression.value;
+		if (v instanceof Promise) return undefined;
+		// Literal NULL ⇒ unbounded (emitter uses Infinity), not a ≤1-row constant.
+		if (v === null) return undefined;
+		const n = Number(v);
+		if (!Number.isFinite(n)) return undefined;
+		return n;
+	}
+
 	get estimatedRows(): number | undefined {
 		const sourceRows = this.source.estimatedRows;
 		if (sourceRows === undefined) return undefined;
 
-		// TODO: Evaluate limit/offset if they are constants
-		// For now, assume limit is 100 if specified, otherwise use source rows
+		const limit = this.constantLimit();
+		if (limit !== undefined && limit >= 0) {
+			// Exact upper bound: at most `limit` rows survive. OFFSET only removes
+			// rows, so `min(sourceRows, limit)` is sound regardless of offset.
+			return Math.min(sourceRows, limit);
+		}
+
+		// Non-constant limit: keep the existing heuristic (no limit ⇒ source rows).
 		if (this.limit) {
 			return Math.min(sourceRows, 100);
 		}
@@ -70,12 +105,26 @@ export class LimitOffsetNode extends PlanNode implements UnaryRelationalNode, Li
 
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const sourcePhysical = childrenPhysical[0];
+
+		// A compile-time-constant LIMIT ≤ 1 (including LIMIT 0) is provably ≤1-row,
+		// so emit the singleton `∅ → all_cols` FD alongside the source FDs. OFFSET
+		// does not gate this — it only removes rows. Merge (don't replace): the
+		// empty key subsumes all source keys, and the read surface normalizes.
+		let fds = sourcePhysical?.fds;
+		const limit = this.constantLimit();
+		if (limit !== undefined && limit <= 1) {
+			const singleton = singletonFd(this.getAttributes().length);
+			if (singleton !== undefined) {
+				fds = mergeFds(sourcePhysical?.fds ?? [], [singleton]);
+			}
+		}
+
 		return {
 			estimatedRows: this.estimatedRows,
 			ordering: sourcePhysical?.ordering,
 			// LIMIT/OFFSET preserves FDs/ECs/bindings — slicing rows doesn't break
 			// per-row determinations.
-			fds: sourcePhysical?.fds,
+			fds,
 			equivClasses: sourcePhysical?.equivClasses,
 			constantBindings: sourcePhysical?.constantBindings,
 			domainConstraints: sourcePhysical?.domainConstraints,

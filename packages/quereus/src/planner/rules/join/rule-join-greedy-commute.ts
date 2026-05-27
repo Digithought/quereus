@@ -3,6 +3,7 @@ import type { PlanNode, RelationalPlanNode } from '../../nodes/plan-node.js';
 import type { OptContext } from '../../framework/context.js';
 import { JoinNode } from '../../nodes/join-node.js';
 import { hasSingletonFd } from '../../util/fd-utils.js';
+import { isCorrelatedSubquery } from '../../cache/correlation-detector.js';
 
 const log = createLogger('optimizer:rule:join-greedy-commute');
 
@@ -26,6 +27,16 @@ function isSingleton(node: RelationalPlanNode): boolean {
 export function ruleJoinGreedyCommute(node: PlanNode, _context: OptContext): PlanNode | null {
   if (!(node instanceof JoinNode)) return null;
   if (node.joinType !== 'inner' && node.joinType !== 'cross') return null;
+
+  // A correlated input (LATERAL referencing the other side) imposes an
+  // evaluation order: the correlated side must be the driven (right) side so the
+  // relation defining its outer references is in scope. Commuting would move it
+  // to the outer position and break that correlation. Skip the swap in that case
+  // — a ≤1-row correlated lateral (e.g. `LIMIT 1`) now advertises a singleton FD,
+  // which would otherwise mark it as the preferred driver.
+  if (isCorrelatedSubquery(node.getRightSource()) || isCorrelatedSubquery(node.getLeftSource())) {
+    return null;
+  }
 
   const leftRows = node.getLeftSource().estimatedRows ?? Number.POSITIVE_INFINITY;
   const rightRows = node.getRightSource().estimatedRows ?? Number.POSITIVE_INFINITY;
