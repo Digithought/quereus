@@ -35,7 +35,9 @@ export function extractOrderingFromSortKeys(
 
 		const columnRef = sortKey.expression as unknown as ColumnReferenceNode;
 
-		// Find the column index in the source attributes
+		// Raw `{ id }[]` helper with no owning node (unit-tested against bare arrays);
+		// see getAttributeIndex() callers — migrating would change this signature
+		// contract, so the array scan stays.
 		const columnIndex = sourceAttributes.findIndex(attr => attr.id === columnRef.attributeId);
 		if (columnIndex === -1) {
 			return undefined; // Column not found in source
@@ -64,6 +66,8 @@ export function getColumnIndex(
 	columnRef: ColumnReferenceNode,
 	attributes: Array<{ id: number }>
 ): number | undefined {
+	// Raw `{ id }[]` helper with no owning node — see getAttributeIndex() callers;
+	// the array scan stays rather than forcing a throwaway local map.
 	const index = attributes.findIndex(attr => attr.id === columnRef.attributeId);
 	return index >= 0 ? index : undefined;
 }
