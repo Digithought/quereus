@@ -1,9 +1,12 @@
 # Incremental Maintenance
 
 Quereus exposes a single, reusable change-driven kernel that runs at every COMMIT.
-Assertions are its first consumer; materialized views, reactive signals, and
-triggers will plug into the same surface without reinventing change capture or
-binding-key analysis.
+Assertions are its first consumer; keyed derived relations — materialized views
+and covering structures (indexes / unique-constraint enforcement) — plus reactive
+signals and triggers will plug into the same surface without reinventing change
+capture or binding-key analysis. The [lens layer](lens.md) routes set-level
+constraint enforcement to this kernel when no covering structure is present, and
+maintains covering structures through it when one is.
 
 ## Pipeline at a glance
 
@@ -24,9 +27,11 @@ DML emitter ──recordInsert/Update/Delete(row, pkIndices)──► Transactio
                             ┌─────────────────────┬──────────┴────────┐
                             │                     │                   │
                             ▼                     ▼                   ▼
-                  AssertionEvaluator     [future] MV refresh    [future] signals
-                  (residual scheduler    (delete-then-upsert
-                   per tuple)             per binding tuple)
+                  AssertionEvaluator     [future] MV /         [future] signals
+                  (residual scheduler    covering-structure
+                   per tuple)             refresh
+                                         (delete-then-upsert
+                                          per binding tuple)
 ```
 
 The kernel is decoupled from any specific consumer. A `DeltaSubscription`
@@ -139,8 +144,9 @@ dispatch handle, capture demand, and residual schedulers.
 ## Plug-in pattern for future consumers
 
 A new consumer follows the same shape (today the kernel is owned by the
-`AssertionEvaluator`; the MV ticket will surface a shared registration path
-on `Database` — see [`tickets/backlog/updatable-views.md`](../tickets/backlog/updatable-views.md)):
+`AssertionEvaluator`; the keyed-derived-relation ticket will surface a shared
+registration path on `Database` — see
+[`tickets/backlog/known/updatable-views.md`](../tickets/backlog/known/updatable-views.md)):
 
 ```ts
 // 1. Analyze the consumer's plan.
@@ -191,7 +197,8 @@ const dispose = deltaExecutor.register({
 ## Cross-references
 
 - Optimizer surface: [Optimizer § Binding-aware Delta Planning](optimizer.md#binding-aware-delta-planning-reusable)
+- Layered schemas / lenses: [Lenses and Layered Schemas](lens.md)
 - Source: `src/planner/analysis/binding-extractor.ts`, `src/runtime/delta-executor.ts`, `src/core/database-transaction.ts`, `src/core/database-assertions.ts`
-- Materialized views (planned consumer): `tickets/backlog/updatable-views.md`
+- Keyed derived relations / covering structures (planned consumer): `tickets/backlog/known/updatable-views.md`
 - Cross-process reactive transport: out of scope here; see the sync packages
   under `packages/quereus-sync-*`.

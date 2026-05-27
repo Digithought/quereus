@@ -85,7 +85,7 @@ export class SortNode extends PlanNode implements UnaryRelationalNode, SortCapab
 			const leadingKey = this.sortKeys[0];
 			if (leadingKey.expression instanceof ColumnReferenceNode) {
 				const leadAttrId = leadingKey.expression.attributeId;
-				const leadIdx = sourceAttributes.findIndex(a => a.id === leadAttrId);
+				const leadIdx = this.source.getAttributeIndex().get(leadAttrId) ?? -1;
 				if (leadIdx >= 0) {
 					const strict = isAssertedKey(new Set([leadIdx]), sourcePhysical?.fds, sourceAttributes.length);
 					monotonicOn = [{

@@ -29,9 +29,11 @@ export function emitBloomJoin(plan: BloomJoinNode, ctx: EmissionContext): Instru
 	const leftIndices: number[] = [];
 	const rightIndices: number[] = [];
 	const keyNormalizers: ((s: string) => string)[] = [];
+	const leftIndex = plan.left.getAttributeIndex();
+	const rightIndex = plan.right.getAttributeIndex();
 	for (const pair of plan.equiPairs) {
-		const li = leftAttributes.findIndex(a => a.id === pair.leftAttrId);
-		const ri = rightAttributes.findIndex(a => a.id === pair.rightAttrId);
+		const li = leftIndex.get(pair.leftAttrId) ?? -1;
+		const ri = rightIndex.get(pair.rightAttrId) ?? -1;
 		if (li === -1 || ri === -1) {
 			throw new Error(`BloomJoin: could not resolve equi-pair attr IDs ${pair.leftAttrId}=${pair.rightAttrId}`);
 		}

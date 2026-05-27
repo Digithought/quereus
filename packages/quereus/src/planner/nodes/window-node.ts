@@ -259,7 +259,7 @@ export class WindowNode extends PlanNode implements UnaryRelationalNode {
 				if (leadExpr instanceof ColumnReferenceNode) {
 					const sourceAttrs = this.source.getAttributes();
 					const leadAttrId = leadExpr.attributeId;
-					const leadIdx = sourceAttrs.findIndex(a => a.id === leadAttrId);
+					const leadIdx = this.source.getAttributeIndex().get(leadAttrId) ?? -1;
 					if (leadIdx >= 0) {
 						const direction = this.windowSpec.orderBy[0]?.direction === 'desc' ? 'desc' : 'asc';
 						const strict = isAssertedKey(new Set([leadIdx]), sourcePhysical?.fds, sourceAttrs.length);

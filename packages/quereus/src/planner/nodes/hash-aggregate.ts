@@ -179,7 +179,7 @@ export class HashAggregateNode extends PlanNode implements UnaryRelationalNode {
 	computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
 		const sourcePhysical = childrenPhysical[0];
 		const { fds, equivClasses, constantBindings, domainConstraints } = propagateAggregateFds(
-			this.source.getAttributes(),
+			this.source.getAttributeIndex(),
 			this.groupBy,
 			sourcePhysical,
 			this.getAttributes().length,

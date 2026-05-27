@@ -110,6 +110,8 @@ function analyzeProjectionLeaves(expr: ScalarPlanNode): { attrIds: Set<number>; 
  * `injectivePairs` instead.
  */
 export function deriveProjectionColumnMap(
+	// pure helper: no owning node; callers pass raw attrs incl. unit tests, so we
+	// keep the array scan rather than migrating to RelationalPlanNode.getAttributeIndex().
 	sourceAttrs: readonly Attribute[],
 	projections: readonly InjectiveProjectionEntry[],
 ): ProjectionMappingResult {

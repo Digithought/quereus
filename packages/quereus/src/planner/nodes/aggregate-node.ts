@@ -35,7 +35,7 @@ export interface AggregateExpression {
  * (e.g. for HAVING-clause access on the streaming variant).
  */
 export function propagateAggregateFds(
-  sourceAttrs: readonly Attribute[],
+  sourceAttrIndex: ReadonlyMap<number, number>,
   groupBy: readonly ScalarPlanNode[],
   sourcePhysical: PhysicalProperties | undefined,
   outputColumnCount: number,
@@ -60,7 +60,7 @@ export function propagateAggregateFds(
   const map = new Map<number, number>();
   groupBy.forEach((expr, outIdx) => {
     if (expr instanceof ColumnReferenceNode) {
-      const srcIdx = sourceAttrs.findIndex(a => a.id === expr.attributeId);
+      const srcIdx = sourceAttrIndex.get(expr.attributeId) ?? -1;
       if (srcIdx >= 0 && !map.has(srcIdx)) map.set(srcIdx, outIdx);
     }
   });
@@ -275,7 +275,7 @@ export class AggregateNode extends PlanNode implements UnaryRelationalNode, Aggr
   computePhysical(childrenPhysical: PhysicalProperties[]): Partial<PhysicalProperties> {
     const sourcePhysical = childrenPhysical[0];
     const { fds, equivClasses, constantBindings, domainConstraints } = propagateAggregateFds(
-      this.source.getAttributes(),
+      this.source.getAttributeIndex(),
       this.groupBy,
       sourcePhysical,
       this.getAttributes().length,

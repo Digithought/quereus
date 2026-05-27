@@ -43,8 +43,11 @@ function resolveSetup(plan: AsofScanNode, ctx: EmissionContext): AsofScanSetup {
 	const leftRowDescriptor = buildRowDescriptor(leftAttrs);
 	const rightRowDescriptor = buildRowDescriptor(rightAttrs);
 
-	const leftMatchIdx = leftAttrs.findIndex(a => a.id === plan.matchAttr.leftAttrId);
-	const rightMatchIdx = rightAttrs.findIndex(a => a.id === plan.matchAttr.rightAttrId);
+	const leftIndex = plan.left.getAttributeIndex();
+	const rightIndex = plan.right.getAttributeIndex();
+
+	const leftMatchIdx = leftIndex.get(plan.matchAttr.leftAttrId) ?? -1;
+	const rightMatchIdx = rightIndex.get(plan.matchAttr.rightAttrId) ?? -1;
 	if (leftMatchIdx === -1 || rightMatchIdx === -1) {
 		throw new Error(`AsofScan: could not resolve match-attr ids ${plan.matchAttr.leftAttrId}/${plan.matchAttr.rightAttrId}`);
 	}
@@ -56,8 +59,8 @@ function resolveSetup(plan: AsofScanNode, ctx: EmissionContext): AsofScanSetup {
 	const partitionCollations: CollationFunction[] = [];
 	const keyNormalizers: ((s: string) => string)[] = [];
 	for (const p of plan.partitionAttrs) {
-		const leftIdx = leftAttrs.findIndex(a => a.id === p.leftAttrId);
-		const rightIdx = rightAttrs.findIndex(a => a.id === p.rightAttrId);
+		const leftIdx = leftIndex.get(p.leftAttrId) ?? -1;
+		const rightIdx = rightIndex.get(p.rightAttrId) ?? -1;
 		if (leftIdx === -1 || rightIdx === -1) {
 			throw new Error(`AsofScan: could not resolve partition-attr ids ${p.leftAttrId}/${p.rightAttrId}`);
 		}

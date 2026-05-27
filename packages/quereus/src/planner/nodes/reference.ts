@@ -230,9 +230,7 @@ export class TableReferenceNode extends PlanNode implements ZeroAryRelationalNod
 	}
 
 	getColumnIndexForAttribute(attributeId: number): number | undefined {
-		const attrs = this.getAttributes();
-		const idx = attrs.findIndex(a => a.id === attributeId);
-		return idx >= 0 ? idx : undefined;
+		return this.getAttributeIndex().get(attributeId);
 	}
 
 	override getLogicalAttributes(): Record<string, unknown> {

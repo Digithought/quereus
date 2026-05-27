@@ -20,7 +20,7 @@ This is lower priority than FK constraints, computed columns, and ALTER TABLE. T
 
 The implement stage should create a timeless `docs/materialized-views.md` reflecting what is actually built, register it in the docs index in `docs/architecture.md`, and cross-reference it from `docs/optimizer.md`, `docs/schema.md`, `docs/incremental-maintenance.md`, and `docs/lens.md` the way the shipped features already are — the design prose here graduates into that doc rather than living in two places.
 
-(Naming: this ticket's filename — `4-materialized-views` — undersells its scope; it is really *keyed derived relations / covering structures*, the substrate beneath both materialized views and the lens layer. Rename via the tess workflow if/when convenient; the filename is left as-is here to avoid breaking ticket references.)
+This ticket's scope is broader than a "materialized views" reading suggests: it is really *keyed derived relations / covering structures* — the substrate beneath both materialized views and the [lens layer](../../../docs/lens.md).
 
 ### Foundations already in place
 
