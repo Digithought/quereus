@@ -854,6 +854,19 @@ describe('AST round-trip property: transactional + misc', () => {
 		expect(stmt.schemaName).to.equal('main');
 		expect(stmt.tableName).to.equal(undefined);
 	});
+
+	it('schema-only ANALYZE round-trips a schema name that requires quoting', () => {
+		// The structural property test only samples safe lowercase idents, so it
+		// never exercises the quoteIdentifier + `.*` emit path. A reserved word as
+		// the schema name forces quoting and confirms the quoted `.*` form re-parses
+		// back to the same schema-only shape.
+		const ast: AST.AnalyzeStmt = { type: 'analyze', schemaName: 'select' };
+		const sql = astToString(ast);
+		expect(sql).to.include('.*');
+		const reparsed = parse(sql) as AST.AnalyzeStmt;
+		expect(reparsed.schemaName).to.equal('select');
+		expect(reparsed.tableName).to.equal(undefined);
+	});
 });
 
 describe('AST round-trip property: DML smoke', () => {

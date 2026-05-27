@@ -82,7 +82,7 @@ This realizes the principle that **a constraint is a logical claim, and the stru
 
 **A logical `unique` (or primary key) creates no structure.** Declaring `unique(x, y)` in a logical schema contributes a key/FD to the optimizer and an enforced boundary constraint — but it does **not** auto-create an index. This is a deliberate departure from the legacy behavior where `unique(...)` eagerly built a secondary BTree at declaration time (`LayerManager.ensureUniqueConstraintIndexes`), fusing the logical claim with a physical structure. In the layered model the two are separated: the constraint is logical, and any covering index is an explicit, independent **basis-layer** declaration (a materialized view with `order by`). With no such structure the constraint is still correct — enforced by the commit-time `DeltaExecutor` scan — just not O(log n). Whether to add the covering index is a physical-tuning decision made against the basis, never a side effect of the logical declaration.
 
-## Validation: lens laws as the completeness check
+## Validation and Coverage
 
 Because the logical spec and the lens body are authored (or generated) independently, the lens layer **proves they agree**. Each constraint in the logical spec plays one of two roles, decided by whether the lens body already guarantees it:
 
@@ -90,6 +90,30 @@ Because the logical spec and the lens body are authored (or generated) independe
 - **Body does not prove it** → the spec entry is an *enforced boundary constraint*, per [Constraint Attachment](#constraint-attachment).
 
 These proof obligations are the lens laws restated in Quereus's own terms: **PutGet** ("the mapping loses no logical guarantee") and **GetPut** ("round-tripping basis through the lens is faithful") are exactly the cross-checks that the compiled view's inferred FD / key / domain surface conforms to the logical spec. The prover is a consumer of the same key-inference surface the optimizer uses; what it cannot prove, it reports — it never silently assumes coverage.
+
+### Coverage checklist
+
+At compile the prover walks every logical aspect and confirms it is mapped to, and covered by, the basis. Each check has a severity: an **error** blocks the compile (the mapping is unsound or incomplete); a **warning** is advisory (the mapping is correct but suboptimal).
+
+**Errors — the logical surface is not fully realized:**
+
+| Check | Failure |
+|---|---|
+| **Column coverage** | Every logical column resolves to a basis expression (override or generated gap). An uncovered column errors, naming the column. |
+| **Type / nullability conformance** | Each mapped column's basis-derived type and nullability satisfy the logical declaration. A nullable basis expression under a `not null` logical column errors unless a total default or guard supplies a value. |
+| **Constraint realizability** | Each logical constraint is either *proven* by the body or *attachable* as an enforced boundary constraint (per [Constraint Attachment](#constraint-attachment)). A constraint that is neither — e.g. one referencing a column whose lineage is `computed` (no write path) — errors. |
+| **Key reconstructibility** | For a writable logical table, the logical primary key is reconstructible at the lens boundary (a row-identifying predicate exists). Otherwise the table is read-only and any mutation against it errors. |
+| **Round-trip (lens laws)** | GetPut / PutGet hold over the writable fragment. An override whose `put` is non-invertible and undisambiguated errors, naming the operator/column (the same diagnostic surface as [view updateability](view-updateability.md#diagnostics)). |
+
+**Warnings — correct but suboptimal:**
+
+| Check | Advisory |
+|---|---|
+| **No backing index for a set-level constraint** | A `unique` / primary key (or FK existence) with no basis covering structure is enforced by the O(n) commit-time `DeltaExecutor` scan. The prover warns and recommends a basis covering index (a materialized view with `order by` over the constraint columns), noting that row-time conflict resolution (`insert or replace` / `or ignore`) *requires* that structure and is otherwise rejected. |
+| **No answering structure for a declared access pattern** | If the logical schema (or its tags) declares an expected lookup/ordering with no basis ordering or index to serve it, the prover warns that reads will scan. |
+| **Partial override** | When an override covers only some columns of a table and the remainder took the default alignment, the prover emits an informational note listing the gap-filled columns, so the generated portion is visible. |
+
+Warnings are reported through the same channel as the compile result (and surfaced in the deploy summary); they never block a deploy. The backing-index warning is the lens layer's single most important advisory, because it is the one place where the "structure is optional, correctness isn't" separation has a visible performance cost the developer should consciously accept or remedy.
 
 ## Deployment Is a Compile Step
 

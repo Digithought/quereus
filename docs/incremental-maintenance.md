@@ -22,7 +22,8 @@ DML emitter ──recordInsert/Update/Delete(row, pkIndices)──► Transactio
                                                   (PK + projected cols,
                                                    savepoint-layered)
                                                               │
-                                            on COMMIT (precedes vtab commit)
+                                          at top-level COMMIT (phase per consumer:
+                                           assertions pre-commit, watch post-commit)
                                                               ▼
                                                        DeltaExecutor
                                                               │
