@@ -30,9 +30,11 @@ export interface AggregateExpression {
  *   - GROUP BY non-empty: `{0..groupCount-1} → (all_other_output_cols)`.
  *   - GROUP BY empty:     `∅ → all_output_cols` (singleton: one row total).
  *
- * `outputColumnCount` is the aggregate node's total output-column count, which
- * may exceed `groupCount + aggregateCount` when source columns pass through
- * (e.g. for HAVING-clause access on the streaming variant).
+ * `outputColumnCount` is the aggregate node's total output-column count. It is
+ * always exactly `groupCount + aggregateCount`: aggregate nodes advertise (and
+ * emit) only their GROUP BY + aggregate columns. Source columns needed for
+ * HAVING / correlated access flow through the runtime row-descriptor context,
+ * never as output columns, so they do not appear here.
  */
 export function propagateAggregateFds(
   sourceAttrIndex: ReadonlyMap<number, number>,

@@ -37,8 +37,8 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
   }
 
   private buildAttributes(): Attribute[] {
-    // If we have preserved attribute IDs, use them directly
-    // The optimizer rule now passes both aggregate AND source attributes
+    // If we have preserved attribute IDs, use them directly. The optimizer rule
+    // passes exactly the logical AggregateNode's GROUP BY + aggregate attributes.
     if (this.preserveAttributeIds) {
       return this.preserveAttributeIds.slice();
     }

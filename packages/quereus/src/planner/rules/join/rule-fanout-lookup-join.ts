@@ -104,14 +104,13 @@ interface RecognizedBranch {
  * the projection-list node that must be rewritten to a column reference into
  * the fan-out's wide row.
  *
- * The branch child is NOT the subquery root verbatim: a no-GROUP-BY aggregate
- * exposes a single output attribute as the logical `AggregateNode`, but its
- * physical `StreamAggregateNode` form additionally exposes the source columns
- * (for HAVING access). Driving that 4-column relation as the branch would
- * misalign the wide row. Instead the assembly wraps `subqueryRoot` in a stable
- * single-column `ProjectNode` selecting `valueAttr`, so the branch always
- * contributes exactly the scalar value regardless of the aggregate's physical
- * shape.
+ * The branch child wraps `subqueryRoot` in a stable single-column `ProjectNode`
+ * selecting `valueAttr`. Aggregate nodes now advertise exactly their logical
+ * GROUP-BY + aggregate schema in both their logical and physical forms, so a
+ * no-GROUP-BY scalar aggregate is already single-column; the explicit Project
+ * is a defensive pin that anchors the branch's output attribute id/alias to
+ * `valueAttr` and keeps the wide-row contribution invariant regardless of the
+ * inner root's shape.
  */
 interface RecognizedSubqueryBranch {
 	readonly subqueryNode: ScalarSubqueryNode;
@@ -274,10 +273,12 @@ export function ruleFanOutLookupJoin(node: PlanNode, context: OptContext): PlanN
 		});
 	}
 	for (const b of subqueryBranches) {
-		// Pin the branch to a single column (the scalar value) so its attribute
-		// count is invariant under the inner aggregate's logical→physical
-		// expansion. `attributeId: valueAttr.id` keeps the branch output attribute
-		// identical to what the outer projection's column reference targets.
+		// Pin the branch to a single column (the scalar value). The inner
+		// aggregate already advertises exactly its logical schema in physical form
+		// (single-column for a no-GROUP-BY scalar aggregate), so this is a
+		// defensive identity pin. `attributeId: valueAttr.id` keeps the branch
+		// output attribute identical to what the outer projection's column
+		// reference targets.
 		const colRef = new ColumnReferenceNode(
 			node.scope,
 			columnExprFor(b.valueAttr.name),
