@@ -410,6 +410,40 @@ describe('Key propagation and estimatedRows reduction', () => {
 			);
 			expect(types, 'DISTINCT over a ≤1-row join must be eliminated').to.not.include('Distinct');
 		});
+
+		it('DISTINCT-eliminated ≤1-row join returns the same rows as the un-eliminated query', async () => {
+			// Behavioral soundness guard: eliminating DISTINCT (driven by the
+			// empty-key/singleton-FD propagated onto the join) must not change the
+			// result set. We compare against the DISTINCT-free query rather than a
+			// hard-coded shape so an unrelated pre-existing `*`-naming quirk in
+			// scalar-aggregate subqueries (second column relabeled, value correct —
+			// see tickets/fix/scalar-agg-subquery-star-column-naming) does not mask
+			// the property under test. DISTINCT is a no-op over a ≤1-row source, so
+			// both queries must agree row-for-row.
+			await setup();
+			const distinctSql = 'SELECT DISTINCT * FROM (SELECT count(*) AS a FROM t) x CROSS JOIN (SELECT count(*) AS b FROM t) y';
+			const plainSql = 'SELECT * FROM (SELECT count(*) AS a FROM t) x CROSS JOIN (SELECT count(*) AS b FROM t) y';
+			const distinctRows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval(distinctSql)) distinctRows.push(r as Record<string, unknown>);
+			const plainRows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval(plainSql)) plainRows.push(r as Record<string, unknown>);
+			expect(distinctRows).to.have.length(1);
+			expect(distinctRows).to.deep.equal(plainRows);
+		});
+
+		it('≤1-row CROSS JOIN preserving the other side keys returns correct rows', async () => {
+			// The key-preserving plan from the scalar-aggregate case must still
+			// emit one output row per t row (3), each carrying the aggregate value.
+			await setup();
+			const sql = 'SELECT t.id, t.v, agg.c FROM t CROSS JOIN (SELECT count(*) AS c FROM t) agg ORDER BY t.id';
+			const rows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval(sql)) rows.push(r as Record<string, unknown>);
+			expect(rows).to.deep.equal([
+				{ id: 1, v: 'a', c: 3 },
+				{ id: 2, v: 'b', c: 3 },
+				{ id: 3, v: 'c', c: 3 },
+			]);
+		});
 	});
 
 	describe('Projection isSet soundness', () => {
