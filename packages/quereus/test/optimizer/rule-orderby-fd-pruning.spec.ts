@@ -169,6 +169,32 @@ describe('ruleOrderByFdPruning', () => {
 		expect(sorts, 'multi-key Sort over a ≤1-row source must be eliminated').to.have.length(0);
 	});
 
+	it('Singleton source via LIMIT 1: ORDER BY over a LIMIT 1 subquery → Sort eliminated', async () => {
+		// A `LIMIT 1` subquery carries the `∅ → all_cols` singleton FD, so the
+		// ORDER BY above it is a no-op and the whole Sort drops. This exercises a
+		// non-aggregate singleton source flowing through the same
+		// `isUnique([], source)` check.
+		await db.exec('CREATE TABLE t (a INTEGER, b INTEGER) USING memory');
+		const plan = db.getPlan('SELECT a, b FROM (SELECT a, b FROM t LIMIT 1) ORDER BY a');
+		const sorts = findAllSorts(plan);
+		expect(sorts, 'Sort over a LIMIT 1 (≤1-row) source must be eliminated').to.have.length(0);
+	});
+
+	it('Ordering-dependent consumer: DISTINCT over a singleton source still returns the row in order', async () => {
+		// Probes the ticket's explicit ordering-regression concern: an outer
+		// operator (DISTINCT) sits above the dropped Sort. A ≤1-row relation
+		// satisfies any ordering, so the result is unaffected.
+		await db.exec('CREATE TABLE t (a INTEGER, b INTEGER) USING memory');
+		await db.exec('INSERT INTO t VALUES (5, 9), (6, 8), (7, 1)');
+		const out: { c: number }[] = [];
+		for await (const r of db.eval(
+			'SELECT DISTINCT c FROM (SELECT count(*) AS c FROM t) ORDER BY c',
+		)) {
+			out.push(r as unknown as { c: number });
+		}
+		expect(out).to.deep.equal([{ c: 3 }]);
+	});
+
 	it('Behavioral correctness: ORDER BY over singleton source preserves the row', async () => {
 		await db.exec('CREATE TABLE t (a INTEGER, b INTEGER) USING memory');
 		await db.exec('INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)');
