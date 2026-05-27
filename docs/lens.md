@@ -115,6 +115,32 @@ At compile the prover walks every logical aspect and confirms it is mapped to, a
 
 Warnings are reported through the same channel as the compile result (and surfaced in the deploy summary); they never block a deploy. The backing-index warning is the lens layer's single most important advisory, because it is the one place where the "structure is optional, correctness isn't" separation has a visible performance cost the developer should consciously accept or remedy.
 
+### Acknowledging advisories
+
+Advisories only reduce noise if acknowledged ones stay out of the way — but an acknowledgment must never hide a *newly* important problem. The mechanism balances both:
+
+- **Coded and sited.** Every advisory carries a stable code (`lens.no-backing-index`, `lens.no-answering-structure`, `lens.partial-override`) and the logical site it concerns (table / constraint), so an acknowledgment targets exactly one advisory, never a class.
+- **Acknowledged in source, via a reserved tag.** A `quereus.lens.ack.<code>` tag on the logical table or constraint suppresses that advisory from the default report. Because the ack lives in the logical declaration, it is version-controlled and shows up in review — there is no hidden, out-of-band suppress-list. The tag value is a **required rationale** (an empty or missing rationale is itself a warning), so every suppression carries its justification.
+- **Tallied, never vanished.** The deploy summary always reports `acknowledged: N` and can expand them on demand. The default view is decluttered; nothing becomes truly invisible.
+- **Re-surfaces on material change.** The prover fingerprints the facts behind each advisory (constraint columns, the absence of a covering structure, a coarse cardinality band, …) and the tooling records that fingerprint when the ack is written. If the facts later diverge — the table crosses the cardinality band, the constraint columns change, a previously-present index is dropped — the fingerprint no longer matches and the advisory **re-surfaces as un-acknowledged**, flagged *"previously acknowledged; situation changed."* This is the anti-fatigue guarantee that still catches the thing that matters. A hand-written ack with no recorded fingerprint is honored but marked *unconditional* — the author has explicitly opted out of re-surfacing.
+- **Escalation policy.** A deploy policy promotes specific codes beyond advisory:
+  - `error-on: [code]` — the code is always a hard error; an ack cannot suppress it. For invariants you never permit.
+  - `require-ack: [code]` — an un-acknowledged instance is an error, but a valid (fingerprint-matched) ack with rationale clears it. This is the sweet spot for `lens.no-backing-index`: it forces a conscious, documented decision without blocking the developer who has genuinely accepted the commit-time scan.
+
+```sql
+declare logical schema X {
+  table Car (
+    id int primary key,
+    vin text,
+    unique (vin)
+  ) with tags (
+    "quereus.lens.ack.no-backing-index:vin" = 'low-write table; commit-time scan is acceptable'
+  );
+}
+```
+
+Acknowledgment suppresses the *warning* only; it has no effect on an `error-on` escalation or on any correctness error from the [coverage checklist](#coverage-checklist).
+
 ## Deployment Is a Compile Step
 
 Quereus is a query-processing engine, not a deployment system, but it exposes the ingredients an application needs to assemble a complete deployment story. Deploying a logical schema against a basis is a **compile**:
