@@ -140,7 +140,7 @@ dispatch handle, capture demand, and residual schedulers.
 
 A new consumer follows the same shape (today the kernel is owned by the
 `AssertionEvaluator`; the MV ticket will surface a shared registration path
-on `Database` — see [`tickets/backlog/4-materialized-views.md`](../tickets/backlog/4-materialized-views.md)):
+on `Database` — see [`tickets/backlog/updatable-views.md`](../tickets/backlog/updatable-views.md)):
 
 ```ts
 // 1. Analyze the consumer's plan.
@@ -192,6 +192,6 @@ const dispose = deltaExecutor.register({
 
 - Optimizer surface: [Optimizer § Binding-aware Delta Planning](optimizer.md#binding-aware-delta-planning-reusable)
 - Source: `src/planner/analysis/binding-extractor.ts`, `src/runtime/delta-executor.ts`, `src/core/database-transaction.ts`, `src/core/database-assertions.ts`
-- Materialized views (planned consumer): `tickets/backlog/4-materialized-views.md`
+- Materialized views (planned consumer): `tickets/backlog/updatable-views.md`
 - Cross-process reactive transport: out of scope here; see the sync packages
   under `packages/quereus-sync-*`.

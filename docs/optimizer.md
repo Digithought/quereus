@@ -1835,7 +1835,7 @@ For `'row'` bindings, the chosen key prefers the table's primary key when it's a
 - Multiple consumers (assertions, MVs, signals) share the same kernel and the same change capture; only their `apply` callbacks differ.
 
 ### Applicability Beyond Assertions
-- Materialized Views: compute ΔQ and merge into cached relation. The future MV ticket (`tickets/backlog/4-materialized-views.md`) plugs in by registering one `DeltaSubscription` per view with an `apply` that performs delete-then-upsert per binding tuple.
+- Materialized Views: compute ΔQ and merge into cached relation. The future MV ticket (`tickets/backlog/updatable-views.md`) plugs in by registering one `DeltaSubscription` per view with an `apply` that performs delete-then-upsert per binding tuple.
 - Triggers/Signals: invoke actions only for affected keys/groups.
 
 This places “what to bind” in the optimizer and “when/how to execute residuals” in the runtime, enabling reuse across features.
