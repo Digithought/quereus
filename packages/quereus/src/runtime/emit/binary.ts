@@ -4,7 +4,7 @@ import type { SqlValue } from "../../common/types.js";
 import type { Instruction, InstructionRun, RuntimeContext } from "../types.js";
 import type { BinaryOpNode } from "../../planner/nodes/scalar.js";
 import { emitPlanNode } from "../emitters.js";
-import { compareSqlValuesFast } from "../../util/comparison.js";
+import { compareSqlValuesFast, isTruthy } from "../../util/comparison.js";
 import type { CollationFunction } from "../../util/comparison.js";
 import { coerceToNumberForArithmetic } from "../../util/coercion.js";
 import { simpleLike } from "../../util/patterns.js";
@@ -327,40 +327,30 @@ export function emitLogicalOp(plan: BinaryOpNode, ctx: EmissionContext): Instruc
 	const operator = plan.expression.operator.toUpperCase();
 
 	function run(ctx: RuntimeContext, v1: SqlValue, v2: SqlValue): SqlValue {
-		// SQL three-valued logic
+		// SQL three-valued logic. Coerce non-NULL operands to a boolean using
+		// SQL truthiness (isTruthy) rather than JS truthiness so that values like
+		// blobs and non-numeric strings agree with how FilterNode/CASE/NOT treat
+		// them — otherwise `<blob> AND true` and a bare `<blob>` predicate diverge.
+		const b1 = v1 === null ? null : isTruthy(v1);
+		const b2 = v2 === null ? null : isTruthy(v2);
 		switch (operator) {
 			case 'AND': {
-				// NULL AND x -> NULL if x is true or NULL, otherwise false
-				// false AND x -> false
-				// true AND x -> x
-				if (v1 === null) {
-					return (v2 === null || v2) ? null : false;
-				}
-				if (!v1) return false;
-				return v2 === null ? null : (v2 ? true : false);
+				// false dominates; else NULL if any operand is NULL; else true.
+				if (b1 === false || b2 === false) return false;
+				if (b1 === null || b2 === null) return null;
+				return true;
 			}
 
 			case 'OR': {
-				// NULL OR x -> NULL if x is false or NULL, otherwise true
-				// true OR x -> true
-				// false OR x -> x
-				if (v1 === null) {
-					return (v2 === null || !v2) ? null : true;
-				}
-				if (v1) return true;
-				return v2 === null ? null : (v2 ? true : false);
+				// true dominates; else NULL if any operand is NULL; else false.
+				if (b1 === true || b2 === true) return true;
+				if (b1 === null || b2 === null) return null;
+				return false;
 			}
 
 			case 'XOR': {
-				// NULL XOR x -> NULL
-				// x XOR NULL -> NULL
-				// false XOR false -> false
-				// false XOR true -> true
-				// true XOR false -> true
-				// true XOR true -> false
-				if (v1 === null || v2 === null) return null;
-				const b1 = !!v1;
-				const b2 = !!v2;
+				// NULL with anything -> NULL; else logical inequality.
+				if (b1 === null || b2 === null) return null;
 				return b1 !== b2;
 			}
 
