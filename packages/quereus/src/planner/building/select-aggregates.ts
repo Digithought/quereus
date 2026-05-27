@@ -315,20 +315,10 @@ function createAggregateOutputScope(
 			new ColumnReferenceNode(s, exp as AST.ColumnExpr, agg.expression.getType(), attr.id, columnIndex));
 	});
 
-	// Register source columns for HAVING clause access
-	// Start after GROUP BY and aggregate columns
-	const sourceColumnStartIndex = groupByExpressions.length + aggregates.length;
-	for (let i = sourceColumnStartIndex; i < aggregateAttributes.length; i++) {
-		const attr = aggregateAttributes[i];
-		// Only register if not already registered (avoid conflicts with GROUP BY columns)
-		const symbolName = attr.name.toLowerCase();
-		const existingSymbols = aggregateOutputScope.getSymbols();
-		const alreadyRegistered = existingSymbols.some(([key]) => key === symbolName);
-		if (!alreadyRegistered) {
-			aggregateOutputScope.registerSymbol(symbolName, (exp, s) =>
-				new ColumnReferenceNode(s, exp as AST.ColumnExpr, attr.type, attr.id, i));
-		}
-	}
+	// Note: the aggregate node advertises exactly its GROUP BY + aggregate columns.
+	// Source columns for HAVING / correlated access are resolved through the runtime
+	// row-descriptor context and the source-column fallback in buildHavingFilter's
+	// hybrid scope — not through extra output attributes on the aggregate.
 
 	return aggregateOutputScope;
 }

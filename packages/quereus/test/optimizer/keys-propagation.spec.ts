@@ -414,12 +414,9 @@ describe('Key propagation and estimatedRows reduction', () => {
 		it('DISTINCT-eliminated ≤1-row join returns the same rows as the un-eliminated query', async () => {
 			// Behavioral soundness guard: eliminating DISTINCT (driven by the
 			// empty-key/singleton-FD propagated onto the join) must not change the
-			// result set. We compare against the DISTINCT-free query rather than a
-			// hard-coded shape so an unrelated pre-existing `*`-naming quirk in
-			// scalar-aggregate subqueries (second column relabeled, value correct —
-			// see tickets/fix/scalar-agg-subquery-star-column-naming) does not mask
-			// the property under test. DISTINCT is a no-op over a ≤1-row source, so
-			// both queries must agree row-for-row.
+			// result set. DISTINCT is a no-op over a ≤1-row source, so both queries
+			// must agree row-for-row — and, since the scalar-agg-subquery `*`-naming
+			// defect is fixed, both must expose the exact {a, b} shape.
 			await setup();
 			const distinctSql = 'SELECT DISTINCT * FROM (SELECT count(*) AS a FROM t) x CROSS JOIN (SELECT count(*) AS b FROM t) y';
 			const plainSql = 'SELECT * FROM (SELECT count(*) AS a FROM t) x CROSS JOIN (SELECT count(*) AS b FROM t) y';
@@ -427,7 +424,7 @@ describe('Key propagation and estimatedRows reduction', () => {
 			for await (const r of db.eval(distinctSql)) distinctRows.push(r as Record<string, unknown>);
 			const plainRows: Array<Record<string, unknown>> = [];
 			for await (const r of db.eval(plainSql)) plainRows.push(r as Record<string, unknown>);
-			expect(distinctRows).to.have.length(1);
+			expect(distinctRows).to.deep.equal([{ a: 3, b: 3 }]);
 			expect(distinctRows).to.deep.equal(plainRows);
 		});
 
@@ -507,6 +504,33 @@ describe('Key propagation and estimatedRows reduction', () => {
 				{ id: 2, v: 'b', c: 3 },
 				{ id: 3, v: 'c', c: 3 },
 			]);
+		});
+
+		it('scalar-aggregate subquery cross join exposes both aggregate columns by name (SELECT *)', async () => {
+			// Regression: physical aggregates once advertised extra source columns
+			// they never emitted (the optimizer appended the source attribute list).
+			// A scalar-aggregate subquery used as a join source (no Project to trim
+			// it) then leaked the inner table's first column name (`id`) in place of
+			// the second subquery's aggregate alias (`b`), yielding {a:3, id:3}.
+			await setup();
+			const rows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval(
+				'SELECT * FROM (SELECT count(*) AS a FROM t) x CROSS JOIN (SELECT count(*) AS b FROM t) y',
+			)) rows.push(r as Record<string, unknown>);
+			expect(rows).to.deep.equal([{ a: 3, b: 3 }]);
+		});
+
+		it('scalar-aggregate subquery cross join over different tables exposes both aliases', async () => {
+			// Proves the fix is not `*`-expansion-only: an explicit `x.a, y.b` over
+			// two different tables must resolve to the right aggregate columns/values.
+			await setup();
+			await db.exec("CREATE TABLE t2 (id INTEGER PRIMARY KEY, v TEXT) USING memory");
+			await db.exec("INSERT INTO t2 VALUES (1,'a'),(2,'b')");
+			const rows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval(
+				'SELECT x.a, y.b FROM (SELECT count(*) AS a FROM t) x CROSS JOIN (SELECT count(*) AS b FROM t2) y',
+			)) rows.push(r as Record<string, unknown>);
+			expect(rows).to.deep.equal([{ a: 3, b: 2 }]);
 		});
 	});
 

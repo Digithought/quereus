@@ -67,18 +67,9 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
       });
     });
 
-    // Add source attributes to support HAVING clauses
-    const sourceAttributes = this.source.getAttributes();
-    const existingAttrNames = new Set(attributes.map(attr => attr.name));
-
-    for (const sourceAttr of sourceAttributes) {
-      // Only add if not already present by name (avoid duplicates for GROUP BY columns)
-      if (!existingAttrNames.has(sourceAttr.name)) {
-        attributes.push(sourceAttr);
-        existingAttrNames.add(sourceAttr.name);
-      }
-    }
-
+    // Advertise only GROUP BY + aggregate columns — exactly what the emitter yields.
+    // Source values for HAVING / correlated reads flow through the runtime row-descriptor
+    // context, not through extra output attributes.
     return attributes;
   }
 
@@ -114,23 +105,13 @@ export class StreamAggregateNode extends PlanNode implements UnaryRelationalNode
         generated: false
       })));
 
-      // Then aggregate columns
+      // Then aggregate columns. Only GROUP BY + aggregate columns are advertised
+      // (consistent with getAttributes()); source columns are not emitted as output.
       columns.push(...this.aggregates.map(agg => ({
         name: agg.alias,
         type: agg.expression.getType(),
         generated: true
       })));
-
-      // Add all source columns to support HAVING clauses (consistent with getAttributes())
-      const sourceType = this.source.getType();
-      const existingNames = new Set(columns.map(col => col.name));
-
-      for (const sourceCol of sourceType.columns) {
-        // Only add if not already present (avoid duplicates for GROUP BY columns)
-        if (!existingNames.has(sourceCol.name)) {
-          columns.push(sourceCol);
-        }
-      }
     }
 
     return {
