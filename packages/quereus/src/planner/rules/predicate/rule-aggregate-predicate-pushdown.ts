@@ -63,7 +63,7 @@ export function ruleAggregatePredicatePushdown(node: PlanNode, _context: OptCont
 		if (!(gbExpr instanceof ColumnReferenceNode)) continue;
 		const outAttrId = aggAttrs[i].id;
 		const srcAttrId = gbExpr.attributeId;
-		const srcIdx = sourceAttrs.findIndex(a => a.id === srcAttrId);
+		const srcIdx = agg.source.getAttributeIndex().get(srcAttrId) ?? -1;
 		if (srcIdx < 0) continue;
 		outputToSource.set(outAttrId, { sourceAttrId: srcAttrId, sourceColIdx: srcIdx });
 		groupByOutputIndices.add(i);

@@ -368,8 +368,7 @@ export function ruleLateralTop1Asof(node: PlanNode, context: OptContext): PlanNo
 	}
 
 	// Translate the asof match attribute id to a table column index.
-	const tableAttrs = tableRef.getAttributes();
-	const matchColumnIdx = tableAttrs.findIndex(a => a.id === classified.asof.rightAttrId);
+	const matchColumnIdx = tableRef.getAttributeIndex().get(classified.asof.rightAttrId) ?? -1;
 	if (matchColumnIdx === -1) {
 		log('Asof match attr %d is not a column of the underlying table', classified.asof.rightAttrId);
 		return null;

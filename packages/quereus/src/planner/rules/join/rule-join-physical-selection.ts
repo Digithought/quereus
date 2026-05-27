@@ -39,9 +39,10 @@ function createSortForEquiPairs(
 	scope: import('../../scopes/scope.js').Scope
 ): RelationalPlanNode {
 	const attrs = source.getAttributes();
+	const attrIndex = source.getAttributeIndex();
 	const sortKeys = equiPairs.map(pair => {
 		const attrId = side === 'left' ? pair.leftAttrId : pair.rightAttrId;
-		const idx = attrs.findIndex(a => a.id === attrId);
+		const idx = attrIndex.get(attrId) ?? -1;
 		const attr = attrs[idx];
 		// Create a ColumnReferenceNode for this attribute
 		const colRef = new ColumnReferenceNode(

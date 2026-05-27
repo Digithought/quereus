@@ -56,7 +56,7 @@ export function ruleOrderByFdPruning(node: PlanNode, _context: _OptContext): Pla
 	if (node.sortKeys.length < 2) return null;
 
 	const source = node.source;
-	const sourceAttrs = source.getAttributes();
+	const sourceIndex = source.getAttributeIndex();
 	const sourcePhysical = source.physical;
 	const sourceFds = sourcePhysical.fds ?? [];
 	const sourceEcs = sourcePhysical.equivClasses ?? [];
@@ -88,7 +88,7 @@ export function ruleOrderByFdPruning(node: PlanNode, _context: _OptContext): Pla
 			survivors.push(key);
 			continue;
 		}
-		const srcIdx = sourceAttrs.findIndex(a => a.id === expr.attributeId);
+		const srcIdx = sourceIndex.get(expr.attributeId) ?? -1;
 		if (srcIdx < 0) {
 			// Defensive: column reference doesn't resolve into the source.
 			// Retain the key rather than mis-prune.

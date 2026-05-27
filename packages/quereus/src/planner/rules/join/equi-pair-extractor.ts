@@ -41,10 +41,10 @@ export function isOrderedOnEquiPairs(
 	if (!ordering || ordering.length === 0) return false;
 	if (equiPairs.length > ordering.length) return false;
 
-	const attrs = source.getAttributes();
+	const attrIndex = source.getAttributeIndex();
 	for (let i = 0; i < equiPairs.length; i++) {
 		const attrId = side === 'left' ? equiPairs[i].leftAttrId : equiPairs[i].rightAttrId;
-		const idx = attrs.findIndex(a => a.id === attrId);
+		const idx = attrIndex.get(attrId) ?? -1;
 		if (idx === -1) return false;
 		if (ordering[i].column !== idx || ordering[i].desc) return false;
 	}
@@ -64,10 +64,10 @@ export function reorderEquiPairsForMerge(
 	const leftOrdering = PlanNodeCharacteristics.getOrdering(left);
 	if (!leftOrdering || leftOrdering.length < equiPairs.length) return null;
 
-	const leftAttrs = left.getAttributes();
+	const leftAttrIndex = left.getAttributeIndex();
 	const colToEqIdx = new Map<number, number>();
 	for (let i = 0; i < equiPairs.length; i++) {
-		const attrIdx = leftAttrs.findIndex(a => a.id === equiPairs[i].leftAttrId);
+		const attrIdx = leftAttrIndex.get(equiPairs[i].leftAttrId) ?? -1;
 		if (attrIdx === -1) return null;
 		colToEqIdx.set(attrIdx, i);
 	}

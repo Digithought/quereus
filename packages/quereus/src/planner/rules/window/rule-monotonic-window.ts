@@ -231,7 +231,7 @@ export function ruleMonotonicWindow(node: PlanNode, _context: OptContext): PlanN
 	const leadDirection: 'asc' | 'desc' = orderBy[0].direction === 'desc' ? 'desc' : 'asc';
 	const leadAttrId = leadOrderBy.attributeId;
 	const sourceAttrs = node.source.getAttributes();
-	const leadColIdx = sourceAttrs.findIndex(a => a.id === leadAttrId);
+	const leadColIdx = node.source.getAttributeIndex().get(leadAttrId) ?? -1;
 	if (leadColIdx < 0) {
 		log('Leading ORDER BY attrId not present in source attributes');
 		return null;

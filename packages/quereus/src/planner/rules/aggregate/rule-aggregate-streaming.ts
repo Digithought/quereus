@@ -64,7 +64,7 @@ export function ruleAggregatePhysical(node: PlanNode, _context: OptContext): Pla
 
 	// Check if source already provides the required ordering
 	const sourceOrdering = PlanNodeCharacteristics.getOrdering(source);
-	const alreadySorted = isOrderedForGrouping(sourceOrdering, groupingKeys, source.getAttributes());
+	const alreadySorted = isOrderedForGrouping(sourceOrdering, groupingKeys, source.getAttributeIndex());
 
 	if (alreadySorted) {
 		// Already sorted → always stream aggregate (no sort cost, preserves ordering for downstream)
@@ -115,7 +115,7 @@ export const ruleAggregateStreaming = ruleAggregatePhysical;
 function isOrderedForGrouping(
 	ordering: { column: number; desc: boolean }[] | undefined,
 	groupingKeys: readonly ScalarPlanNode[],
-	sourceAttributes: readonly { id: number }[]
+	sourceAttrIndex: ReadonlyMap<number, number>
 ): boolean {
 	if (!ordering || ordering.length === 0) {
 		return false;
@@ -128,7 +128,7 @@ function isOrderedForGrouping(
 		}
 
 		const colRef = key as unknown as ColumnReferenceNode;
-		const idx = sourceAttributes.findIndex(a => a.id === colRef.attributeId);
+		const idx = sourceAttrIndex.get(colRef.attributeId) ?? -1;
 		if (idx < 0) {
 			return false;
 		}

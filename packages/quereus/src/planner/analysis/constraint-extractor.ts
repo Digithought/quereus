@@ -1177,7 +1177,7 @@ function classifyForAggregate(
         return;
     }
 
-    const sourceAttrs = (aggNode.source as RelationalPlanNode).getAttributes();
+    const sourceIndex = (aggNode.source as RelationalPlanNode).getAttributeIndex();
     // Source physical properties carry FDs/ECs propagated from below — including any
     // ECs added by Filters between the aggregate and the table reference.
     const sourcePhysical = (aggNode.source as unknown as { physical?: { fds?: readonly FunctionalDependency[]; equivClasses?: readonly (readonly number[])[] } }).physical;
@@ -1191,7 +1191,7 @@ function classifyForAggregate(
     for (const expr of groupBy) {
         if (expr.nodeType !== PlanNodeType.ColumnReference) continue;
         const attrId = (expr as unknown as _ColumnRef).attributeId;
-        const sourceColIdx = sourceAttrs.findIndex(a => a.id === attrId);
+        const sourceColIdx = sourceIndex.get(attrId) ?? -1;
         if (sourceColIdx >= 0) groupByEntries.push({ attrId, sourceColIdx });
     }
 
@@ -1220,14 +1220,14 @@ function classifyForAggregate(
 
         // Map each table-column index to its source-side index by attribute ID.
         // tableColIdx i has attrId = tInfo.attributes[i].id; that attr appears in
-        // sourceAttrs at some index (if not dropped by a Project between table and source).
+        // the source at some index (if not dropped by a Project between table and source).
         const attrIdByTableCol = new Map<number, number>();
         for (let i = 0; i < tInfo.attributes.length; i++) {
             attrIdByTableCol.set(i, tInfo.attributes[i].id);
         }
         const tableColToSourceCol = new Map<number, number>();
         for (const [tableColIdx, attrId] of attrIdByTableCol) {
-            const sourceColIdx = sourceAttrs.findIndex(a => a.id === attrId);
+            const sourceColIdx = sourceIndex.get(attrId) ?? -1;
             if (sourceColIdx >= 0) tableColToSourceCol.set(tableColIdx, sourceColIdx);
         }
 

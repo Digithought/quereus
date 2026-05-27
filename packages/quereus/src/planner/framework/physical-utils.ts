@@ -237,6 +237,8 @@ export function deriveOrderingFromMonotonicOn(
 	if (!monotonicOn || monotonicOn.length === 0) return undefined;
 	const result: { column: number; desc: boolean }[] = [];
 	for (const m of monotonicOn) {
+		// Raw `{ id }[]` helper with no owning node — see getAttributeIndex() callers;
+		// migrating would force a throwaway local map, so the array scan stays.
 		const idx = attrs.findIndex(a => a.id === m.attrId);
 		if (idx >= 0) {
 			result.push({ column: idx, desc: m.direction === 'desc' });

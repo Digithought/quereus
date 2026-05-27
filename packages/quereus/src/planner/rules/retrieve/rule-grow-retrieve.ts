@@ -445,7 +445,7 @@ function trySortAbsorbViaIndexOrdering(sort: SortNode, context: OptContext): Pla
 	if (!vtabModule?.getBestAccessPlan) return null;
 
 	// Translate sort keys to table-column ordering using attribute IDs.
-	const tableAttrs = tableRef.getAttributes();
+	const tableAttrIndex = tableRef.getAttributeIndex();
 	const requiredOrdering: OrderingSpec[] = [];
 	for (const key of sort.getSortKeys()) {
 		// Explicit NULLS FIRST/LAST is not currently propagated to the access
@@ -459,7 +459,7 @@ function trySortAbsorbViaIndexOrdering(sort: SortNode, context: OptContext): Pla
 			return null;
 		}
 		const colRef = key.expression as ColumnReferenceNode;
-		const tableColIdx = tableAttrs.findIndex(a => a.id === colRef.attributeId);
+		const tableColIdx = tableAttrIndex.get(colRef.attributeId) ?? -1;
 		if (tableColIdx < 0) {
 			log('Sort key not directly mappable to table column; cannot absorb');
 			return null;
