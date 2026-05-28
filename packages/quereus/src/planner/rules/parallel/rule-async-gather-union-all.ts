@@ -62,16 +62,16 @@ export function ruleAsyncGatherUnionAll(node: PlanNode, context: OptContext): Pl
 	if (children.length < tuning.minBranches) return null;
 
 	// Gate 1: every child must be concurrency-safe. A single unsafe branch
-	// poisons the rewrite.
+	// poisons the rewrite. Side-effect freedom (`isConcurrencySafe`) is the
+	// connection-lock gate that pairs with the module-level `concurrencySafe`
+	// physical flag: an impure subtree on a `'serial'` / `'reentrant-reads'`
+	// module would violate the connection lock under concurrent execution.
 	for (const child of children) {
 		if (child.physical.concurrencySafe !== true) {
 			log('Aborting rewrite: child %s is not concurrencySafe', child.id);
 			return null;
 		}
-		// Side-effect gate (independent of concurrencySafe): a branch whose
-		// subtree carries a write must not be driven concurrently with its
-		// siblings — that would interleave per-branch writes non-deterministically.
-		if (PlanNodeCharacteristics.subtreeHasSideEffects(child)) {
+		if (!PlanNodeCharacteristics.isConcurrencySafe(child)) {
 			log('Aborting rewrite: child %s has side effects', child.id);
 			return null;
 		}

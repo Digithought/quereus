@@ -702,6 +702,46 @@ rule that consults `subtreeHasSideEffects` will start refusing or
 weakening on the new shapes. The discipline is the safety net those
 landings stand on.
 
+### Parallel-track side-effect refusal
+
+The `parallel/` rules (`async-gather-union-all`, `async-gather-zip-by-key`,
+`eager-prefetch-probe`) and the `join/`-residing fan-out rules
+(`fanout-lookup-join`, `fanout-batched-outer`) all fork the
+`RuntimeContext` and drive sibling subtrees **concurrently** on the same
+connection. The module concurrency contract (`'serial'` /
+`'reentrant-reads'` / `'fully-reentrant'`) governs *reads*; a DML
+subtree on a sibling branch violates the per-connection lock under
+everything except `'fully-reentrant'`, and no module currently
+advertises that level. The parallel-recognition rules must therefore
+refuse to fold / fork / prefetch when any participating branch reports
+`hasSideEffects = true`.
+
+`PlanNodeCharacteristics.isConcurrencySafe(node)` is the shared
+predicate every parallel-track rule consults. It is implemented as the
+negation of `subtreeHasSideEffects` — side-effect freedom is the only
+gate today; the module-level concurrency contract is enforced
+separately via `node.physical.concurrencySafe`. Once a
+`'fully-reentrant'` module ships, `isConcurrencySafe` can be refined to
+permit concurrent impure execution on it, without touching every
+caller.
+
+The refusal pattern is uniform across the parallel rules:
+
+```typescript
+for (const branch of branches) {
+  if (branch.physical.concurrencySafe !== true) return null;   // module-level
+  if (!PlanNodeCharacteristics.isConcurrencySafe(branch)) return null; // side-effect
+}
+```
+
+This is a **refusal**, not a fallback to a serial variant — the rules
+are optimizations layered on top of an already-correct serial plan.
+Refusing leaves the serial plan in place, which is correct (writes
+execute exactly once, in textual order, under the connection lock).
+Regression coverage lives in
+`packages/quereus/test/optimizer/parallel-side-effect-refusal.spec.ts`,
+which pins the predicate's contract and the negative-fold cases.
+
 ## Common Patterns
 
 ### Predicate Analysis and Pushdown

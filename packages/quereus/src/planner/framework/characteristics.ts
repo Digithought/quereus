@@ -43,6 +43,32 @@ export class PlanNodeCharacteristics {
 		return false;
 	}
 
+	/**
+	 * True iff the subtree rooted at `node` is safe to drive concurrently with a
+	 * sibling subtree under a parallel-track operator (`EagerPrefetchNode`,
+	 * `AsyncGatherNode`, `FanOutLookupJoinNode`).
+	 *
+	 * For now, the only gate is **side-effect freedom**: a subtree carrying a
+	 * write violates the per-connection lock contract under every module
+	 * concurrency mode except `'fully-reentrant'`, and no module currently
+	 * advertises that level. The module-level concurrency contract
+	 * (`'serial'` / `'reentrant-reads'` / `'fully-reentrant'`) is enforced
+	 * separately via `PhysicalProperties.concurrencySafe`, which the parallel-
+	 * track rules already consult; this predicate is the **side-effect** gate
+	 * that pairs with it. Once a `'fully-reentrant'` module ships, this
+	 * predicate can be refined to allow concurrent impure execution on it.
+	 *
+	 * Pairs with the parallel-track recognition rules' refusal discipline: any
+	 * rule that introduces an `EagerPrefetchNode` / `AsyncGatherNode` /
+	 * `FanOutLookupJoinNode` consults this predicate on every participating
+	 * branch and refuses (leaves the serial plan in place) when any branch
+	 * reports unsafe. See `docs/optimizer.md` § "Parallel-track side-effect
+	 * refusal" for the cross-rule discipline.
+	 */
+	static isConcurrencySafe(node: PlanNode): boolean {
+		return !this.subtreeHasSideEffects(node);
+	}
+
 	static isReadOnly(node: PlanNode): boolean {
 		return node.physical.readonly !== false;
 	}

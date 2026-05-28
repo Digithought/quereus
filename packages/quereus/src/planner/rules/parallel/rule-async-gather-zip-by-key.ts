@@ -159,6 +159,8 @@ export function ruleAsyncGatherZipByKey(node: PlanNode, context: OptContext): Pl
 
 	// Gates (mirror rule-async-gather-union-all). These are projection-layout
 	// independent, so they run once before deciding canonical-vs-reordered.
+	// `isConcurrencySafe` is the connection-lock gate (side-effect freedom)
+	// pairing with the module-level `physical.concurrencySafe` flag.
 	for (const branch of branches) {
 		if (branch.physical.concurrencySafe !== true) {
 			log('Aborting: branch %s is not concurrencySafe', branch.id);
@@ -168,9 +170,7 @@ export function ruleAsyncGatherZipByKey(node: PlanNode, context: OptContext): Pl
 			log('Aborting: branch %s is correlated (lateral dependency)', branch.id);
 			return null;
 		}
-		// Side-effect gate: a branch whose subtree carries a write must not
-		// run concurrently with siblings.
-		if (PlanNodeCharacteristics.subtreeHasSideEffects(branch)) {
+		if (!PlanNodeCharacteristics.isConcurrencySafe(branch)) {
 			log('Aborting: branch %s has side effects', branch.id);
 			return null;
 		}

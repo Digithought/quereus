@@ -226,12 +226,14 @@ export function ruleFanOutLookupJoin(node: PlanNode, context: OptContext): PlanN
 
 	// Side-effect gate: the fan-out drives every branch concurrently per outer
 	// row, so a side-effect-bearing branch (or outer) would interleave writes.
-	if (PlanNodeCharacteristics.subtreeHasSideEffects(outerSubtree)) return null;
+	// `isConcurrencySafe` is the connection-lock gate that pairs with the
+	// per-branch `physical.concurrencySafe` flag tracked on `FanOutBranchSpec`.
+	if (!PlanNodeCharacteristics.isConcurrencySafe(outerSubtree)) return null;
 	for (const b of spineBranches) {
-		if (PlanNodeCharacteristics.subtreeHasSideEffects(b.lookup)) return null;
+		if (!PlanNodeCharacteristics.isConcurrencySafe(b.lookup)) return null;
 	}
 	for (const b of subqueryBranches) {
-		if (PlanNodeCharacteristics.subtreeHasSideEffects(b.subqueryRoot)) return null;
+		if (!PlanNodeCharacteristics.isConcurrencySafe(b.subqueryRoot)) return null;
 	}
 
 	// Memory-safety gate (before clustering): a `cross` branch's 1:n fan-out

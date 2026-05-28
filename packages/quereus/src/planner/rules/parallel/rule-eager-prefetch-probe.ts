@@ -61,14 +61,15 @@ export function ruleEagerPrefetchProbe(node: PlanNode, context: OptContext): Pla
 	if (probe.nodeType === PlanNodeType.AsyncGather) return null;
 
 	// Concurrency gate: the eager pump iterates the probe concurrently with the
-	// build's for-await, so both sides must be proven concurrency-safe.
+	// build's for-await, so both sides must be proven concurrency-safe. The
+	// `physical.concurrencySafe` flag is the module-level (lock-contract) gate;
+	// `PlanNodeCharacteristics.isConcurrencySafe` is the side-effect gate the
+	// connection lock additionally requires (an impure subtree on a
+	// `'serial'` / `'reentrant-reads'` module would violate the lock).
 	if (probe.physical.concurrencySafe !== true) return null;
 	if (node.right.physical.concurrencySafe !== true) return null;
-
-	// Side-effect gate: prefetching iterates the probe concurrently with the
-	// build, which would interleave per-side writes.
-	if (PlanNodeCharacteristics.subtreeHasSideEffects(probe)
-		|| PlanNodeCharacteristics.subtreeHasSideEffects(node.right)) {
+	if (!PlanNodeCharacteristics.isConcurrencySafe(probe)
+		|| !PlanNodeCharacteristics.isConcurrencySafe(node.right)) {
 		return null;
 	}
 

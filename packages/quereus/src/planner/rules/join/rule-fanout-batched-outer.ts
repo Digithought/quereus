@@ -132,10 +132,11 @@ export function ruleFanOutBatchedOuter(node: PlanNode, context: OptContext): Pla
 	if (node.outer.physical.concurrencySafe !== true) return null;
 
 	// Side-effect gate: batched outer pump runs the outer concurrently with
-	// in-flight per-row branch forks — interleaves outer-side writes.
-	if (PlanNodeCharacteristics.subtreeHasSideEffects(node.outer)) return null;
+	// in-flight per-row branch forks — interleaves outer-side writes. Pairs
+	// with the module-level `physical.concurrencySafe` gate above.
+	if (!PlanNodeCharacteristics.isConcurrencySafe(node.outer)) return null;
 	for (const b of node.branches) {
-		if (PlanNodeCharacteristics.subtreeHasSideEffects(b.child)) return null;
+		if (!PlanNodeCharacteristics.isConcurrencySafe(b.child)) return null;
 	}
 
 	// Wrap the outer in EagerPrefetch (isolation + read-ahead feed) unless it is
