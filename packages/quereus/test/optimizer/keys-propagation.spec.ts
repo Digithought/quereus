@@ -532,6 +532,66 @@ describe('Key propagation and estimatedRows reduction', () => {
 			)) rows.push(r as Record<string, unknown>);
 			expect(rows).to.deep.equal([{ a: 3, b: 2 }]);
 		});
+
+		async function valuesPhysical(sql: string): Promise<{ fds?: Fd[]; estimatedRows?: number } | undefined> {
+			const rows: Array<{ op: string; physical: string | null }> = [];
+			for await (const r of db.eval('SELECT op, physical FROM query_plan(?)', [sql])) {
+				rows.push(r as unknown as { op: string; physical: string | null });
+			}
+			const row = rows.find(r => r.op.toUpperCase().includes('VALUES'));
+			if (!row?.physical) return undefined;
+			return JSON.parse(row.physical);
+		}
+
+		// All-literal VALUES is const-folded to a TableLiteral before the physical
+		// pass runs, so to actually exercise `ValuesNode.computePhysical` we need a
+		// VALUES the const-folder cannot evaluate. Parameter references (`?`) are
+		// non-const at plan time, so they keep the node as a `Values` in the
+		// physical plan.
+
+		it('single-row VALUES emits the singleton ∅→all FD on the Values physical', async () => {
+			const phys = await valuesPhysical('SELECT * FROM (VALUES (?, ?)) AS v(a, b)');
+			expect(phys, 'expected VALUES physical').to.not.equal(undefined);
+			expect(hasSingletonFd(phys!.fds, 2), 'expected singleton ∅→all FD for single-row VALUES').to.equal(true);
+		});
+
+		it('multi-row VALUES does NOT emit the singleton FD', async () => {
+			const phys = await valuesPhysical('SELECT * FROM (VALUES (?, ?), (?, ?)) AS v(a, b)');
+			expect(phys, 'expected VALUES physical').to.not.equal(undefined);
+			expect(hasSingletonFd(phys!.fds, 2), 'multi-row VALUES must not emit the singleton').to.equal(false);
+		});
+
+		it('ORDER BY whole-Sort eliminated over a single-row VALUES', async () => {
+			const types = await nodeTypesOf('SELECT * FROM (VALUES (?, ?)) AS v(a, b) ORDER BY a');
+			expect(types, 'whole-Sort must be eliminated over a single-row VALUES').to.not.include('Sort');
+			// Negative control: 2-row VALUES still requires a Sort.
+			const multiTypes = await nodeTypesOf('SELECT * FROM (VALUES (?, ?), (?, ?)) AS v(a, b) ORDER BY a');
+			expect(multiTypes, 'multi-row VALUES must retain its Sort').to.include('Sort');
+		});
+
+		it('DISTINCT eliminated over a single-row VALUES', async () => {
+			const types = await nodeTypesOf('SELECT DISTINCT * FROM (VALUES (?, ?)) AS v(a, b)');
+			expect(types, 'DISTINCT must be eliminated over a single-row VALUES').to.not.include('Distinct');
+			// Negative control: 2-row VALUES retains DISTINCT.
+			const multiTypes = await nodeTypesOf('SELECT DISTINCT * FROM (VALUES (?, ?), (?, ?)) AS v(a, b)');
+			expect(multiTypes, 'multi-row VALUES must retain DISTINCT').to.include('Distinct');
+		});
+
+		it('eliminated ORDER BY / DISTINCT over single-row VALUES still returns the right rows', async () => {
+			// Behavioral soundness guard: dropping the Sort / Distinct (driven by the
+			// singleton FD this ticket adds) must not change the result set. Column
+			// names from `AS v(a, b)` are not always reflected when projecting `*`
+			// over a parameterized VALUES, so compare row values rather than aliases.
+			const valuesOf = (r: Record<string, unknown>) => Object.values(r);
+			const orderRows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval('SELECT * FROM (VALUES (?, ?)) AS v(a, b) ORDER BY a', [1, 2])) orderRows.push(r as Record<string, unknown>);
+			expect(orderRows).to.have.length(1);
+			expect(valuesOf(orderRows[0])).to.deep.equal([1, 2]);
+			const distinctRows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval('SELECT DISTINCT * FROM (VALUES (?, ?)) AS v(a, b)', [1, 2])) distinctRows.push(r as Record<string, unknown>);
+			expect(distinctRows).to.have.length(1);
+			expect(valuesOf(distinctRows[0])).to.deep.equal([1, 2]);
+		});
 	});
 
 	describe('Projection isSet soundness', () => {
