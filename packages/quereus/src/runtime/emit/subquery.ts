@@ -131,7 +131,7 @@ export function emitIn(plan: InNode, ctx: EmissionContext): Instruction {
 			return {
 				params: [sourceInstruction, conditionExpr],
 				run: runImpure as InstructionRun,
-				note: 'IN (subquery, impure)'
+				note: 'IN(impure)'
 			};
 		}
 

@@ -121,6 +121,32 @@ drop table inner_pk;
 drop table outer_pk;
 
 -- ===================================
+-- 8b. UPDATE in EXISTS position fires its writes (parallel to case 1)
+-- ===================================
+
+create table upd_e (id integer primary key, v integer);
+insert into upd_e values (1, 10), (2, 20), (3, 30);
+select exists (update upd_e set v = v + 1 returning v) as ex;
+→ [{"ex":true}]
+select v from upd_e order by id;
+→ [{"v":11},{"v":21},{"v":31}]
+drop table upd_e;
+
+-- ===================================
+-- 8c. DELETE as scalar subquery returns the deleted row's value
+-- ===================================
+-- Single-row DELETE keeps the scalar deterministic without relying on order
+-- of returned rows for multi-row DML in scalar position.
+
+create table del_s (id integer primary key, v integer);
+insert into del_s values (1, 100), (2, 200), (3, 300);
+select (delete from del_s where id = 2 returning v) as deleted;
+→ [{"deleted":200}]
+select v from del_s order by id;
+→ [{"v":100},{"v":300}]
+drop table del_s;
+
+-- ===================================
 -- 9. View bodied as VALUES is unupdateable (FD-driven path)
 -- ===================================
 
