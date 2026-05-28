@@ -174,9 +174,10 @@ This ensures type information flows through the entire planning and execution pi
 **DATETIME**
 - Physical: `PhysicalType.TEXT` (ISO 8601 string: "YYYY-MM-DDTHH:MM:SS.sss")
 - Values: ISO datetime strings
-- Validation: Must parse as valid Temporal.PlainDateTime
-- Comparison: Lexicographic
+- Validation: Must parse as valid Temporal.PlainDateTime, Temporal.ZonedDateTime, or Temporal.Instant
+- Comparison: Lexicographic (by UTC wall-clock — see canonicalization below)
 - Collations: None
+- Canonicalization: Inputs with an offset (`+HH:MM` / `Z`) or `[zone]` annotation are converted to UTC, and numeric inputs (Unix milliseconds) are canonicalized through UTC, before being stored as the bare PlainDateTime form. Equal instants compare equal regardless of input shape.
 
 **TIMESPAN**
 - Physical: `PhysicalType.TEXT` (ISO 8601 duration string: "PT1H30M", "P1DT2H")

@@ -3,6 +3,21 @@ import { BINARY_COLLATION } from '../util/comparison.js';
 import { Temporal } from 'temporal-polyfill';
 
 /**
+ * Parse any string ISO datetime form into a UTC PlainDateTime — the canonical
+ * stored shape for DATETIME values. Zone-bearing inputs ([zone] annotation,
+ * `Z` suffix, or `±HH:MM` offset) are converted to UTC; bare ISO datetimes
+ * are treated as already-UTC wall-clock.
+ */
+function parseDateTimeStringToUtcPlain(v: string): Temporal.PlainDateTime {
+	// ZonedDateTime first — requires explicit [zone], so the match is unambiguous.
+	try { return Temporal.ZonedDateTime.from(v).toPlainDateTime(); } catch { /* fall through */ }
+	// Instant.from handles `Z` suffix and bare offsets like `+00:00`.
+	try { return Temporal.Instant.from(v).toZonedDateTimeISO('UTC').toPlainDateTime(); } catch { /* fall through */ }
+	// Bare PlainDateTime (no zone/offset) — assume UTC wall-clock.
+	return Temporal.PlainDateTime.from(v);
+}
+
+/**
  * DATE type - stores ISO 8601 date strings (YYYY-MM-DD)
  * Uses Temporal.PlainDate for validation and parsing
  */
@@ -18,7 +33,12 @@ export const DATE_TYPE: LogicalType = {
 			Temporal.PlainDate.from(v);
 			return true;
 		} catch {
-			return false;
+			try {
+				parseDateTimeStringToUtcPlain(v);
+				return true;
+			} catch {
+				return false;
+			}
 		}
 	},
 
@@ -28,8 +48,14 @@ export const DATE_TYPE: LogicalType = {
 			try {
 				const date = Temporal.PlainDate.from(v);
 				return date.toString(); // ISO 8601 format: YYYY-MM-DD
-			} catch (e) {
-				throw new TypeError(`Cannot convert '${v}' to DATE: ${e instanceof Error ? e.message : String(e)}`);
+			} catch (ePlain) {
+				try {
+					// Fall back to full datetime parsing so Z-suffixed / offset /
+					// zoned datetime strings degrade to their UTC date.
+					return parseDateTimeStringToUtcPlain(v).toPlainDate().toString();
+				} catch {
+					throw new TypeError(`Cannot convert '${v}' to DATE: ${ePlain instanceof Error ? ePlain.message : String(ePlain)}`);
+				}
 			}
 		}
 		if (typeof v === 'number') {
@@ -73,7 +99,12 @@ export const TIME_TYPE: LogicalType = {
 			Temporal.PlainTime.from(v);
 			return true;
 		} catch {
-			return false;
+			try {
+				parseDateTimeStringToUtcPlain(v);
+				return true;
+			} catch {
+				return false;
+			}
 		}
 	},
 
@@ -83,8 +114,14 @@ export const TIME_TYPE: LogicalType = {
 			try {
 				const time = Temporal.PlainTime.from(v);
 				return time.toString(); // ISO 8601 format: HH:MM:SS or HH:MM:SS.sss
-			} catch (e) {
-				throw new TypeError(`Cannot convert '${v}' to TIME: ${e instanceof Error ? e.message : String(e)}`);
+			} catch (ePlain) {
+				try {
+					// Fall back to full datetime parsing so Z-suffixed / offset /
+					// zoned datetime strings degrade to their UTC time.
+					return parseDateTimeStringToUtcPlain(v).toPlainTime().toString();
+				} catch {
+					throw new TypeError(`Cannot convert '${v}' to TIME: ${ePlain instanceof Error ? ePlain.message : String(ePlain)}`);
+				}
 			}
 		}
 		if (typeof v === 'number') {
@@ -121,17 +158,10 @@ export const DATETIME_TYPE: LogicalType = {
 		if (v === null) return true;
 		if (typeof v !== 'string') return false;
 		try {
-			// Try PlainDateTime first
-			Temporal.PlainDateTime.from(v);
+			parseDateTimeStringToUtcPlain(v);
 			return true;
 		} catch {
-			try {
-				// Also accept ZonedDateTime
-				Temporal.ZonedDateTime.from(v);
-				return true;
-			} catch {
-				return false;
-			}
+			return false;
 		}
 	},
 
@@ -139,23 +169,15 @@ export const DATETIME_TYPE: LogicalType = {
 		if (v === null) return null;
 		if (typeof v === 'string') {
 			try {
-				// Try PlainDateTime first
-				const dt = Temporal.PlainDateTime.from(v);
-				return dt.toString(); // ISO 8601 format: YYYY-MM-DDTHH:MM:SS
-			} catch {
-				try {
-					// Try ZonedDateTime
-					const zdt = Temporal.ZonedDateTime.from(v);
-					return zdt.toString(); // ISO 8601 with timezone
-				} catch (e) {
-					throw new TypeError(`Cannot convert '${v}' to DATETIME: ${e instanceof Error ? e.message : String(e)}`);
-				}
+				return parseDateTimeStringToUtcPlain(v).toString();
+			} catch (e) {
+				throw new TypeError(`Cannot convert '${v}' to DATETIME: ${e instanceof Error ? e.message : String(e)}`);
 			}
 		}
 		if (typeof v === 'number') {
-			// Unix timestamp (milliseconds)
+			// Unix timestamp (milliseconds) — canonicalize to bare PlainDateTime in UTC.
 			const instant = Temporal.Instant.fromEpochMilliseconds(v);
-			return instant.toZonedDateTimeISO('UTC').toString();
+			return instant.toZonedDateTimeISO('UTC').toPlainDateTime().toString();
 		}
 		throw new TypeError(`Cannot convert ${typeof v} to DATETIME`);
 	},
