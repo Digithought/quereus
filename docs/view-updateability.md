@@ -4,6 +4,20 @@
 
 Quereus treats views, CTEs, and subqueries-in-`from` uniformly: any relation expression that can be written as a `select` can also be the target of an `insert`, `update`, or `delete`. The engine derives the required base-table operations from the relation's predicate, its functional-dependency surface, and the per-operator semantics described below.
 
+### View-body forms
+
+A view body is any relation-producing `QueryExpr` except DML:
+
+- **`SELECT`**: the canonical case. Updateability is FD-driven per the rules below.
+- **`VALUES (…), …`**: a literal row set. The body has no base-table lineage,
+  so the FD walker reaches no `TableReferenceNode`; the view is read-only.
+  Insert / update / delete against a `VALUES`-bodied view raises the standard
+  "no recoverable base operation" diagnostic.
+- **`INSERT/UPDATE/DELETE … RETURNING`**: **rejected at view-creation time.**
+  A view body re-evaluates on every reference; a DML body would re-drive the
+  write per read, which is incoherent with view semantics. Mutations belong
+  in the statement that *references* the view, not in the view body.
+
 There is no `with check option`. There is no `instead of` trigger surface. There is no view-level flag declaring updateability. A relation is updateable iff a deterministic decomposition exists at plan time; if it does not, the mutation surfaces a structured diagnostic naming the operator and column that obstructed propagation.
 
 ## Philosophy: Predicates Rule

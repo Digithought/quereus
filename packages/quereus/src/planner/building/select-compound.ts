@@ -11,7 +11,9 @@ import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { buildExpression } from './expression.js';
 import { buildValuesStmt } from './select.js';
-// Import will be added after refactoring select.ts
+import { buildInsertStmt } from './insert.js';
+import { buildUpdateStmt } from './update.js';
+import { buildDeleteStmt } from './delete.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 
@@ -34,8 +36,9 @@ export function buildCompoundSelect(
 	const leftPlan = buildSelectStmt(contextWithCTEs, leftCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
 
 	// Right side: any QueryExpr. SELECT legs strip ORDER BY/LIMIT/OFFSET (those
-	// belong to the outer compound). VALUES legs build directly. DML legs are
-	// gated until the dml-in-expression-position ticket lifts them.
+	// belong to the outer compound). VALUES legs build directly. DML legs
+	// (RETURNING enforced by the parser) build through the standard DML
+	// builders; their RETURNING projection supplies the compound-leg arity.
 	const rightStmt = stmt.compound.select;
 	let rightPlan: RelationalPlanNode;
 	switch (rightStmt.type) {
@@ -48,15 +51,14 @@ export function buildCompoundSelect(
 			rightPlan = buildValuesStmt(contextWithCTEs, rightStmt);
 			break;
 		case 'insert':
+			rightPlan = buildInsertStmt(contextWithCTEs, rightStmt) as RelationalPlanNode;
+			break;
 		case 'update':
+			rightPlan = buildUpdateStmt(contextWithCTEs, rightStmt) as RelationalPlanNode;
+			break;
 		case 'delete':
-			throw new QuereusError(
-				`${rightStmt.type.toUpperCase()} as a compound set-operation leg is not yet supported — track ticket dml-in-expression-position.`,
-				StatusCode.UNSUPPORTED,
-				undefined,
-				rightStmt.loc?.start.line,
-				rightStmt.loc?.start.column,
-			);
+			rightPlan = buildDeleteStmt(contextWithCTEs, rightStmt) as RelationalPlanNode;
+			break;
 	}
 
 	// Expand DIFF as (A EXCEPT B) UNION (B EXCEPT A)

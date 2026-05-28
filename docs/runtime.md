@@ -882,6 +882,11 @@ Non-deterministic expressions (like `random()`, `datetime('now')`) produce diffe
 - `date('now')`, `time('now')`, `datetime('now')`, `julianday('now')` - Current time functions
 - User-defined functions marked as non-deterministic
 - Any expression containing non-deterministic sub-expressions
+- DML in expression position (`(insert/update/delete … returning …)` inside
+  a CHECK / DEFAULT / assertion expression). DML is non-deterministic via
+  the side-effect axis — the `DmlExecutorNode` sets `deterministic: false`,
+  which propagates through the AND-of-children physical-properties chain
+  and is rejected by the determinism enforcer.
 
 **Allowed in Constraints and Defaults:**
 - Constant literals: `42`, `'hello'`, `true`
@@ -1014,6 +1019,36 @@ async function run(rctx: RuntimeContext, input: AsyncIterable<Row>): Promise<und
 	return undefined;
 }
 ```
+
+### Impure subquery emitters: full-drain + run-once
+
+Scalar, `IN`, and `EXISTS` subquery emitters detect a side-effecting inner via
+`PlanNodeCharacteristics.subtreeHasSideEffects(plan.subquery)` and switch to
+an impure-path implementation that applies two contracts:
+
+- **Full drain.** The emitter iterates every row of the inner. The pure path's
+  short-circuits (scalar's "first row only" / `IN`'s "first match" / `EXISTS`'s
+  "first row") would skip writes past row 1, so they are dropped for impure
+  inners. Loss of the short-circuit is acceptable because (a) it only fires for
+  DML-bearing inners and (b) correctness trumps the optimization there.
+- **Run-once per statement execution.** A correlated outer expression or a
+  per-row scan would re-invoke the scalar subquery's `run` function once per
+  outer row. The emitter memoizes the materialized result and the
+  scalar/`EXISTS`/`IN` answer on first call, and replays the memoized answer
+  on subsequent calls without re-driving the iterator. Closure state is
+  per-emission and `Statement` re-emits per execution, so the memoization
+  resets between prepared-statement runs.
+
+Both contracts are gated by `physical.readonly === false` on the inner — pure
+subqueries take the unchanged short-circuit fast path. See
+`src/runtime/emit/subquery.ts` for the emitter source.
+
+DML in expression position is rejected as a view body at view-creation time
+(see `src/planner/building/create-view.ts`). A view body re-evaluates on
+every reference; a DML body would re-drive writes per read, which the
+run-once fence cannot rescue (views compose, the cache lives at one emission
+site, and a downstream consumer would observe stale state). The check is
+permanent, not pending.
 
 ## Query Optimizer Integration
 

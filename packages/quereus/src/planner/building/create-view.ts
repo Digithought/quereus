@@ -8,10 +8,11 @@ import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 
 /**
- * Plan the view body for arity validation. Mirrors the planning-time gate
- * used in other relation-position sites: SELECT/VALUES build directly; DML
- * bodies parse but cannot yet execute as a view body (see follow-up
- * ticket dml-in-expression-position).
+ * Plan the view body for arity validation. SELECT and VALUES bodies build
+ * directly. DML bodies (INSERT/UPDATE/DELETE with RETURNING) are rejected
+ * permanently — a view body re-evaluates on every reference, so a DML body
+ * would re-drive writes on every read, which is incoherent with view
+ * semantics. Mutations must be expressed in the query that *uses* the view.
  */
 function planViewBody(ctx: PlanningContext, viewName: string, body: AST.QueryExpr): RelationalPlanNode {
 	switch (body.type) {
@@ -31,8 +32,8 @@ function planViewBody(ctx: PlanningContext, viewName: string, body: AST.QueryExp
 		case 'update':
 		case 'delete':
 			throw new QuereusError(
-				`${body.type.toUpperCase()} as a view body is not yet supported — track ticket dml-in-expression-position.`,
-				StatusCode.UNSUPPORTED,
+				`${body.type.toUpperCase()} cannot be used as a view body — a view re-evaluates on every reference, which would re-drive the write. Move the mutation into the statement that references the view.`,
+				StatusCode.ERROR,
 				undefined,
 				body.loc?.start.line,
 				body.loc?.start.column,

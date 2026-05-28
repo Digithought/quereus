@@ -4,6 +4,9 @@ import { CTENode, type CTEPlanNode, type CTEScopeNode } from '../nodes/cte-node.
 import { RecursiveCTENode } from '../nodes/recursive-cte-node.js';
 import { InternalRecursiveCTERefNode } from '../nodes/internal-recursive-cte-ref-node.js';
 import { buildSelectStmt, buildValuesStmt } from './select.js';
+import { buildInsertStmt } from './insert.js';
+import { buildUpdateStmt } from './update.js';
+import { buildDeleteStmt } from './delete.js';
 import { buildExpression } from './expression.js';
 import type { RelationalPlanNode, ScalarPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
@@ -82,8 +85,8 @@ export function buildCommonTableExpr(
 
 	// For non-recursive CTEs or recursive CTEs without UNION structure.
 	// CTE bodies are QueryExprs; SELECT and VALUES bodies build straight to a
-	// relation. DML bodies (with RETURNING) parse but are gated until the
-	// dml-in-expression-position ticket lifts them.
+	// relation. DML bodies (RETURNING enforced by the parser) lower through
+	// the DML builders — the resulting ReturningNode is the CTE's surface.
 	let query: RelationalPlanNode;
 	switch (cte.query.type) {
 		case 'select':
@@ -93,15 +96,14 @@ export function buildCommonTableExpr(
 			query = buildValuesStmt(cteContext, cte.query);
 			break;
 		case 'insert':
+			query = buildInsertStmt(cteContext, cte.query) as RelationalPlanNode;
+			break;
 		case 'update':
+			query = buildUpdateStmt(cteContext, cte.query) as RelationalPlanNode;
+			break;
 		case 'delete':
-			throw new QuereusError(
-				`${cte.query.type.toUpperCase()} CTE bodies are not yet supported — track ticket dml-in-expression-position.`,
-				StatusCode.UNSUPPORTED,
-				undefined,
-				cte.query.loc?.start.line,
-				cte.query.loc?.start.column,
-			);
+			query = buildDeleteStmt(cteContext, cte.query) as RelationalPlanNode;
+			break;
 	}
 
 	// Validate declared column count matches the SELECT projection arity

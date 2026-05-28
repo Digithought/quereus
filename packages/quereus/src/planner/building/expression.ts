@@ -10,6 +10,9 @@ import type { RelationType } from '../../common/datatype.js';
 import { resolveColumn, resolveParameter } from '../resolve.js';
 import { Ambiguous } from '../scopes/scope.js';
 import { buildSelectStmt, buildValuesStmt } from './select.js';
+import { buildInsertStmt } from './insert.js';
+import { buildUpdateStmt } from './update.js';
+import { buildDeleteStmt } from './delete.js';
 import { resolveWindowFunction } from '../../schema/window-function.js';
 import { buildFunctionCall } from './function-call.js';
 import { createLogger } from '../../common/logger.js';
@@ -18,17 +21,17 @@ import { createLogger } from '../../common/logger.js';
  * Plans a `QueryExpr` in scalar / IN / EXISTS expression position.
  *
  * SELECT and VALUES legs lower to their normal relational builders. DML
- * legs (INSERT/UPDATE/DELETE with RETURNING) parse here but cannot yet
- * execute in expression position — they need full-drain semantics, a
- * run-once fence, and change-scope propagation that the follow-up ticket
- * `dml-in-expression-position` will land. Until then we refuse with a
- * clear, pre-execution error so users see the constraint at plan time.
+ * legs (INSERT/UPDATE/DELETE with RETURNING — the parser requires RETURNING
+ * in this position) build through the standard DML builders and yield a
+ * `ReturningNode`. The runtime emitters for scalar / IN / EXISTS detect a
+ * side-effecting inner via `subtreeHasSideEffects` and apply full-drain +
+ * run-once semantics (see `docs/runtime.md`).
  */
 function buildExpressionPositionQueryExpr(
 	ctx: PlanningContext,
 	query: AST.QueryExpr,
 	preserveInputColumns: boolean,
-	siteLabel: 'scalar subquery' | 'IN subquery' | 'EXISTS subquery',
+	_siteLabel: 'scalar subquery' | 'IN subquery' | 'EXISTS subquery',
 ): RelationalPlanNode {
 	switch (query.type) {
 		case 'select':
@@ -36,15 +39,11 @@ function buildExpressionPositionQueryExpr(
 		case 'values':
 			return buildValuesStmt(ctx, query);
 		case 'insert':
+			return buildInsertStmt(ctx, query) as RelationalPlanNode;
 		case 'update':
+			return buildUpdateStmt(ctx, query) as RelationalPlanNode;
 		case 'delete':
-			throw new QuereusError(
-				`${query.type.toUpperCase()} is not yet supported in ${siteLabel} position — track ticket dml-in-expression-position.`,
-				StatusCode.UNSUPPORTED,
-				undefined,
-				query.loc?.start.line,
-				query.loc?.start.column,
-			);
+			return buildDeleteStmt(ctx, query) as RelationalPlanNode;
 	}
 }
 

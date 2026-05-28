@@ -51,13 +51,38 @@ Each of these may appear at any **relation site**:
 position consumes a relation, so a `RETURNING`-less DML is rejected at parse
 time outside top-level.
 
-**Today's planner runs the SELECT and VALUES forms at every site.** Running
-DML in scalar / IN / EXISTS / compound-leg / view-body / non-top CTE-body
-positions is a separate milestone (see follow-up ticket
-`dml-in-expression-position`); the planner reports a clear "not yet
-supported" error at plan time until that lands. DML in a top-level FROM
-subquery source has worked historically and continues to work via the
-unified `SubquerySource` shape.
+**All five forms run at every relation site**, with one exception: DML
+(`INSERT/UPDATE/DELETE … RETURNING`) is rejected as a view body. A view
+re-evaluates on every reference, and replaying a write per read is incoherent
+with view semantics; the mutation belongs in the statement that references
+the view, not in the view body. The rejection fires at view-creation time.
+
+**Run-once + full-drain contract for impure subqueries.** When a DML appears
+in scalar / `IN` / `EXISTS` position, the runtime applies two contracts that
+do not apply to pure inners:
+
+- **Full drain.** The emitter consumes every row of the inner iterator —
+  no short-circuit on first row (`scalar`), on match (`IN`), or on
+  `EXISTS = true`. The pure-inner optimization survives unchanged.
+- **Run once per statement execution.** If the outer expression is
+  re-evaluated (correlated subquery, per-row scan), the inner DML executes
+  exactly once and subsequent evaluations replay the memoized result.
+
+Both contracts are gated by `physical.readonly === false` on the inner
+subtree, so pure inners are unaffected. See `docs/runtime.md` for the
+emitter-level mechanics.
+
+**Conflict resolution does not propagate inward.** An outer
+`INSERT OR REPLACE … (insert into inner … returning …)` does not flow its
+`OR REPLACE` into the inner DML — each DML carries its own
+`onConflict` from its own AST.
+
+**Limitation: per-row DML in an outer DML is not supported.** Expressions
+of the form `update outer set x = (insert into inner … returning y)` where
+the scalar subquery is evaluated *per row of an outer DML* are not yet
+supported. The ordering semantics (does the inner see the outer's mid-flight
+writes?) are subtle and the engine errs on the side of refusing rather than
+guessing. Use a CTE pre-pass or a two-statement form instead.
 
 **Column naming for unnamed bodies.** When a `VALUES` (or any other form
 without explicit projection aliases) appears at a site that binds columns,

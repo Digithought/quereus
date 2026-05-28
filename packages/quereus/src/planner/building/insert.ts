@@ -5,6 +5,8 @@ import { buildTableReference } from './table.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
 import { buildSelectStmt, buildValuesStmt } from './select.js';
+import { buildUpdateStmt } from './update.js';
+import { buildDeleteStmt } from './delete.js';
 import { buildWithClause } from './with.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type Attribute, type RowDescriptor } from '../nodes/plan-node.js';
 import { buildExpression } from './expression.js';
@@ -473,20 +475,24 @@ export function buildInsertStmt(
 			checkColumnsAssignable(sourceNode.getType().columns, targetColumns, stmt);
 			break;
 		}
-		case 'insert':
-		case 'update':
+		case 'insert': {
+			// DML-as-source: the inner DML's RETURNING clause produces the rows
+			// consumed by the outer INSERT. The inner is built through its
+			// standard builder; the outer's row-expansion projection aligns the
+			// RETURNING columns to the outer target columns.
+			sourceNode = buildInsertStmt(contextWithSchemaPath, stmt.source) as RelationalPlanNode;
+			checkColumnsAssignable(sourceNode.getType().columns, targetColumns, stmt);
+			break;
+		}
+		case 'update': {
+			sourceNode = buildUpdateStmt(contextWithSchemaPath, stmt.source) as RelationalPlanNode;
+			checkColumnsAssignable(sourceNode.getType().columns, targetColumns, stmt);
+			break;
+		}
 		case 'delete': {
-			// DML-as-source: the inner DML's RETURNING clause produces the rows.
-			// The follow-up `dml-in-expression-position` ticket lifts run-once /
-			// full-drain semantics; for now the planner trusts the FROM-clause
-			// path through SubquerySource if the user wrote it that way.
-			throw new QuereusError(
-				`${stmt.source.type.toUpperCase()} in INSERT source position is not yet supported — track ticket dml-in-expression-position.`,
-				StatusCode.UNSUPPORTED,
-				undefined,
-				stmt.source.loc?.start.line,
-				stmt.source.loc?.start.column,
-			);
+			sourceNode = buildDeleteStmt(contextWithSchemaPath, stmt.source) as RelationalPlanNode;
+			checkColumnsAssignable(sourceNode.getType().columns, targetColumns, stmt);
+			break;
 		}
 	}
 

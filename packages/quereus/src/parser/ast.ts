@@ -263,9 +263,12 @@ export interface ValuesStmt extends AstNode {
  * body, view body).
  *
  * DML forms (INSERT/UPDATE/DELETE) qualify only when they carry a RETURNING
- * clause; the parser enforces this at non-top-level positions. The
- * planner currently rejects DML in scalar/EXISTS/IN positions and as a
- * view body — see follow-up ticket `dml-in-expression-position`.
+ * clause; the parser enforces this at non-top-level positions. DML in
+ * scalar / IN / EXISTS / compound-leg / CTE-body / FROM-source positions
+ * executes with full-drain + run-once semantics (see `docs/runtime.md`).
+ * DML as a view body is rejected at view-creation time — a view body
+ * re-evaluates on every reference and re-driving the write per read is
+ * incoherent.
  */
 export type QueryExpr =
 	| SelectStmt
