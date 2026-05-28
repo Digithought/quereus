@@ -422,3 +422,23 @@ SELECT count(*) as c FROM t_canon WHERE t = '10:30:00';
 → [{"c":4}]
 
 DROP TABLE t_canon;
+
+-- ============================================================
+-- DATE / TIME: non-zero offset must shift to UTC, not be silently
+-- stripped as wall-clock. Without canonicalization-first these would
+-- return the local wall-clock date/time instead of the UTC equivalent.
+-- '2024-01-15T01:30:00+02:00' = '2024-01-14T23:30:00Z'  (date crosses)
+-- '2024-01-15T10:30:00+02:00' = '2024-01-15T08:30:00Z'  (time shifts)
+-- '2024-01-15T23:30:00-05:00' = '2024-01-16T04:30:00Z'  (date crosses)
+-- ============================================================
+
+CREATE TABLE dt_offset (id INTEGER PRIMARY KEY, d DATE, t TIME);
+INSERT INTO dt_offset VALUES (1, '2024-01-15T01:30:00+02:00', '2024-01-15T01:30:00+02:00');
+INSERT INTO dt_offset VALUES (2, '2024-01-15T10:30:00+02:00', '2024-01-15T10:30:00+02:00');
+INSERT INTO dt_offset VALUES (3, '2024-01-15T23:30:00-05:00', '2024-01-15T23:30:00-05:00');
+-- run
+
+SELECT id, d, t FROM dt_offset ORDER BY id;
+→ [{"id":1,"d":"2024-01-14","t":"23:30:00"},{"id":2,"d":"2024-01-15","t":"08:30:00"},{"id":3,"d":"2024-01-16","t":"04:30:00"}]
+
+DROP TABLE dt_offset;

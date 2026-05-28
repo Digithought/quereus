@@ -160,16 +160,18 @@ This ensures type information flows through the entire planning and execution pi
 **DATE**
 - Physical: `PhysicalType.TEXT` (ISO 8601 string: "YYYY-MM-DD")
 - Values: ISO date strings
-- Validation: Must parse as valid Temporal.PlainDate
+- Validation: Must parse as a valid bare PlainDate, or as a datetime string (bare, offset, `Z`, or `[zone]`) from which a date can be extracted
 - Comparison: Lexicographic (ISO strings sort correctly)
 - Collations: None
+- Canonicalization: A datetime-shaped input is first converted to UTC (offset / `Z` / `[zone]` annotations honored), then the UTC date is stored. Numeric inputs (Unix milliseconds) are likewise canonicalized through UTC.
 
 **TIME**
 - Physical: `PhysicalType.TEXT` (ISO 8601 string: "HH:MM:SS.sss")
 - Values: ISO time strings
-- Validation: Must parse as valid Temporal.PlainTime
+- Validation: Must parse as a valid bare PlainTime, or as a datetime string (bare, offset, `Z`, or `[zone]`) from which a time can be extracted
 - Comparison: Lexicographic
 - Collations: None
+- Canonicalization: A datetime-shaped input is first converted to UTC, then the UTC wall-clock time is stored — `'2024-01-15T10:30:00+02:00'` stores as `'08:30:00'`, not `'10:30:00'`.
 
 **DATETIME**
 - Physical: `PhysicalType.TEXT` (ISO 8601 string: "YYYY-MM-DDTHH:MM:SS.sss")

@@ -30,11 +30,14 @@ export const DATE_TYPE: LogicalType = {
 		if (v === null) return true;
 		if (typeof v !== 'string') return false;
 		try {
-			Temporal.PlainDate.from(v);
+			// Full datetime parsing first so offset/zoned inputs canonicalize to UTC
+			// before the date is extracted. PlainDate.from would otherwise silently
+			// accept offset-bearing strings and return the wall-clock date.
+			parseDateTimeStringToUtcPlain(v);
 			return true;
 		} catch {
 			try {
-				parseDateTimeStringToUtcPlain(v);
+				Temporal.PlainDate.from(v);
 				return true;
 			} catch {
 				return false;
@@ -46,15 +49,15 @@ export const DATE_TYPE: LogicalType = {
 		if (v === null) return null;
 		if (typeof v === 'string') {
 			try {
-				const date = Temporal.PlainDate.from(v);
-				return date.toString(); // ISO 8601 format: YYYY-MM-DD
-			} catch (ePlain) {
+				// Datetime-shaped inputs (with or without offset/zone) canonicalize
+				// through UTC. PlainDate.from is only consulted for bare date-only
+				// strings, which the helper rejects.
+				return parseDateTimeStringToUtcPlain(v).toPlainDate().toString();
+			} catch {
 				try {
-					// Fall back to full datetime parsing so Z-suffixed / offset /
-					// zoned datetime strings degrade to their UTC date.
-					return parseDateTimeStringToUtcPlain(v).toPlainDate().toString();
-				} catch {
-					throw new TypeError(`Cannot convert '${v}' to DATE: ${ePlain instanceof Error ? ePlain.message : String(ePlain)}`);
+					return Temporal.PlainDate.from(v).toString(); // ISO 8601 format: YYYY-MM-DD
+				} catch (eDate) {
+					throw new TypeError(`Cannot convert '${v}' to DATE: ${eDate instanceof Error ? eDate.message : String(eDate)}`);
 				}
 			}
 		}
@@ -96,11 +99,14 @@ export const TIME_TYPE: LogicalType = {
 		if (v === null) return true;
 		if (typeof v !== 'string') return false;
 		try {
-			Temporal.PlainTime.from(v);
+			// Full datetime parsing first so offset/zoned inputs canonicalize to UTC
+			// before the time is extracted. PlainTime.from would otherwise silently
+			// accept offset-bearing strings and return the wall-clock time.
+			parseDateTimeStringToUtcPlain(v);
 			return true;
 		} catch {
 			try {
-				parseDateTimeStringToUtcPlain(v);
+				Temporal.PlainTime.from(v);
 				return true;
 			} catch {
 				return false;
@@ -112,15 +118,15 @@ export const TIME_TYPE: LogicalType = {
 		if (v === null) return null;
 		if (typeof v === 'string') {
 			try {
-				const time = Temporal.PlainTime.from(v);
-				return time.toString(); // ISO 8601 format: HH:MM:SS or HH:MM:SS.sss
-			} catch (ePlain) {
+				// Datetime-shaped inputs (with or without offset/zone) canonicalize
+				// through UTC. PlainTime.from is only consulted for bare time-only
+				// strings, which the helper rejects.
+				return parseDateTimeStringToUtcPlain(v).toPlainTime().toString();
+			} catch {
 				try {
-					// Fall back to full datetime parsing so Z-suffixed / offset /
-					// zoned datetime strings degrade to their UTC time.
-					return parseDateTimeStringToUtcPlain(v).toPlainTime().toString();
-				} catch {
-					throw new TypeError(`Cannot convert '${v}' to TIME: ${ePlain instanceof Error ? ePlain.message : String(ePlain)}`);
+					return Temporal.PlainTime.from(v).toString(); // ISO 8601 format: HH:MM:SS or HH:MM:SS.sss
+				} catch (eTime) {
+					throw new TypeError(`Cannot convert '${v}' to TIME: ${eTime instanceof Error ? eTime.message : String(eTime)}`);
 				}
 			}
 		}
