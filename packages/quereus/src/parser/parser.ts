@@ -638,8 +638,10 @@ export class Parser {
 			}
 
 			// Compound leg is any QueryExpr (SELECT/VALUES/DML w/ RETURNING).
-			// For SELECT legs we still suppress ORDER BY / LIMIT so they bind
-			// to the outer compound — same rule the legacy code applied.
+			// For SELECT/VALUES legs we suppress ORDER BY / LIMIT so they bind
+			// to the outer compound — same rule the legacy code applied for
+			// SELECT, and the VALUES leg recurses so further compound chains
+			// continue past a VALUES right leg.
 			const usedParen = this.match(TokenType.LPAREN);
 			const legStartToken = this.peek();
 			let rightSelect: AST.QueryExpr;
@@ -648,7 +650,7 @@ export class Parser {
 				rightSelect = this.selectStatement(legStartToken, withClause, /*isCompoundSubquery*/ true);
 			} else if (this.check(TokenType.VALUES)) {
 				this.advance();
-				rightSelect = this.valuesStatement(legStartToken);
+				rightSelect = this.valuesStatementWithOptionalCompound(legStartToken, withClause, /*isCompoundSubquery*/ true);
 			} else if (
 				this.check(TokenType.WITH)
 				|| this.check(TokenType.INSERT)
@@ -2126,25 +2128,32 @@ export class Parser {
 	}
 
 	/**
-	 * Parses VALUES at a position that also accepts a trailing compound
-	 * (UNION / INTERSECT / EXCEPT / DIFF). Used at the top-level statement
-	 * dispatch and inside `parseQueryExpr` so that
-	 * `VALUES (1) UNION ALL VALUES (2)` parses without an outer SELECT
-	 * wrapper at the source.
+	 * Parses VALUES at a position that also accepts trailing compound
+	 * (UNION / INTERSECT / EXCEPT / DIFF) and — outside compound-leg
+	 * position — trailing ORDER BY / LIMIT / OFFSET. Used at the top-level
+	 * statement dispatch, inside `parseQueryExpr`, and as a compound right
+	 * leg so that chains like `VALUES (1) UNION VALUES (2) UNION VALUES (3)`
+	 * and `VALUES (1) ORDER BY 1 LIMIT 2` parse uniformly.
 	 *
-	 * Implementation note: the AST `compound` field lives on `SelectStmt`,
-	 * not on `ValuesStmt`. When a compound follows VALUES we synthesize a
-	 * SELECT-from-(VALUES …) wrapper so the existing compound machinery
-	 * applies. The wrapper is structurally indistinguishable from what a
-	 * user-written `SELECT * FROM (VALUES …)` would produce.
+	 * Implementation note: the AST `compound` / `orderBy` / `limit` fields
+	 * live on `SelectStmt`, not on `ValuesStmt`. When any of those clauses
+	 * follow VALUES we synthesize a `SELECT * FROM (VALUES …)` wrapper so the
+	 * existing SELECT machinery applies. The wrapper is structurally
+	 * indistinguishable from what a user-written `SELECT * FROM (VALUES …)`
+	 * would produce.
+	 *
+	 * `isCompoundSubquery` suppresses ORDER BY / LIMIT consumption — those
+	 * belong to the outer compound when VALUES appears as a right leg.
 	 */
-	private valuesStatementWithOptionalCompound(startToken: Token, withClause?: AST.WithClause): AST.QueryExpr {
+	private valuesStatementWithOptionalCompound(startToken: Token, withClause?: AST.WithClause, isCompoundSubquery: boolean = false): AST.QueryExpr {
 		const values = this.valuesStatement(startToken);
-		if (!this.check(TokenType.UNION) && !this.check(TokenType.INTERSECT) && !this.check(TokenType.EXCEPT) && !this.check(TokenType.DIFF)) {
+		const hasCompound = this.check(TokenType.UNION) || this.check(TokenType.INTERSECT) || this.check(TokenType.EXCEPT) || this.check(TokenType.DIFF);
+		const hasTrailing = !isCompoundSubquery && (this.check(TokenType.ORDER) || this.check(TokenType.LIMIT));
+		if (!hasCompound && !hasTrailing) {
 			return values;
 		}
 		// Wrap as `SELECT * FROM (<values>) AS <synthetic alias>` and continue
-		// parsing as a SELECT so the compound chain folds in naturally.
+		// parsing as a SELECT so the trailing clauses fold in naturally.
 		const syntheticAlias = `values_${startToken.startOffset}`;
 		const wrapped: AST.SelectStmt = {
 			type: 'select',
@@ -2157,36 +2166,23 @@ export class Parser {
 			}],
 			loc: values.loc,
 		};
-		return this.continueSelectAfterFrom(wrapped, withClause);
+		return this.continueSelectAfterFrom(wrapped, withClause, isCompoundSubquery);
 	}
 
 	/**
 	 * Picks up an in-progress SELECT after its FROM clause is already
 	 * populated and parses any remaining trailing clauses
-	 * (WHERE/GROUP/HAVING/compound/ORDER/LIMIT). Used by
-	 * `valuesStatementWithOptionalCompound` to graft compound chains onto
-	 * a synthesized SELECT-from-VALUES wrapper. The synthesized wrapper
-	 * never carries a WHERE / GROUP BY / HAVING / ORDER BY / LIMIT itself —
-	 * those would attach to the compound result if the user wrote them
-	 * after the VALUES, and we want the same shape as `SELECT * FROM (VALUES …)`
-	 * would produce.
+	 * (compound/ORDER/LIMIT). Used by `valuesStatementWithOptionalCompound`
+	 * to graft compound chains and trailing clauses onto a synthesized
+	 * SELECT-from-VALUES wrapper. The synthesized wrapper never carries
+	 * its own WHERE / GROUP BY / HAVING — bare VALUES at top level does not
+	 * accept those clauses, so they fall through as a statement-boundary
+	 * parse error rather than being silently absorbed by the wrapper.
+	 *
+	 * `isCompoundSubquery` suppresses ORDER BY / LIMIT consumption — those
+	 * belong to the outer compound when this wrapper is a right leg.
 	 */
-	private continueSelectAfterFrom(sel: AST.SelectStmt, withClause?: AST.WithClause): AST.SelectStmt {
-		// Trailing WHERE — most natural place for users to attach a filter.
-		if (this.match(TokenType.WHERE)) {
-			sel.where = this.expression();
-		}
-		// GROUP BY / HAVING are not commonly used with bare VALUES but parse
-		// them defensively so users aren't surprised.
-		if (this.match(TokenType.GROUP) && this.consume(TokenType.BY, "Expected 'BY' after 'GROUP'.")) {
-			sel.groupBy = [];
-			do {
-				sel.groupBy.push(this.expression());
-			} while (this.match(TokenType.COMMA));
-		}
-		if (this.match(TokenType.HAVING)) {
-			sel.having = this.expression();
-		}
+	private continueSelectAfterFrom(sel: AST.SelectStmt, withClause?: AST.WithClause, isCompoundSubquery: boolean = false): AST.SelectStmt {
 		// Compound chain.
 		if (this.match(TokenType.UNION, TokenType.INTERSECT, TokenType.EXCEPT, TokenType.DIFF)) {
 			const tok = this.previous();
@@ -2208,7 +2204,12 @@ export class Parser {
 				rightLeg = this.selectStatement(legStartToken, withClause, /*isCompoundSubquery*/ true);
 			} else if (this.check(TokenType.VALUES)) {
 				this.advance();
-				rightLeg = this.valuesStatement(legStartToken);
+				// Recurse so that further compound chains (`VALUES (1) UNION
+				// VALUES (2) UNION VALUES (3)`) wrap each VALUES leg and the
+				// chain continues. isCompoundSubquery=true suppresses
+				// trailing ORDER BY / LIMIT — those belong to the outermost
+				// compound result, not this leg.
+				rightLeg = this.valuesStatementWithOptionalCompound(legStartToken, withClause, /*isCompoundSubquery*/ true);
 			} else if (this.check(TokenType.WITH) || this.check(TokenType.INSERT) || this.check(TokenType.UPDATE) || this.check(TokenType.DELETE)) {
 				rightLeg = this.parseQueryExpr(undefined, /*requireReturning*/ true);
 			} else {
@@ -2218,6 +2219,9 @@ export class Parser {
 				this.consume(TokenType.RPAREN, "Expected ')' after parenthesized set operation.");
 			}
 			sel.compound = { op, select: rightLeg };
+		}
+		if (isCompoundSubquery) {
+			return sel;
 		}
 		// ORDER BY / LIMIT apply to the final compound result.
 		if (this.match(TokenType.ORDER) && this.consume(TokenType.BY, "Expected 'BY' after 'ORDER'.")) {

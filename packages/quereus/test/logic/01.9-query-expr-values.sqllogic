@@ -68,3 +68,44 @@ select exists (values (1)) as ex;
 
 select (values (42)) as v;
 → [{"v":42}]
+
+-- ===================================
+-- 9. Three-leg compound chain of bare VALUES
+-- ===================================
+-- The right leg of a compound recurses through the VALUES wrapper so chains
+-- longer than two legs work, not just `VALUES … UNION VALUES …`.
+
+values (1) union all values (2) union all values (3);
+→ [{"column_0":1},{"column_0":2},{"column_0":3}]
+
+-- ===================================
+-- 10. Bare VALUES + ORDER BY at top level (no compound)
+-- ===================================
+-- The wrapper synthesizes whenever ORDER BY / LIMIT / OFFSET follow VALUES,
+-- not just on compound. Result column names come from the inner VALUES
+-- (synthetic `column_0`).
+
+values (3), (1), (2) order by column_0;
+→ [{"column_0":1},{"column_0":2},{"column_0":3}]
+
+-- ===================================
+-- 11. Bare VALUES + LIMIT/OFFSET at top level
+-- ===================================
+
+values (1), (2), (3), (4) limit 2 offset 1;
+→ [{"column_0":2},{"column_0":3}]
+
+-- ===================================
+-- 12. Bare VALUES + ORDER BY/LIMIT inside a parenthesized subquery source
+-- ===================================
+
+select * from (values (3), (1), (2) order by column_0 limit 2) as v;
+→ [{"column_0":1},{"column_0":2}]
+
+-- ===================================
+-- 13. Bare VALUES + ORDER BY in a CTE body
+-- ===================================
+
+with c(a) as (values (3), (1), (2) order by column_0)
+select a from c;
+→ [{"a":1},{"a":2},{"a":3}]
