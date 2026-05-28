@@ -572,10 +572,9 @@ Virtual table modules can opt-in to receive deterministic mutation statements fo
 When a module sets `wantStatements: true`, Quereus provides a `mutationStatement` string with each `update()` call. This statement:
 
 - Represents the **bottom-level mutation** at the VirtualTable.update() level (not the top-level DML statement)
-- Contains all values as **literals** (no parameters or non-deterministic expressions)
+- Contains all values as **literals** (no parameters; non-deterministic source expressions like `random()` or `datetime('now')` are already resolved to the concrete per-row values the engine evaluated)
 - Includes **resolved mutation context** values as literals in the WITH CONTEXT clause
-- Can be replayed on another Quereus instance to produce identical results
-- Preserves determinism by eliminating all non-deterministic expressions
+- Is the **audit / transport encoding** of the resolved per-row primitive that hit the module; replay is the act of applying that primitive at the same module boundary on another instance — not re-parsing the captured SQL through the full DML pipeline (re-execution would re-fire CHECKs, default evaluation, and generated-column computation, which is explicitly not the supported replay path)
 
 ### Module Opt-In
 
@@ -646,10 +645,10 @@ The mutation statement system ensures determinism by:
 
 1. **Resolving Execution Parameters**: All `:name` and `?` parameters are replaced with their literal values
 2. **Resolving Mutation Context**: All context variables are evaluated once per statement and emitted as literals
-3. **Resolving Defaults**: Default expressions are evaluated and emitted as literal values
+3. **Resolving Defaults / Generated Columns**: DEFAULT and `GENERATED ALWAYS AS` expressions are evaluated per row and emitted as literal values — this is true even when the source expressions contain non-deterministic functions (allowed under `pragma nondeterministic_schema = true`; see [Determinism Validation](runtime.md#determinism-validation))
 4. **Preserving Order**: Mutations are logged in the order they're applied to the virtual table
 
-This means that a sequence of logged mutation statements can be replayed to fully replicate a database, with no chance of non-determinism (assuming the same code and schema version).
+Replay then means: take the captured primitive and re-apply it at the module boundary (e.g. feed `mutationStatement` rows back through `vtab.update()` on the replica), not re-execute the SQL through the full DML pipeline. The atomicity of the original commit — including deferred CHECKs that were evaluated once at commit time — is preserved by replaying the transaction's writes as a unit.
 
 ### Use Cases
 

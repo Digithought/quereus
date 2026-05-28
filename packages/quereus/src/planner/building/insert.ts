@@ -127,8 +127,11 @@ function createRowExpansionProjection(
 					// It's an AST.Expression - build it into a plan node with context scope
 					defaultNode = buildExpression(defaultCtx, tableColumn.defaultValue as AST.Expression) as ScalarPlanNode;
 
-					// Validate that the default expression is deterministic
-					validateDeterministicDefault(defaultNode, tableColumn.name, tableSchema.name);
+					// Validate that the default expression is deterministic — skip when the
+					// `nondeterministic_schema` option permits non-deterministic defaults.
+					if (!ctx.db.options.getBooleanOption('nondeterministic_schema')) {
+						validateDeterministicDefault(defaultNode, tableColumn.name, tableSchema.name);
+					}
 				} else {
 					// Literal default value
 					defaultNode = buildExpression(defaultCtx, { type: 'literal', value: tableColumn.defaultValue }) as ScalarPlanNode;
@@ -196,7 +199,9 @@ function createGeneratedColumnProjection(
 		const genProjections: Projection[] = tableSchema.columns.map((col, colIdx) => {
 			if (colIdx === genColIdx) {
 				const genNode = buildExpression(genCtx, genColumn.generatedExpr!) as ScalarPlanNode;
-				validateDeterministicGenerated(genNode, genColumn.name, tableSchema.name);
+				if (!ctx.db.options.getBooleanOption('nondeterministic_schema')) {
+					validateDeterministicGenerated(genNode, genColumn.name, tableSchema.name);
+				}
 				return { node: genNode, alias: col.name };
 			}
 			const attr = inputAttributes[colIdx];

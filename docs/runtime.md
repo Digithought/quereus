@@ -866,16 +866,54 @@ const value = await entry.evaluator(runtimeCtx);
 
 ## Determinism Validation
 
-Quereus enforces that all expressions in CHECK constraints and DEFAULT values must be deterministic. This ensures that captured statements at the VTable update boundary are fully deterministic and replayable.
+The real invariant Quereus needs in DEFAULT / CHECK / GENERATED clauses is not
+"the source expression is deterministic" — it is "the captured artifact at the
+`vtab.update()` frontier is fully resolved and replayable." That invariant is
+satisfied by construction: defaults and stored generated columns are evaluated
+per row before reaching the module, immediate row CHECKs fire at write time so
+only passing rows reach `vtab.update()`, and deferred CHECKs evaluate once at
+commit (their outcome decides commit-vs-rollback for the entire transaction,
+so replay-via-module-layer cannot disagree with the commit outcome).
 
-### Why Determinism Matters
+Because of this, the prohibition on non-deterministic expressions in DDL is a
+**stricter-than-necessary proxy** for the actual replay contract, not a
+correctness requirement. Quereus therefore defaults to strict rejection for
+backward compatibility but exposes a single opt-in to lift the gate when you
+want it.
 
-Non-deterministic expressions (like `random()`, `datetime('now')`) produce different values on each execution. If these were allowed in constraints or defaults:
-- Replaying captured statements would produce different results
-- Constraint validation could be inconsistent
-- Audit logs would not be reproducible
+### The `nondeterministic_schema` option
 
-### Validation Rules
+| Option | Type | Default | Aliases |
+| --- | --- | --- | --- |
+| `nondeterministic_schema` | boolean | `false` | `allow_nondeterministic_schema_expressions` |
+
+Set programmatically or via PRAGMA:
+
+```sql
+pragma nondeterministic_schema = true;
+pragma nondeterministic_schema;
+-- → [{"name":"nondeterministic_schema","value":true}]
+```
+
+```typescript
+db.setOption('nondeterministic_schema', true);
+```
+
+When `true`, Quereus permits non-deterministic expressions in DEFAULT, CHECK,
+and `GENERATED ALWAYS AS` clauses. Capture still happens at the resolved-row
+frontier: the row stored in the table (and the literal SQL produced by
+`buildInsertStatement` / `buildUpdateStatement` / `buildDeleteStatement` in
+`util/mutation-statement.ts`) contains the concrete value the engine
+evaluated for that row.
+
+The option is not baked into any persisted schema; toggling it affects
+validation of *subsequent* DDL/DML only — already-created tables keep
+whatever expressions they were created with.
+
+### Strict-mode behaviour (default)
+
+The default `nondeterministic_schema = false` preserves the historical
+rejection paths.
 
 **Rejected in Constraints and Defaults:**
 - `random()`, `randomblob()` - Random value generation
@@ -956,6 +994,11 @@ db.createScalarFunction("my_upper",
 
 ### Validation Timing
 
+All determinism rejection sites described below are skipped when
+`nondeterministic_schema = true`. The bind-parameter / column-reference
+pre-walks remain active in both modes (those are scope checks, not
+determinism checks).
+
 **CREATE TABLE:**
 - DEFAULT expressions are rejected if they reference bind parameters
   (`?`, `:name`) or table columns; both are detected via an AST pre-walk
@@ -977,6 +1020,8 @@ a known follow-up.
 - DEFAULT expressions validated when building row expansion
 - CHECK constraints validated when building constraint checks (full
   column-scope resolution happens here)
+- `GENERATED ALWAYS AS` expressions validated when building the generated
+  column projection (INSERT) or assignment chain (UPDATE)
 
 **ALTER TABLE ADD CONSTRAINT:**
 - Validation deferred to first INSERT/UPDATE (constraints may reference NEW/OLD)

@@ -671,4 +671,26 @@ describe('determinism-validator', () => {
 			expect(result.expression).to.equal('random()');
 		});
 	});
+
+	// The `nondeterministic_schema` option lifts the *invocation* of these
+	// validators at the four call sites (CREATE TABLE DEFAULT/CHECK and
+	// INSERT/UPDATE generated/default build sites); the validators themselves
+	// remain strict so any future call site that wants strict checking can
+	// keep relying on them. Lock that contract here.
+	describe('validators remain strict when called directly', () => {
+		it('validateDeterministicDefault still throws on non-det input', () => {
+			expect(() => validateDeterministicDefault(mockScalar(false, 'random()'), 'a', 't'))
+				.to.throw(QuereusError, /Non-deterministic expression not allowed/);
+		});
+
+		it('validateDeterministicGenerated still throws on non-det input', () => {
+			expect(() => validateDeterministicGenerated(mockScalar(false, 'random()'), 'g', 't'))
+				.to.throw(QuereusError, /Non-deterministic expression not allowed/);
+		});
+
+		it('validateDeterministicConstraint still throws on non-det input', () => {
+			expect(() => validateDeterministicConstraint(mockScalar(false, 'random()'), 'c', 't'))
+				.to.throw(QuereusError, /Non-deterministic expression not allowed/);
+		});
+	});
 });

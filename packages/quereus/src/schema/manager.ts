@@ -1486,8 +1486,15 @@ export class SchemaManager {
 		const baseTableSchema = this.buildTableSchemaFromAST(stmt, moduleName, effectiveModuleArgs, moduleInfo);
 
 		const hasMutationContext = !!baseTableSchema.mutationContext && baseTableSchema.mutationContext.length > 0;
-		this.validateDefaultDeterminism(baseTableSchema.columns, tableName, hasMutationContext);
-		this.validateCheckConstraintDeterminism(baseTableSchema.checkConstraints, tableName);
+		// `nondeterministic_schema = true` lifts the strict-rejection gate at CREATE TABLE.
+		// The captured artifact at the vtab.update() frontier is fully resolved per row, so
+		// defaults / CHECKs / generated columns containing non-determinism remain replay-safe
+		// (see docs/architecture.md § Constraints and docs/module-authoring.md § Mutation Statements).
+		const allowNonDet = this.db.options.getBooleanOption('nondeterministic_schema');
+		if (!allowNonDet) {
+			this.validateDefaultDeterminism(baseTableSchema.columns, tableName, hasMutationContext);
+			this.validateCheckConstraintDeterminism(baseTableSchema.checkConstraints, tableName);
+		}
 
 		let tableInstance: VirtualTable;
 		try {

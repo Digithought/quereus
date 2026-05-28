@@ -268,6 +268,18 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 			aliases: ['fk_enforcement'],
 			description: 'Enable foreign key constraint enforcement. When omitted, ON DELETE / ON UPDATE default to RESTRICT.',
 		});
+
+		this.options.registerOption('nondeterministic_schema', {
+			type: 'boolean',
+			defaultValue: false,
+			aliases: ['allow_nondeterministic_schema_expressions'],
+			description: 'When true, permit non-deterministic expressions in DEFAULT, CHECK, and GENERATED ALWAYS AS clauses. ' +
+				'Capture happens at the resolved-row frontier in vtab.update(); replay applies module-layer writes without re-evaluating constraints. ' +
+				'Defaults to false (strict rejection) for backward compatibility.',
+			onChange: (event) => {
+				log('nondeterministic_schema changed to: %s', event.newValue);
+			}
+		});
 	}
 
 	/** @internal Registers default built-in SQL functions */

@@ -3073,7 +3073,51 @@ create table users (
 
 **Note:** Primary key columns are always NOT NULL regardless of this setting.
 
-#### 9.2.4 schema_path
+#### 9.2.4 nondeterministic_schema
+
+Allows non-deterministic expressions (`random()`, `datetime('now')`, user-defined functions
+marked non-deterministic, etc.) inside DEFAULT, CHECK, and `GENERATED ALWAYS AS` clauses.
+Defaults to `false` (strict rejection) for backward compatibility.
+
+**Aliases:** `allow_nondeterministic_schema_expressions`
+
+**Values:**
+- `false` (default) — strict rejection: a CREATE TABLE / INSERT / UPDATE that compiles a
+  non-deterministic expression in a DEFAULT, CHECK, or generated-column clause raises
+  `Non-deterministic expression not allowed in …`.
+- `true` — permit non-deterministic expressions. Per-row evaluation still produces a
+  concrete literal at the `vtab.update()` frontier (captured in `args.values` and in the
+  literal SQL produced by `buildInsertStatement` / `buildUpdateStatement` /
+  `buildDeleteStatement`), so the replay contract — "apply primitives at the module-layer
+  boundary" — is preserved.
+
+```sql
+-- Default: strict rejection
+create table t (id integer primary key, ts text default datetime('now'));
+-- error: Non-deterministic expression not allowed in DEFAULT
+
+-- Relax the gate
+pragma nondeterministic_schema = true;
+
+create table audit (
+  id integer primary key,
+  ts text default datetime('now'),         -- now permitted
+  tag integer generated always as (random()) stored
+);
+
+insert into audit (id) values (1);
+-- The row stored carries a concrete ts string and concrete tag integer.
+```
+
+**Scope:** The option is read at validation time. Toggling it affects validation of
+*subsequent* DDL / DML only; tables already created retain whatever expressions they
+were created with. The option is not baked into any persisted schema.
+
+**See also:** [Determinism Validation](runtime.md#determinism-validation) for the full
+replay-contract discussion, and [Mutation Statements](module-authoring.md#mutation-statements)
+for how the captured artifact is structured.
+
+#### 9.2.5 schema_path
 
 Sets or queries the default schema search path used when resolving unqualified table names. The value is a comma-separated list of schema names.
 

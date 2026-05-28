@@ -112,7 +112,9 @@ export function buildUpdateStmt(
     const col = tableReference.tableSchema.columns[colIdx];
     if (!col.generated || !col.generatedExpr) continue;
     const genNode = buildExpression(updateCtx, col.generatedExpr) as ScalarPlanNode;
-    validateDeterministicGenerated(genNode, col.name, tableReference.tableSchema.name);
+    if (!ctx.db.options.getBooleanOption('nondeterministic_schema')) {
+      validateDeterministicGenerated(genNode, col.name, tableReference.tableSchema.name);
+    }
     const targetColumn: AST.ColumnExpr = { type: 'column', name: col.name, table: stmt.table.name, schema: stmt.table.schema };
     assignments.push({ targetColumn, value: genNode, isGenerated: true });
   }

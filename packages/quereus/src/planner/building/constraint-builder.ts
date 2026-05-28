@@ -145,9 +145,13 @@ export function buildConstraintChecks(
         constraint.expr
       ) as ScalarPlanNode;
 
-      // Validate that the constraint expression is deterministic
+      // Validate that the constraint expression is deterministic — skip when
+      // `nondeterministic_schema` is on; per-row resolution + replay-at-module
+      // boundary keeps the capture safe even with non-det inside CHECKs.
       const constraintName = constraint.name ?? `_check_${tableSchema.name}`;
-      validateDeterministicConstraint(expression, constraintName, tableSchema.name);
+      if (!ctx.db.options.getBooleanOption('nondeterministic_schema')) {
+        validateDeterministicConstraint(expression, constraintName, tableSchema.name);
+      }
 
       // Heuristic: auto-defer if the expression contains a subquery
       // or references committed.* state (which necessarily implies a subquery, but
