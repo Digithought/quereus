@@ -72,8 +72,18 @@ On `create materialized view`:
 When a `<name>` resolves to a `MaterializedViewSchema`, the planner emits a `TableReferenceNode` to the **backing table**, not a body-expanded view. This is a one-line decision in name resolution (parallel to today's `isView` branch). Effects:
 
 - Optimizer sees a `TableReferenceNode` with the backing-table's full physical-property surface (`computePhysical` already does this work) — keys, FDs, ordering, statistics — at zero extra cost.
-- `getChangeScope()` reports the **backing table**, not the source tables. Reactive consumers watching an MV watch the backing table. This is the correct semantics: an MV is a stable relation whose change cadence is "when refresh fires," not "when sources change." (Phase 2 sharpens this to source-driven, but is separately ticketed.)
+- `getChangeScope()` reports the **backing table**, not the source tables. Reactive consumers watching an MV watch the backing table. This is the correct semantics: an MV is a stable relation whose change cadence is "when refresh fires," not "when sources change." (Phase 2 sharpens this for `on-commit-incremental` MVs to source-union; see `materialized-view-incremental-refresh`.)
 - The MV body AST is still retained on the schema for declarative-schema emission and for the body-hash check.
+
+### Mutation semantics: read-only at the user-write boundary (v1)
+
+`insert into mv`, `update mv set ...`, and `delete from mv` are **rejected** in v1 with a clear diagnostic: *"materialized views are read-only; write to the source tables instead."*
+
+Rationale: an MV is defined by its body, not by its cache. The orthogonal answer ("writes propagate through the body to the sources") requires the [view-updateability propagation pass](view-updateability-implementation), which is a separate, sizeable plan ticket — not yet shipped despite `docs/view-updateability.md` describing it. When `view-updateability-implementation` lands, writes against an MV name *will* route through that pass against the MV's `selectAst` (with the backing table then catching up via manual or incremental refresh), but adding that surface to this ticket would couple two large independent features.
+
+So: v1 ships read-only MVs. The write-through path is a follow-up that gates on view-updateability landing; file as `materialized-view-writes-through-body` (backlog) when ready. The MV body AST is already retained on the schema, so enabling write-through later is purely a routing change with no schema-shape implication.
+
+Source tables remain writable via the normal `insert into source_table` path; MV reads see the new state at the next refresh (manual phase 1) or at commit (`on-commit-incremental`, phase 2).
 
 ### Refresh execution
 
@@ -141,6 +151,7 @@ Mirror `AssertionEvaluator` (`packages/quereus/src/core/database-assertions.ts`)
 - **DDL round-trip.** `create materialized view mv as select x, y from t` survives `schema -> DDL emit -> parse -> schema` with no shape change (rides the `declarative-equivalence` harness — `test/declarative-equivalence.spec.ts`).
 - **Initial materialization correctness.** Insert into `t`; create MV; assert MV rows equal `select x, y from t`. With `order by`: assert MV scan order matches.
 - **Source mutation does NOT update MV (phase 1).** Insert into `t` after MV creation; assert MV rows unchanged until `refresh materialized view`.
+- **Read-only at user-write boundary.** `insert into mv values (...)`, `update mv set ...`, `delete from mv` all reject with the "materialized views are read-only" diagnostic. Source-table writes (`insert into t ...`) succeed normally and are reflected in the MV after refresh.
 - **Refresh swaps base atomically.** A reader iterating the MV during a `refresh` from another connection blocks until the refresh completes, then sees the new state (no half-state visible). Add to `test/vtab/concurrent-scan.spec.ts` shape.
 - **Query resolution.** A `select * from mv` plan contains a `TableReferenceNode` to the backing table, not an expanded body. Use the golden-plan harness.
 - **`getChangeScope()` reports backing table.** Watching an MV watches the backing table; phase 2 sharpens to sources.

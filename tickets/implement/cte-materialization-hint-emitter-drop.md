@@ -54,6 +54,8 @@ it round-trip-faithful by *default* is the design stance the property
 suite implies, but is not explicitly stated anywhere. Worth confirming
 before filing more "emit silently drops X" tickets piecemeal.
 
+Decision: Do 1 and document the policy
+
 ## Acceptance
 
 - A CTE with `materialized` / `not materialized` round-trips
