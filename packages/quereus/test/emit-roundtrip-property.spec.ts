@@ -380,6 +380,115 @@ const queryExprArb: fc.Arbitrary<AST.SelectStmt | AST.ValuesStmt> = fc.oneof(
 	valuesStmtArb,
 );
 
+// ------------------------------------------------------------------------
+// QueryExpr-bearing wrapper arbitraries — drive `queryExprArb` through
+// every QueryExpr-accepting AST site so a silent-drop regression at any
+// emitter dispatch surfaces structurally, not just at CREATE VIEW.
+// ------------------------------------------------------------------------
+
+/**
+ * `select <subquery> from t` — drives `SubqueryExpr.query` in scalar
+ * expression position. A regression that emitted only `select` legs of
+ * the QueryExpr union (and dropped VALUES at this site) would surface as
+ * a round-trip failure here.
+ */
+const subqueryInColumnArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(queryExprArb, identArb).map(
+	([query, table]): AST.SelectStmt => ({
+		type: 'select',
+		columns: [{ type: 'column', expr: { type: 'subquery', query } }],
+		from: [{ type: 'table', table: { type: 'identifier', name: table } }],
+	}),
+);
+
+/**
+ * `select c from t where c [not] in (<query-expr>)` — drives
+ * `InExpr.subquery`. Both the bare and NOT-wrapped surface re-parse to
+ * the same `UnaryExpr(NOT, InExpr)` / `InExpr` shape — the parser folds
+ * `c NOT IN (…)` and prefix `NOT c IN (…)` to the same tree.
+ */
+const inSubqueryArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(
+	queryExprArb,
+	identArb, // column name
+	identArb, // table name
+	fc.boolean(),
+).map(([query, col, table, negated]): AST.SelectStmt => {
+	const inExpr: AST.InExpr = {
+		type: 'in',
+		expr: { type: 'column', name: col },
+		subquery: query,
+	};
+	const where: AST.Expression = negated
+		? { type: 'unary', operator: 'NOT', expr: inExpr }
+		: inExpr;
+	return {
+		type: 'select',
+		columns: [{ type: 'column', expr: { type: 'column', name: col } }],
+		from: [{ type: 'table', table: { type: 'identifier', name: table } }],
+		where,
+	};
+});
+
+/**
+ * `select c from t where exists (<query-expr>)` — drives `ExistsExpr.subquery`.
+ */
+const existsSubqueryArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(
+	queryExprArb,
+	identArb, // column name
+	identArb, // table name
+).map(([query, col, table]): AST.SelectStmt => ({
+	type: 'select',
+	columns: [{ type: 'column', expr: { type: 'column', name: col } }],
+	from: [{ type: 'table', table: { type: 'identifier', name: table } }],
+	where: { type: 'exists', subquery: query },
+}));
+
+/**
+ * `select c from t <op> <query-expr>` — drives `SelectStmt.compound[].select`
+ * across every compound operator (UNION / UNION ALL / INTERSECT / EXCEPT /
+ * DIFF). Left leg is always a SELECT so the top-level wrapper-emit shape
+ * does not interact (see ticket out-of-scope note on bare-VALUES UNION).
+ */
+const compoundOpArb: fc.Arbitrary<'union' | 'unionAll' | 'intersect' | 'except' | 'diff'> = fc.constantFrom(
+	'union', 'unionAll', 'intersect', 'except', 'diff',
+);
+
+const compoundSelectArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(
+	identArb, // left column name
+	identArb, // left table name
+	compoundOpArb,
+	queryExprArb,
+).map(([col, table, op, rightLeg]): AST.SelectStmt => ({
+	type: 'select',
+	columns: [{ type: 'column', expr: { type: 'column', name: col } }],
+	from: [{ type: 'table', table: { type: 'identifier', name: table } }],
+	compound: { op, select: rightLeg },
+}));
+
+/**
+ * `with <name> as (<query-expr>) select c from t` — drives
+ * `CommonTableExpr.query`. The outer SELECT body is decoupled from the CTE
+ * so the test is independent of CTE-reference resolution (parsing is
+ * purely syntactic — name binding happens later). `materializationHint`
+ * and the CTE column list are omitted: the former isn't emitted by today's
+ * stringifier (a separate gap), and the latter would couple the column
+ * arity to the QueryExpr's shape and conflict with VALUES bodies.
+ */
+const cteSelectArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(
+	identArb, // CTE name
+	queryExprArb,
+	identArb, // outer column name
+	identArb, // outer table name
+).map(([cteName, query, col, table]): AST.SelectStmt => ({
+	type: 'select',
+	withClause: {
+		type: 'with',
+		recursive: false,
+		ctes: [{ type: 'commonTableExpr', name: cteName, query }],
+	},
+	columns: [{ type: 'column', expr: { type: 'column', name: col } }],
+	from: [{ type: 'table', table: { type: 'identifier', name: table } }],
+}));
+
 /**
  * CREATE VIEW with either a SELECT or VALUES body. When the body is VALUES
  * we drop the explicit column list because its arity is generator-coupled
@@ -863,6 +972,34 @@ describe('AST round-trip property: DDL', () => {
 
 	it('DECLARE SCHEMA round-trips structurally', () => {
 		fc.assert(fc.property(declareSchemaArb, checkRoundTrip), { numRuns: 100 });
+	});
+});
+
+describe('AST round-trip property: QueryExpr at every accepting site', () => {
+	// Each suite drives `queryExprArb` (today: SELECT | VALUES) through a
+	// distinct AST site that accepts a QueryExpr. The CREATE VIEW site is
+	// covered above (`CREATE VIEW round-trips structurally`) — these add
+	// coverage for the remaining sites widened by query-expr-ast-parser-
+	// unification so a silent emitter drop on any one branch surfaces here
+	// rather than only in the `.sqllogic` execution corpus.
+	it('scalar SubqueryExpr in a SELECT column round-trips structurally', () => {
+		fc.assert(fc.property(subqueryInColumnArb, checkRoundTrip), { numRuns: 100 });
+	});
+
+	it('InExpr.subquery in WHERE round-trips structurally', () => {
+		fc.assert(fc.property(inSubqueryArb, checkRoundTrip), { numRuns: 100 });
+	});
+
+	it('ExistsExpr.subquery in WHERE round-trips structurally', () => {
+		fc.assert(fc.property(existsSubqueryArb, checkRoundTrip), { numRuns: 100 });
+	});
+
+	it('SelectStmt.compound leg round-trips structurally', () => {
+		fc.assert(fc.property(compoundSelectArb, checkRoundTrip), { numRuns: 100 });
+	});
+
+	it('CommonTableExpr.query body round-trips structurally', () => {
+		fc.assert(fc.property(cteSelectArb, checkRoundTrip), { numRuns: 100 });
 	});
 });
 
