@@ -349,4 +349,67 @@ describe('Parser', () => {
 			expect(action.setDefault).to.equal(null);
 		});
 	});
+
+	// Guards the shared CONTEXTUAL_KEYWORDS constant in parser.ts: these tokenized-but-contextual
+	// reserved words must still be accepted as identifiers in every context, and the two extended
+	// sets (+temp/temporary in tableIdentifier, +replace in the function-call path) must keep working.
+	describe('Contextual keywords as identifiers', () => {
+		it('accepts a contextual keyword as a qualified column reference', () => {
+			const stmt = parse(`select cascade.restrict from cascade`) as SelectStmt;
+			const col = stmt.columns[0];
+			expect(col.type).to.equal('column');
+			const expr = (col as { expr: Expression }).expr as { type: string; table?: string; name: string };
+			expect(expr.type).to.equal('column');
+			expect(expr.table).to.equal('cascade');
+			expect(expr.name).to.equal('restrict');
+		});
+
+		it('accepts a contextual keyword as a column alias', () => {
+			const stmt = parse(`select x as "default" from t`) as SelectStmt;
+			const col = stmt.columns[0];
+			expect(col.type).to.equal('column');
+			expect((col as { alias?: string }).alias).to.equal('default');
+		});
+
+		it('accepts a contextual keyword as a table-valued function name (base set)', () => {
+			const stmt = parse(`select * from like(1)`) as SelectStmt;
+			const from = stmt.from![0] as { type: string; name: { name: string } };
+			expect(from.type).to.equal('functionSource');
+			expect(from.name.name).to.equal('like');
+		});
+
+		it("accepts 'replace' as a scalar function name (function-call spread set)", () => {
+			const stmt = parse(`select replace('a', 'a', 'b')`) as SelectStmt;
+			const expr = (stmt.columns[0] as { expr: Expression }).expr as { type: string; name: string };
+			expect(expr.type).to.equal('function');
+			expect(expr.name).to.equal('replace');
+		});
+
+		it("accepts 'temp'/'temporary' as schema/table names (tableIdentifier spread set)", () => {
+			const qualified = parse(`select * from temp.foo`) as SelectStmt;
+			const qFrom = qualified.from![0] as { type: string; table: { schema?: string; name: string } };
+			expect(qFrom.table.schema).to.equal('temp');
+			expect(qFrom.table.name).to.equal('foo');
+
+			const bare = parse(`select * from temporary`) as SelectStmt;
+			const bFrom = bare.from![0] as { type: string; table: { name: string } };
+			expect(bFrom.table.name).to.equal('temporary');
+		});
+
+		it('accepts a contextual keyword as a CTE name (CTE subset)', () => {
+			const stmt = parse(`with "key" as (select 1 as a) select * from "key"`) as SelectStmt;
+			expect(stmt.withClause).to.exist;
+			expect(stmt.withClause!.ctes[0].name).to.equal('key');
+		});
+
+		// Characterizes a *pre-existing* inconsistency (see backlog ticket
+		// parser-cte-contextual-keyword-subset): the CTE name/column set omits
+		// references/on/cascade/restrict, so an unquoted CTE named `references`
+		// fails to parse even though a table named `references` is accepted.
+		it('rejects an unquoted reserved-but-table-legal keyword as a CTE name (documents narrower CTE set)', () => {
+			expect(() => parse(`with references as (select 1 as a) select * from references`)).to.throw(/CTE name/);
+			// ...yet the same word is accepted as a table name:
+			expect(() => parse(`select * from references`)).to.not.throw();
+		});
+	});
 });
