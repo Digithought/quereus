@@ -93,6 +93,26 @@ describe('Emit: statement round-trips', () => {
 		it('WITH RECURSIVE', () => {
 			roundTripStmt('with recursive r(n) as (select 1 union all select n + 1 from r where n < 10) select n from r');
 		});
+
+		it('WITH MATERIALIZED hint', () => {
+			roundTripStmt('with x as materialized (select 1) select * from x');
+		});
+
+		it('WITH NOT MATERIALIZED hint', () => {
+			roundTripStmt('with x as not materialized (select 1) select * from x');
+		});
+
+		it('preserves the materialization hint structurally', () => {
+			for (const [sql, expected] of [
+				['with x as materialized (select 1) select * from x', 'materialized'],
+				['with x as not materialized (select 1) select * from x', 'not_materialized'],
+				['with x as (select 1) select * from x', undefined],
+			] as const) {
+				const stmt = parse(sql) as SelectStmt;
+				const reparsed = parse(astToString(stmt)) as SelectStmt;
+				expect(reparsed.withClause?.ctes[0].materializationHint, sql).to.equal(expected);
+			}
+		});
 	});
 
 	describe('INSERT', () => {

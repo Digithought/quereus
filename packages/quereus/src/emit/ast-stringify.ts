@@ -1,6 +1,15 @@
 /**
  * Functions to convert DDL AST nodes back into SQL strings.
  *
+ * Round-trip policy: the emitter is round-trip-faithful by default. Every
+ * semantically meaningful AST field MUST survive `parse(astToString(ast))` —
+ * a field that re-parses to a different value (or vanishes) is a bug, enforced
+ * structurally by `test/emit-roundtrip-property.spec.ts`. The only fields the
+ * emitter is permitted to drop are non-semantic metadata (`loc`, `comments`,
+ * conditionally-filled `lexeme`) and clauses that are *exactly equivalent* to a
+ * documented parser default (see below); each such omission is mirrored by an
+ * entry in `test/emit-roundtrip-comparator.ts` so the drop stays intentional.
+ *
  * Formatting Notes:
  * - Emits lowercase SQL keywords.
  * - Quotes identifiers (table/column names) using double quotes.
@@ -438,6 +447,14 @@ function compoundOpToKeyword(op: 'union' | 'unionAll' | 'intersect' | 'except' |
 	}
 }
 
+function materializationHintToKeyword(hint: AST.CommonTableExpr['materializationHint']): string | undefined {
+	switch (hint) {
+		case 'materialized': return 'materialized';
+		case 'not_materialized': return 'not materialized';
+		case undefined: return undefined;
+	}
+}
+
 function withClauseToString(withClause: AST.WithClause): string {
 	let result = 'with';
 	if (withClause.recursive) result += ' recursive';
@@ -447,7 +464,10 @@ function withClauseToString(withClause: AST.WithClause): string {
 		if (cte.columns && cte.columns.length > 0) {
 			cteStr += ` (${cte.columns.map(quoteIdentifier).join(', ')})`;
 		}
-		cteStr += ` as (${astToString(cte.query)})`;
+		cteStr += ' as';
+		const hint = materializationHintToKeyword(cte.materializationHint);
+		if (hint) cteStr += ` ${hint}`;
+		cteStr += ` (${astToString(cte.query)})`;
 		return cteStr;
 	});
 

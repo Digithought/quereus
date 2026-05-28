@@ -484,30 +484,41 @@ const subquerySourceArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(
 	from: [{ type: 'subquerySource', subquery: query, alias }],
 }));
 
+/** [NOT] MATERIALIZED hint on a CTE — `undefined` ≡ no keyword emitted. */
+const materializationHintArb: fc.Arbitrary<AST.CommonTableExpr['materializationHint']> = fc.constantFrom(
+	undefined,
+	'materialized' as const,
+	'not_materialized' as const,
+);
+
 /**
- * `with <name> as (<query-expr>) select c from t` — drives
- * `CommonTableExpr.query`. The outer SELECT body is decoupled from the CTE
- * so the test is independent of CTE-reference resolution (parsing is
- * purely syntactic — name binding happens later). `materializationHint`
- * and the CTE column list are omitted: the former isn't emitted by today's
- * stringifier (a separate gap), and the latter would couple the column
- * arity to the QueryExpr's shape and conflict with VALUES bodies.
+ * `with <name> as [materialized|not materialized] (<query-expr>) select c from t`
+ * — drives `CommonTableExpr.query` and `materializationHint`. The outer SELECT
+ * body is decoupled from the CTE so the test is independent of CTE-reference
+ * resolution (parsing is purely syntactic — name binding happens later). The
+ * CTE column list is omitted because it would couple the column arity to the
+ * QueryExpr's shape and conflict with VALUES bodies.
  */
 const cteSelectArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(
 	identArb, // CTE name
 	queryExprArb,
+	materializationHintArb,
 	identArb, // outer column name
 	identArb, // outer table name
-).map(([cteName, query, col, table]): AST.SelectStmt => ({
-	type: 'select',
-	withClause: {
-		type: 'with',
-		recursive: false,
-		ctes: [{ type: 'commonTableExpr', name: cteName, query }],
-	},
-	columns: [{ type: 'column', expr: { type: 'column', name: col } }],
-	from: [{ type: 'table', table: { type: 'identifier', name: table } }],
-}));
+).map(([cteName, query, materializationHint, col, table]): AST.SelectStmt => {
+	const cte: AST.CommonTableExpr = { type: 'commonTableExpr', name: cteName, query };
+	if (materializationHint !== undefined) cte.materializationHint = materializationHint;
+	return {
+		type: 'select',
+		withClause: {
+			type: 'with',
+			recursive: false,
+			ctes: [cte],
+		},
+		columns: [{ type: 'column', expr: { type: 'column', name: col } }],
+		from: [{ type: 'table', table: { type: 'identifier', name: table } }],
+	};
+});
 
 /**
  * CREATE VIEW with either a SELECT or VALUES body. When the body is VALUES
