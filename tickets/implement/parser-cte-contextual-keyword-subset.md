@@ -45,3 +45,5 @@ reserved specifically as CTE names), or is it an oversight from when the sets we
 If it is an oversight (most likely), the fix is to reference `CONTEXTUAL_KEYWORDS` at the two CTE
 sites and update the characterization test to assert the keyword is now accepted. Verify against
 SQLite's actual behavior for CTE naming with these keywords before changing.
+
+Answer: no, shouldn't be narrowed
