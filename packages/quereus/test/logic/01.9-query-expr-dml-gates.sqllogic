@@ -1,0 +1,60 @@
+-- query-expr-dml-gates.sqllogic — pins the parser- and planner-side gates
+-- around DML in relation positions. The orthogonal QueryExpr surface accepts
+-- DML syntactically in every relation site (parser succeeds), but two
+-- separate gates fire afterwards:
+--
+--   1. Parser-side RETURNING-required at non-top-level positions.
+--   2. Planner-side "not yet supported" for DML in scalar / IN / EXISTS /
+--      compound-leg / view-body / CTE-body positions, deferred to the
+--      follow-up `dml-in-expression-position` ticket.
+
+create table t (id integer primary key, name text);
+
+-- ===================================
+-- Parser-side gate: DML in a relation position without RETURNING
+-- ===================================
+
+select * from (insert into t values (1, 'a')) as s;
+-- error: must have a RETURNING clause
+
+select 1 + (insert into t values (2, 'b'));
+-- error: must have a RETURNING clause
+
+-- ===================================
+-- Planner-side gate: DML in scalar subquery position (with RETURNING) is parsed,
+-- but the planner refuses pending dml-in-expression-position.
+-- ===================================
+
+select (insert into t values (3, 'c') returning id);
+-- error: not yet supported in scalar subquery position
+
+-- ===================================
+-- Planner-side gate: DML inside EXISTS position
+-- ===================================
+
+select exists (insert into t values (4, 'd') returning id);
+-- error: not yet supported in EXISTS subquery position
+
+-- ===================================
+-- Planner-side gate: DML inside IN subquery position
+-- ===================================
+
+select 1 in (insert into t values (5, 'e') returning id);
+-- error: not yet supported in IN subquery position
+
+-- ===================================
+-- Planner-side gate: DML as a view body
+-- ===================================
+
+create view v_dml as insert into t values (6, 'f') returning id;
+-- error: as a view body is not yet supported
+
+-- ===================================
+-- Planner-side gate: DML as a CTE body
+-- ===================================
+
+with d as (delete from t where id = 1 returning id)
+select * from d;
+-- error: CTE bodies are not yet supported
+
+drop table t;

@@ -60,7 +60,10 @@ export function classifyAssertionForHoisting(
 	// Inner: EXISTS (...)
 	if (outer.expr.type !== 'exists') return undefined;
 	const existsExpr = outer.expr as AST.ExistsExpr;
-	const sel = existsExpr.subquery;
+	// The EXISTS subquery is any QueryExpr; the classifier only handles the
+	// canonical SELECT-shaped form. Other forms (VALUES, DML) bail out cleanly.
+	if (existsExpr.subquery.type !== 'select') return undefined;
+	const sel = existsExpr.subquery as AST.SelectStmt;
 
 	// Strict shape gates on the inner SELECT.
 	if (sel.compound) return undefined;

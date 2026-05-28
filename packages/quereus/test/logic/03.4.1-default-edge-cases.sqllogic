@@ -58,7 +58,7 @@ create table t_dv (
 );
 
 insert into t_dv default values;
--- error: VALUES or SELECT
+-- error: Expected VALUES, SELECT, or DML
 
 drop table t_dv;
 

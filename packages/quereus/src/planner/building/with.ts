@@ -3,7 +3,7 @@ import type { PlanningContext } from '../planning-context.js';
 import { CTENode, type CTEPlanNode, type CTEScopeNode } from '../nodes/cte-node.js';
 import { RecursiveCTENode } from '../nodes/recursive-cte-node.js';
 import { InternalRecursiveCTERefNode } from '../nodes/internal-recursive-cte-ref-node.js';
-import { buildSelectStmt } from './select.js';
+import { buildSelectStmt, buildValuesStmt } from './select.js';
 import { buildExpression } from './expression.js';
 import type { RelationalPlanNode, ScalarPlanNode } from '../nodes/plan-node.js';
 import { QuereusError } from '../../common/errors.js';
@@ -72,22 +72,36 @@ export function buildCommonTableExpr(
 	}
 	cteContext.scope = cteScope;
 
-	// Check if this is a recursive CTE with UNION structure
+	// Check if this is a recursive CTE with UNION structure. Recursive CTEs
+	// require a SELECT body with a compound (UNION / UNION ALL) leg — VALUES
+	// or DML bodies cannot be recursive and fall through to the normal path
+	// (which will report the right error for non-SELECT recursive bodies).
 	if (isRecursive && cte.query.type === 'select' && cte.query.compound) {
 		return buildRecursiveCTE(cteContext, cte, existingCTEs, options);
 	}
 
-	// For non-recursive CTEs or recursive CTEs without UNION structure
+	// For non-recursive CTEs or recursive CTEs without UNION structure.
+	// CTE bodies are QueryExprs; SELECT and VALUES bodies build straight to a
+	// relation. DML bodies (with RETURNING) parse but are gated until the
+	// dml-in-expression-position ticket lifts them.
 	let query: RelationalPlanNode;
-
-	if (cte.query.type === 'select') {
-		query = buildSelectStmt(cteContext, cte.query, existingCTEs) as RelationalPlanNode;
-	} else {
-		// CTE can also be INSERT, UPDATE, or DELETE statements
-		throw new QuereusError(
-			'Non-SELECT CTEs are not yet supported',
-			StatusCode.UNSUPPORTED
-		);
+	switch (cte.query.type) {
+		case 'select':
+			query = buildSelectStmt(cteContext, cte.query, existingCTEs) as RelationalPlanNode;
+			break;
+		case 'values':
+			query = buildValuesStmt(cteContext, cte.query);
+			break;
+		case 'insert':
+		case 'update':
+		case 'delete':
+			throw new QuereusError(
+				`${cte.query.type.toUpperCase()} CTE bodies are not yet supported — track ticket dml-in-expression-position.`,
+				StatusCode.UNSUPPORTED,
+				undefined,
+				cte.query.loc?.start.line,
+				cte.query.loc?.start.column,
+			);
 	}
 
 	// Validate declared column count matches the SELECT projection arity
@@ -151,7 +165,19 @@ function buildRecursiveCTE(
 		offset: undefined
 	};
 
-	const recursiveCaseStmt = selectStmt.compound.select;
+	// Recursive CTE: the recursive leg of the compound must itself be a SELECT
+	// (the only form that can carry self-reference + projection). VALUES /
+	// DML legs would compile but never recurse meaningfully.
+	if (selectStmt.compound.select.type !== 'select') {
+		throw new QuereusError(
+			`Recursive CTE '${cte.name}' recursive leg must be a SELECT (got ${selectStmt.compound.select.type}).`,
+			StatusCode.UNSUPPORTED,
+			undefined,
+			selectStmt.compound.select.loc?.start.line,
+			selectStmt.compound.select.loc?.start.column,
+		);
+	}
+	const recursiveCaseStmt: AST.SelectStmt = selectStmt.compound.select;
 	const isUnionAll = selectStmt.compound.op === 'unionAll';
 
 	// Build the base case query (without CTE self-reference)

@@ -42,7 +42,7 @@ insert into sales values (1, 100, null), (2, 200, null), (3, 300, null);
 
 with mult(id, m) as (values (1, 1.5), (2, 2.0), (3, 3.0))
    update sales set multiplier = mult.m from mult where sales.id = mult.id;
--- error: SELECT, INSERT, UPDATE, or DELETE
+-- error: Expected statement type
 
 drop table sales;
 

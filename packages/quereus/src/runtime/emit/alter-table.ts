@@ -8,7 +8,7 @@ import type { TableSchema, PrimaryKeyColumnDefinition, RowConstraintSchema, Fore
 import { buildColumnIndexMap, opsToMask, withGeneratedColumnGraph } from '../../schema/table.js';
 import type { ColumnDef } from '../../parser/ast.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
-import { quoteIdentifier, expressionToString, selectToString } from '../../emit/ast-stringify.js';
+import { quoteIdentifier, expressionToString, astToString } from '../../emit/ast-stringify.js';
 import { renameTableInAst, renameColumnInAst, renameColumnInCheckExpression } from '../../schema/rename-rewriter.js';
 import type { Schema } from '../../schema/schema.js';
 import { tryFoldLiteral } from '../../parser/utils.js';
@@ -878,7 +878,7 @@ function propagateTableRenameInSchema(
 		for (const view of Array.from(schema.getAllViews())) {
 			const changed = renameTableInAst(view.selectAst, oldName, newName, renamedSchemaName);
 			if (changed) {
-				const updatedView = { ...view, sql: selectToString(view.selectAst) };
+				const updatedView = { ...view, sql: astToString(view.selectAst) };
 				schema.addView(updatedView);
 			}
 		}
@@ -966,7 +966,7 @@ function propagateColumnRenameInSchema(
 		for (const view of Array.from(schema.getAllViews())) {
 			const changed = renameColumnInAst(view.selectAst, tableName, oldCol, newCol, renamedSchemaName);
 			if (changed) {
-				const updatedView = { ...view, sql: selectToString(view.selectAst) };
+				const updatedView = { ...view, sql: astToString(view.selectAst) };
 				schema.addView(updatedView);
 			}
 		}

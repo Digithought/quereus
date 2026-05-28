@@ -22,6 +22,57 @@ Key features:
 - **Third Manifesto Aligned:** Embraces principles like default NOT NULL columns and key-based addressing.
 
 ## 2. SQL Statement Reference
+
+### Query expressions
+
+A **query expression** is anything that produces a relation. Quereus accepts
+the same five forms at every relation-producing site:
+
+| Form                                 | Notes                                                         |
+| ------------------------------------ | ------------------------------------------------------------- |
+| `SELECT …`                           | The canonical relational query.                               |
+| `VALUES (…), …`                      | A literal row set. Body-supplied / binding-site names apply.  |
+| `INSERT … RETURNING …`               | DML re-projected through `RETURNING`.                         |
+| `UPDATE … RETURNING …`               | DML re-projected through `RETURNING`.                         |
+| `DELETE … RETURNING …`               | DML re-projected through `RETURNING`.                         |
+
+Each of these may appear at any **relation site**:
+
+- Top-level statement
+- FROM-clause subquery source (`… FROM (<query-expr>) AS t [(cols)]`)
+- Scalar / row subquery (`(<query-expr>)`)
+- `IN (<query-expr>)` and `NOT IN (<query-expr>)`
+- `EXISTS (<query-expr>)`
+- Compound legs (`… UNION [ALL] | INTERSECT | EXCEPT | DIFF <query-expr>`)
+- CTE body (`WITH cte(cols) AS (<query-expr>) …`)
+- View body (`CREATE VIEW v[(cols)] AS <query-expr>`)
+
+**RETURNING is required for DML at non-top-level positions.** The outer
+position consumes a relation, so a `RETURNING`-less DML is rejected at parse
+time outside top-level.
+
+**Today's planner runs the SELECT and VALUES forms at every site.** Running
+DML in scalar / IN / EXISTS / compound-leg / view-body / non-top CTE-body
+positions is a separate milestone (see follow-up ticket
+`dml-in-expression-position`); the planner reports a clear "not yet
+supported" error at plan time until that lands. DML in a top-level FROM
+subquery source has worked historically and continues to work via the
+unified `SubquerySource` shape.
+
+**Column naming for unnamed bodies.** When a `VALUES` (or any other form
+without explicit projection aliases) appears at a site that binds columns,
+the precedence is:
+
+1. Binding-site column list — `(VALUES (…)) AS t(a, b)`, `WITH t(a, b) AS …`,
+   `CREATE VIEW v(a, b) AS …` — wins absolutely.
+2. Body-supplied names — SELECT/RETURNING aliases or column refs. `VALUES`
+   has none.
+3. Synthesized fallback — `column_0`, `column_1`, … (today's default).
+
+Persistent named relations (top-level CTE bodies, view bodies) with neither
+binding-site nor body-supplied names silently fall back to the synthesized
+form; they do **not** error.
+
 ### 2.0 Declarative Schema (Optional, Order-Independent)
 
 Quereus keeps traditional DDL fully intact. Declarative schema is an optional alternative for describing the desired end‑state in a single, order‑independent block. Modules continue to use DDL‑based interfaces; declarative workflows operate entirely in the engine and produce DDL.

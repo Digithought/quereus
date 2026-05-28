@@ -358,19 +358,47 @@ const simpleSelectArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(identArb, identAr
 	from: [{ type: 'table', table: { type: 'identifier', name: table } }],
 }));
 
+/**
+ * Compact VALUES bodies — 1–3 rows of 1–3 literal cells. Used as the
+ * exemplar `ValuesStmt` instance at each QueryExpr-accepting site so the
+ * comparator catches a silent drop of the VALUES branch in any of the
+ * widened emitters (SubqueryExpr, ExistsExpr, InExpr, compound, CTE, view).
+ */
+const valuesStmtArb: fc.Arbitrary<AST.ValuesStmt> = fc.tuple(
+	fc.integer({ min: 1, max: 3 }), // cells per row
+	fc.integer({ min: 1, max: 3 }), // rows
+).chain(([width, height]) =>
+	fc.array(
+		fc.array(literalArb, { minLength: width, maxLength: width }),
+		{ minLength: height, maxLength: height },
+	).map((rows): AST.ValuesStmt => ({ type: 'values', values: rows })),
+);
+
+/** Either a simple SELECT or a VALUES — the two QueryExpr forms today's planner runs. */
+const queryExprArb: fc.Arbitrary<AST.SelectStmt | AST.ValuesStmt> = fc.oneof(
+	simpleSelectArb,
+	valuesStmtArb,
+);
+
+/**
+ * CREATE VIEW with either a SELECT or VALUES body. When the body is VALUES
+ * we drop the explicit column list because its arity is generator-coupled
+ * to the VALUES width and the round-trip would otherwise reject the
+ * mismatch — column-list survival is already covered via the SELECT body.
+ */
 const createViewArb: fc.Arbitrary<AST.CreateViewStmt> = fc.tuple(
 	identArb,
 	fc.boolean(),
 	fc.option(uniqueIdents(1), { nil: undefined }),
-	simpleSelectArb,
+	queryExprArb,
 	fc.boolean(),
-).map(([name, ifNotExists, columns, select, isTemporary]): AST.CreateViewStmt => ({
+).map(([name, ifNotExists, columns, body, isTemporary]): AST.CreateViewStmt => ({
 	type: 'createView',
 	view: { type: 'identifier', name },
 	ifNotExists,
 	isTemporary,
-	columns,
-	select,
+	columns: body.type === 'values' ? undefined : columns,
+	select: body,
 }));
 
 // ------------------------------------------------------------------------
@@ -665,7 +693,10 @@ const insertArb: fc.Arbitrary<AST.InsertStmt> = fc.tuple(
 		type: 'insert',
 		table: { type: 'identifier', name: tbl },
 		columns: colNames,
-		values: [vals],
+		source: {
+			type: 'values',
+			values: [vals],
+		},
 	};
 	if (onConflict !== undefined) stmt.onConflict = onConflict;
 	return stmt;

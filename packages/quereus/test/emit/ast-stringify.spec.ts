@@ -96,15 +96,19 @@ describe('Emit: ast-stringify AST round-trip', () => {
 
 			const reparsed = parse(emitted) as CreateViewStmt;
 			// Walk the linked compound chain and collect each leg's literal.
+			// View body / compound legs are QueryExpr (any relation); for this
+			// fixture every leg is a SELECT, but we narrow defensively.
 			const codes: string[] = [];
-			let cursor: SelectStmt | undefined = reparsed.select;
+			let cursor: SelectStmt | undefined =
+				reparsed.select.type === 'select' ? (reparsed.select as SelectStmt) : undefined;
 			while (cursor) {
 				const col = cursor.columns[0];
 				if (col.type !== 'column' || col.expr.type !== 'literal') {
 					throw new Error('Expected literal-string projection per leg');
 				}
 				codes.push(String(col.expr.value));
-				cursor = cursor.compound?.select;
+				const next = cursor.compound?.select;
+				cursor = next && next.type === 'select' ? (next as SelectStmt) : undefined;
 			}
 			expect(codes).to.deep.equal(['a', 'b', 'c', 'd']);
 		});
@@ -118,14 +122,18 @@ describe('Emit: ast-stringify AST round-trip', () => {
 			expect(emitted).to.not.match(/\bunion\s+all\b/i);
 
 			const reparsed = parse(emitted) as CreateViewStmt;
-			expect(reparsed.select.compound?.op).to.equal('union');
+			const body = reparsed.select;
+			if (body.type !== 'select') throw new Error('Expected SELECT view body');
+			expect(body.compound?.op).to.equal('union');
 		});
 
 		it('preserves INTERSECT and EXCEPT', () => {
 			for (const op of ['intersect', 'except'] as const) {
 				const sql = `create view V as select 1 as N ${op} select 2 as N`;
 				const reparsed = parse(createViewToString(parse(sql) as CreateViewStmt)) as CreateViewStmt;
-				expect(reparsed.select.compound?.op, `op for ${op}`).to.equal(op);
+				const body = reparsed.select;
+				if (body.type !== 'select') throw new Error('Expected SELECT view body');
+				expect(body.compound?.op, `op for ${op}`).to.equal(op);
 			}
 		});
 	});
@@ -238,7 +246,9 @@ describe('Emit: ast-stringify AST round-trip', () => {
 			const view = reparsed.items.find(i => i.type === 'declaredView') as DeclaredView;
 			expect(view).to.exist;
 			expect(view.viewStmt.view.name.toLowerCase()).to.equal('v');
-			expect(view.viewStmt.select.where).to.exist;
+			const viewBody = view.viewStmt.select;
+			if (viewBody.type !== 'select') throw new Error('Expected SELECT view body');
+			expect(viewBody.where).to.exist;
 		});
 
 		it('preserves declared seed rows with literal values', () => {
@@ -323,10 +333,13 @@ describe('Emit: ast-stringify AST round-trip', () => {
 				type: 'insert',
 				table: { type: 'identifier', name: 'T' },
 				columns: ['a', 'b'],
-				values: [[
-					{ type: 'literal', value: 1 },
-					{ type: 'literal', value: 2 },
-				]],
+				source: {
+					type: 'values',
+					values: [[
+						{ type: 'literal', value: 1 },
+						{ type: 'literal', value: 2 },
+					]],
+				},
 				onConflict: ConflictResolution.ABORT,
 			};
 

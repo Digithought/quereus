@@ -48,13 +48,15 @@ drop table c_left;
 -- VALUES clause as compound operand
 -- =============================================================================
 
--- VALUES UNION VALUES — Quereus parser does not allow VALUES as a top-level
--- compound operand; must be wrapped in a SELECT FROM (VALUES ...) form.
+-- VALUES UNION VALUES — orthogonal QueryExpr surface now accepts bare
+-- VALUES at top-level participating in a compound. Column names are
+-- synthesized (`column_0`, `column_1`); a SELECT FROM (VALUES ...) form
+-- below preserves user-chosen aliases.
 values (1, 'x'), (2, 'y')
 union
 values (2, 'y'), (3, 'z')
-order by column1;
--- error: union
+order by column_0;
+→ [{"column_0":1,"column_1":"x"},{"column_0":2,"column_1":"y"},{"column_0":3,"column_1":"z"}]
 
 -- Equivalent expressed via SELECT-FROM-VALUES wrapping with explicit aliases
 select c1, c2 from (values (1, 'x'), (2, 'y')) as v(c1, c2)

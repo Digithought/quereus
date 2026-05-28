@@ -4,9 +4,8 @@ import { InsertNode } from '../nodes/insert-node.js';
 import { buildTableReference } from './table.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
-import { buildSelectStmt } from './select.js';
+import { buildSelectStmt, buildValuesStmt } from './select.js';
 import { buildWithClause } from './with.js';
-import { ValuesNode } from '../nodes/values-node.js';
 import { PlanNode, type RelationalPlanNode, type ScalarPlanNode, type Attribute, type RowDescriptor } from '../nodes/plan-node.js';
 import { buildExpression } from './expression.js';
 import { checkColumnsAssignable, columnSchemaToDef } from '../type-utils.js';
@@ -444,40 +443,51 @@ export function buildInsertStmt(
 			.map(col => columnSchemaToDef(col.name, col));
 	}
 
+	// Build the INSERT source — a unified QueryExpr (SELECT/VALUES/DML w/ RETURNING).
+	// Each branch produces a relational plan that the row-expansion projection
+	// then aligns to the target table columns. CTEs declared on the INSERT
+	// flow into the inner build via `parentCtes`.
+	let parentCtes: Map<string, CTEScopeNode> = new Map();
+	if (stmt.withClause) {
+		parentCtes = buildWithClause(contextWithSchemaPath, stmt.withClause);
+	}
+
 	let sourceNode: RelationalPlanNode;
-
-	if (stmt.values) {
-		// VALUES clause - build the VALUES node
-		const rows = stmt.values.map(rowExprs =>
-			rowExprs.map(expr => buildExpression(contextWithSchemaPath, expr) as PlanNode as ScalarPlanNode)
-		);
-
-		// Check that there are the right number of columns in each row
-		rows.forEach(row => {
-			if (row.length !== targetColumns.length) {
-				throw new QuereusError(`Column count mismatch in VALUES clause. Expected ${targetColumns.length} columns, got ${row.length}.`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+	switch (stmt.source.type) {
+		case 'values': {
+			// Bare VALUES — no source-side column type-check; the row-expansion
+			// projection handles column-count and per-column type coercion.
+			sourceNode = buildValuesStmt(contextWithSchemaPath, stmt.source);
+			const sourceCols = sourceNode.getType().columns;
+			if (sourceCols.length !== targetColumns.length) {
+				throw new QuereusError(`Column count mismatch in VALUES clause. Expected ${targetColumns.length} columns, got ${sourceCols.length}.`, StatusCode.ERROR, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
 			}
-		});
-
-		// Create VALUES node with target column names
-		const targetColumnNames = targetColumns.map(col => col.name);
-		sourceNode = new ValuesNode(contextWithSchemaPath.scope, rows, targetColumnNames);
-
-	} else if (stmt.select) {
-		// SELECT clause - build the SELECT statement
-		let parentCtes: Map<string, CTEScopeNode> = new Map();
-		if (stmt.withClause) {
-			parentCtes = buildWithClause(contextWithSchemaPath, stmt.withClause);
+			break;
 		}
-		const selectPlan = buildSelectStmt(contextWithSchemaPath, stmt.select, parentCtes);
-		if (selectPlan.getType().typeClass !== 'relation') {
-			throw new QuereusError('SELECT statement in INSERT did not produce a relational plan.', StatusCode.INTERNAL, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+		case 'select': {
+			const selectPlan = buildSelectStmt(contextWithSchemaPath, stmt.source, parentCtes);
+			if (selectPlan.getType().typeClass !== 'relation') {
+				throw new QuereusError('SELECT statement in INSERT did not produce a relational plan.', StatusCode.INTERNAL, undefined, stmt.loc?.start.line, stmt.loc?.start.column);
+			}
+			sourceNode = selectPlan as RelationalPlanNode;
+			checkColumnsAssignable(sourceNode.getType().columns, targetColumns, stmt);
+			break;
 		}
-		sourceNode = selectPlan as RelationalPlanNode;
-		checkColumnsAssignable(sourceNode.getType().columns, targetColumns, stmt);
-
-	} else {
-		throw new QuereusError('INSERT statement must have a VALUES clause or a SELECT query.', StatusCode.ERROR);
+		case 'insert':
+		case 'update':
+		case 'delete': {
+			// DML-as-source: the inner DML's RETURNING clause produces the rows.
+			// The follow-up `dml-in-expression-position` ticket lifts run-once /
+			// full-drain semantics; for now the planner trusts the FROM-clause
+			// path through SubquerySource if the user wrote it that way.
+			throw new QuereusError(
+				`${stmt.source.type.toUpperCase()} in INSERT source position is not yet supported — track ticket dml-in-expression-position.`,
+				StatusCode.UNSUPPORTED,
+				undefined,
+				stmt.source.loc?.start.line,
+				stmt.source.loc?.start.column,
+			);
+		}
 	}
 
 	// ORTHOGONAL ROW EXPANSION: Apply uniform row expansion to map any source to table structure with defaults

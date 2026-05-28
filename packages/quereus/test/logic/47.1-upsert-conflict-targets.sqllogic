@@ -57,7 +57,7 @@ insert into alias_t values (1, 'alice', 1);
 -- INSERT ... AS alias is not supported by Quereus's parser
 insert into alias_t as old values (1, 'updated', 100)
    on conflict (id) do update set name = excluded.name, count = old.count + 1;
--- error: Expected VALUES or SELECT
+-- error: Expected VALUES, SELECT, or DML
 
 drop table alias_t;
 

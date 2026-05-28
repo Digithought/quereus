@@ -10,6 +10,7 @@ import { LiteralNode } from '../nodes/scalar.js';
 import { RegisteredScope } from '../scopes/registered.js';
 import { ColumnReferenceNode } from '../nodes/reference.js';
 import { buildExpression } from './expression.js';
+import { buildValuesStmt } from './select.js';
 // Import will be added after refactoring select.ts
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode } from '../../common/types.js';
@@ -30,11 +31,33 @@ export function buildCompoundSelect(
 	// Build left side by cloning the statement without compound and stripping ORDER BY/LIMIT/OFFSET that belong to outer query
 	const { compound: _outerCompound, orderBy: outerOrderBy, limit: outerLimit, offset: outerOffset, ...leftCore } = stmt;
 
-	// Also strip ORDER BY/LIMIT/OFFSET from the right side - they should only apply to the final compound result
-	const { orderBy: _rightOrderBy, limit: _rightLimit, offset: _rightOffset, ...rightCore } = stmt.compound.select;
-
 	const leftPlan = buildSelectStmt(contextWithCTEs, leftCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
-	const rightPlan = buildSelectStmt(contextWithCTEs, rightCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
+
+	// Right side: any QueryExpr. SELECT legs strip ORDER BY/LIMIT/OFFSET (those
+	// belong to the outer compound). VALUES legs build directly. DML legs are
+	// gated until the dml-in-expression-position ticket lifts them.
+	const rightStmt = stmt.compound.select;
+	let rightPlan: RelationalPlanNode;
+	switch (rightStmt.type) {
+		case 'select': {
+			const { orderBy: _rightOrderBy, limit: _rightLimit, offset: _rightOffset, ...rightCore } = rightStmt;
+			rightPlan = buildSelectStmt(contextWithCTEs, rightCore as AST.SelectStmt, cteNodes) as RelationalPlanNode;
+			break;
+		}
+		case 'values':
+			rightPlan = buildValuesStmt(contextWithCTEs, rightStmt);
+			break;
+		case 'insert':
+		case 'update':
+		case 'delete':
+			throw new QuereusError(
+				`${rightStmt.type.toUpperCase()} as a compound set-operation leg is not yet supported — track ticket dml-in-expression-position.`,
+				StatusCode.UNSUPPORTED,
+				undefined,
+				rightStmt.loc?.start.line,
+				rightStmt.loc?.start.column,
+			);
+	}
 
 	// Expand DIFF as (A EXCEPT B) UNION (B EXCEPT A)
 	let setNode: RelationalPlanNode;

@@ -107,8 +107,7 @@ function visitTableRename(
 			const stmt = node as AST.InsertStmt;
 			stmt.withClause?.ctes.forEach(cte => visitTableRename(cte.query, oldName, newName, defaultSchemaName, ctx));
 			rewriteIdentifierIfTable(stmt.table, oldName, newName, defaultSchemaName, ctx);
-			(stmt.values ?? []).forEach(row => row.forEach(v => visitTableRename(v, oldName, newName, defaultSchemaName, ctx)));
-			visitTableRename(stmt.select, oldName, newName, defaultSchemaName, ctx);
+			visitTableRename(stmt.source, oldName, newName, defaultSchemaName, ctx);
 			(stmt.upsertClauses ?? []).forEach(uc => {
 				(uc.assignments ?? []).forEach(a => visitTableRename(a.value, oldName, newName, defaultSchemaName, ctx));
 				visitTableRename(uc.where, oldName, newName, defaultSchemaName, ctx);
@@ -170,11 +169,6 @@ function visitTableRename(
 		case 'subquerySource': {
 			const ss = node as AST.SubquerySource;
 			visitTableRename(ss.subquery, oldName, newName, defaultSchemaName, ctx);
-			break;
-		}
-		case 'mutatingSubquerySource': {
-			const ms = node as AST.MutatingSubquerySource;
-			visitTableRename(ms.stmt, oldName, newName, defaultSchemaName, ctx);
 			break;
 		}
 		case 'binary': {
@@ -422,7 +416,6 @@ function collectFromBindings(
 			break;
 		}
 		case 'subquerySource':
-		case 'mutatingSubquerySource':
 		case 'functionSource':
 			// Aliased; these don't contribute the renamed underlying table for
 			// unqualified resolution purposes.
@@ -576,8 +569,7 @@ function visitColumnRename(node: AST.AstNode | undefined, state: ColumnRewriteSt
 						}
 					});
 				}
-				(stmt.values ?? []).forEach(row => row.forEach(v => visitColumnRename(v, state)));
-				visitColumnRename(stmt.select, state);
+				visitColumnRename(stmt.source, state);
 				(stmt.upsertClauses ?? []).forEach(uc => {
 					(uc.assignments ?? []).forEach(a => visitColumnRename(a.value, state));
 					visitColumnRename(uc.where, state);
@@ -669,10 +661,6 @@ function visitColumnRename(node: AST.AstNode | undefined, state: ColumnRewriteSt
 		}
 		case 'subquerySource': {
 			visitColumnRename((node as AST.SubquerySource).subquery, state);
-			break;
-		}
-		case 'mutatingSubquerySource': {
-			visitColumnRename((node as AST.MutatingSubquerySource).stmt, state);
 			break;
 		}
 		case 'binary': {

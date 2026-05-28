@@ -213,10 +213,10 @@ export function expressionToString(expr: AST.Expression): string {
 		}
 
 		case 'subquery':
-			return `(${selectToString(expr.query)})`;
+			return `(${astToString(expr.query)})`;
 
 		case 'exists':
-			return `exists (${selectToString((expr as AST.ExistsExpr).subquery)})`;
+			return `exists (${astToString((expr as AST.ExistsExpr).subquery)})`;
 
 		case 'in': {
 			const inExpr = expr as AST.InExpr;
@@ -224,7 +224,7 @@ export function expressionToString(expr: AST.Expression): string {
 			if (inExpr.values) {
 				result += `(${inExpr.values.map(expressionToString).join(', ')})`;
 			} else if (inExpr.subquery) {
-				result += `(${selectToString(inExpr.subquery)})`;
+				result += `(${astToString(inExpr.subquery)})`;
 			}
 			return result;
 		}
@@ -421,7 +421,8 @@ export function selectToString(stmt: AST.SelectStmt): string {
 
 	if (stmt.compound) {
 		result += ` ${compoundOpToKeyword(stmt.compound.op)} `;
-		result += selectToString(stmt.compound.select);
+		// Compound leg is a QueryExpr; astToString dispatches on the discriminator.
+		result += astToString(stmt.compound.select);
 	}
 
 	return result;
@@ -472,16 +473,9 @@ function fromClauseToString(from: AST.FromClause): string {
 		}
 
 		case 'subquerySource': {
-			let subqueryStr: string;
-			if (from.subquery.type === 'select') {
-				subqueryStr = selectToString(from.subquery);
-			} else if (from.subquery.type === 'values') {
-				subqueryStr = valuesToString(from.subquery);
-			} else {
-				// Handle the case where subquery type is not recognized
-				const exhaustiveCheck: never = from.subquery;
-				subqueryStr = astToString(exhaustiveCheck);
-			}
+			// QueryExpr body: SELECT / VALUES / INSERT|UPDATE|DELETE w/ RETURNING.
+			// astToString dispatches on the inner discriminator.
+			const subqueryStr = astToString(from.subquery);
 
 			let aliasStr = `as ${quoteIdentifier(from.alias)}`;
 			if (from.columns && from.columns.length > 0) {
@@ -519,15 +513,6 @@ function fromClauseToString(from: AST.FromClause): string {
 			return joinStr;
 		}
 
-		case 'mutatingSubquerySource': {
-			const stmtStr = astToString(from.stmt);
-			let aliasStr = `as ${quoteIdentifier(from.alias)}`;
-			if (from.columns && from.columns.length > 0) {
-				aliasStr += ` (${from.columns.map(quoteIdentifier).join(', ')})`;
-			}
-			return `(${stmtStr}) ${aliasStr}`;
-		}
-
 		default:
 			return '[unknown_from]';
 	}
@@ -557,14 +542,10 @@ export function insertToString(stmt: AST.InsertStmt): string {
 		parts.push('with context', contextAssignments.join(', '));
 	}
 
-	if (stmt.values) {
-		const valueRows = stmt.values.map(row =>
-			`(${row.map(expressionToString).join(', ')})`
-		);
-		parts.push('values', valueRows.join(', '));
-	} else if (stmt.select) {
-		parts.push(selectToString(stmt.select));
-	}
+	// Body is a QueryExpr — bare SELECT/VALUES at top-level of INSERT, or a
+	// nested DML form (must carry RETURNING; outer INSERT is the consumer).
+	// astToString dispatches on the discriminator.
+	parts.push(astToString(stmt.source));
 
 	// UPSERT clauses (ON CONFLICT DO ...)
 	if (stmt.upsertClauses) {
@@ -748,7 +729,8 @@ export function createViewToString(stmt: AST.CreateViewStmt): string {
 		parts.push(`(${stmt.columns.map(quoteIdentifier).join(', ')})`);
 	}
 
-	parts.push('as', selectToString(stmt.select));
+	// View body is a QueryExpr — astToString dispatches on the discriminator.
+	parts.push('as', astToString(stmt.select));
 
 	const viewTagStr = tagsClauseToString(stmt.tags);
 	if (viewTagStr) parts.push(viewTagStr.trimStart());
@@ -916,7 +898,8 @@ function declaredViewToString(it: AST.DeclaredView): string {
 	if (stmt.columns && stmt.columns.length > 0) {
 		parts.push(`(${stmt.columns.map(quoteIdentifier).join(', ')})`);
 	}
-	parts.push('as', selectToString(stmt.select));
+	// View body is a QueryExpr — astToString dispatches on the discriminator.
+	parts.push('as', astToString(stmt.select));
 
 	const tagStr = tagsClauseToString(stmt.tags);
 	if (tagStr) parts.push(tagStr.trimStart());

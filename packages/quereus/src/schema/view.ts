@@ -12,8 +12,13 @@ export interface ViewSchema {
 	schemaName: string;
 	/** The original SQL text used to create the view */
 	sql: string;
-	/** The parsed SELECT statement AST that defines the view's logic */
-	selectAst: AST.SelectStmt;
+	/**
+	 * The parsed body AST that defines the view's logic. Any relation-producing
+	 * QueryExpr (SELECT / VALUES / DML w/ RETURNING). Today the planner only
+	 * runs SELECT and VALUES bodies; DML bodies are rejected at plan time
+	 * pending the dml-in-expression-position ticket.
+	 */
+	selectAst: AST.QueryExpr;
 	/** Columns explicitly defined in CREATE VIEW (e.g., CREATE VIEW v(a,b) AS...) */
 	columns?: ReadonlyArray<string>; // Optional list of explicitly named columns
 	/** Arbitrary metadata tags (informational only, does not affect behavior or hashing) */

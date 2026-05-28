@@ -389,8 +389,20 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			const viewSchema = parentContext.db.schemaManager.getView(schemaName, fromClause.table.name);
 
 			if (viewSchema) {
-				// Build the view's SELECT statement
-				let viewSelectNode = buildSelectStmt(parentContext, viewSchema.selectAst, cteNodes) as RelationalPlanNode;
+				// Build the view's body. The body is a QueryExpr — today only
+				// SELECT and VALUES bodies plan; DML bodies are rejected at
+				// CREATE VIEW plan time so we never get here with one.
+				let viewSelectNode: RelationalPlanNode;
+				if (viewSchema.selectAst.type === 'select') {
+					viewSelectNode = buildSelectStmt(parentContext, viewSchema.selectAst, cteNodes) as RelationalPlanNode;
+				} else if (viewSchema.selectAst.type === 'values') {
+					viewSelectNode = buildValuesStmt(parentContext, viewSchema.selectAst);
+				} else {
+					throw new QuereusError(
+						`View '${viewSchema.name}' has a ${viewSchema.selectAst.type.toUpperCase()} body, which is not yet supported.`,
+						StatusCode.UNSUPPORTED,
+					);
+				}
 
 				// If the view has explicit column names, wrap with a projection to rename columns
 				if (viewSchema.columns && viewSchema.columns.length > 0) {
@@ -453,16 +465,33 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		columnScope = registerColumnScope(parentContext.scope, fromTable, '', fromClause.alias?.toLowerCase() ?? fromClause.name.name.toLowerCase());
 
 	} else if (fromClause.type === 'subquerySource') {
-		// Build the subquery
+		// Build the subquery body. SubquerySource now carries any QueryExpr;
+		// the SELECT/VALUES legs return a pure relation, the DML legs (with
+		// RETURNING — enforced by the parser) materialize via the DML
+		// builders. The builder dispatch mirrors the legacy MutatingSubquerySource
+		// branch and the legacy SubquerySource branch in one place.
 		let subqueryNode: RelationalPlanNode;
-		if (fromClause.subquery.type === 'select') {
-			subqueryNode = buildSelectStmt(parentContext, fromClause.subquery, cteNodes) as RelationalPlanNode;
-		} else if (fromClause.subquery.type === 'values') {
-			subqueryNode = buildValuesStmt(parentContext, fromClause.subquery);
-		} else {
-			const exhaustiveCheck: never = fromClause.subquery;
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			throw new QuereusError(`Unsupported subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
+		switch (fromClause.subquery.type) {
+			case 'select':
+				subqueryNode = buildSelectStmt(parentContext, fromClause.subquery, cteNodes) as RelationalPlanNode;
+				break;
+			case 'values':
+				subqueryNode = buildValuesStmt(parentContext, fromClause.subquery);
+				break;
+			case 'insert':
+				subqueryNode = buildInsertStmt(parentContext, fromClause.subquery) as RelationalPlanNode;
+				break;
+			case 'update':
+				subqueryNode = buildUpdateStmt(parentContext, fromClause.subquery) as RelationalPlanNode;
+				break;
+			case 'delete':
+				subqueryNode = buildDeleteStmt(parentContext, fromClause.subquery) as RelationalPlanNode;
+				break;
+			default: {
+				const exhaustiveCheck: never = fromClause.subquery;
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				throw new QuereusError(`Unsupported subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
+			}
 		}
 
 		const alias = fromClause.alias?.toLowerCase();
@@ -491,52 +520,6 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 		columnScope = alias
 			? new AliasedScope(subqueryScope, '', alias)
 			: subqueryScope;
-
-	} else if (fromClause.type === 'mutatingSubquerySource') {
-		// Build the mutating subquery (DML with RETURNING)
-		let dmlNode: RelationalPlanNode;
-
-		if (fromClause.stmt.type === 'insert') {
-			// Build INSERT without SinkNode wrapper since we need the RETURNING results
-			dmlNode = buildInsertStmt(parentContext, fromClause.stmt) as RelationalPlanNode;
-		} else if (fromClause.stmt.type === 'update') {
-			// Build UPDATE without SinkNode wrapper since we need the RETURNING results
-			dmlNode = buildUpdateStmt(parentContext, fromClause.stmt) as RelationalPlanNode;
-		} else if (fromClause.stmt.type === 'delete') {
-			// Build DELETE without SinkNode wrapper since we need the RETURNING results
-			dmlNode = buildDeleteStmt(parentContext, fromClause.stmt) as RelationalPlanNode;
-		} else {
-			const exhaustiveCheck: never = fromClause.stmt;
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			throw new QuereusError(`Unsupported mutating subquery type: ${(exhaustiveCheck as any).type}`, StatusCode.INTERNAL);
-		}
-
-		const alias = fromClause.alias?.toLowerCase();
-
-		// Wrap with AliasNode to update relationName on attributes
-		fromTable = alias
-			? new AliasNode(parentContext.scope, dmlNode, alias)
-			: dmlNode;
-
-		// Create scope for mutating subquery columns
-		const mutatingScope = new RegisteredScope(parentContext.scope);
-		const mutatingAttributes = fromTable.getAttributes();
-
-		// Use provided column names or infer from RETURNING clause
-		const columnNames = fromClause.columns || fromTable.getType().columns.map(c => c.name);
-
-		columnNames.forEach((colName, i) => {
-			if (i < mutatingAttributes.length) {
-				const attr = mutatingAttributes[i];
-				const columnType = fromTable.getType().columns[i]?.type || { typeClass: 'scalar', logicalType: TEXT_TYPE, nullable: true, isReadOnly: false };
-				mutatingScope.registerSymbol(colName.toLowerCase(), (exp, s) =>
-					new ColumnReferenceNode(s, exp as AST.ColumnExpr, columnType, attr.id, i));
-			}
-		});
-
-		columnScope = alias
-			? new AliasedScope(mutatingScope, '', alias)
-			: mutatingScope;
 
 	} else if (fromClause.type === 'join') {
 		// Handle JOIN clauses
