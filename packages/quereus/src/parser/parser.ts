@@ -37,6 +37,14 @@ function _createLoc(startToken: Token, endToken: Token): AST.AstNode['loc'] {
 }
 
 /**
+ * Reserved words that the lexer tokenizes specially but which SQL still permits as
+ * identifiers in most contexts (table/column/alias names, etc.). Shared across the many
+ * parser methods that accept identifiers; methods needing extras spread this constant,
+ * e.g. `[...CONTEXTUAL_KEYWORDS, 'replace']`.
+ */
+const CONTEXTUAL_KEYWORDS = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'] as const;
+
+/**
  * IMPORTANT: Any changes to parsed syntax must also be reflected in the corresponding emitters:
  *   - packages/quereus/src/emit/ast-stringify.ts          (AST-to-SQL string conversion)
  *   - packages/quereus/src/schema/catalog.ts              (DDL generation for catalog/hashing)
@@ -393,14 +401,13 @@ export class Parser {
 
 		// Parse the table reference
 		const table = this.tableIdentifier();
-		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
 		// Parse column list if provided
 		let columns: string[] | undefined;
 		if (this.match(TokenType.LPAREN)) {
 			columns = [];
 			do {
-				if (!this.checkIdentifierLike(contextualKeywords)) {
+				if (!this.checkIdentifierLike(CONTEXTUAL_KEYWORDS)) {
 					throw this.error(this.peek(), "Expected column name.");
 				}
 				columns.push(this.getIdentifierValue(this.advance()));
@@ -744,7 +751,6 @@ export class Parser {
 	 */
 	private columnList(): AST.ResultColumn[] {
 		const columns: AST.ResultColumn[] = [];
-		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
 		do {
 			// Handle wildcard: * or table.*
@@ -752,9 +758,9 @@ export class Parser {
 				columns.push({ type: 'all' });
 			}
 			// Handle table.* syntax
-			else if (this.checkIdentifierLike(contextualKeywords) && this.checkNext(1, TokenType.DOT) &&
+			else if (this.checkIdentifierLike(CONTEXTUAL_KEYWORDS) && this.checkNext(1, TokenType.DOT) &&
 				this.checkNext(2, TokenType.ASTERISK)) {
-				const table = this.consumeIdentifier(contextualKeywords, "Expected table name before '.*'.");
+				const table = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected table name before '.*'.");
 				this.advance(); // consume DOT
 				this.advance(); // consume ASTERISK
 				columns.push({ type: 'all', table });
@@ -766,7 +772,7 @@ export class Parser {
 
 				// Handle AS alias or just alias
 				if (this.match(TokenType.AS)) {
-					if (this.checkIdentifierLike(contextualKeywords) || this.check(TokenType.STRING)) {
+					if (this.checkIdentifierLike(CONTEXTUAL_KEYWORDS) || this.check(TokenType.STRING)) {
 						const aliasToken = this.advance();
 						// For STRING tokens, use literal; for identifiers, use getIdentifierValue
 						alias = aliasToken.type === TokenType.STRING
@@ -801,7 +807,7 @@ export class Parser {
 		let schema: string | undefined;
 		let name: string;
 		let endToken = startToken;
-		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like', 'temp', 'temporary'];
+		const contextualKeywords = [...CONTEXTUAL_KEYWORDS, 'temp', 'temporary'];
 
 		// Check for schema.table pattern
 		if (this.checkIdentifierLike(contextualKeywords) && this.checkNext(1, TokenType.DOT)) {
@@ -850,7 +856,6 @@ export class Parser {
 	 */
 	private tableSource(withClause?: AST.WithClause): AST.FromClause {
 		const startToken = this.peek();
-		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
 		// Subquery: any QueryExpr in parens. Decision is made on the token
 		// immediately after `(`; all relation-producing forms (SELECT, VALUES,
@@ -874,7 +879,7 @@ export class Parser {
 		}
 
 		// Check for function call syntax: IDENTIFIER (
-		if (this.checkIdentifierLike(contextualKeywords) && this.checkNext(1, TokenType.LPAREN)) {
+		if (this.checkIdentifierLike(CONTEXTUAL_KEYWORDS) && this.checkNext(1, TokenType.LPAREN)) {
 			return this.functionSource(startToken);
 		}
 		// Otherwise, assume it's a standard table source
@@ -924,11 +929,10 @@ export class Parser {
 		// Parse optional column list after alias: AS alias(col1, col2, ...)
 		if (this.match(TokenType.LPAREN)) {
 			columns = [];
-			const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
 			if (!this.check(TokenType.RPAREN)) {
 				do {
-					columns.push(this.consumeIdentifier(contextualKeywords, "Expected column name in alias column list."));
+					columns.push(this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name in alias column list."));
 				} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
 			}
 			this.consume(TokenType.RPAREN, "Expected ')' after alias column list.");
@@ -946,7 +950,6 @@ export class Parser {
 
 	/** Parses a standard table source (schema.table or table) */
 	private standardTableSource(startToken: Token): AST.TableSource {
-		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
 		// Parse table name (potentially schema-qualified)
 		const table = this.tableIdentifier();
@@ -955,7 +958,7 @@ export class Parser {
 		// Parse optional alias
 		let alias: string | undefined;
 		if (this.match(TokenType.AS)) {
-			if (!this.checkIdentifierLike(contextualKeywords)) {
+			if (!this.checkIdentifierLike(CONTEXTUAL_KEYWORDS)) {
 				throw this.error(this.peek(), "Expected alias after 'AS'.");
 			}
 			const aliasToken = this.advance();
@@ -981,7 +984,6 @@ export class Parser {
 
 	/** Parses a table-valued function source: name(arg1, ...) [AS alias] */
 	private functionSource(startToken: Token): AST.FunctionSource {
-		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
 		const name = this.tableIdentifier(); // name has its own loc
 		let endToken = this.previous(); // Initialize endToken after parsing function identifier
@@ -1016,7 +1018,7 @@ export class Parser {
 		let alias: string | undefined;
 		let columns: string[] | undefined;
 		if (this.match(TokenType.AS)) {
-			if (!this.checkIdentifierLike(contextualKeywords)) {
+			if (!this.checkIdentifierLike(CONTEXTUAL_KEYWORDS)) {
 				throw this.error(this.peek(), "Expected alias after 'AS'.");
 			}
 			const aliasToken = this.advance();
@@ -1035,10 +1037,9 @@ export class Parser {
 		// Optional column list after alias: alias(col1, col2, ...)
 		if (alias && this.match(TokenType.LPAREN)) {
 			columns = [];
-			const colKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 			if (!this.check(TokenType.RPAREN)) {
 				do {
-					columns.push(this.consumeIdentifier(colKeywords, "Expected column name in alias column list."));
+					columns.push(this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name in alias column list."));
 				} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
 			}
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after alias column list.");
@@ -1097,10 +1098,9 @@ export class Parser {
 		} else if (this.match(TokenType.USING)) {
 			this.consume(TokenType.LPAREN, "Expected '(' after 'USING'.");
 			columns = [];
-			const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 
 			do {
-				columns.push(this.consumeIdentifier(contextualKeywords, "Expected column name."));
+				columns.push(this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name."));
 			} while (this.match(TokenType.COMMA));
 
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after columns.");
@@ -1641,8 +1641,8 @@ export class Parser {
 		}
 
 		// Function call (with optional window function support)
-		if (this.checkIdentifierLike(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like', 'replace']) && this.checkNext(1, TokenType.LPAREN)) {
-			const name = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like', 'replace'], "Expected function name.");
+		if (this.checkIdentifierLike([...CONTEXTUAL_KEYWORDS, 'replace']) && this.checkNext(1, TokenType.LPAREN)) {
+			const name = this.consumeIdentifier([...CONTEXTUAL_KEYWORDS, 'replace'], "Expected function name.");
 
 			this.consume(TokenType.LPAREN, "Expected '(' after function name.");
 
@@ -1699,16 +1699,15 @@ export class Parser {
 		}
 
 		// Column/identifier expressions
-		const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
-		if (this.checkIdentifierLike(contextualKeywords)) {
+		if (this.checkIdentifierLike(CONTEXTUAL_KEYWORDS)) {
 			// Schema.table.column
-			if (this.checkNext(1, TokenType.DOT) && this.checkIdentifierLikeAt(2, contextualKeywords) &&
-				this.checkNext(3, TokenType.DOT) && this.checkIdentifierLikeAt(4, contextualKeywords)) {
-				const schema = this.consumeIdentifier(contextualKeywords, "Expected schema name.");
+			if (this.checkNext(1, TokenType.DOT) && this.checkIdentifierLikeAt(2, CONTEXTUAL_KEYWORDS) &&
+				this.checkNext(3, TokenType.DOT) && this.checkIdentifierLikeAt(4, CONTEXTUAL_KEYWORDS)) {
+				const schema = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected schema name.");
 				this.advance(); // Consume DOT
-				const table = this.consumeIdentifier(contextualKeywords, "Expected table name.");
+				const table = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected table name.");
 				this.advance(); // Consume DOT
-				const name = this.consumeIdentifier(contextualKeywords, "Expected column name.");
+				const name = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name.");
 				const nameToken = this.previous();
 
 				return {
@@ -1720,10 +1719,10 @@ export class Parser {
 				};
 			}
 			// table.column
-			else if (this.checkNext(1, TokenType.DOT) && this.checkIdentifierLikeAt(2, contextualKeywords)) {
-				const table = this.consumeIdentifier(contextualKeywords, "Expected table name.");
+			else if (this.checkNext(1, TokenType.DOT) && this.checkIdentifierLikeAt(2, CONTEXTUAL_KEYWORDS)) {
+				const table = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected table name.");
 				this.advance(); // Consume DOT
-				const name = this.consumeIdentifier(contextualKeywords, "Expected column name.");
+				const name = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name.");
 				const nameToken = this.previous();
 
 				return {
@@ -1735,7 +1734,7 @@ export class Parser {
 			}
 			// just column
 			else {
-				const name = this.consumeIdentifier(contextualKeywords, "Expected column name.");
+				const name = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name.");
 				const nameToken = this.previous();
 
 				return {
@@ -2034,7 +2033,7 @@ export class Parser {
 		this.consume(TokenType.SET, "Expected 'SET' after table name in UPDATE.");
 		const assignments: { column: string; value: AST.Expression }[] = [];
 		do {
-			const column = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected column name in SET clause.");
+			const column = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name in SET clause.");
 			this.consume(TokenType.EQUAL, "Expected '=' after column name in SET clause.");
 			const value = this.expression();
 			assignments.push({ column, value });
@@ -2315,8 +2314,7 @@ export class Parser {
 			// If we didn't see a comma and the next token looks like the start of another
 			// column or table constraint, provide a clearer error about a missing comma.
 			if (!this.check(TokenType.RPAREN)) {
-				const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
-				const nextLooksLikeAnotherItem = this.peekKeyword('PRIMARY') || this.peekKeyword('UNIQUE') || this.peekKeyword('CHECK') || this.peekKeyword('FOREIGN') || this.peekKeyword('CONSTRAINT') || this.checkIdentifierLike(contextualKeywords);
+				const nextLooksLikeAnotherItem = this.peekKeyword('PRIMARY') || this.peekKeyword('UNIQUE') || this.peekKeyword('CHECK') || this.peekKeyword('FOREIGN') || this.peekKeyword('CONSTRAINT') || this.checkIdentifierLike(CONTEXTUAL_KEYWORDS);
 				if (nextLooksLikeAnotherItem) {
 					const next = this.peek();
 					throw this.error(next, `Expected ',' between table elements. Did you forget a comma before '${next.lexeme}'?`);
@@ -2475,10 +2473,9 @@ export class Parser {
 		if (this.check(TokenType.LPAREN)) {
 			this.consume(TokenType.LPAREN, "Expected '(' to start view column list.");
 			columns = [];
-			const contextualKeywords = ['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'];
 			if (!this.check(TokenType.RPAREN)) {
 				do {
-					columns.push(this.consumeIdentifier(contextualKeywords, "Expected column name in view column list."));
+					columns.push(this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name in view column list."));
 				} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
 			}
 			this.consume(TokenType.RPAREN, "Expected ')' after view column list.");
@@ -2589,13 +2586,13 @@ export class Parser {
 		if (this.peekKeyword('RENAME')) {
 			this.consumeKeyword('RENAME', "Expected RENAME.");
 			if (this.matchKeyword('COLUMN')) {
-				const oldName = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected old column name after RENAME COLUMN.");
+				const oldName = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected old column name after RENAME COLUMN.");
 				this.consumeKeyword('TO', "Expected 'TO' after old column name.");
-				const newName = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected new column name after TO.");
+				const newName = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected new column name after TO.");
 				action = { type: 'renameColumn', oldName, newName };
 			} else {
 				this.consumeKeyword('TO', "Expected 'TO' after RENAME.");
-				const newName = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected new table name after RENAME TO.");
+				const newName = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected new table name after RENAME TO.");
 				action = { type: 'renameTable', newName };
 			}
 		} else if (this.peekKeyword('ADD')) {
@@ -2613,7 +2610,7 @@ export class Parser {
 		} else if (this.peekKeyword('DROP')) {
 			this.consumeKeyword('DROP', "Expected DROP.");
 			this.matchKeyword('COLUMN');
-			const name = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected column name after DROP COLUMN.");
+			const name = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name after DROP COLUMN.");
 			action = { type: 'dropColumn', name };
 		} else if (this.peekKeyword('ALTER')) {
 			this.consumeKeyword('ALTER', "Expected ALTER.");
@@ -2627,7 +2624,7 @@ export class Parser {
 				const columns: Array<{ name: string; direction?: 'asc' | 'desc' }> = [];
 				if (!this.check(TokenType.RPAREN)) {
 					do {
-						const colName = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected column name in PRIMARY KEY definition.");
+						const colName = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name in PRIMARY KEY definition.");
 						let direction: 'asc' | 'desc' | undefined;
 						if (this.matchKeyword('ASC')) {
 							direction = 'asc';
@@ -2659,7 +2656,7 @@ export class Parser {
 	 */
 	private alterColumnAction(): AST.AlterTableAction {
 		const columnName = this.consumeIdentifier(
-			['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'],
+			CONTEXTUAL_KEYWORDS,
 			"Expected column name after ALTER COLUMN.",
 		);
 
@@ -2895,7 +2892,7 @@ export class Parser {
 	}
 
 	private declareTableItem(): AST.DeclaredTable {
-		const tableName = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], 'Expected table name in declaration.');
+		const tableName = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, 'Expected table name in declaration.');
 		let moduleName: string | undefined;
 		let moduleArgs: Record<string, SqlValue> | undefined;
 		const columns: AST.ColumnDef[] = [];
@@ -3275,8 +3272,8 @@ export class Parser {
 
 	/** @internal Helper to consume an IDENTIFIER token and return its lexeme */
 	private consumeIdentifier(errorMessage: string): string;
-	private consumeIdentifier(availableKeywords: string[], errorMessage: string): string;
-	private consumeIdentifier(errorMessageOrKeywords: string | string[], errorMessage?: string): string {
+	private consumeIdentifier(availableKeywords: readonly string[], errorMessage: string): string;
+	private consumeIdentifier(errorMessageOrKeywords: string | readonly string[], errorMessage?: string): string {
 		if (typeof errorMessageOrKeywords === 'string') {
 			// Single parameter version - no contextual keywords
 			return this.consumeIdentifierOrContextualKeyword([], errorMessageOrKeywords);
@@ -3292,7 +3289,7 @@ export class Parser {
 	 * @param errorMessage Error message if no valid token is found
 	 * @returns The identifier value (unquoted for quoted identifiers)
 	 */
-	private consumeIdentifierOrContextualKeyword(availableKeywords: string[], errorMessage: string): string {
+	private consumeIdentifierOrContextualKeyword(availableKeywords: readonly string[], errorMessage: string): string {
 		const token = this.peek();
 
 		// First check for regular identifier
@@ -3317,7 +3314,7 @@ export class Parser {
 	/**
 	 * @internal Helper to check if current token is an identifier or available contextual keyword
 	 */
-	private checkIdentifierLike(availableKeywords: string[] = []): boolean {
+	private checkIdentifierLike(availableKeywords: readonly string[] = []): boolean {
 		if (this.check(TokenType.IDENTIFIER)) {
 			return true;
 		}
@@ -3328,7 +3325,7 @@ export class Parser {
 	/**
 	 * @internal Helper to check if token at offset is an identifier or available contextual keyword
 	 */
-	private checkIdentifierLikeAt(offset: number, availableKeywords: string[] = []): boolean {
+	private checkIdentifierLikeAt(offset: number, availableKeywords: readonly string[] = []): boolean {
 		if (this.checkNext(offset, TokenType.IDENTIFIER)) {
 			return true;
 		}
@@ -3351,7 +3348,7 @@ export class Parser {
 	/**
 	 * @internal Helper to check if any of the specified contextual keywords are available at current position
 	 */
-	private isContextualKeywordAvailable(availableKeywords: string[]): boolean {
+	private isContextualKeywordAvailable(availableKeywords: readonly string[]): boolean {
 		const token = this.peek();
 
 		for (const keyword of availableKeywords) {
@@ -3370,7 +3367,7 @@ export class Parser {
 
 	/** @internal Parses a column definition */
 	private columnDefinition(): AST.ColumnDef {
-		const name = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected column name.");
+		const name = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name.");
 
 		let dataType: string | undefined;
 		if (this.check(TokenType.IDENTIFIER)) {
@@ -3857,7 +3854,7 @@ export class Parser {
 	private identifierList(): string[] {
 		const identifiers: string[] = [];
 		do {
-			identifiers.push(this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected identifier in list."));
+			identifiers.push(this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected identifier in list."));
 		} while (this.match(TokenType.COMMA));
 		return identifiers;
 	}
@@ -3866,7 +3863,7 @@ export class Parser {
 	private identifierListWithDirection(): { name: string; direction?: 'asc' | 'desc' }[] {
 		const identifiers: { name: string; direction?: 'asc' | 'desc' }[] = [];
 		do {
-			const name = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'references', 'on', 'cascade', 'restrict', 'like'], "Expected identifier in list.");
+			const name = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected identifier in list.");
 			const direction = this.match(TokenType.ASC) ? 'asc' : this.match(TokenType.DESC) ? 'desc' : undefined;
 			identifiers.push({ name, direction });
 		} while (this.match(TokenType.COMMA));
