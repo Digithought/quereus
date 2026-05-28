@@ -104,13 +104,14 @@ interface RecognizedBranch {
  * the projection-list node that must be rewritten to a column reference into
  * the fan-out's wide row.
  *
- * The branch child wraps `subqueryRoot` in a stable single-column `ProjectNode`
- * selecting `valueAttr`. Aggregate nodes now advertise exactly their logical
- * GROUP-BY + aggregate schema in both their logical and physical forms, so a
- * no-GROUP-BY scalar aggregate is already single-column; the explicit Project
- * is a defensive pin that anchors the branch's output attribute id/alias to
- * `valueAttr` and keeps the wide-row contribution invariant regardless of the
- * inner root's shape.
+ * Aggregate nodes advertise exactly their logical GROUP-BY + aggregate schema
+ * in both their logical and physical (`StreamAggregate` / `HashAggregate`)
+ * forms — source columns needed for HAVING / correlated reads flow through the
+ * runtime row-descriptor context, not as output attributes — so a no-GROUP-BY
+ * scalar-aggregate subquery root is already single-column. The branch child
+ * is `subqueryRoot` verbatim; `valueAttr` is its column-0 attribute and is
+ * what `substituteSubqueries` rewrites the outer projection's
+ * `ScalarSubqueryNode` to reference.
  */
 interface RecognizedSubqueryBranch {
 	readonly subqueryNode: ScalarSubqueryNode;
@@ -273,28 +274,14 @@ export function ruleFanOutLookupJoin(node: PlanNode, context: OptContext): PlanN
 		});
 	}
 	for (const b of subqueryBranches) {
-		// Pin the branch to a single column (the scalar value). The inner
-		// aggregate already advertises exactly its logical schema in physical form
-		// (single-column for a no-GROUP-BY scalar aggregate), so this is a
-		// defensive identity pin. `attributeId: valueAttr.id` keeps the branch
-		// output attribute identical to what the outer projection's column
-		// reference targets.
-		const colRef = new ColumnReferenceNode(
-			node.scope,
-			columnExprFor(b.valueAttr.name),
-			b.valueAttr.type,
-			b.valueAttr.id,
-			0,
-		);
-		const projectedChild = new ProjectNode(
-			node.scope,
-			b.subqueryRoot,
-			[{ node: colRef, alias: b.valueAttr.name, attributeId: b.valueAttr.id }],
-		);
+		// Drive the branch off the subquery root verbatim — its column-0 attribute
+		// IS `valueAttr` (a no-GROUP-BY scalar aggregate advertises exactly its
+		// logical schema in both logical and physical form, and the recognition
+		// gate already rejected any root with `getAttributes().length !== 1`).
 		branchSpecs.push({
-			child: projectedChild,
+			child: b.subqueryRoot,
 			mode: b.mode,
-			outputAttrs: projectedChild.getAttributes(),
+			outputAttrs: b.subqueryRoot.getAttributes(),
 			concurrencySafe: b.concurrencySafe,
 		});
 	}
