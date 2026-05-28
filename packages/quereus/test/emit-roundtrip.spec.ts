@@ -103,10 +103,21 @@ describe('Emit: statement round-trips', () => {
 		});
 
 		it('preserves the materialization hint structurally', () => {
+			// roundTripStmt only proves idempotence — a dropped hint re-emits identically
+			// and still passes it. These assertions check the hint survives the *first*
+			// parse→stringify→parse against the original, which is the actual regression.
+			// Covers the keyword × {column list, recursive} cross-products that the
+			// `withClauseToString` emitter and `commonTableExpression` parser share.
 			for (const [sql, expected] of [
 				['with x as materialized (select 1) select * from x', 'materialized'],
 				['with x as not materialized (select 1) select * from x', 'not_materialized'],
 				['with x as (select 1) select * from x', undefined],
+				// Column list before AS, hint after.
+				['with x (a) as materialized (select 1) select * from x', 'materialized'],
+				['with x (a) as not materialized (select 1) select * from x', 'not_materialized'],
+				// Recursive CTEs route through the same emitter/parser path.
+				['with recursive r(n) as materialized (select 1 union all select n + 1 from r where n < 10) select n from r', 'materialized'],
+				['with recursive r(n) as not materialized (select 1 union all select n + 1 from r where n < 10) select n from r', 'not_materialized'],
 			] as const) {
 				const stmt = parse(sql) as SelectStmt;
 				const reparsed = parse(astToString(stmt)) as SelectStmt;
