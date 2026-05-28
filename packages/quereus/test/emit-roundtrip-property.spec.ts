@@ -465,6 +465,26 @@ const compoundSelectArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(
 }));
 
 /**
+ * `select c from (<query-expr>) as <alias>` — drives `SubquerySource.subquery`
+ * in FROM position. The `case 'subquerySource'` dispatch in
+ * `fromClauseToString` (ast-stringify.ts:475-486) is a distinct
+ * `astToString` call site from the four expression-position dispatches;
+ * a silent drop of one QueryExpr branch there would surface only here.
+ * The column list is omitted for the same arity-coupling reason as the
+ * CREATE VIEW arbitrary's VALUES branch — column-list survival at
+ * SubquerySource isn't probed by the property suite.
+ */
+const subquerySourceArb: fc.Arbitrary<AST.SelectStmt> = fc.tuple(
+	queryExprArb,
+	identArb, // outer column name
+	identArb, // FROM alias
+).map(([query, col, alias]): AST.SelectStmt => ({
+	type: 'select',
+	columns: [{ type: 'column', expr: { type: 'column', name: col } }],
+	from: [{ type: 'subquerySource', subquery: query, alias }],
+}));
+
+/**
  * `with <name> as (<query-expr>) select c from t` — drives
  * `CommonTableExpr.query`. The outer SELECT body is decoupled from the CTE
  * so the test is independent of CTE-reference resolution (parsing is
@@ -996,6 +1016,10 @@ describe('AST round-trip property: QueryExpr at every accepting site', () => {
 
 	it('SelectStmt.compound leg round-trips structurally', () => {
 		fc.assert(fc.property(compoundSelectArb, checkRoundTrip), { numRuns: 100 });
+	});
+
+	it('SubquerySource.subquery in FROM round-trips structurally', () => {
+		fc.assert(fc.property(subquerySourceArb, checkRoundTrip), { numRuns: 100 });
 	});
 
 	it('CommonTableExpr.query body round-trips structurally', () => {
