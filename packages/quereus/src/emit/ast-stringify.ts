@@ -843,7 +843,7 @@ function releaseToString(stmt: AST.ReleaseStmt): string {
 }
 
 function pragmaToString(stmt: AST.PragmaStmt): string {
-	let result = `pragma ${stmt.name.toLowerCase()}`;
+	let result = `pragma ${quoteIdentifier(stmt.name.toLowerCase())}`;
 	if (stmt.value) {
 		result += ` = ${expressionToString(stmt.value)}`;
 	}
