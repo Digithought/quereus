@@ -799,10 +799,18 @@ export class Optimizer {
 				phase: 'rewrite',
 				fn: ruleMaterializationAdvisory,
 				priority: 30,
-				// Delegates to MaterializationAdvisory, which itself gates on
-				// `CachingAnalysis.isCacheable` — that helper only caches
-				// side-effect-bearing subtrees when they would also be expensive
-				// AND repeated, so insertion is a run-once memoization (sound).
+				// Delegates to MaterializationAdvisory. The advisory does not
+				// explicitly consult `hasSideEffects` — soundness for impure
+				// subtrees rests on CacheNode itself being a run-once fence
+				// (materialize-on-first-read, replay thereafter), so a
+				// side-effect-bearing subtree that the advisory would otherwise
+				// wrap runs exactly once instead of per-reference. That is a
+				// count-change but order-preserving rewrite. If a future
+				// reviewer wants the advisory to refuse outright on impure
+				// subtrees (matching the rest of the audit's refusal posture
+				// once `dml-in-expression-position` lifts the planning gate),
+				// add a `PlanNodeCharacteristics.subtreeHasSideEffects` check
+				// in `MaterializationAdvisory.adviseCaching`.
 				sideEffectMode: 'aware',
 			});
 		}
