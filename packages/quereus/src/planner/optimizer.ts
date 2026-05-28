@@ -125,7 +125,10 @@ export class Optimizer {
 				nodeType,
 				phase: 'rewrite',
 				fn: ruleGrowRetrieve,
-				priority: 10
+				priority: 10,
+				// Slides operators down into a Retrieve boundary, whose pipeline is
+				// always a read by construction (RetrieveNode is the vtab read entry).
+				sideEffectMode: 'safe',
 			});
 		}
 
@@ -135,7 +138,9 @@ export class Optimizer {
 			nodeType: PlanNodeType.Join,
 			phase: 'rewrite',
 			fn: ruleJoinKeyInference,
-			priority: 15
+			priority: 15,
+			// Diagnostic-only: never returns a transformed node.
+			sideEffectMode: 'safe',
 		});
 
 		// Greedy join commute: place smaller input on the left to improve nested-loop-like costs
@@ -144,7 +149,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Join,
 			phase: 'rewrite',
 			fn: ruleJoinGreedyCommute,
-			priority: 16
+			priority: 16,
+			// Swaps left/right of an inner join — would reorder side-effect
+			// execution. The rule refuses when either side carries a write.
+			sideEffectMode: 'aware',
 		});
 
 		// DISTINCT elimination: remove redundant DISTINCT when source already has unique keys
@@ -153,7 +161,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Distinct,
 			phase: 'rewrite',
 			fn: ruleDistinctElimination,
-			priority: 18
+			priority: 18,
+			// Unwraps DISTINCT around its source; source survives verbatim and any
+			// writes inside it still execute the same number of times.
+			sideEffectMode: 'safe',
 		});
 
 		// Projection pruning: remove unused inner projections in Project-on-Project
@@ -162,7 +173,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Project,
 			phase: 'rewrite',
 			fn: ruleProjectionPruning,
-			priority: 19
+			priority: 19,
+			// Drops unreferenced inner projections — refuses to drop any whose
+			// scalar expression carries a side effect.
+			sideEffectMode: 'aware',
 		});
 
 		// Sargable range rewrite: turn `f(col) = c` (for monotone-lossy `f` with
@@ -176,7 +190,9 @@ export class Optimizer {
 			nodeType: PlanNodeType.Filter,
 			phase: 'rewrite',
 			fn: ruleSargableRangeRewrite,
-			priority: 18
+			priority: 18,
+			// Rewrites a single scalar conjunct shape in place; no subtree moved.
+			sideEffectMode: 'safe',
 		});
 
 		// Aggregate-aware predicate pushdown: splits a Filter above an aggregate so
@@ -188,7 +204,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Filter,
 			phase: 'rewrite',
 			fn: ruleAggregatePredicatePushdown,
-			priority: 19
+			priority: 19,
+			// Moves Filter conjuncts below an Aggregate, changing which rows reach
+			// the source subtree. Refuses when source has side effects.
+			sideEffectMode: 'aware',
 		});
 
 		this.passManager.addRuleToPass(PassId.Structural, {
@@ -196,7 +215,11 @@ export class Optimizer {
 			nodeType: PlanNodeType.Filter,
 			phase: 'rewrite',
 			fn: rulePredicatePushdown,
-			priority: 20
+			priority: 20,
+			// Slides Filter past Sort/Distinct/Project/Alias/Retrieve, changing
+			// which rows reach the layer below — refuses when the immediate child
+			// subtree carries a write.
+			sideEffectMode: 'aware',
 		});
 
 		// Filter merge: combine adjacent Filter nodes into one AND-combined Filter
@@ -205,7 +228,12 @@ export class Optimizer {
 			nodeType: PlanNodeType.Filter,
 			phase: 'rewrite',
 			fn: ruleFilterMerge,
-			priority: 21
+			priority: 21,
+			// Merges two adjacent Filters into AND; the source subtree is untouched
+			// and only the order of predicate-clause evaluation changes (predicates
+			// are pure today; the audit gate that DML-in-expression-position needs
+			// is on rules that move or drop SUBTREES, not predicate ASTs).
+			sideEffectMode: 'safe',
 		});
 
 		// Scalar CSE: deduplicate common scalar expressions across Project + Filter + Sort chains
@@ -214,7 +242,11 @@ export class Optimizer {
 			nodeType: PlanNodeType.Project,
 			phase: 'rewrite',
 			fn: ruleScalarCSE,
-			priority: 22
+			priority: 22,
+			// Deduplicates scalar expressions — would silently collapse N copies of
+			// a side-effect-bearing scalar into 1. The rule's collector skips any
+			// non-deterministic or side-effect-bearing expression.
+			sideEffectMode: 'aware',
 		});
 
 		// EC-driven predicate inference: materialize inferred equality predicates
@@ -230,7 +262,12 @@ export class Optimizer {
 			nodeType: PlanNodeType.Filter,
 			phase: 'rewrite',
 			fn: rulePredicateInferenceEquivalence,
-			priority: 22
+			priority: 22,
+			// Materializes inferred equality conjuncts and optionally injects
+			// branch filters above an inner/cross join's children — would change
+			// which rows reach a side-effect-bearing branch. Refuses branch
+			// injection when the target branch has side effects.
+			sideEffectMode: 'aware',
 		});
 
 		// GROUP BY FD simplification: drop GROUP BY columns determined by other
@@ -245,7 +282,11 @@ export class Optimizer {
 			nodeType: PlanNodeType.Aggregate,
 			phase: 'rewrite',
 			fn: ruleGroupByFdSimplification,
-			priority: 23
+			priority: 23,
+			// Drops bare-column GROUP BY entries (re-emitting them as picker
+			// aggregates). The dropped expressions are pure ColumnReferenceNodes
+			// by construction, so no side-effect-bearing scalar can be lost.
+			sideEffectMode: 'safe',
 		});
 
 		// Fan-out lookup join (FK→PK): cluster N LEFT/INNER nested-loop joins from
@@ -262,7 +303,11 @@ export class Optimizer {
 			nodeType: PlanNodeType.Project,
 			phase: 'rewrite',
 			fn: ruleFanOutLookupJoin,
-			priority: 23
+			priority: 23,
+			// Clusters per-outer-row branches into a parallel fan-out — drives
+			// branches concurrently. Refuses to cluster a branch whose subtree
+			// carries a write.
+			sideEffectMode: 'aware',
 		});
 
 		// Join elimination (FK→PK): drop LEFT/INNER joins whose non-preserved side
@@ -275,7 +320,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Project,
 			phase: 'rewrite',
 			fn: ruleJoinElimination,
-			priority: 24
+			priority: 24,
+			// Drops the non-preserved side of a join — refuses to drop a subtree
+			// that carries a write.
+			sideEffectMode: 'aware',
 		});
 
 		// Subquery decorrelation: transform correlated EXISTS/IN into semi/anti joins
@@ -285,7 +333,11 @@ export class Optimizer {
 			nodeType: PlanNodeType.Filter,
 			phase: 'rewrite',
 			fn: ruleSubqueryDecorrelation,
-			priority: 25
+			priority: 25,
+			// Transforms EXISTS(correlated) / IN(correlated) into semi/anti
+			// joins, changing how many times the inner subquery's subtree is
+			// executed — refuses when the inner subtree carries a write.
+			sideEffectMode: 'aware',
 		});
 
 		// IND-driven existence folding (priority 26 — runs after decorrelation has
@@ -299,7 +351,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Join,
 			phase: 'rewrite',
 			fn: ruleAntiJoinFkEmpty,
-			priority: 26
+			priority: 26,
+			// Folds an anti-join to EmptyRelation, dropping both sides. Refuses
+			// when either side carries a write.
+			sideEffectMode: 'aware',
 		});
 
 		this.passManager.addRuleToPass(PassId.Structural, {
@@ -307,7 +362,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Join,
 			phase: 'rewrite',
 			fn: ruleSemiJoinFkTrivial,
-			priority: 26
+			priority: 26,
+			// Drops the R side of a semi-join (replacing with a NOT NULL filter on
+			// L). Refuses when R carries a write.
+			sideEffectMode: 'aware',
 		});
 
 		// Aggregate variant of join-elimination: when an Aggregate sits over an
@@ -319,7 +377,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Aggregate,
 			phase: 'rewrite',
 			fn: ruleJoinEliminationUnderAggregate,
-			priority: 26
+			priority: 26,
+			// Drops the non-preserved side of an inner join sitting under an
+			// Aggregate — same guard as ruleJoinElimination.
+			sideEffectMode: 'aware',
 		});
 
 		// ORDER BY FD pruning: drop trailing ORDER BY keys functionally determined
@@ -335,7 +396,12 @@ export class Optimizer {
 			nodeType: PlanNodeType.Sort,
 			phase: 'rewrite',
 			fn: ruleOrderByFdPruning,
-			priority: 26
+			priority: 26,
+			// Drops trailing ORDER BY keys (or the whole Sort) — the keys are
+			// either bare ColumnReferenceNodes (pure) or kept opaque. The Sort's
+			// source is preserved verbatim. Whole-Sort elimination is also safe:
+			// it returns `node.source`, so every subtree below survives intact.
+			sideEffectMode: 'safe',
 		});
 
 		// Predicate-contradiction folding (priority 27 — after IND rules at 26):
@@ -356,6 +422,9 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleFilterContradiction,
 			priority: 27,
+			// Replaces the Filter (and its source) with EmptyRelation — refuses
+			// when the source subtree carries a write.
+			sideEffectMode: 'aware',
 		});
 
 		// Empty-relation folding (priority 27 — after IND rules at 26): recognize
@@ -369,6 +438,8 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleFilterFoldEmpty,
 			priority: 27,
+			// `Filter(x, lit-false)` drops `x` — refuses when `x` has side effects.
+			sideEffectMode: 'aware',
 		});
 		this.passManager.addRuleToPass(PassId.Structural, {
 			id: 'fold-project-empty',
@@ -376,6 +447,10 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleProjectFoldEmpty,
 			priority: 27,
+			// Fires only when source is already an EmptyRelation (a pure marker
+			// with no children); side-effect-bearing subtree cannot reach this
+			// fold without itself first being folded.
+			sideEffectMode: 'safe',
 		});
 		this.passManager.addRuleToPass(PassId.Structural, {
 			id: 'fold-sort-empty',
@@ -383,6 +458,8 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleSortFoldEmpty,
 			priority: 27,
+			// Source is EmptyRelation; see fold-project-empty.
+			sideEffectMode: 'safe',
 		});
 		this.passManager.addRuleToPass(PassId.Structural, {
 			id: 'fold-limit-empty',
@@ -390,6 +467,8 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleLimitOffsetFoldEmpty,
 			priority: 27,
+			// Source is EmptyRelation; see fold-project-empty.
+			sideEffectMode: 'safe',
 		});
 		this.passManager.addRuleToPass(PassId.Structural, {
 			id: 'fold-distinct-empty',
@@ -397,6 +476,8 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleDistinctFoldEmpty,
 			priority: 27,
+			// Source is EmptyRelation; see fold-project-empty.
+			sideEffectMode: 'safe',
 		});
 		this.passManager.addRuleToPass(PassId.Structural, {
 			id: 'fold-join-empty',
@@ -404,6 +485,10 @@ export class Optimizer {
 			phase: 'rewrite',
 			fn: ruleJoinFoldEmpty,
 			priority: 27,
+			// Folds an inner/cross/semi/anti join with an empty side to Empty,
+			// dropping the *other* side — refuses when the dropped side carries
+			// a write.
+			sideEffectMode: 'aware',
 		});
 
 		// Physical pass rules (bottom-up) - for logical to physical transformations
@@ -412,7 +497,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Retrieve,
 			phase: 'impl',
 			fn: ruleSelectAccessPath,
-			priority: 10
+			priority: 10,
+			// Replaces a logical Retrieve with a physical access node over the
+			// same TableReference — read-only by construction.
+			sideEffectMode: 'safe',
 		});
 
 		// QuickPick join enumeration (optional via tuning)
@@ -421,7 +509,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Join,
 			phase: 'impl',
 			fn: ruleQuickPickJoinEnumeration,
-			priority: 5
+			priority: 5,
+			// Reorders inner-join trees by cost — would change side-effect
+			// execution order. Refuses when any leaf relation has side effects.
+			sideEffectMode: 'aware',
 		});
 
 		this.passManager.addRuleToPass(PassId.Physical, {
@@ -429,7 +520,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Aggregate,
 			phase: 'impl',
 			fn: ruleAggregatePhysical,
-			priority: 20
+			priority: 20,
+			// Selects Stream vs Hash aggregate; the source is preserved verbatim
+			// (or wrapped in a Sort, which executes its source once).
+			sideEffectMode: 'safe',
 		});
 
 		// Recognize lateral-top-1 asof. Runs in the Structural pass (before
@@ -441,7 +535,12 @@ export class Optimizer {
 			nodeType: PlanNodeType.Join,
 			phase: 'rewrite',
 			fn: ruleLateralTop1Asof,
-			priority: 5
+			priority: 5,
+			// Recognizes a very narrow shape (Project/Limit/Sort/Filter chain
+			// over a vtab leaf that advertises asofRight) — leaf must be a
+			// physical TableReference, so all participating subtrees are
+			// read-only by construction.
+			sideEffectMode: 'safe',
 		});
 
 		// Post-optimization pass rules (bottom-up) - for cleanup and caching
@@ -456,7 +555,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Join,
 			phase: 'impl',
 			fn: ruleMonotonicMergeJoin,
-			priority: 4
+			priority: 4,
+			// Replaces a logical Join with a MergeJoin; both children survive
+			// in their original positions (no swap).
+			sideEffectMode: 'safe',
 		});
 
 		// Monotonic streaming-window recognition. Runs after monotonic-merge-join
@@ -468,7 +570,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Window,
 			phase: 'impl',
 			fn: ruleMonotonicWindow,
-			priority: 6
+			priority: 6,
+			// Tags the WindowNode with a streaming config in place; source and
+			// functions are preserved verbatim.
+			sideEffectMode: 'safe',
 		});
 
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
@@ -476,7 +581,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Join,
 			phase: 'impl',
 			fn: ruleJoinPhysicalSelection,
-			priority: 5
+			priority: 5,
+			// May swap build/probe sides of an INNER hash join — would reorder
+			// side-effect execution. Refuses when either side has side effects.
+			sideEffectMode: 'aware',
 		});
 
 		// Monotonic LIMIT/OFFSET pushdown: replace LimitOffset[/Sort]/access-leaf
@@ -487,7 +595,11 @@ export class Optimizer {
 			nodeType: PlanNodeType.LimitOffset,
 			phase: 'impl',
 			fn: ruleMonotonicLimitPushdown,
-			priority: 8
+			priority: 8,
+			// Slides LIMIT/OFFSET into a physical access leaf via OrdinalSlice;
+			// only fires when the chain peels to a SeqScan/IndexScan/IndexSeek
+			// (all read-only by construction).
+			sideEffectMode: 'safe',
 		});
 
 		// Monotonic range-scan recognition. Runs on physical leaves to annotate
@@ -512,7 +624,9 @@ export class Optimizer {
 				nodeType,
 				phase: 'rewrite',
 				fn: ruleMonotonicRangeAccess,
-				priority: 9
+				priority: 9,
+				// Pure annotation of a physical access leaf (read-only).
+				sideEffectMode: 'safe',
 			});
 		}
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
@@ -520,7 +634,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Filter,
 			phase: 'rewrite',
 			fn: ruleMonotonicRangeAccess,
-			priority: 9
+			priority: 9,
+			// Defensive escalation: drops a leaf's monotonicOn advertisement;
+			// the leaf and Filter source tree survive verbatim.
+			sideEffectMode: 'safe',
 		});
 
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
@@ -528,7 +645,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.Join,
 			phase: 'rewrite',
 			fn: ruleMutatingSubqueryCache,
-			priority: 10
+			priority: 10,
+			// Specifically *targets* side-effect-bearing right sides and wraps
+			// them in a run-once CacheNode — the canonical aware rule.
+			sideEffectMode: 'aware',
 		});
 
 		// AsofScan strategy selection (hash → merge). Runs after the leaves'
@@ -539,7 +659,9 @@ export class Optimizer {
 			nodeType: PlanNodeType.AsofScan,
 			phase: 'impl',
 			fn: ruleAsofStrategySelect,
-			priority: 11
+			priority: 11,
+			// Flips a strategy field on an existing AsofScan; children survive.
+			sideEffectMode: 'safe',
 		});
 
 		// Async-gather UNION ALL fold: collapse a chain of
@@ -559,7 +681,11 @@ export class Optimizer {
 			nodeType: PlanNodeType.SetOperation,
 			phase: 'rewrite',
 			fn: ruleAsyncGatherUnionAll,
-			priority: 17
+			priority: 17,
+			// Drives N branches concurrently — would interleave writes from
+			// side-effect-bearing branches in non-deterministic order. Refuses
+			// when any branch carries a write.
+			sideEffectMode: 'aware',
 		});
 
 		// Async-gather ZIP BY KEY fold: collapse a `Project` over a chain of
@@ -575,7 +701,9 @@ export class Optimizer {
 			nodeType: PlanNodeType.Project,
 			phase: 'rewrite',
 			fn: ruleAsyncGatherZipByKey,
-			priority: 17
+			priority: 17,
+			// Concurrent N-ary zip by key — same concern as union-all gather.
+			sideEffectMode: 'aware',
 		});
 
 		// Eager-prefetch probe wrap: when a physical hash join's build (right)
@@ -595,7 +723,11 @@ export class Optimizer {
 			nodeType: PlanNodeType.HashJoin,
 			phase: 'rewrite',
 			fn: ruleEagerPrefetchProbe,
-			priority: 15
+			priority: 15,
+			// Wraps the probe side in a concurrent prefetch pump — iterates the
+			// probe subtree concurrently with the build side, which would
+			// interleave writes. Refuses when either side has side effects.
+			sideEffectMode: 'aware',
 		});
 
 		// Fan-out batched-outer recognition: flip an already-formed
@@ -613,7 +745,10 @@ export class Optimizer {
 			nodeType: PlanNodeType.FanOutLookupJoin,
 			phase: 'rewrite',
 			fn: ruleFanOutBatchedOuter,
-			priority: 16
+			priority: 16,
+			// Flips fan-out outer pump to batched (concurrent) — interleaves
+			// outer iteration with branch lookups. Refuses on side-effect outer.
+			sideEffectMode: 'aware',
 		});
 
 		this.passManager.addRuleToPass(PassId.PostOptimization, {
@@ -621,7 +756,13 @@ export class Optimizer {
 			nodeType: PlanNodeType.CTE,
 			phase: 'rewrite',
 			fn: ruleCteOptimization,
-			priority: 20
+			priority: 20,
+			// Wraps a CTE source in CacheNode. CacheNode materializes on first
+			// read and replays on subsequent reads — a run-once fence over the
+			// source, so a side-effect-bearing CTE that was previously rerun
+			// per reference would now run once. That is sound but order-changing,
+			// so the rule is aware of side effects.
+			sideEffectMode: 'aware',
 		});
 
 		// IN-subquery caching: wrap uncorrelated IN subquery sources in CacheNode
@@ -630,7 +771,9 @@ export class Optimizer {
 			nodeType: PlanNodeType.In,
 			phase: 'rewrite',
 			fn: ruleInSubqueryCache,
-			priority: 25
+			priority: 25,
+			// Already gates on `isFunctional(source)` (deterministic + read-only).
+			sideEffectMode: 'aware',
 		});
 
 		// Register materialization advisory for multiple node types
@@ -655,7 +798,12 @@ export class Optimizer {
 				nodeType,
 				phase: 'rewrite',
 				fn: ruleMaterializationAdvisory,
-				priority: 30
+				priority: 30,
+				// Delegates to MaterializationAdvisory, which itself gates on
+				// `CachingAnalysis.isCacheable` — that helper only caches
+				// side-effect-bearing subtrees when they would also be expensive
+				// AND repeated, so insertion is a run-once memoization (sound).
+				sideEffectMode: 'aware',
 			});
 		}
 

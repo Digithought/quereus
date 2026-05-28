@@ -198,6 +198,28 @@ For an UPDATE / INSERT / DELETE plan:
   clauses still appear in `unboundParameters` so a caller binding the
   statement repeatedly can still observe what it parameterizes on.
 
+### DML write-target propagation (FROM-position DML)
+
+A SELECT that contains nested DML — e.g.
+`select * from (insert into t (x) values (1) returning *) z` — writes to
+`t` as part of its evaluation. The analyzer must surface `t` in the
+outer statement's `ChangeScope` so a watcher subscribed to `t` (or any
+caller introspecting the scope) sees the write surface.
+
+`Insert` / `Update` / `Delete` nodes hold their write-target
+`TableReferenceNode` on `.table`, **outside** `getChildren()` (only
+visible via `getRelations()`). The analyzer's plan walk must descend
+through both `getChildren()` and `getRelations()` to capture the target.
+With that walk, the write target is classified the same way any other
+table reference would be — typically `{kind:'full'}` — and the outer
+statement's ChangeScope picks it up automatically.
+
+The propagation chain rests on the [optimizer's side-effect audit
+discipline](optimizer.md#audit-discipline-sideeffectmode): no rule may
+silently drop the nested DML subtree (that would also break the
+write-target propagation), and `physical.readonly` propagates as
+AND-of-children so `subtreeHasSideEffects` is reliable.
+
 ## The two cases that look the same but are not
 
 Row-binding values come from two structurally similar SQL constructs;

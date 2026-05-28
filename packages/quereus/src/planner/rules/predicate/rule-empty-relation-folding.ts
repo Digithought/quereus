@@ -42,6 +42,7 @@ import { JoinNode } from '../../nodes/join-node.js';
 import { AliasNode } from '../../nodes/alias-node.js';
 import { LiteralNode } from '../../nodes/scalar.js';
 import { EmptyRelationNode } from '../../nodes/empty-relation-node.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:empty-relation-folding');
 
@@ -77,6 +78,14 @@ export function ruleFilterFoldEmpty(node: PlanNode, _ctx: OptContext): PlanNode 
 		return node.source;
 	}
 	if (isLiteralFalsy(node.predicate)) {
+		// Refuse to drop a source subtree that carries a write: folding
+		// `Filter(InsertReturning, false)` to Empty would silently skip the
+		// INSERT. The audit gate forces an explicit run; the empty result still
+		// has to be produced by some surviving subtree.
+		if (PlanNodeCharacteristics.subtreeHasSideEffects(node.source)) {
+			log('Filter(x, lit-false) skipped: source has side effects');
+			return null;
+		}
 		log('Filter(x, lit-false) → Empty');
 		return new EmptyRelationNode(node.scope, node.getAttributes(), node.getType());
 	}
@@ -149,6 +158,17 @@ export function ruleJoinFoldEmpty(node: PlanNode, _ctx: OptContext): PlanNode | 
 	}
 
 	if (!fold) return null;
+
+	// Refuse to drop the non-empty side when it carries a write — collapsing
+	// the join to Empty would silently skip those writes. The empty side has
+	// no children (EmptyRelation is a leaf, possibly wrapped in Alias whose
+	// source is Empty), so only the *other* side is the concern.
+	const droppedSide = leftEmpty ? node.right : node.left;
+	if (PlanNodeCharacteristics.subtreeHasSideEffects(droppedSide)) {
+		log('Join(%s) fold skipped: dropped side has side effects', node.joinType);
+		return null;
+	}
+
 	log('Join(%s) with empty side(s) → Empty', node.joinType);
 	return new EmptyRelationNode(node.scope, node.getAttributes(), node.getType());
 }

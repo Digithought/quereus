@@ -46,6 +46,7 @@ import type { PlanNode } from '../../nodes/plan-node.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
 import { BloomJoinNode } from '../../nodes/bloom-join-node.js';
 import { EagerPrefetchNode } from '../../nodes/eager-prefetch-node.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:eager-prefetch-probe');
 
@@ -63,6 +64,13 @@ export function ruleEagerPrefetchProbe(node: PlanNode, context: OptContext): Pla
 	// build's for-await, so both sides must be proven concurrency-safe.
 	if (probe.physical.concurrencySafe !== true) return null;
 	if (node.right.physical.concurrencySafe !== true) return null;
+
+	// Side-effect gate: prefetching iterates the probe concurrently with the
+	// build, which would interleave per-side writes.
+	if (PlanNodeCharacteristics.subtreeHasSideEffects(probe)
+		|| PlanNodeCharacteristics.subtreeHasSideEffects(node.right)) {
+		return null;
+	}
 
 	// Cost gate: only fire when the build (right) side is high-latency. Inert
 	// on memory-vtab plans where expectedLatencyMs is 0 throughout.

@@ -143,7 +143,7 @@ function makeRule(
 	fn: (node: PlanNode, ctx: OptContext) => PlanNode | null,
 	priority?: number,
 ): RuleHandle {
-	return { id, nodeType, phase: 'rewrite', fn, priority };
+	return { id, nodeType, phase: 'rewrite', fn, priority, sideEffectMode: 'safe' };
 }
 
 // ---------------------------------------------------------------------------
@@ -814,6 +814,7 @@ describe('Planner Framework', () => {
 			nodeType: PlanNodeType.Filter,
 			phase: 'rewrite',
 			fn: () => null,
+			sideEffectMode: 'safe',
 		};
 
 		afterEach(() => {

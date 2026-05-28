@@ -44,6 +44,7 @@ import type { PlanNode, RelationalPlanNode } from '../../nodes/plan-node.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
 import { SetOperationNode } from '../../nodes/set-operation-node.js';
 import { AsyncGatherNode } from '../../nodes/async-gather-node.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:async-gather-union-all');
 
@@ -65,6 +66,13 @@ export function ruleAsyncGatherUnionAll(node: PlanNode, context: OptContext): Pl
 	for (const child of children) {
 		if (child.physical.concurrencySafe !== true) {
 			log('Aborting rewrite: child %s is not concurrencySafe', child.id);
+			return null;
+		}
+		// Side-effect gate (independent of concurrencySafe): a branch whose
+		// subtree carries a write must not be driven concurrently with its
+		// siblings — that would interleave per-branch writes non-deterministically.
+		if (PlanNodeCharacteristics.subtreeHasSideEffects(child)) {
+			log('Aborting rewrite: child %s has side effects', child.id);
 			return null;
 		}
 	}

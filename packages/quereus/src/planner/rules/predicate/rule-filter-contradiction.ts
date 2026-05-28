@@ -33,6 +33,7 @@ import { EmptyRelationNode } from '../../nodes/empty-relation-node.js';
 import { splitConjuncts } from '../../analysis/predicate-conjuncts.js';
 import { checkSatisfiability } from '../../analysis/sat-checker.js';
 import { isLiteralFalsy } from './rule-empty-relation-folding.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:filter-contradiction');
 
@@ -69,6 +70,13 @@ export function ruleFilterContradiction(node: PlanNode, _ctx: OptContext): PlanN
 	);
 
 	if (result !== 'unsat') return null;
+
+	// Refuse to drop a source that carries a write — folding to Empty would
+	// silently skip the write. Mirrors `ruleFilterFoldEmpty`'s guard.
+	if (PlanNodeCharacteristics.subtreeHasSideEffects(node.source)) {
+		log('Filter contradiction fold skipped: source has side effects');
+		return null;
+	}
 
 	log('Filter predicate provably unsatisfiable → Empty');
 	return new EmptyRelationNode(node.scope, node.getAttributes(), node.getType());

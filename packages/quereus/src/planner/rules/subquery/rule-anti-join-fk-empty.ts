@@ -38,6 +38,7 @@ import { EmptyRelationNode } from '../../nodes/empty-relation-node.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { lookupCoveringFK, isRowPreservingPathToTable, tableSchemaOf } from '../../util/ind-utils.js';
 import { isAndOfColumnEqualities } from '../join/rule-join-elimination.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:anti-join-fk-empty');
 
@@ -70,6 +71,14 @@ export function ruleAntiJoinFkEmpty(node: PlanNode, _context: OptContext): PlanN
 	// The parent side must expose the full base-table row set — otherwise the
 	// IND `L.fk ⊆ R.pk` doesn't guarantee a match in the filtered relation.
 	if (!isRowPreservingPathToTable(node.right)) return null;
+
+	// Refuse to fold to Empty when either participating subtree carries a write —
+	// the anti-join collapses to EmptyRelation(L's attrs), dropping both sides.
+	if (PlanNodeCharacteristics.subtreeHasSideEffects(node.left)
+		|| PlanNodeCharacteristics.subtreeHasSideEffects(node.right)) {
+		log('Anti-join FK→Empty skipped: a participating subtree has side effects');
+		return null;
+	}
 
 	log('Folding anti-join over FK %s.%s → %s to empty',
 		leftSchema.name,

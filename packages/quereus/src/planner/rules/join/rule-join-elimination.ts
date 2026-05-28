@@ -39,6 +39,7 @@ import { BinaryOpNode } from '../../nodes/scalar.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { checkFkPkAlignment, extractTableSchema } from '../../util/key-utils.js';
 import { lookupCoveringFK, isRowPreservingPathToTable } from '../../util/ind-utils.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:join-elimination');
 
@@ -205,6 +206,14 @@ function tryEliminate(
 	sideToRemove: 'left' | 'right',
 	pairs: ReadonlyArray<{ left: number; right: number }>,
 ): RelationalPlanNode | null {
+	// Refuse to drop a side that carries a write — the rewrite returns the
+	// preserved side directly and the eliminated side never executes again.
+	const eliminable = sideToRemove === 'right' ? join.right : join.left;
+	if (PlanNodeCharacteristics.subtreeHasSideEffects(eliminable as RelationalPlanNode)) {
+		log('join-elimination skipped: %s side has side effects', sideToRemove);
+		return null;
+	}
+
 	const leftSchema = extractTableSchema(join.left as RelationalPlanNode);
 	const rightSchema = extractTableSchema(join.right as RelationalPlanNode);
 	if (!leftSchema || !rightSchema) return null;

@@ -108,6 +108,7 @@ import { ColumnReferenceNode } from '../../nodes/reference.js';
 import { ScalarFunctionCallNode } from '../../nodes/function.js';
 import { AsyncGatherNode } from '../../nodes/async-gather-node.js';
 import { isCorrelatedSubquery } from '../../cache/correlation-detector.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 import type * as AST from '../../../parser/ast.js';
 
 const log = createLogger('optimizer:rule:async-gather-zip-by-key');
@@ -165,6 +166,12 @@ export function ruleAsyncGatherZipByKey(node: PlanNode, context: OptContext): Pl
 		}
 		if (isCorrelatedSubquery(branch)) {
 			log('Aborting: branch %s is correlated (lateral dependency)', branch.id);
+			return null;
+		}
+		// Side-effect gate: a branch whose subtree carries a write must not
+		// run concurrently with siblings.
+		if (PlanNodeCharacteristics.subtreeHasSideEffects(branch)) {
+			log('Aborting: branch %s has side effects', branch.id);
 			return null;
 		}
 	}

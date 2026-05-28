@@ -6,6 +6,7 @@ import { JoinNode } from '../../nodes/join-node.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { BinaryOpNode } from '../../nodes/scalar.js';
 import { ColumnReferenceNode } from '../../nodes/reference.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:quickpick');
 
@@ -215,6 +216,16 @@ export function ruleQuickPickJoinEnumeration(node: PlanNode, context: OptContext
   const graph = extractJoinGraph(node);
   if (!graph) return null;
   if (graph.relations.length < 3) return null; // Only helpful for 3+ relations
+
+  // Refuse to reorder when any participating relation carries a write —
+  // QuickPick enumerates arbitrary join orderings, which would change the
+  // user-visible execution order of side-effect subtrees.
+  for (const rel of graph.relations) {
+    if (PlanNodeCharacteristics.subtreeHasSideEffects(rel)) {
+      log('quickpick skipped: a relation has side effects');
+      return null;
+    }
+  }
 
   const baselineCost = estimatePlanCost(node as unknown as RelationalPlanNode);
   if (baselineCost < (qk.minTriggerCost ?? 0)) return null;

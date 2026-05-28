@@ -62,14 +62,16 @@ describe('PassManager', () => {
 					nodeType: PlanNodeType.Filter,
 					phase: 'rewrite',
 					fn: () => makeNode(PlanNodeType.Project) as unknown as PlanNode,
-					priority: 10
+					priority: 10,
+					sideEffectMode: 'safe',
 				},
 				{
 					id: 'b-project-to-filter',
 					nodeType: PlanNodeType.Project,
 					phase: 'rewrite',
 					fn: () => makeNode(PlanNodeType.Filter) as unknown as PlanNode,
-					priority: 20
+					priority: 20,
+					sideEffectMode: 'safe',
 				},
 			);
 

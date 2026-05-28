@@ -289,7 +289,10 @@ function relKeyFor(ref: TableReferenceNode): string {
 function collectTableRefs(plan: PlanNode): TableReferenceNode[] {
 	const out: TableReferenceNode[] = [];
 	const seen = new Set<TableReferenceNode>();
+	const visited = new Set<PlanNode>();
 	function walk(node: PlanNode): void {
+		if (visited.has(node)) return;
+		visited.add(node);
 		if (node instanceof TableReferenceNode) {
 			if (!seen.has(node)) {
 				seen.add(node);
@@ -297,6 +300,12 @@ function collectTableRefs(plan: PlanNode): TableReferenceNode[] {
 			}
 		}
 		for (const c of node.getChildren()) walk(c as unknown as PlanNode);
+		// DML write targets (Insert/Update/Delete `.table`) sit OUTSIDE
+		// `getChildren()` — they're surfaced via `getRelations()`. Walk those
+		// too so a FROM-position DML's write target is captured in the outer
+		// statement's ChangeScope. See `docs/change-scope.md` § DML write-target
+		// propagation.
+		for (const r of node.getRelations()) walk(r as unknown as PlanNode);
 	}
 	walk(plan);
 	return out;

@@ -26,6 +26,7 @@ import {
 	isOrderedOnEquiPairs,
 	reorderEquiPairsForMerge,
 } from './equi-pair-extractor.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:join-physical-selection');
 
@@ -174,7 +175,11 @@ export function ruleJoinPhysicalSelection(node: PlanNode, _context: OptContext):
 
 	// For INNER join, swap sides if left is smaller (becomes build side).
 	// For LEFT/SEMI/ANTI, left must remain probe to preserve semantics.
-	if (joinType === 'inner' && leftRows < rightRows) {
+	// Refuse to swap when either side carries a write — flipping build/probe
+	// reorders the user-visible execution order of side-effect subtrees.
+	if (joinType === 'inner' && leftRows < rightRows
+		&& !PlanNodeCharacteristics.subtreeHasSideEffects(node.left)
+		&& !PlanNodeCharacteristics.subtreeHasSideEffects(node.right)) {
 		// Swap: left becomes build, right becomes probe
 		probeSource = node.right;
 		buildSource = node.left;

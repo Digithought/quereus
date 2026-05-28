@@ -4,6 +4,7 @@ import type { OptContext } from '../../framework/context.js';
 import { JoinNode } from '../../nodes/join-node.js';
 import { hasSingletonFd } from '../../util/fd-utils.js';
 import { isCorrelatedSubquery } from '../../cache/correlation-detector.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:join-greedy-commute');
 
@@ -35,6 +36,14 @@ export function ruleJoinGreedyCommute(node: PlanNode, _context: OptContext): Pla
   // — a ≤1-row correlated lateral (e.g. `LIMIT 1`) now advertises a singleton FD,
   // which would otherwise mark it as the preferred driver.
   if (isCorrelatedSubquery(node.getRightSource()) || isCorrelatedSubquery(node.getLeftSource())) {
+    return null;
+  }
+
+  // Refuse to swap when either side carries a write — commuting an inner join
+  // reorders the user-visible execution order of side-effect-bearing subtrees.
+  if (PlanNodeCharacteristics.subtreeHasSideEffects(node.getLeftSource() as RelationalPlanNode)
+    || PlanNodeCharacteristics.subtreeHasSideEffects(node.getRightSource() as RelationalPlanNode)) {
+    log('join-greedy-commute skipped: a side has side effects');
     return null;
   }
 

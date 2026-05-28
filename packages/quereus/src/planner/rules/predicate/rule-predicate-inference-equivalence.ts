@@ -49,6 +49,7 @@ import { JoinNode } from '../../nodes/join-node.js';
 import { BinaryOpNode, LiteralNode } from '../../nodes/scalar.js';
 import { ColumnReferenceNode, ParameterReferenceNode } from '../../nodes/reference.js';
 import { extractEqualityFds } from '../../util/fd-utils.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 import type { Scope } from '../../scopes/scope.js';
 import type * as AST from '../../../parser/ast.js';
 
@@ -161,10 +162,18 @@ function tryBranchInjection(join: JoinNode, inferred: readonly InferredConjunct[
 	let newRight: RelationalPlanNode = join.right;
 
 	if (leftBranchConjuncts.length > 0) {
+		// Refuse to inject a Filter above a side-effect-bearing branch — the
+		// added predicate would change which rows reach the write.
+		if (PlanNodeCharacteristics.subtreeHasSideEffects(join.left)) {
+			return null;
+		}
 		const leftPred = combineAnds(join.scope, leftBranchConjuncts);
 		newLeft = new FilterNode(join.left.scope, join.left, leftPred);
 	}
 	if (rightBranchConjuncts.length > 0) {
+		if (PlanNodeCharacteristics.subtreeHasSideEffects(join.right)) {
+			return null;
+		}
 		const rightPred = combineAnds(join.scope, rightBranchConjuncts);
 		newRight = new FilterNode(join.right.scope, join.right, rightPred);
 	}

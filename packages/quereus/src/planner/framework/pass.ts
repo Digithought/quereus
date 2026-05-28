@@ -9,7 +9,7 @@
 import type { PlanNode } from '../nodes/plan-node.js';
 import type { OptContext } from './context.js';
 import type { RuleHandle } from './registry.js';
-import { hasRuleBeenApplied, markRuleApplied } from './registry.js';
+import { hasRuleBeenApplied, markRuleApplied, validateSideEffectMode } from './registry.js';
 import { createLogger } from '../../common/logger.js';
 import { performConstantFolding } from '../analysis/const-pass.js';
 import { createRuntimeExpressionEvaluator, createRuntimeRelationalEvaluator } from '../analysis/const-evaluator.js';
@@ -250,6 +250,8 @@ export class PassManager {
 	 * Add a rule to a specific pass
 	 */
 	addRuleToPass(passId: string, rule: RuleHandle): void {
+		validateSideEffectMode(rule);
+
 		const pass = this.passes.get(passId);
 		if (!pass) {
 			throw new Error(`Unknown pass: ${passId}`);

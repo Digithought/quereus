@@ -28,6 +28,7 @@ import { ColumnReferenceNode } from '../../nodes/reference.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { splitConjuncts, combineConjuncts } from '../../analysis/predicate-conjuncts.js';
 import { computeClosure } from '../../util/fd-utils.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:aggregate-predicate-pushdown');
 
@@ -48,6 +49,15 @@ export function ruleAggregatePredicatePushdown(node: PlanNode, _context: OptCont
 	// Scalar aggregate (no GROUP BY): the predicate selects on the single output
 	// row, so nothing is pushable.
 	if (agg.groupBy.length === 0) return null;
+
+	// Refuse to push when the aggregate's source carries a write — landing
+	// extra predicates below would change which rows reach the side-effect
+	// subtree (and could pre-filter rows that the aggregate's grouping never
+	// would have rejected on their own).
+	if (PlanNodeCharacteristics.subtreeHasSideEffects(agg.source)) {
+		log('aggregate-predicate-pushdown skipped: aggregate source has side effects');
+		return null;
+	}
 
 	const aggAttrs = agg.getAttributes();
 	const sourceAttrs = agg.source.getAttributes();

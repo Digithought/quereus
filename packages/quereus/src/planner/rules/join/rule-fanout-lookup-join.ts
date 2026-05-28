@@ -77,7 +77,7 @@ import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { checkFkPkAlignment, extractTableSchema } from '../../util/key-utils.js';
 import { lookupCoveringFK, isRowPreservingPathToTable } from '../../util/ind-utils.js';
 import { collectExternalReferences } from '../../cache/correlation-detector.js';
-import { CapabilityDetectors } from '../../framework/characteristics.js';
+import { CapabilityDetectors, PlanNodeCharacteristics } from '../../framework/characteristics.js';
 import { isAndOfColumnEqualities } from './rule-join-elimination.js';
 import { FanOutLookupJoinNode, isCrossBranchMode, isLeftBranchMode, type FanOutBranchSpec, type FanOutBranchMode } from '../../nodes/fanout-lookup-join-node.js';
 import type { TableSchema } from '../../../schema/table.js';
@@ -223,6 +223,16 @@ export function ruleFanOutLookupJoin(node: PlanNode, context: OptContext): PlanN
 
 	const totalBranches = spineBranches.length + subqueryBranches.length;
 	if (totalBranches < tuning.minBranches) return null;
+
+	// Side-effect gate: the fan-out drives every branch concurrently per outer
+	// row, so a side-effect-bearing branch (or outer) would interleave writes.
+	if (PlanNodeCharacteristics.subtreeHasSideEffects(outerSubtree)) return null;
+	for (const b of spineBranches) {
+		if (PlanNodeCharacteristics.subtreeHasSideEffects(b.lookup)) return null;
+	}
+	for (const b of subqueryBranches) {
+		if (PlanNodeCharacteristics.subtreeHasSideEffects(b.subqueryRoot)) return null;
+	}
 
 	// Memory-safety gate (before clustering): a `cross` branch's 1:n fan-out
 	// makes the output the Cartesian product of the outer side and every cross

@@ -34,6 +34,7 @@ import { ColumnReferenceNode } from '../../nodes/reference.js';
 import { normalizePredicate } from '../../analysis/predicate-normalizer.js';
 import { lookupCoveringFK, isRowPreservingPathToTable, tableSchemaOf } from '../../util/ind-utils.js';
 import { isAndOfColumnEqualities } from '../join/rule-join-elimination.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:semi-join-fk-trivial');
 
@@ -62,6 +63,13 @@ export function ruleSemiJoinFkTrivial(node: PlanNode, _context: OptContext): Pla
 	// The parent side must be the full table — if rows were filtered out, the
 	// IND inclusion doesn't preserve "every L row has a match" under filtering.
 	if (!isRowPreservingPathToTable(node.right)) return null;
+
+	// Refuse to drop the R side when it carries a write — the rewrite replaces
+	// the semi-join with L (or Filter(L)) and the R subtree is dropped entirely.
+	if (PlanNodeCharacteristics.subtreeHasSideEffects(node.right)) {
+		log('Semi-join trivialization skipped: R side has side effects');
+		return null;
+	}
 
 	if (!match.nullable) {
 		log('Dropping semi-join over non-null FK %s → %s; left side survives unchanged',

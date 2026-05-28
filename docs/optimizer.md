@@ -630,6 +630,78 @@ SELECT * FROM users WHERE active = true;
 - Provide reasonable defaults
 - Document cost model assumptions
 
+## Audit discipline (`sideEffectMode`)
+
+Every rule registered via `addRuleToPass` (or the global `registerRule`)
+**must** declare its `sideEffectMode`. The registry validates the field at
+registration time and rejects any rule that fails to declare. This is the
+load-bearing audit gate the side-effect-aware optimizer rests on.
+
+### The signal
+
+`PlanNode.physical.readonly` is the canonical side-effect flag — `false`
+means "executing this node has a write side effect" (DML, sequence step,
+external sink). It propagates as **AND-of-children**: a node inherits
+`readonly` from its children unless its own `computePhysical` overrides
+the value. So for any well-formed plan tree, a single DML node anywhere
+beneath a SELECT marks every ancestor as side-effect-bearing.
+
+`PlanNodeCharacteristics` exposes two helpers:
+
+```typescript
+PlanNodeCharacteristics.hasSideEffects(node)         // local node only
+PlanNodeCharacteristics.subtreeHasSideEffects(node)  // recursive walk (defensive)
+```
+
+The defensive recursive helper exists so a rule's intent reads clearly
+(*"refuse if any subtree I move / drop / dedup carries a write"*) and so
+the audit gate still fires when a custom `computePhysical` override fails
+to propagate `readonly=false`.
+
+### The two declarations
+
+- `'safe'` — the rule never moves, duplicates, drops, or merges any
+  subtree it does not separately verify pure. Annotation-only transforms,
+  in-place field flips (e.g. swap an AsofScan strategy), and logical→
+  physical replacements where every child survives in the same position
+  qualify. The rule does NOT need to consult `hasSideEffects` because its
+  structural shape guarantees side-effect preservation.
+
+- `'aware'` — the rule DOES move, duplicate, drop, or merge subtrees, and
+  explicitly consults `PlanNodeCharacteristics.hasSideEffects` (or
+  `subtreeHasSideEffects`) to refuse / weaken when any participating
+  subtree carries a write. Includes rules that *intentionally* preserve
+  side effects through run-once memoization (e.g.
+  `rule-mutating-subquery-cache`, which targets impure right sides and
+  wraps them in a `CacheNode` so the join's nested-loop driver doesn't
+  re-execute the write per outer row).
+
+### Rule categories that consult the signal
+
+| Category | Mode | Why |
+|---|---|---|
+| `subquery/` (decorrelation, FK-empty / FK-trivial) | aware | Decorrelation changes execution cardinality; FK-empty / -trivial drop subtrees. |
+| `predicate/` (pushdown, aggregate-pushdown, fold-empty, contradiction, inference) | aware | Pushdown moves rows under a side-effect subtree; folds drop subtrees. |
+| `cache/` (mutating-subquery-cache, in-subquery-cache, materialization-advisory, scalar-cse) | aware | Cache injection is a run-once memoize; CSE dedups scalar expressions. |
+| `join/` (greedy-commute, physical-selection, fanout, quickpick, join-elimination, lateral-asof) | mixed | Commute / build-probe swap reorder; elimination drops; FanOut clusters concurrently. |
+| `parallel/` (async-gather union-all / zip-by-key, eager-prefetch-probe, fanout-batched) | aware | Concurrent drivers interleave per-branch writes. |
+| `retrieve/` (grow-retrieve, projection-pruning) | mixed | Grow slides into read-only Retrieve (safe); pruning drops scalar projections (aware). |
+| `access/`, `sort/`, `aggregate/`, `window/`, `distinct/` | mostly safe | Replace logical with physical nodes / annotate in place. |
+
+The full per-rule annotation lives at each `addRuleToPass(...)` call in
+`src/planner/optimizer.ts`. Treat that file as the single source of truth
+for the audit.
+
+### When DML-in-expression-position lands
+
+The audit gate is mostly inert today because DML appears only at the
+root or in FROM position. Once `dml-in-expression-position` lifts the
+planning-time gate, side-effect-bearing scalars (`(insert ... returning ...)`)
+will appear inside Project / Filter / Sort expressions, and every aware
+rule that consults `subtreeHasSideEffects` will start refusing or
+weakening on the new shapes. The discipline is the safety net those
+landings stand on.
+
 ## Common Patterns
 
 ### Predicate Analysis and Pushdown

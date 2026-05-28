@@ -25,6 +25,24 @@ export class PlanNodeCharacteristics {
 		return node.physical.readonly === false;
 	}
 
+	/**
+	 * True iff this node OR any descendant in its subtree has side effects.
+	 *
+	 * `PlanNode.physical.readonly` propagates as AND-of-children, so for any
+	 * well-formed plan tree `hasSideEffects(node) ⇔ subtreeHasSideEffects(node)`.
+	 * This helper exists for rules that want to express the audit intent
+	 * explicitly ("refuse if any subtree I am about to move / drop / dedup
+	 * carries a write") — and as a defensive belt against a node that fails to
+	 * forward the property through its own `computePhysical` override.
+	 */
+	static subtreeHasSideEffects(node: PlanNode): boolean {
+		if (this.hasSideEffects(node)) return true;
+		for (const child of node.getChildren()) {
+			if (this.subtreeHasSideEffects(child)) return true;
+		}
+		return false;
+	}
+
 	static isReadOnly(node: PlanNode): boolean {
 		return node.physical.readonly !== false;
 	}

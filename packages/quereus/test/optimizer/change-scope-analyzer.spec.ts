@@ -153,6 +153,20 @@ describe('analyzeChangeScope', () => {
 		});
 	});
 
+	describe('DML write-target propagation (FROM-position DML)', () => {
+		it('select * from (insert into t (id, x) values (1, 99) returning id) includes t in change scope', async () => {
+			await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER NOT NULL) USING memory');
+			// Wrapped-DML pattern: the SELECT consumes RETURNING rows from the
+			// INSERT. The Insert's write-target `t` sits outside getChildren()
+			// (only on getRelations()), so the analyzer must walk both to surface
+			// `t` in the outer statement's ChangeScope.
+			const scope = scopeFor(db,
+				'select * from (insert into t (id, x) values (1, 99) returning id) z');
+			const watchedTables = scope.watches.map(w => `${w.table.schema}.${w.table.table}`);
+			expect(watchedTables, `watched tables=${watchedTables.join(',')}`).to.include('main.t');
+		});
+	});
+
 	describe('non-deterministic sources', () => {
 		it('select random() → empty watches, random nondet source', async () => {
 			const scope = scopeFor(db, 'select random() as r');

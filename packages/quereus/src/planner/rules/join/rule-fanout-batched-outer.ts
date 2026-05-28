@@ -75,6 +75,7 @@ import type { PlanNode, RelationalPlanNode } from '../../nodes/plan-node.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
 import { FanOutLookupJoinNode, isCrossBranchMode } from '../../nodes/fanout-lookup-join-node.js';
 import { EagerPrefetchNode } from '../../nodes/eager-prefetch-node.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:fanout-batched-outer');
 
@@ -129,6 +130,13 @@ export function ruleFanOutBatchedOuter(node: PlanNode, context: OptContext): Pla
 	// Concurrency gate: the prefetch pump iterates the outer concurrently with
 	// branch lookups, so the outer must be proven concurrency-safe.
 	if (node.outer.physical.concurrencySafe !== true) return null;
+
+	// Side-effect gate: batched outer pump runs the outer concurrently with
+	// in-flight per-row branch forks — interleaves outer-side writes.
+	if (PlanNodeCharacteristics.subtreeHasSideEffects(node.outer)) return null;
+	for (const b of node.branches) {
+		if (PlanNodeCharacteristics.subtreeHasSideEffects(b.child)) return null;
+	}
 
 	// Wrap the outer in EagerPrefetch (isolation + read-ahead feed) unless it is
 	// already prefetched. Sized to `maxOuterReadAhead` — the outer-read-ahead

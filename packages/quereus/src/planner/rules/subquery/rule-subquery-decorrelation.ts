@@ -31,6 +31,7 @@ import { ColumnReferenceNode } from '../../nodes/reference.js';
 import { isCorrelatedSubquery } from '../../cache/correlation-detector.js';
 import { PlanNodeType } from '../../nodes/plan-node-type.js';
 import { splitConjuncts, combineConjuncts } from '../../analysis/predicate-conjuncts.js';
+import { PlanNodeCharacteristics } from '../../framework/characteristics.js';
 
 const log = createLogger('optimizer:rule:subquery-decorrelation');
 
@@ -332,6 +333,18 @@ export function ruleSubqueryDecorrelation(node: PlanNode, _context: OptContext):
 	}
 
 	if (!candidate || candidateIndex === -1) return null;
+
+	// Decorrelating EXISTS/IN into a semi/anti join changes how many times the
+	// inner subquery's subtree executes (per outer row → once per matching outer
+	// row in the semi-join driver). Refuse on impure inners so DML-bearing
+	// subqueries keep their declared per-row firing.
+	const innerRoot = candidate.subqueryNode instanceof ExistsNode
+		? candidate.subqueryNode.subquery
+		: (candidate.subqueryNode as InNode).source;
+	if (innerRoot && PlanNodeCharacteristics.subtreeHasSideEffects(innerRoot)) {
+		log('Decorrelation skipped: inner subquery has side effects');
+		return null;
+	}
 
 	log('Found %s decorrelation candidate in filter predicate', candidate.joinType);
 
