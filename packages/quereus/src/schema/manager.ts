@@ -1073,7 +1073,8 @@ export class SchemaManager {
 	private validateDefaultDeterminism(
 		columns: ReadonlyArray<ColumnSchema>,
 		tableName: string,
-		hasMutationContext: boolean
+		hasMutationContext: boolean,
+		allowNonDeterministic: boolean = false
 	): void {
 		const globalScope = new GlobalScope(this.db.schemaManager);
 		const parameterScope = new ParameterScope(globalScope);
@@ -1126,6 +1127,8 @@ export class SchemaManager {
 
 			if (!defaultExpr) continue;
 
+			if (allowNonDeterministic) continue;
+
 			const result = checkDeterministic(defaultExpr);
 			if (!result.valid) {
 				throw new QuereusError(
@@ -1148,7 +1151,8 @@ export class SchemaManager {
 	 */
 	private validateCheckConstraintDeterminism(
 		checkConstraints: ReadonlyArray<RowConstraintSchema>,
-		tableName: string
+		tableName: string,
+		allowNonDeterministic: boolean = false
 	): void {
 		for (const cc of checkConstraints) {
 			const constraintName = cc.name ?? `_check_${tableName}`;
@@ -1158,6 +1162,8 @@ export class SchemaManager {
 				formatParamError: () =>
 					`CHECK constraint '${constraintName}' on table '${tableName}' may not reference bind parameters.`,
 			});
+
+			if (allowNonDeterministic) continue;
 
 			let offendingExpr: AST.FunctionExpr | undefined;
 			traverseAst(cc.expr as AST.AstNode, {
@@ -1490,11 +1496,11 @@ export class SchemaManager {
 		// The captured artifact at the vtab.update() frontier is fully resolved per row, so
 		// defaults / CHECKs / generated columns containing non-determinism remain replay-safe
 		// (see docs/architecture.md § Constraints and docs/module-authoring.md § Mutation Statements).
+		// The bind-parameter / column-reference pre-walks inside the validators still run
+		// in both modes — those are scope checks, not determinism checks.
 		const allowNonDet = this.db.options.getBooleanOption('nondeterministic_schema');
-		if (!allowNonDet) {
-			this.validateDefaultDeterminism(baseTableSchema.columns, tableName, hasMutationContext);
-			this.validateCheckConstraintDeterminism(baseTableSchema.checkConstraints, tableName);
-		}
+		this.validateDefaultDeterminism(baseTableSchema.columns, tableName, hasMutationContext, allowNonDet);
+		this.validateCheckConstraintDeterminism(baseTableSchema.checkConstraints, tableName, allowNonDet);
 
 		let tableInstance: VirtualTable;
 		try {

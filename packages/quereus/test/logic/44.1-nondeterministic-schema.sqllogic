@@ -238,3 +238,34 @@ SELECT COUNT(*) AS n, COUNT(rnd) AS non_null_rnd FROM keeper;
 → [{"n":3,"non_null_rnd":3}]
 
 DROP TABLE keeper;
+
+-- ===================================
+-- Scope-check pre-walks remain active even under relaxed mode. Bind parameters
+-- and bare column references in DEFAULT, and bind parameters in CHECK, are
+-- still rejected at CREATE TABLE time regardless of the pragma — these are
+-- scope checks, not determinism checks.
+-- ===================================
+
+PRAGMA nondeterministic_schema = true;
+
+CREATE TABLE relaxed_default_bindparam (
+    id INTEGER PRIMARY KEY,
+    v INTEGER DEFAULT (?)
+);
+-- error: may not reference bind parameters
+
+CREATE TABLE relaxed_default_colref (
+    id INTEGER PRIMARY KEY,
+    a INTEGER,
+    b INTEGER DEFAULT (a)
+);
+-- error: may not reference columns
+
+CREATE TABLE relaxed_check_bindparam (
+    id INTEGER PRIMARY KEY,
+    v INTEGER,
+    CHECK (v > ?)
+);
+-- error: may not reference bind parameters
+
+PRAGMA nondeterministic_schema = false;
