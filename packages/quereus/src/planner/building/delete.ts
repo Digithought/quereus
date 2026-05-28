@@ -144,10 +144,24 @@ export function buildDeleteStmt(
     constraintChecks.push(...parentFKChecks);
   }
 
-  // Always inject ConstraintCheckNode for DELETE operations
+  // Mirror INSERT/UPDATE wiring: the DML prep node (DeleteNode) expands the
+  // source row to the flat 2N OLD/NEW layout BEFORE ConstraintCheckNode runs,
+  // so deferred CHECK constraints that reference NEW columns find them at the
+  // expected flat indices (n..2n-1) even though they hold NULL for DELETE.
+  const deleteNode = new DeleteNode(
+    deleteCtx.scope,
+    tableReference,
+    sourceNode,
+    oldRowDescriptor,
+    flatRowDescriptor,
+    mutationContextValues.size > 0 ? mutationContextValues : undefined,
+    contextAttributes.length > 0 ? contextAttributes : undefined,
+    contextDescriptor
+  );
+
   const constraintCheckNode = new ConstraintCheckNode(
     deleteCtx.scope,
-    sourceNode,
+    deleteNode,
     tableReference,
     RowOpFlag.DELETE,
     oldRowDescriptor,
@@ -159,21 +173,10 @@ export function buildDeleteStmt(
     contextDescriptor
   );
 
-  const deleteNode = new DeleteNode(
-    deleteCtx.scope,
-    tableReference,
-    constraintCheckNode,
-    oldRowDescriptor,
-    flatRowDescriptor,
-    mutationContextValues.size > 0 ? mutationContextValues : undefined,
-    contextAttributes.length > 0 ? contextAttributes : undefined,
-    contextDescriptor
-  );
-
   // Add DML executor node to perform the actual database delete operations
   const dmlExecutorNode = new DmlExecutorNode(
     deleteCtx.scope,
-    deleteNode,
+    constraintCheckNode,
     tableReference,
     'delete',
     undefined, // onConflict not used for DELETE
