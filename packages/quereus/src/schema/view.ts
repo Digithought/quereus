@@ -107,8 +107,9 @@ export interface MaterializedViewSchema {
 	 *  recovery also failed — the backing table cannot be re-materialized and its
 	 *  contents have silently diverged from the sources. Reads error unconditionally
 	 *  until a successful refresh / rebuild clears it (distinct from `stale`, which
-	 *  tracks *structural* body breakage, not data drift). Not serialized;
-	 *  recomputed at runtime. */
+	 *  tracks *structural* body breakage, not data drift). Runtime-only and not
+	 *  persisted: it resets to falsy on reload (a persisted store that diverged in
+	 *  a prior session loses the flag — same as `stale`). */
 	diverged?: boolean;
 
 	/** When and how the backing table is brought back in sync with its sources.

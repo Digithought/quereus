@@ -124,6 +124,23 @@ describe('Materialized view incremental-apply failure visibility', () => {
 		]);
 	});
 
+	it('Tier 1 — an apply-write failure (residual succeeded) self-heals via full rebuild', async () => {
+		await setupRowMv();
+		// The per-binding residual recomputes fine; the maintenance *write* fails.
+		// Recovery still routes through the separate full-rebuild path.
+		db._setMaterializedViewMaintenanceFault((phase) => {
+			if (phase === 'apply') throw new Error('injected apply (write) failure');
+		});
+
+		await db.exec('update t set x = 999 where id = 2;');
+
+		expect(divergedFlag()).to.not.equal(true);
+		const rows = await selectAll('select id, x from mv order by id');
+		expect(rows).to.deep.equal([
+			{ id: 1, x: 10 }, { id: 2, x: 999 }, { id: 3, x: 30 }, { id: 4, x: 40 },
+		]);
+	});
+
 	it('Tier 2 — residual + rebuild both fail → diverged, reads error, commit stands', async () => {
 		await setupRowMv();
 		// Both the per-binding recompute AND the recovery rebuild fail.

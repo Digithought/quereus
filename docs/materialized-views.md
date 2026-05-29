@@ -275,8 +275,18 @@ no signal. On an apply error the manager escalates in two tiers:
   `MaterializedViewSchema.diverged`. **Reads then error unconditionally** (checked
   in `select.ts` *before* the `stale` body re-validation, with no body
   re-planning — the body is fine; the *data* is wrong) with a diagnostic naming the
-  MV and pointing at `refresh materialized view`. This guarantees no silent wrong
-  reads in the persistent-failure case.
+  MV and pointing at `refresh materialized view`. This stops silent wrong reads
+  in the persistent-failure case for any **freshly planned** query.
+
+> **Caveat — cached prepared statements.** The `diverged` check (like the `stale`
+> check beside it) runs at *plan-build* time in `select.ts`. `diverged` is set on
+> the post-commit maintenance path without emitting a schema-change event, so a
+> prepared statement that was already planned against the MV *before* it diverged
+> keeps its cached plan and reads the backing table directly — bypassing the guard
+> until something forces a recompile. A query planned *after* divergence always
+> errors. This is a pre-existing limitation shared with `stale`; closing it
+> (invalidating dependent plans when an MV's read-state toggles) is tracked
+> separately.
 
 `diverged` is cleared **only** by a full re-materialization, never by a later
 incremental apply (a subsequent apply maintains only the *new* delta and would not
