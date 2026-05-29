@@ -180,7 +180,14 @@ the changed table as **stale**.
 - On the next successful **refresh**, the stale flag is cleared.
 
 Staleness tracks *structural* breakage, not data drift: ordinary source
-`INSERT` / `UPDATE` / `DELETE` never set the flag.
+`INSERT` / `UPDATE` / `DELETE` never set the flag. Data drift caused by a
+*failed* incremental apply that could not self-heal is a **distinct** signal —
+the separate `diverged` flag, which makes reads error unconditionally (the body
+still plans; it is the backing data that is wrong). See
+[Apply-failure recovery](#apply-failure-recovery-two-tier). Reusing `stale` for
+this would not work: the stale read-path only re-validates the body against
+current source *schemas*, and a body that still plans resolves to the backing
+table silently — serving the diverged rows.
 
 ## Incremental refresh
 
@@ -190,9 +197,10 @@ consumer of the reusable change-driven kernel
 ([Incremental Maintenance](incremental-maintenance.md)): the
 `MaterializedViewManager` registers a `DeltaSubscription` whose `apply` **writes**
 the backing table (delete-then-upsert per affected binding), running in the
-post-commit window (change log alive, all connections committed). A failed apply
-**logs and skips** — it never rolls the user's commit back (the watcher
-contract, not the assertion one).
+post-commit window (change log alive, all connections committed). The user's
+commit always stands — a failed apply never rolls it back (the watcher contract,
+not the assertion one) — but a failure is no longer silently skipped: see
+[Apply-failure recovery](#apply-failure-recovery-two-tier).
 
 ### Eligibility (checked at create time)
 
@@ -249,6 +257,41 @@ full rebuild via the same `replaceBaseLayer` path manual refresh uses
 (`rebuildBacking`) — so a bulk change re-materializes once instead of issuing
 thousands of per-row patches. The manual `refresh materialized view` statement
 also works on an incremental MV and is the resync escape valve.
+
+### Apply-failure recovery (two-tier)
+
+The user's commit always stands, but a failed incremental apply must never
+silently leave the MV diverged from its sources and keep serving wrong data with
+no signal. On an apply error the manager escalates in two tiers:
+
+- **Tier 1 — self-heal (the common case).** The `apply` catch logs, then attempts
+  a full `rebuildBacking`. A full rebuild runs the *whole* body (`collectBodyRows`,
+  no injected key filter) — a **different code path** from the per-binding
+  `runResidual`/`applyMaintenance` that just failed — so a residual-specific or
+  transient failure is very often recovered with correct data and no user-visible
+  effect.
+- **Tier 2 — visible divergence (the worst case).** If the recovery rebuild *also*
+  throws, the MV genuinely cannot be re-materialized. The manager sets
+  `MaterializedViewSchema.diverged`. **Reads then error unconditionally** (checked
+  in `select.ts` *before* the `stale` body re-validation, with no body
+  re-planning — the body is fine; the *data* is wrong) with a diagnostic naming the
+  MV and pointing at `refresh materialized view`. This guarantees no silent wrong
+  reads in the persistent-failure case.
+
+`diverged` is cleared **only** by a full re-materialization, never by a later
+incremental apply (a subsequent apply maintains only the *new* delta and would not
+fix the old gap). The clearing paths are: a successful Tier-1 recovery rebuild
+(which never sets the flag); a successful `refresh materialized view`; and the
+**self-heal retry** — when `diverged` is already set, the next commit that touches
+a source short-circuits the incremental delta and runs a full `rebuildBacking`, so
+a deterministic failure that later becomes transient heals automatically.
+
+> Forcing a deterministic apply failure for tests is awkward in production code,
+> so `MaterializedViewManager` carries a narrow `@internal` fault-injection seam
+> (`maintenanceFaultInjector`, installed via
+> `Database._setMaterializedViewMaintenanceFault`) that can throw at the
+> `'residual'`, `'apply'`, or `'rebuild'` phase. Production never sets it; see
+> `test/materialized-view-diagnostics.spec.ts`.
 
 ### Change-scope projection
 

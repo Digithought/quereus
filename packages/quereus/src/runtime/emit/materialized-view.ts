@@ -132,6 +132,10 @@ export function emitRefreshMaterializedView(plan: RefreshMaterializedViewNode, _
 		await rebuildBacking(db, mv);
 
 		mv.stale = false;
+		// A successful full re-materialization clears data divergence too — the
+		// backing table now matches the sources (distinct from `stale`, which tracks
+		// structural body breakage). A later incremental apply never clears this.
+		mv.diverged = false;
 		sm.getChangeNotifier().notifyChange({
 			type: 'materialized_view_refreshed',
 			schemaName: plan.schemaName,

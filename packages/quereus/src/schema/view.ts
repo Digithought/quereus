@@ -103,6 +103,14 @@ export interface MaterializedViewSchema {
 	 *  is modified/removed in a way that may break the body. */
 	stale?: boolean;
 
+	/** Set when an incremental apply failed AND the always-correct full-rebuild
+	 *  recovery also failed — the backing table cannot be re-materialized and its
+	 *  contents have silently diverged from the sources. Reads error unconditionally
+	 *  until a successful refresh / rebuild clears it (distinct from `stale`, which
+	 *  tracks *structural* body breakage, not data drift). Not serialized;
+	 *  recomputed at runtime. */
+	diverged?: boolean;
+
 	/** When and how the backing table is brought back in sync with its sources.
 	 *  Absent on already-serialized MVs ⇒ treat as {@link DEFAULT_REFRESH_POLICY}
 	 *  (`manual`). Set to `on-commit-incremental` to enable delta maintenance. */

@@ -55,7 +55,7 @@ import {
 import { TransactionManager, type TransactionManagerContext } from './database-transaction.js';
 import { AssertionEvaluator, type AssertionEvaluatorContext } from './database-assertions.js';
 import { WatcherManager, type WatcherManagerContext } from './database-watchers.js';
-import { MaterializedViewManager } from './database-materialized-views.js';
+import { MaterializedViewManager, type MaintenanceFaultPhase } from './database-materialized-views.js';
 import type { ChangeScope, Subscription, WatchHandler } from '../planner/analysis/change-scope.js';
 import { tryGetEventEmitter } from '../vtab/events.js';
 import { Table } from './table-handle.js';
@@ -1738,6 +1738,15 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	/** @internal Detach an MV's incremental subscription (DROP path). */
 	public unregisterMaterializedView(schemaName: string, name: string): void {
 		this.materializedViewManager.unregisterMaterializedView(schemaName, name);
+	}
+
+	/** @internal Test-only: install (or clear, with `undefined`) a fault injector
+	 *  on the incremental materialized-view maintenance path. Throwing from the
+	 *  injector simulates a failure at the given phase so the two-tier recovery
+	 *  (full-rebuild self-heal / `diverged`) can be exercised. Production never
+	 *  sets this. */
+	public _setMaterializedViewMaintenanceFault(fn: ((phase: MaintenanceFaultPhase) => void) | undefined): void {
+		this.materializedViewManager.maintenanceFaultInjector = fn;
 	}
 
 	/** @internal Invalidate cached assertion plan (called on DROP ASSERTION) */

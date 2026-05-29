@@ -96,6 +96,13 @@ interface ResidualArtifacts {
 	deleteKeyOrder: number[] | null;
 }
 
+/**
+ * Maintenance phase a {@link MaterializedViewManager.maintenanceFaultInjector}
+ * may simulate a failure at: while recomputing a binding's residual, just
+ * before writing the maintenance ops, or during the full-rebuild recovery.
+ */
+export type MaintenanceFaultPhase = 'residual' | 'apply' | 'rebuild';
+
 /** Cached per-MV incremental compilation. */
 interface CompiledIncrementalMV {
 	bindings: PlanBindings;
@@ -113,6 +120,15 @@ export class MaterializedViewManager {
 	private readonly executor: DeltaExecutor;
 	/** Compiled incremental entries keyed by `schema.name` (lowercase). */
 	private readonly incremental = new Map<string, CompiledIncrementalMV>();
+
+	/**
+	 * @internal Test-only fault-injection seam. When set, it is invoked with the
+	 * maintenance phase about to run; throwing simulates that phase failing. Used
+	 * to exercise the two-tier recovery (Tier-1 full-rebuild self-heal, Tier-2
+	 * `diverged`). Production never sets this; see
+	 * `Database._setMaterializedViewMaintenanceFault`.
+	 */
+	maintenanceFaultInjector?: (phase: MaintenanceFaultPhase) => void;
 
 	constructor(private readonly ctx: MaterializedViewManagerContext) {
 		const executorCtx: DeltaExecutorContext = {
@@ -366,6 +382,18 @@ export class MaterializedViewManager {
 
 		const apply = async (input: DeltaApplyInput): Promise<void> => {
 			try {
+				// Diverged self-heal retry: a prior apply failed AND its full-rebuild
+				// recovery also failed (Tier 2). The incremental delta only covers the
+				// *new* change, not the old gap, so ignore it and re-attempt a full
+				// re-materialization. Success clears the flag; a failure falls into the
+				// catch and re-attempts once more.
+				if (mv.diverged) {
+					await this.recoveryRebuild(db, mv);
+					mv.diverged = false;
+					log('Materialized view %s.%s recovered from diverged state via full rebuild', mv.schemaName, mv.name);
+					return;
+				}
+
 				// Any global relation (a 'global' binding — rejected at create — or a
 				// cost-fallback demotion) makes a full rebuild the only correct option.
 				if (input.globalRelations.size > 0) {
@@ -397,10 +425,31 @@ export class MaterializedViewManager {
 						StatusCode.INTERNAL,
 					);
 				}
+				this.maintenanceFaultInjector?.('apply');
 				await getBackingManager(backing).applyMaintenance(ops);
 			} catch (err) {
-				// Maintenance failure logs-and-skips; the user's commit stands.
-				warnLog('Incremental maintenance for %s.%s failed (commit stands): %O', mv.schemaName, mv.name, err);
+				// Tier 1 — self-heal (the common case). The incremental apply failed;
+				// the user's commit always stands (no rollback). The always-correct
+				// full rebuild is a *different* code path (whole-body `collectBodyRows`,
+				// not the per-binding `runResidual`/`applyMaintenance` that just failed),
+				// so a residual-specific or transient failure is very often recovered
+				// here with correct data and no user-visible effect.
+				warnLog('Incremental maintenance for %s.%s failed; attempting full rebuild (commit stands): %O', mv.schemaName, mv.name, err);
+				try {
+					await this.recoveryRebuild(db, mv);
+					if (mv.diverged) {
+						mv.diverged = false;
+						log('Materialized view %s.%s recovered via full rebuild', mv.schemaName, mv.name);
+					}
+				} catch (err2) {
+					// Tier 2 — visible divergence (the worst case). Even the always-correct
+					// rebuild failed: the backing table genuinely cannot be re-materialized.
+					// Mark diverged so reads error unconditionally (a separate notion from
+					// `stale`) until a successful refresh/rebuild, instead of silently
+					// serving data that has drifted from the sources.
+					mv.diverged = true;
+					warnLog('Incremental maintenance for %s.%s could not self-heal; marked diverged (refresh required): %O', mv.schemaName, mv.name, err2);
+				}
 			}
 		};
 
@@ -425,8 +474,19 @@ export class MaterializedViewManager {
 		return buildPrimaryKeyFromValues(keyValues, compiled.backingPkDefinition);
 	}
 
+	/**
+	 * Full-rebuild recovery wrapper — the single seam the `'rebuild'` fault fires
+	 * at. Shared by the Tier-1 apply-failure recovery and the diverged self-heal
+	 * retry so both rebuild attempts behave identically under fault injection.
+	 */
+	private async recoveryRebuild(db: Database, mv: MaterializedViewSchema): Promise<void> {
+		this.maintenanceFaultInjector?.('rebuild');
+		await rebuildBacking(db, mv);
+	}
+
 	/** Run a residual scheduler for one binding tuple and collect its output rows. */
 	private async runResidual(residual: ResidualArtifacts, tuple: readonly SqlValue[]): Promise<Row[]> {
+		this.maintenanceFaultInjector?.('residual');
 		const params: Record<string, SqlValue> = {};
 		for (let i = 0; i < tuple.length; i++) {
 			params[`${residual.paramPrefix}${i}`] = tuple[i];
