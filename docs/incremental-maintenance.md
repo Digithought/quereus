@@ -214,6 +214,14 @@ Two MV-specific wrinkles diverge from the watcher template:
   source *identity*: a row-preserving body binds `'row'` on the source PK; a
   single-source aggregate binds `'group'` on the bare `GROUP BY` columns. The
   manager builds the `BindingMode` map directly and hands it to the same kernel.
+  A **recursive-CTE** body is the deliberate exception: `compile()` binds *every*
+  source `'global'` (no per-binding residual is built), because a fixpoint has no
+  bounded per-binding slice — a single changed source row can ripple through
+  arbitrarily many iterations. Any source change therefore routes through the
+  global branch (`rebuildBacking`), re-deriving the whole MV — always correct, not
+  algorithmically incremental (see
+  [Materialized Views § Eligibility](materialized-views.md#eligibility-checked-at-create-time);
+  true delta evaluation is tracked in `materialized-view-recursive-semi-naive-delta`).
 - **`apply` writes, so it needs a delete key.** The binding tuple is projected
   onto the backing table's physical PK via attribute provenance (passthrough ids
   forward; aggregate group-by ids resolve through the aggregate's producing

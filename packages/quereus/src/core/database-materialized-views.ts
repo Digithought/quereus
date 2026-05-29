@@ -385,7 +385,24 @@ export class MaterializedViewManager {
 		const relationToBase = new Map<string, string>();
 
 		const agg = findAggregate(analyzed);
-		if (agg) {
+		// A recursive CTE computes a fixpoint: a single changed source row can ripple
+		// through arbitrarily many iterations, so there is no bounded per-binding
+		// residual that recomputes "the affected rows only". Classify the whole MV as
+		// 'global' so any source mutation triggers a full rebuildBacking at COMMIT —
+		// always correct, including shrinking-closure deletes (a from-scratch recompute
+		// is always right). This must run BEFORE the aggregate / join branches: a
+		// recursive body whose outer query aggregates or joins (e.g. `select count(*)
+		// from closure`, or the `r ⋈ edges` join inside the recursive case) must not be
+		// misrouted into the aggregate / non-inner-join rejections. True incremental
+		// delta evaluation (semi-naïve insert + DRed delete) is deferred to
+		// materialized-view-recursive-semi-naive-delta.
+		if (containsNodeType(analyzed, PlanNodeType.RecursiveCTE)) {
+			for (const [relKey, ref] of tableRefByRelKey) {
+				const base = `${ref.tableSchema.schemaName}.${ref.tableSchema.name}`.toLowerCase();
+				perRelation.set(relKey, { kind: 'global' });
+				relationToBase.set(relKey, base);
+			}
+		} else if (agg) {
 			// Aggregate maintenance binds on the group key of a single source. An
 			// aggregate over a join would need OLD/NEW group recompute across the
 			// join's fan-in, which v1 does not model — defer.

@@ -217,16 +217,30 @@ body is incrementally maintainable. The accepted shapes are:
 - **single-source aggregate** with `GROUP BY` over **bare source columns**:
   maintenance binds on the **group key**. Each changed group (OLD and NEW on an
   update that moves a row between groups) is recomputed.
+- **recursive CTE** (transitive closure / fixpoint) over one or more sources:
+  *accepted, but maintained as a whole-MV `'global'` rebuild.* A recursive
+  fixpoint has no bounded per-binding residual — a single changed source row can
+  ripple through arbitrarily many iterations — so `compile()` classifies every
+  source as `'global'` and any source mutation re-derives the **entire** fixpoint
+  at COMMIT via `rebuildBacking` (the same recompute manual `refresh` runs). This
+  is always correct (including shrinking-closure deletes, which a from-scratch
+  recompute handles trivially) but is **not** algorithmically incremental: even a
+  one-row source change triggers a full recompute, so there is no per-row fast
+  path. True semi-naïve insert + DRed delete delta evaluation is deferred to
+  `materialized-view-recursive-semi-naive-delta`. (A recursive body that reads no
+  source table is still rejected by the empty-source guard — there is nothing to
+  bind on or to trigger a rebuild from.)
 
 Rejected up front with a diagnostic: **outer/semi/anti joins**
 (`materialized-view-incremental-outer-joins`), **aggregate over a join**
 (`materialized-view-incremental-aggregate-join`), `DISTINCT` over a join, set
 operations — bag-distinguishing ones (`union`/`intersect`/`except`) at build
 time, `union all` in `compile()` (`materialized-view-incremental-set-ops`) —
-recursive CTE bodies (`materialized-view-incremental-recursive-cte`), whole-table
-aggregates (no `GROUP BY`), `GROUP BY` over non-column expressions, and a source
-without a primary key. A `manual` MV over the same body is always allowed (no
-gate).
+whole-table aggregates (no `GROUP BY`), `GROUP BY` over non-column expressions,
+and a source without a primary key. A `manual` MV over the same body is always
+allowed (no gate). A recursive `union all` body whose fixpoint contains duplicate
+rows is still a bag, so it raises the "must be a set" diagnostic at the create-time
+full-rebuild fill.
 
 > **Note on classification.** This eligibility is *not* the `extractBindings`
 > 'row'/'group' classification used by assertions/watchers — that surface is
@@ -556,11 +570,14 @@ tracked separately and build on this substrate:
 - **Incremental refresh** — *delivered* for row-preserving bodies over one or
   more **inner/cross-joined** sources and single-source aggregate bodies
   (`with refresh = 'on-commit-incremental'`; see
-  [Incremental refresh](#incremental-refresh)). Remaining work: outer/semi/anti
-  join bodies (`materialized-view-incremental-outer-joins`), aggregate over a
-  join (`materialized-view-incremental-aggregate-join`), set-ops
-  (`materialized-view-incremental-set-ops`), recursive CTEs
-  (`materialized-view-incremental-recursive-cte`), cascading-MV convergence
+  [Incremental refresh](#incremental-refresh)). Recursive-CTE bodies are
+  *delivered as a whole-MV global rebuild* (full fixpoint recompute on any source
+  commit — correct, not algorithmically incremental); the true semi-naïve/DRed
+  delta path is deferred to `materialized-view-recursive-semi-naive-delta`.
+  Remaining work: outer/semi/anti join bodies
+  (`materialized-view-incremental-outer-joins`), aggregate over a join
+  (`materialized-view-incremental-aggregate-join`), set-ops
+  (`materialized-view-incremental-set-ops`), cascading-MV convergence
   (`materialized-view-incremental-cascading-convergence`), and the
   `getChangeScope()` source projection (`materialized-view-incremental-changescope`).
 - **Write-through** (`materialized-view-writes-through-body`) — accept DML

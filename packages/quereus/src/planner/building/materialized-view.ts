@@ -73,8 +73,13 @@ export function buildCreateMaterializedViewStmt(ctx: PlanningContext, stmt: AST.
 /**
  * Reject body shapes `on-commit-incremental` maintenance does not support yet,
  * with diagnostics pointing at the tracking tickets. Bag-distinguishing set-ops
- * (UNION/INTERSECT/EXCEPT — anything but `union all`) and recursive CTE bodies
- * are out of scope for v1.
+ * (UNION/INTERSECT/EXCEPT — anything but `union all`) are out of scope for v1.
+ *
+ * Recursive CTE bodies are *not* rejected here: a recursive fixpoint has no
+ * bounded per-binding residual, so `compile()` classifies it as whole-MV
+ * `'global'` and maintains it by a full rebuild on any source change (always
+ * correct; not algorithmically incremental). True semi-naïve/DRed delta
+ * evaluation is deferred to `materialized-view-recursive-semi-naive-delta`.
  */
 function rejectUnsupportedIncrementalBody(select: AST.QueryExpr, viewName: string): void {
 	if (select.type !== 'select') return;
@@ -83,14 +88,6 @@ function rejectUnsupportedIncrementalBody(select: AST.QueryExpr, viewName: strin
 			`materialized view '${viewName}': 'on-commit-incremental' refresh does not support `
 				+ `${select.compound.op} set-operation bodies yet `
 				+ `(filed: materialized-view-incremental-set-ops); use 'manual' refresh`,
-			StatusCode.UNSUPPORTED,
-		);
-	}
-	if (select.withClause?.recursive) {
-		throw new QuereusError(
-			`materialized view '${viewName}': 'on-commit-incremental' refresh does not support `
-				+ `recursive CTE bodies yet `
-				+ `(filed: materialized-view-incremental-recursive-cte); use 'manual' refresh`,
 			StatusCode.UNSUPPORTED,
 		);
 	}
