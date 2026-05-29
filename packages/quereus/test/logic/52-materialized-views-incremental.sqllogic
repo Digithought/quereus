@@ -959,3 +959,188 @@ select * from mv_agg_setop order by k;
 drop materialized view mv_agg_setop;
 drop table ag_a;
 drop table ag_b;
+
+-- ===================================
+-- 32. Lateral TVF fan-out — INCREMENTAL via base-PK prefix delete. The body fans
+--     a base row out through a correlated lateral TVF
+--     (`base t cross join lateral json_each(t.arr)`). A single base-row change
+--     maps to MANY backing rows; the exact per-binding `delete-key` cannot
+--     express that, so the maintainer deletes the changed base row's whole fan-out
+--     by its base-PK *prefix* and re-inserts the recomputed fan-out. This is gated
+--     on json_each advertising a key on its element id (column 4): projecting
+--     `je.id` into the backing PK proves the recomputed fan-out is a set on the
+--     backing PK. All results below equal what a `manual` (full-rebuild) refresh
+--     would produce — the white-box proof that the prefix-delete path (not a full
+--     rebuild) actually runs lives in test/materialized-view-lateral-tvf.spec.ts.
+-- ===================================
+
+create table doc (id integer primary key, arr text);
+insert into doc values (1, '[10,20,30]'), (2, '[40]'), (3, '[50,60]');
+create materialized view mv_tags as
+  select d.id as id, je.id as eid, je.value as v
+  from doc d cross join lateral json_each(d.arr) je
+  with refresh = 'on-commit-incremental';
+
+-- create-time fan-out
+select id, eid, v from mv_tags order by id, eid;
+→ [{"id":1,"eid":0,"v":10},{"id":1,"eid":1,"v":20},{"id":1,"eid":2,"v":30},{"id":2,"eid":0,"v":40},{"id":3,"eid":0,"v":50},{"id":3,"eid":1,"v":60}]
+
+-- INSERT a base row → its whole fan-out appears at COMMIT (no manual refresh)
+insert into doc values (4, '[70,80,90]');
+select id, eid, v from mv_tags order by id, eid;
+→ [{"id":1,"eid":0,"v":10},{"id":1,"eid":1,"v":20},{"id":1,"eid":2,"v":30},{"id":2,"eid":0,"v":40},{"id":3,"eid":0,"v":50},{"id":3,"eid":1,"v":60},{"id":4,"eid":0,"v":70},{"id":4,"eid":1,"v":80},{"id":4,"eid":2,"v":90}]
+
+-- DELETE a base row → its ENTIRE fan-out vanishes (the prefix delete removes all
+-- rows for that base PK, not just one)
+delete from doc where id = 1;
+select id, eid, v from mv_tags order by id, eid;
+→ [{"id":2,"eid":0,"v":40},{"id":3,"eid":0,"v":50},{"id":3,"eid":1,"v":60},{"id":4,"eid":0,"v":70},{"id":4,"eid":1,"v":80},{"id":4,"eid":2,"v":90}]
+
+-- UPDATE that SHRINKS the fan-out arity (id=4: 3 rows → 2). The prefix delete +
+-- re-insert converges exactly — the case the old exact-delete path could not do.
+update doc set arr = '[7,8]' where id = 4;
+select id, eid, v from mv_tags order by id, eid;
+→ [{"id":2,"eid":0,"v":40},{"id":3,"eid":0,"v":50},{"id":3,"eid":1,"v":60},{"id":4,"eid":0,"v":7},{"id":4,"eid":1,"v":8}]
+
+-- UPDATE that GROWS the fan-out arity (id=2: 1 row → 3)
+update doc set arr = '[100,200,300]' where id = 2;
+select id, eid, v from mv_tags order by id, eid;
+→ [{"id":2,"eid":0,"v":100},{"id":2,"eid":1,"v":200},{"id":2,"eid":2,"v":300},{"id":3,"eid":0,"v":50},{"id":3,"eid":1,"v":60},{"id":4,"eid":0,"v":7},{"id":4,"eid":1,"v":8}]
+
+-- Manual refresh still resyncs a lateral-TVF MV (escape valve)
+refresh materialized view mv_tags;
+select id, eid, v from mv_tags order by id, eid;
+→ [{"id":2,"eid":0,"v":100},{"id":2,"eid":1,"v":200},{"id":2,"eid":2,"v":300},{"id":3,"eid":0,"v":50},{"id":3,"eid":1,"v":60},{"id":4,"eid":0,"v":7},{"id":4,"eid":1,"v":8}]
+
+drop materialized view mv_tags;
+drop table doc;
+
+-- ===================================
+-- 33. Advertisement-insufficient lateral TVF → maintained via FULL REBUILD (the
+--     advertisement gate fails, never a silent fan-out dedup). The projection
+--     keeps only `je.value` (no advertised key column in the backing PK), so the
+--     recomputed fan-out cannot be proven a set on the backing PK. Maintenance
+--     falls back to a full rebuild — still correct, just not incremental. (Values
+--     are distinct within each base row so the body remains a valid set.)
+-- ===================================
+
+create table doc2 (id integer primary key, nums text);
+insert into doc2 values (1, '[10,20]'), (2, '[30]');
+create materialized view mv_vals as
+  select d.id as id, je.value as v
+  from doc2 d cross join lateral json_each(d.nums) je
+  with refresh = 'on-commit-incremental';
+select id, v from mv_vals order by id, v;
+→ [{"id":1,"v":10},{"id":1,"v":20},{"id":2,"v":30}]
+
+-- Arity-changing update maintains correctly (rebuild path): no rows wrongly
+-- deduped, old fan-out fully replaced.
+update doc2 set nums = '[40,50,60]' where id = 1;
+select id, v from mv_vals order by id, v;
+→ [{"id":1,"v":40},{"id":1,"v":50},{"id":1,"v":60},{"id":2,"v":30}]
+
+insert into doc2 values (3, '[70]');
+select id, v from mv_vals order by id, v;
+→ [{"id":1,"v":40},{"id":1,"v":50},{"id":1,"v":60},{"id":2,"v":30},{"id":3,"v":70}]
+
+delete from doc2 where id = 2;
+select id, v from mv_vals order by id, v;
+→ [{"id":1,"v":40},{"id":1,"v":50},{"id":1,"v":60},{"id":3,"v":70}]
+
+drop materialized view mv_vals;
+drop table doc2;
+
+-- ===================================
+-- 34. Non-leading prefix → FULL REBUILD. The projection orders a TVF column
+--     (je.id) BEFORE the base PK (d.id), so the base PK is not a leading prefix of
+--     the backing PK (eid, bid, v) — prefix isolation fails, so the prefix-delete
+--     path is not taken and maintenance falls back to a full rebuild (correct).
+-- ===================================
+
+create table doc3 (id integer primary key, nums text);
+insert into doc3 values (1, '[10,20]'), (2, '[30]');
+create materialized view mv_nonlead as
+  select je.id as eid, d.id as bid, je.value as v
+  from doc3 d cross join lateral json_each(d.nums) je
+  with refresh = 'on-commit-incremental';
+select eid, bid, v from mv_nonlead order by bid, eid;
+→ [{"eid":0,"bid":1,"v":10},{"eid":1,"bid":1,"v":20},{"eid":0,"bid":2,"v":30}]
+
+update doc3 set nums = '[40,50,60]' where id = 1;
+select eid, bid, v from mv_nonlead order by bid, eid;
+→ [{"eid":0,"bid":1,"v":40},{"eid":1,"bid":1,"v":50},{"eid":2,"bid":1,"v":60},{"eid":0,"bid":2,"v":30}]
+
+drop materialized view mv_nonlead;
+drop table doc3;
+
+-- ===================================
+-- 35. Lateral SUBQUERY over a base table (control). Its inner table is a visible
+--     TableReferenceNode, so the body is a two-source inner/cross join — it routes
+--     through the existing join-bodies path, NOT the lateral-TVF prefix-delete
+--     path (there is no TableFunctionCallNode). A child-side change maintains, a
+--     parent-side change rebuilds; both converge to the correct state.
+-- ===================================
+
+create table par (id integer primary key, label text);
+create table chld (id integer primary key, pid integer, w integer);
+insert into par values (1, 'a'), (2, 'b');
+insert into chld values (100, 1, 10), (101, 1, 11), (102, 2, 12);
+create materialized view mv_lat_sub as
+  select c.cid as cid, p.id as pid, c.w as w
+  from par p cross join lateral (select chld.id as cid, chld.w as w from chld where chld.pid = p.id) c
+  with refresh = 'on-commit-incremental';
+select cid, pid, w from mv_lat_sub order by cid;
+→ [{"cid":100,"pid":1,"w":10},{"cid":101,"pid":1,"w":11},{"cid":102,"pid":2,"w":12}]
+
+-- CHILD insert (new matching child) appears
+insert into chld values (103, 2, 13);
+select cid, pid, w from mv_lat_sub order by cid;
+→ [{"cid":100,"pid":1,"w":10},{"cid":101,"pid":1,"w":11},{"cid":102,"pid":2,"w":12},{"cid":103,"pid":2,"w":13}]
+
+-- CHILD update reflects
+update chld set w = 999 where id = 100;
+select cid, pid, w from mv_lat_sub order by cid;
+→ [{"cid":100,"pid":1,"w":999},{"cid":101,"pid":1,"w":11},{"cid":102,"pid":2,"w":12},{"cid":103,"pid":2,"w":13}]
+
+-- CHILD delete removes its row
+delete from chld where id = 101;
+select cid, pid, w from mv_lat_sub order by cid;
+→ [{"cid":100,"pid":1,"w":999},{"cid":102,"pid":2,"w":12},{"cid":103,"pid":2,"w":13}]
+
+drop materialized view mv_lat_sub;
+drop table par;
+drop table chld;
+
+-- ===================================
+-- 36. Composite base PK + lateral TVF — the prefix delete spans BOTH base-PK
+--     columns. The backing PK is (a, b, eid, v); the leading run (a, b) covers the
+--     full base PK, so a change to one (a,b) row deletes exactly that row's fan-out
+--     by the 2-column prefix and re-inserts the recomputed fan-out incrementally.
+-- ===================================
+
+create table cdoc (a integer, b integer, arr text, primary key (a, b));
+insert into cdoc values (1, 1, '[10,20]'), (1, 2, '[30]'), (2, 1, '[40,50]');
+create materialized view mv_cdoc as
+  select c.a as a, c.b as b, je.id as eid, je.value as v
+  from cdoc c cross join lateral json_each(c.arr) je
+  with refresh = 'on-commit-incremental';
+select a, b, eid, v from mv_cdoc order by a, b, eid;
+→ [{"a":1,"b":1,"eid":0,"v":10},{"a":1,"b":1,"eid":1,"v":20},{"a":1,"b":2,"eid":0,"v":30},{"a":2,"b":1,"eid":0,"v":40},{"a":2,"b":1,"eid":1,"v":50}]
+
+-- Arity-shrinking update of one composite-keyed base row (a=1,b=1: 2 rows → 1)
+update cdoc set arr = '[100]' where a = 1 and b = 1;
+select a, b, eid, v from mv_cdoc order by a, b, eid;
+→ [{"a":1,"b":1,"eid":0,"v":100},{"a":1,"b":2,"eid":0,"v":30},{"a":2,"b":1,"eid":0,"v":40},{"a":2,"b":1,"eid":1,"v":50}]
+
+-- Delete one composite-keyed base row → its whole fan-out vanishes
+delete from cdoc where a = 2 and b = 1;
+select a, b, eid, v from mv_cdoc order by a, b, eid;
+→ [{"a":1,"b":1,"eid":0,"v":100},{"a":1,"b":2,"eid":0,"v":30}]
+
+-- Insert a new composite-keyed base row → its fan-out appears
+insert into cdoc values (3, 3, '[7,8,9]');
+select a, b, eid, v from mv_cdoc order by a, b, eid;
+→ [{"a":1,"b":1,"eid":0,"v":100},{"a":1,"b":2,"eid":0,"v":30},{"a":3,"b":3,"eid":0,"v":7},{"a":3,"b":3,"eid":1,"v":8},{"a":3,"b":3,"eid":2,"v":9}]
+
+drop materialized view mv_cdoc;
+drop table cdoc;

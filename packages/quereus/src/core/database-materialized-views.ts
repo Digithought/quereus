@@ -39,7 +39,9 @@ import { BlockNode } from '../planner/nodes/block.js';
 import { PlanNode, type ScalarPlanNode } from '../planner/nodes/plan-node.js';
 import { ColumnReferenceNode, TableReferenceNode } from '../planner/nodes/reference.js';
 import { AggregateNode } from '../planner/nodes/aggregate-node.js';
+import { TableFunctionCallNode } from '../planner/nodes/table-function-call.js';
 import { PlanNodeType } from '../planner/nodes/plan-node-type.js';
+import { isTableValuedFunctionSchema, resolveAdvertisement } from '../schema/function.js';
 import type { BindingMode, PlanBindings } from '../planner/analysis/binding-extractor.js';
 import { buildSourceUnionScope } from '../planner/analysis/change-scope.js';
 import { injectKeyFilter } from '../planner/analysis/key-filter.js';
@@ -88,12 +90,35 @@ interface ResidualArtifacts {
 	/**
 	 * How to build the backing-table delete key from a binding tuple, or `null`
 	 * when the binding does not map cleanly onto the (physical) MV-PK — such a
-	 * relation's changes fall back to a full rebuild (always correct).
+	 * relation's changes fall back to a full rebuild (always correct) unless a
+	 * {@link prefixDelete} descriptor is present.
 	 *
 	 * `bindingTupleOrder[j]` = the binding-tuple index supplying physical-PK
 	 * column `j`'s value.
 	 */
 	deleteKeyOrder: number[] | null;
+	/**
+	 * For a lateral-TVF fan-out body (a base row maps to MANY backing rows), how
+	 * to bound the delete by the changed base row's PK *prefix* instead of one
+	 * exact key. `null` when the shape is not a gated fan-out (the
+	 * `deleteKeyOrder`/rebuild path applies). When set, `apply()` emits a
+	 * `delete-by-prefix` op built from the binding tuple's base-PK values.
+	 */
+	prefixDelete: PrefixDeleteDescriptor | null;
+}
+
+/**
+ * Bounded-delete descriptor for a lateral-TVF fan-out body. The backing physical
+ * PK decomposes into a leading run of base-PK columns (the {@link prefixLength}
+ * prefix) followed by TVF-supplied columns; deleting every backing row whose
+ * leading prefix equals the changed base PK removes exactly that base row's
+ * fan-out (base PK is unique, so no other base row shares the prefix).
+ */
+interface PrefixDeleteDescriptor {
+	/** Binding-tuple index supplying each leading prefix column's value, in prefix order. */
+	baseKeyOrder: number[];
+	/** Number of leading backing-PK columns that form the base-PK prefix. */
+	prefixLength: number;
 }
 
 /**
@@ -561,7 +586,32 @@ export class MaterializedViewManager {
 			const deleteKeyOrder = computeDeleteKeyOrder(
 				analyzed, tableRefByRelKey.get(relKey), producingByAttrId, bindCols, physicalPkOutCols,
 			);
-			residualsByRelation.set(relKey, { scheduler, bindColumns: [...bindCols], paramPrefix, deleteKeyOrder });
+
+			// Lateral-TVF fan-out (v1: a single base source feeding one correlated
+			// lateral TVF). A base-row change maps to MANY backing rows, which the
+			// per-binding `deleteKeyOrder` (one exact PK) cannot delete — so it is
+			// `null` here and the shape would otherwise full-rebuild every change.
+			// When the backing PK leads with the base PK (prefix isolation) AND the
+			// TVF's advertisement proves the recomputed fan-out is a set on the
+			// backing PK (set-ness gate), bound the delete by the base-PK prefix
+			// instead. If either fact is unprovable, leave `prefixDelete` null — the
+			// rebuild fallback stands (always correct, just not incremental).
+			let prefixDelete: PrefixDeleteDescriptor | null = null;
+			const baseRef = tableRefByRelKey.get(relKey);
+			if (mode.kind === 'row' && tableRefByRelKey.size === 1 && baseRef) {
+				const lateralTvf = detectLateralTvf(analyzed, baseRef);
+				if (lateralTvf) {
+					const basePkCols = baseRef.tableSchema.primaryKeyDefinition.map(d => d.index);
+					const descriptor = computePrefixDeleteOrder(
+						analyzed, baseRef, producingByAttrId, bindCols, basePkCols, physicalPkOutCols, backingPkDefinition,
+					);
+					if (descriptor && tvfBackingPortionIsSuperkey(analyzed, lateralTvf, producingByAttrId, physicalPkOutCols)) {
+						prefixDelete = descriptor;
+					}
+				}
+			}
+
+			residualsByRelation.set(relKey, { scheduler, bindColumns: [...bindCols], paramPrefix, deleteKeyOrder, prefixDelete });
 		}
 
 		return {
@@ -609,15 +659,23 @@ export class MaterializedViewManager {
 				const ops: MaintenanceOp[] = [];
 				for (const [relKey, tuples] of input.perRelationTuples) {
 					const residual = compiled.residualsByRelation.get(relKey);
-					if (!residual || residual.deleteKeyOrder === null) {
-						// No clean per-binding delete mapping — rebuild (always correct).
+					if (!residual || (residual.deleteKeyOrder === null && !residual.prefixDelete)) {
+						// No bounded per-binding delete (neither an exact MV-PK delete nor a
+						// gated base-PK prefix delete) — rebuild (always correct).
 						await rebuildBacking(db, mv);
 						this.markBackingRebuilt(compiled);
 						return;
 					}
 					for (const tuple of tuples) {
-						const key = this.buildDeleteKey(compiled, residual.deleteKeyOrder, tuple);
-						ops.push({ kind: 'delete-key', key });
+						if (residual.prefixDelete) {
+							// Lateral-TVF fan-out: delete the changed base row's entire fan-out
+							// by its base-PK prefix, then re-insert the recomputed fan-out.
+							const prefix = residual.prefixDelete.baseKeyOrder.map(i => tuple[i]);
+							ops.push({ kind: 'delete-by-prefix', prefix, prefixLength: residual.prefixDelete.prefixLength });
+						} else {
+							const key = this.buildDeleteKey(compiled, residual.deleteKeyOrder!, tuple);
+							ops.push({ kind: 'delete-key', key });
+						}
 						const recomputed = await this.runResidual(residual, tuple);
 						for (const row of recomputed) ops.push({ kind: 'upsert', row });
 					}
@@ -739,15 +797,34 @@ export class MaterializedViewManager {
 			return;
 		}
 
+		// A `delete-by-prefix` op removes an unbounded set of backing PKs that the
+		// per-row before/after overlay capture cannot enumerate from the op alone.
+		// For a cascade producer, mark the backing globally changed so its
+		// dependents re-evaluate in full this pass (always correct; a finer per-row
+		// capture of the fan-out is a later optimization, see docs/incremental-maintenance.md).
+		if (ops.some(op => op.kind === 'delete-by-prefix')) {
+			this.maintenanceFaultInjector?.('apply');
+			await manager.applyMaintenance(ops);
+			this.markBackingRebuilt(compiled);
+			return;
+		}
+
 		// De-duplicated set of touched backing PKs. Delete-key ops carry the key
 		// directly; upsert ops derive it from the row's physical-PK columns via the
 		// same `buildPrimaryKeyFromValues(..., backingPkDefinition)` `buildDeleteKey`
 		// uses, so the two serialize identically and dedup cleanly.
 		const touched = new Map<string, BTreeKeyForPrimary>();
 		for (const op of ops) {
-			const key = op.kind === 'delete-key'
-				? op.key
-				: buildPrimaryKeyFromValues(compiled.backingPkDefinition.map(d => op.row[d.index]), compiled.backingPkDefinition);
+			let key: BTreeKeyForPrimary;
+			if (op.kind === 'delete-key') {
+				key = op.key;
+			} else if (op.kind === 'upsert') {
+				key = buildPrimaryKeyFromValues(compiled.backingPkDefinition.map(d => op.row[d.index]), compiled.backingPkDefinition);
+			} else {
+				// delete-by-prefix is handled before this point (cascade producers take
+				// the markBackingRebuilt path); it never reaches the per-row capture.
+				continue;
+			}
 			touched.set(pkToString(key), key);
 		}
 
@@ -1080,4 +1157,163 @@ function relationalAttributes(block: BlockNode): ReturnType<TableReferenceNode['
 		if (typeof child.getAttributes === 'function') return child.getAttributes();
 	}
 	return undefined;
+}
+
+/* ─────────────────── lateral-TVF fan-out maintenance ─────────────────── */
+
+/** Collect every {@link TableFunctionCallNode} in a plan (recursive `getChildren` walk). */
+function collectTableFunctionCalls(node: PlanNode, out: TableFunctionCallNode[] = []): TableFunctionCallNode[] {
+	if (node instanceof TableFunctionCallNode) out.push(node);
+	for (const child of node.getChildren()) collectTableFunctionCalls(child as unknown as PlanNode, out);
+	return out;
+}
+
+/** Attribute ids referenced by a TVF's operand expressions (recursive scalar walk). */
+function collectOperandAttrIds(tvf: TableFunctionCallNode): Set<number> {
+	const ids = new Set<number>();
+	const walk = (n: PlanNode): void => {
+		if (n instanceof ColumnReferenceNode) ids.add(n.attributeId);
+		for (const c of n.getChildren()) walk(c as unknown as PlanNode);
+	};
+	for (const op of tvf.operands) walk(op as unknown as PlanNode);
+	return ids;
+}
+
+/**
+ * Detect the v1 lateral-TVF fan-out shape: a single {@link TableFunctionCallNode}
+ * whose operands correlate *only* to the bound base source (e.g. the `t.arr` in
+ * `base t cross join lateral json_each(t.arr)`). Returns the TVF node, or
+ * `undefined` when the shape is anything else (no TVF, a constant/non-correlated
+ * TVF, multiple TVFs, or a TVF referencing a relation other than the base) — all
+ * of which stay on the always-correct rebuild fallback.
+ */
+function detectLateralTvf(analyzedRoot: PlanNode, baseRef: TableReferenceNode): TableFunctionCallNode | undefined {
+	const tvfs = collectTableFunctionCalls(analyzedRoot);
+	if (tvfs.length !== 1) return undefined;
+	const baseAttrIds = new Set(baseRef.getAttributes().map(a => a.id));
+	const operandAttrs = collectOperandAttrIds(tvfs[0]);
+	if (operandAttrs.size === 0) return undefined; // not correlated (constant TVF)
+	for (const id of operandAttrs) {
+		if (!baseAttrIds.has(id)) return undefined; // correlated to something other than base
+	}
+	return tvfs[0];
+}
+
+/**
+ * Fact (1) — prefix isolation. The backing physical PK must decompose into a
+ * *leading run* of columns that each resolve (via attribute provenance) to a
+ * `base` PK column and together cover ALL of `base.PK`, followed by ≥1
+ * TVF-supplied column. Deleting every backing row whose leading prefix equals
+ * the changed base PK then removes exactly that base row's fan-out (base PK is
+ * unique, so no other base row shares the prefix). Returns the descriptor, or
+ * `null` when the base PK is not such a clean leading prefix (⇒ rebuild).
+ *
+ * The leading prefix columns must additionally be **ascending** so the matching
+ * backing rows form a single contiguous, forward-scannable run for the
+ * `delete-by-prefix` range delete (a desc leading column ⇒ `null` ⇒ rebuild).
+ */
+function computePrefixDeleteOrder(
+	analyzedRoot: BlockNode,
+	baseRef: TableReferenceNode,
+	producingByAttrId: Map<number, ScalarPlanNode>,
+	bindColumns: readonly number[],
+	basePkCols: readonly number[],
+	physicalPkOutCols: readonly number[],
+	backingPkDefinition: ReadonlyArray<{ index: number; desc?: boolean }>,
+): PrefixDeleteDescriptor | null {
+	const baseAttrToCol = new Map<number, number>();
+	baseRef.getAttributes().forEach((a, i) => baseAttrToCol.set(a.id, i));
+	const sourceColToBindPos = new Map<number, number>();
+	bindColumns.forEach((c, i) => sourceColToBindPos.set(c, i));
+	const basePkSet = new Set(basePkCols);
+
+	const rootAttrs = relationalAttributes(analyzedRoot);
+	if (!rootAttrs) return null;
+
+	const baseKeyOrder: number[] = [];
+	const covered = new Set<number>();
+	for (let j = 0; j < physicalPkOutCols.length; j++) {
+		if (backingPkDefinition[j]?.desc === true) break; // leading run must be ascending
+		const attr = rootAttrs[physicalPkOutCols[j]];
+		if (!attr) break;
+		const baseCol = resolveSourceCol(attr.id, baseAttrToCol, producingByAttrId);
+		if (baseCol === undefined || !basePkSet.has(baseCol)) break; // run ends at the first non-base-PK column
+		const bindPos = sourceColToBindPos.get(baseCol);
+		if (bindPos === undefined) break;
+		baseKeyOrder.push(bindPos);
+		covered.add(baseCol);
+	}
+
+	// The leading run must cover *all* of base PK …
+	if (covered.size !== basePkSet.size) return null;
+	if (baseKeyOrder.length === 0) return null;
+	// … and stop before the end: a backing PK that is *entirely* base-PK columns
+	// is one-row-per-base-row (no fan-out) — the exact `delete-key` path applies.
+	if (baseKeyOrder.length === physicalPkOutCols.length) return null;
+
+	return { baseKeyOrder, prefixLength: baseKeyOrder.length };
+}
+
+/**
+ * Fact (2) — fan-out set-ness. The TVF-derived portion of the backing PK must be
+ * a **superkey** of the TVF output relation, so the per-base-row re-insert batch
+ * is a set on the backing PK (no two distinct fan-out rows collapse). Within one
+ * base row's fan-out the base-derived backing columns are constant, so set-ness
+ * reduces to: the backing-PK columns supplied by the TVF distinguish every TVF
+ * output row. Discharged from the TVF's `relationalAdvertisement`:
+ *   - some advertised `keys` entry ⊆ the backing-PK TVF columns, OR
+ *   - `isSet` AND the backing-PK TVF columns cover *every* TVF output column.
+ * Anything weaker ⇒ `false` ⇒ the gate fails and the shape full-rebuilds
+ * (never a silent fan-out dedup). Out-of-range advertised key indices are
+ * naturally rejected (they cannot be members of the valid backing-PK column set).
+ */
+function tvfBackingPortionIsSuperkey(
+	analyzedRoot: BlockNode,
+	tvf: TableFunctionCallNode,
+	producingByAttrId: Map<number, ScalarPlanNode>,
+	physicalPkOutCols: readonly number[],
+): boolean {
+	const schema = tvf.functionSchema;
+	if (!isTableValuedFunctionSchema(schema)) return false;
+	const rootAttrs = relationalAttributes(analyzedRoot);
+	if (!rootAttrs) return false;
+
+	const tvfAttrToCol = new Map<number, number>();
+	tvf.getAttributes().forEach((a, i) => tvfAttrToCol.set(a.id, i));
+
+	// TVF output column indices that appear in the backing PK.
+	const tvfPkCols = new Set<number>();
+	for (const pkOutCol of physicalPkOutCols) {
+		const attr = rootAttrs[pkOutCol];
+		if (!attr) continue;
+		const tvfCol = resolveSourceCol(attr.id, tvfAttrToCol, producingByAttrId);
+		if (tvfCol !== undefined) tvfPkCols.add(tvfCol);
+	}
+	if (tvfPkCols.size === 0) return false;
+
+	const adv = schema.relationalAdvertisement;
+	const ops = tvf.operands;
+	const colCount = schema.returnType.columns.length;
+
+	// Advertised-key route: some advertised key ⊆ the backing-PK TVF columns.
+	const resolvedKeys = adv ? resolveAdvertisement(adv.keys, ops, schema) : undefined;
+	if (resolvedKeys) {
+		for (const key of resolvedKeys) {
+			if (key.length > 0 && key.every(c => tvfPkCols.has(c.index))) return true;
+		}
+	}
+
+	// isSet route: the TVF output is a set on *all* its columns, and the backing
+	// PK carries all of them.
+	const resolvedIsSet = adv ? resolveAdvertisement(adv.isSet, ops, schema) : undefined;
+	const isSet = resolvedIsSet ?? schema.returnType.isSet;
+	if (isSet) {
+		let coversAll = true;
+		for (let i = 0; i < colCount; i++) {
+			if (!tvfPkCols.has(i)) { coversAll = false; break; }
+		}
+		if (coversAll) return true;
+	}
+
+	return false;
 }

@@ -50,15 +50,24 @@ export type CoveringStructure =
  * committed base layer by {@link MemoryTableManager.applyMaintenance}.
  *
  * - `delete-key` removes the row with this full primary key (no-op if absent).
+ * - `delete-by-prefix` removes *every* row whose leading `prefixLength` primary-key
+ *   columns equal `prefix`. Used by the lateral-TVF fan-out maintenance path: a
+ *   single base-row change maps to many backing rows sharing a common base-PK
+ *   prefix, which one exact `delete-key` cannot express. The leading prefix
+ *   columns are guaranteed ascending by the compile-time gate
+ *   (`computePrefixDeleteOrder` in `database-materialized-views.ts`), so the
+ *   matching rows form a contiguous, forward-scannable run on the primary btree.
  * - `upsert` replaces the row sharing this row's PK, or inserts when absent.
  *
- * The per-binding apply path emits `delete-key` (full MV-PK) + `upsert`. Range
- * deletes for the strict-superset-PK group case are deferred — those MVs fall
+ * The per-binding apply path emits `delete-key` (full MV-PK) + `upsert`; the
+ * lateral-TVF fan-out path emits `delete-by-prefix` (base-PK prefix) + `upsert`.
+ * Shapes whose recomputed fan-out cannot be proven a set on the backing PK fall
  * back to a full rebuild instead (always correct; see
  * `docs/materialized-views.md` § Incremental refresh).
  */
 export type MaintenanceOp =
 	| { kind: 'delete-key'; key: BTreeKeyForPrimary }
+	| { kind: 'delete-by-prefix'; prefix: readonly SqlValue[]; prefixLength: number }
 	| { kind: 'upsert'; row: Row };
 
 /** Origin + structure name for a UNIQUE constraint's implicit covering structure. */
@@ -1199,6 +1208,10 @@ export class MemoryTableManager {
 						if (path.on) tree.deleteAt(path);
 						break;
 					}
+					case 'delete-by-prefix': {
+						this.deleteByPrefix(op.prefix, op.prefixLength);
+						break;
+					}
 					case 'upsert': {
 						const key = this.primaryKeyFunctions.extractFromRow(op.row);
 						const path = tree.find(key);
@@ -1220,6 +1233,62 @@ export class MemoryTableManager {
 			}
 		} finally {
 			release();
+		}
+	}
+
+	/**
+	 * Delete every committed base-layer row whose leading `prefixLength` primary-key
+	 * columns equal `prefix`. The fan-out half of the lateral-TVF maintenance op:
+	 * one base-row change maps to many backing rows sharing a base-PK prefix.
+	 *
+	 * Soundness rests on two facts the compile-time gate guarantees:
+	 *  - the leading prefix columns are the *base* PK and lead the backing PK, so
+	 *    rows sharing the prefix all derive from the one changed base row, and
+	 *  - those leading columns are ascending, so the matching rows form a single
+	 *    contiguous, forward-scannable run on the primary btree.
+	 *
+	 * Implementation mirrors `scanLayer`'s prefix-range scan: seek to the prefix
+	 * (the composite-key comparator's length-diff branch positions a shorter probe
+	 * just before all full keys sharing it), forward-scan collecting matches, and
+	 * stop at the first post-run mismatch. Matches are collected first, then
+	 * deleted by key, so the scan never mutates the tree it is walking. Per-column
+	 * equality is collation-aware (the prefix columns' declared collation).
+	 */
+	private deleteByPrefix(prefix: readonly SqlValue[], prefixLength: number): void {
+		const tree = this.baseLayer.primaryTree;
+		const pkDef = this.tableSchema.primaryKeyDefinition;
+
+		const seekKey = prefix.slice() as unknown as BTreeKeyForPrimary;
+		const path = tree.find(seekKey);
+		// A shorter probe never matches a (longer) full key exactly, so `find`
+		// lands on a crack; step onto the first element at/after it. (Guard `on`
+		// defensively in case a degenerate schema stores a same-length key.)
+		if (!path.on) tree.moveNext(path);
+
+		const toDelete: BTreeKeyForPrimary[] = [];
+		let entered = false;
+		while (path.on) {
+			const row = tree.at(path)!;
+			const key = this.primaryKeyFunctions.extractFromRow(row);
+			const keyArr = (Array.isArray(key) ? key : [key]) as SqlValue[];
+			let matches = true;
+			for (let j = 0; j < prefixLength; j++) {
+				const collation = pkDef[j]?.collation ?? 'BINARY';
+				if (compareSqlValues(keyArr[j], prefix[j], collation) !== 0) { matches = false; break; }
+			}
+			if (matches) {
+				toDelete.push(key);
+				entered = true;
+			} else if (entered) {
+				// Past the contiguous matching run — nothing further can match.
+				break;
+			}
+			tree.moveNext(path);
+		}
+
+		for (const key of toDelete) {
+			const p = tree.find(key);
+			if (p.on) tree.deleteAt(p);
 		}
 	}
 

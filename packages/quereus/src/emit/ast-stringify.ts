@@ -528,7 +528,11 @@ function fromClauseToString(from: AST.FromClause): string {
 		case 'join': {
 			const leftStr = fromClauseToString(from.left);
 			const rightStr = fromClauseToString(from.right);
-			let joinStr = `${leftStr} ${from.joinType.toLowerCase()} join ${rightStr}`;
+			// Preserve LATERAL so a correlated right side (e.g. a lateral TVF
+			// `cross join lateral json_each(t.arr)`) round-trips — without it the
+			// re-parsed body cannot resolve the correlation and fails to plan.
+			const lateralStr = from.isLateral ? 'lateral ' : '';
+			let joinStr = `${leftStr} ${from.joinType.toLowerCase()} join ${lateralStr}${rightStr}`;
 			if (from.condition) {
 				joinStr += ` on ${expressionToString(from.condition)}`;
 			} else if (from.columns) {

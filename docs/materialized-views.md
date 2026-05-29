@@ -214,6 +214,34 @@ body is incrementally maintainable. The accepted shapes are:
   incrementally; a source that fans out (its PK does not determine the physical
   PK) falls back to a full rebuild — see [Apply contract](#apply-contract). Every
   source must have a primary key.
+- **lateral table-valued function fan-out** — a single base source feeding one
+  correlated lateral TVF
+  (`base t cross join lateral json_each(t.arr) je`): a base-row change maps to
+  MANY backing rows (the TVF's per-row fan-out), which the exact per-binding
+  `delete-key` cannot express. When two facts hold the maintainer instead deletes
+  the changed base row's whole fan-out by its **base-PK prefix** and re-inserts
+  the recomputed fan-out (the `delete-by-prefix` maintenance op):
+  1. **Prefix isolation** — the backing physical PK leads with a run of columns
+     that resolve (via attribute provenance) to base-PK columns and cover *all* of
+     the base PK, followed by TVF-supplied columns. The base PK is unique, so
+     deleting every backing row sharing that prefix removes exactly the changed
+     base row's fan-out and nothing else.
+  2. **Fan-out set-ness** — the TVF's `relationalAdvertisement` proves the
+     TVF-derived portion of the backing PK is a *superkey* of the TVF output
+     (some advertised `keys` entry is covered by it, or `isSet` plus all TVF
+     output columns present), so the per-base-row re-insert is a set on the
+     backing PK and never silently collapses distinct fan-out rows.
+
+  When either fact is unprovable — base PK not a leading prefix (e.g. a TVF column
+  projected first), advertisement insufficient (no usable key, not `isSet`), or a
+  non-ascending leading prefix column — the body **falls back to a full rebuild**
+  (always correct, never a wrong result). Multiple base sources each feeding TVFs,
+  a TVF correlated to more than one source, and nested/chained TVFs are out of
+  scope (rebuild). A lateral *subquery* over a base table is **not** this shape —
+  its inner tables are visible source references, so it routes through the
+  inner/cross-join path above. The general fix that would let `keysOf` surface the
+  keyed cross-product key (and so make this MV-local consumption unnecessary) is
+  filed as `optimizer-keyed-cross-product-join-keys`.
 - **single-source aggregate** with `GROUP BY` over **bare source columns**:
   maintenance binds on the **group key**. Each changed group (OLD and NEW on an
   update that moves a row between groups) is recomputed.
@@ -297,6 +325,19 @@ maps to `null` and routes that source's delta to a full rebuild. When *both*
 sides change in one commit, the fan-out side's rebuild also fixes the clean
 side — correct regardless of dispatch order.
 
+For a **lateral-TVF fan-out body** the delete is *bounded by prefix*, not by an
+exact key. The exact per-binding `delete-key` maps to `null` (the backing PK
+includes TVF-output columns with no base provenance), which would normally force
+a rebuild; the gate above (prefix isolation + advertisement-proven fan-out
+set-ness, both computed directly in `compile()` from the TVF's
+`relationalAdvertisement`, since `keysOf` does not surface the keyed
+cross-product key) instead records a *prefix-delete* residual. Per changed base
+row the manager emits a `delete-by-prefix` op (the changed base row's PK values)
+followed by upserts of the recomputed fan-out — so an arity-changing update (old
+*n* rows → new *m* rows) converges exactly, the case the exact-delete path
+provably could not handle. If the gate does not hold, the residual keeps
+`deleteKeyOrder = null` and the relation full-rebuilds.
+
 ### Cost fallback and global rebuild
 
 The kernel demotes a binding to `'global'` when the changed-tuple count is a large
@@ -375,7 +416,12 @@ keeps reporting the backing table.
   to its dependents through a per-pass *delta overlay* layered on the change log
   (a producer's per-binding writes are captured as insert/update/delete deltas;
   a wholesale rebuild — global binding, cost-fallback, or recovery — forces a
-  full rebuild of every dependent, always correct). Because the MV-dependency
+  full rebuild of every dependent, always correct). A **lateral-TVF prefix-delete**
+  producer is treated like a wholesale rebuild for cascade purposes: a
+  `delete-by-prefix` removes an unbounded set of backing PKs the per-row overlay
+  capture cannot enumerate from the op alone, so the manager marks the backing
+  globally changed and its dependents re-evaluate in full (a finer per-row fan-out
+  capture is a later optimization). Because the MV-dependency
   graph is a DAG (a body is fixed at create and any upstream MV must already
   exist), one topologically-ordered pass converges the whole chain — no fixpoint
   loop. A structurally-impossible cycle degrades loudly (a diagnostic plus

@@ -374,6 +374,8 @@ estimatedRows: (operands) => {
 
 Non-deterministic or trace-only TVFs (`execution_trace`, `row_trace`, `stack_trace`, `scheduler_program`, `schema_size`, `explain_assertion`, `schema`) skip advertisement.
 
+**Consumed by materialized-view maintenance.** Beyond optimizer property propagation, the TVF `relationalAdvertisement` (`keys` / `isSet`) is read *directly* by incremental materialized-view maintenance to bound a lateral-TVF fan-out. For a body like `base t cross join lateral json_each(t.arr) je`, a base-row change maps to many backing rows; the maintainer deletes them by base-PK prefix and re-inserts the recomputed fan-out, but only when the advertisement proves the TVF-derived portion of the backing PK is a *superkey* of the TVF output (so the re-insert is a set on the backing PK). This consumes the advertisement directly because `combineJoinKeys` (`planner/util/key-utils.ts`) returns `[]` for a keyless cross/lateral join — it never forms the **product key** `(leftKey ∪ shiftedRightKey)`, so `keysOf` cannot surface the keyed cross-product key and the MV backing PK falls back to all-columns. Teaching `combineJoinKeys` to emit keyed cross-product join keys is the general fix (optimizer-wide blast radius), filed as the backlog item `optimizer-keyed-cross-product-join-keys`; until then the consumption stays MV-local. See [Incremental Maintenance](incremental-maintenance.md) and [Materialized Views § Incremental refresh](materialized-views.md#incremental-refresh).
+
 ### Constant Folding Subsystem
 
 Constant folding is an elaborate optimization that evaluates constant expressions at plan time rather than runtime. The system uses a three-phase algorithm with sophisticated dependency tracking.

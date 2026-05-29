@@ -202,9 +202,26 @@ backing table: per affected binding it issues a delete-then-upsert (the recomput
 slice), and on a `'global'` binding or cost-fallback it rebuilds the backing
 wholesale (`replaceBaseLayer`, the manual-refresh path). The write path bypasses
 the user read-only boundary via `MemoryTableManager.applyMaintenance`
-(delete/upsert against the committed base layer, under the SchemaChange latch,
-off the user-transaction path). A failing `apply` logs and skips — the user's
-commit stands.
+(against the committed base layer, under the SchemaChange latch, off the
+user-transaction path). `applyMaintenance` processes an ordered batch of
+`MaintenanceOp`s:
+
+- **`delete-key`** — remove the row with this exact backing primary key (the
+  common per-binding delete; the recomputed slice's old rows).
+- **`delete-by-prefix`** — remove *every* row whose leading `prefixLength`
+  primary-key columns equal `prefix`. The lateral-TVF fan-out half: one base-row
+  change maps to many backing rows sharing a base-PK prefix, which a single
+  `delete-key` cannot express. The leading prefix columns are guaranteed ascending
+  by the compile-time gate, so the matching rows form a contiguous run that
+  `applyMaintenance` seeks to and forward-scans (mirroring `scanLayer`'s
+  prefix-range early-termination), collecting matches before deleting so the scan
+  never mutates the tree it walks.
+- **`upsert`** — replace (or insert) the row sharing this row's PK; the recomputed
+  slice's new rows.
+
+On a `'global'` binding or cost-fallback the manager instead rebuilds the backing
+wholesale (`replaceBaseLayer`, the manual-refresh path). A failing `apply` logs
+and skips — the user's commit stands.
 
 Two MV-specific wrinkles diverge from the watcher template:
 
@@ -227,6 +244,17 @@ Two MV-specific wrinkles diverge from the watcher template:
   forward; aggregate group-by ids resolve through the aggregate's producing
   expression). When the projection isn't clean (e.g. an `order by`-seeded physical
   PK), the relation falls back to a full rebuild — always correct.
+- **Lateral-TVF fan-out uses a bounded *prefix* delete.** When a single base
+  source feeds one correlated lateral TVF, the exact delete key is unavailable
+  (the backing PK includes TVF-output columns), but `compile()` can still bound
+  the delete by the base-PK prefix when (1) the base PK is a leading ascending
+  prefix of the backing PK (prefix isolation) and (2) the TVF's
+  `relationalAdvertisement` proves the TVF-derived backing-PK portion is a
+  superkey of the TVF output (fan-out set-ness). It then emits `delete-by-prefix`
+  + upserts per changed base row, converging arity-changing fan-outs that the
+  exact-delete path could not. If either fact is unprovable the relation falls
+  back to a full rebuild — see
+  [Materialized Views § Eligibility](materialized-views.md#eligibility-checked-at-create-time).
 
 The residual-injection machinery (`injectKeyFilter`) is shared with assertions in
 `src/planner/analysis/key-filter.ts`.
@@ -269,8 +297,13 @@ reset at the top of `runPostCommit`:
   `applyMaintenance`, synthesizing an insert/update/delete overlay change keyed by
   serialized PK. Any full rebuild instead marks the backing base in
   `globallyChangedBacking`, forcing dependents to rebuild (always correct). A
-  Tier-2 divergence (even the rebuild failed) records nothing — see the
-  cascading-divergence caveat in [Materialized Views § Limitations](materialized-views.md#limitations).
+  `delete-by-prefix` batch (lateral-TVF fan-out) is treated like a wholesale
+  rebuild for capture: it touches an unbounded set of backing PKs the per-row
+  before/after capture cannot enumerate from the op, so the producer marks its
+  backing `globallyChangedBacking` and dependents re-evaluate in full (a finer
+  per-row fan-out capture is a later optimization). A Tier-2 divergence (even the
+  rebuild failed) records nothing — see the cascading-divergence caveat in
+  [Materialized Views § Limitations](materialized-views.md#limitations).
 
 ## Plug-in pattern for future consumers
 
