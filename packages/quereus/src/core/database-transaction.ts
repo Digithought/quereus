@@ -264,10 +264,11 @@ export class TransactionManager {
 			}
 
 			// Maintain incremental materialized views in the same post-commit
-			// window (change log alive). Ordered after watchers; for MV-over-MV,
-			// a leaf MV's backing write made here is not itself in the current
-			// change log, so a dependent MV may need a later commit to converge
-			// (documented limitation — see docs/materialized-views.md).
+			// window (change log alive). Ordered after watchers. MV-over-MV chains
+			// converge in this single pass: the manager processes MVs in dependency-
+			// topological order and feeds each producer's backing-table write to its
+			// dependents via a per-pass delta overlay layered on the change log (see
+			// docs/materialized-views.md, docs/incremental-maintenance.md).
 			try {
 				await this.ctx.runPostCommitMaterializedViews();
 			} catch (err) {

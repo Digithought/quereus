@@ -223,6 +223,47 @@ Two MV-specific wrinkles diverge from the watcher template:
 The residual-injection machinery (`injectKeyFilter`) is shared with assertions in
 `src/planner/analysis/key-filter.ts`.
 
+### Cascading convergence (MV-over-MV) in one pass
+
+When an incremental MV's body reads *another* incremental MV's backing table
+(`mv2 as select … from mv1` resolves to `sqlite_mv_mv1`), the whole chain
+converges in a single post-commit pass. Two seams on the otherwise consumer-
+neutral kernel make this possible — both opt-in, so assertions and watchers
+(which call `runAll()` with no options) are unaffected:
+
+- **`runAll({ order, rescanPerSubscription })`.** `order` reorders the
+  subscription snapshot; `rescanPerSubscription` recomputes
+  `ctx.getChangedBaseTables()` before each `runOne`, so a producer's `apply` that
+  grows the change source is visible to later subscriptions in the same pass.
+- **`DeltaExecutorContext.isGloballyChanged?(base)`.** When a base changed
+  opaquely (a producer rebuilt wholesale), `runOne` flags any relation on it for
+  global re-evaluation instead of fetching per-tuple deltas.
+
+The `MaterializedViewManager` drives both with manager-owned per-pass state, all
+reset at the top of `runPostCommit`:
+
+- **Topological order.** Edges run producer-backing-base → consumer (Kahn's
+  algorithm over the incremental entries; rank cached, invalidated on
+  register/unregister). The MV-dependency graph is a DAG — a body is fixed at
+  create and any upstream MV must already exist — so a single ordered pass
+  converges any chain. A (structurally impossible) cycle logs a diagnostic and
+  falls back to insertion order rather than looping unbounded.
+- **Delta overlay change source.** `getChangedBaseTables()` returns the
+  TransactionManager set ∪ this pass's backing-table deltas (`pendingDelta`) ∪
+  wholesale-rebuilt bases (`globallyChangedBacking`). `getChangedTuples(base, …)`
+  reads the overlay when `base` is a captured backing table (projecting the
+  requested columns out of the captured full rows, with the same insert→new,
+  delete→old, update→old&new emission and de-dup as the change log) and delegates
+  to the change log otherwise. Backing-table names use the reserved `sqlite_mv_`
+  prefix, so per-base routing never collides with user tables.
+- **Capture on write.** A producer's per-binding `apply` reads each touched
+  backing row just before and just after its (synchronous, latched)
+  `applyMaintenance`, synthesizing an insert/update/delete overlay change keyed by
+  serialized PK. Any full rebuild instead marks the backing base in
+  `globallyChangedBacking`, forcing dependents to rebuild (always correct). A
+  Tier-2 divergence (even the rebuild failed) records nothing — see the
+  cascading-divergence caveat in [Materialized Views § Limitations](materialized-views.md#limitations).
+
 ## Plug-in pattern for future consumers
 
 A new consumer follows the same shape — `Database.watch` and the

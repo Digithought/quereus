@@ -233,3 +233,116 @@ drop table t;
 drop table g;
 drop table big;
 drop table agg;
+
+-- ===================================
+-- 13. Cascading MV-over-MV — a linear chain converges in ONE commit.
+--     mv2's body reads mv1's backing table; a single source mutation maintains
+--     both the same commit (no second commit / manual refresh needed). The
+--     manager processes incremental MVs in dependency-topological order and
+--     feeds each producer's backing-table write to its dependents via a per-pass
+--     delta overlay layered on the change log.
+-- ===================================
+
+create table c_t (id integer primary key, x integer);
+insert into c_t values (1, 10), (2, 20);
+create materialized view c_mv1 as select id, x + 1 as x1 from c_t with refresh = 'on-commit-incremental';
+create materialized view c_mv2 as select id, x1 * 10 as x10 from c_mv1 with refresh = 'on-commit-incremental';
+
+-- Both levels materialize at create time
+select * from c_mv1 order by id;
+→ [{"id":1,"x1":11},{"id":2,"x1":21}]
+select * from c_mv2 order by id;
+→ [{"id":1,"x10":110},{"id":2,"x10":210}]
+
+-- A single source insert converges the whole chain THIS commit
+insert into c_t values (3, 30);
+select * from c_mv2 order by id;
+→ [{"id":1,"x10":110},{"id":2,"x10":210},{"id":3,"x10":310}]
+
+-- ===================================
+-- 14. Depth-3 chain (c_t → c_mv1 → c_mv2 → c_mv3): one source mutation converges
+--     all three in the same commit.
+-- ===================================
+
+create materialized view c_mv3 as select id, x10 + 1 as x11 from c_mv2 with refresh = 'on-commit-incremental';
+select * from c_mv3 order by id;
+→ [{"id":1,"x11":111},{"id":2,"x11":211},{"id":3,"x11":311}]
+
+insert into c_t values (4, 40);
+select * from c_mv3 order by id;
+→ [{"id":1,"x11":111},{"id":2,"x11":211},{"id":3,"x11":311},{"id":4,"x11":411}]
+
+-- ===================================
+-- 15. Aggregate dependent over a row-preserving leaf — an UPDATE that moves a
+--     leaf row between groups drives BOTH the OLD and NEW group of the aggregate
+--     dependent in the same commit (exercises the overlay's old/new projection).
+-- ===================================
+
+create table c_src (id integer primary key, k integer, v integer);
+insert into c_src values (1, 1, 10), (2, 1, 20), (3, 2, 5);
+create materialized view c_leaf as select id, k, v from c_src with refresh = 'on-commit-incremental';
+create materialized view c_sum as select k, sum(v) as sv from c_leaf group by k with refresh = 'on-commit-incremental';
+select * from c_sum order by k;
+→ [{"k":1,"sv":30},{"k":2,"sv":5}]
+
+-- Move id=2 from group k=1 → k=2: group 1 drops to 10, group 2 rises to 25
+update c_src set k = 2 where id = 2;
+select * from c_sum order by k;
+→ [{"k":1,"sv":10},{"k":2,"sv":25}]
+
+-- ===================================
+-- 16. Cost-fallback / rebuild upstream propagates — a bulk insert demotes c_big1
+--     to a full rebuild; c_big2 still converges (forced rebuild via the
+--     globally-changed backing flag). Correct regardless of which path fires.
+-- ===================================
+
+create table c_big (id integer primary key, v integer);
+insert into c_big values (1, 1), (2, 1);
+create materialized view c_big1 as select id, v from c_big with refresh = 'on-commit-incremental';
+create materialized view c_big2 as select id, v * 2 as v2 from c_big1 with refresh = 'on-commit-incremental';
+insert into c_big values (3, 1), (4, 1), (5, 1), (6, 1), (7, 1), (8, 1), (9, 1), (10, 1);
+select sum(v2) as total, count(*) as n from c_big2;
+→ [{"total":20,"n":10}]
+
+-- ===================================
+-- 17. DELETE / predicate ripple — a row leaving (or entering) a leaf MV's
+--     predicate, or a deleted source row, ripples through to the dependent the
+--     same commit.
+-- ===================================
+
+create table c_f (id integer primary key, x integer);
+insert into c_f values (1, 5), (2, 6), (3, -1);
+create materialized view c_f1 as select id, x from c_f where x > 0 with refresh = 'on-commit-incremental';
+create materialized view c_f2 as select id, x + 100 as y from c_f1 with refresh = 'on-commit-incremental';
+select * from c_f2 order by id;
+→ [{"id":1,"y":105},{"id":2,"y":106}]
+
+-- id=1 leaves c_f1's predicate (x>0 → x=-2): its c_f2 row disappears this commit
+update c_f set x = -2 where id = 1;
+select * from c_f2 order by id;
+→ [{"id":2,"y":106}]
+
+-- id=3 enters c_f1's predicate (x=-1 → x=7): its c_f2 row appears this commit
+update c_f set x = 7 where id = 3;
+select * from c_f2 order by id;
+→ [{"id":2,"y":106},{"id":3,"y":107}]
+
+-- Deleting a source row removes the leaf row and ripples to the dependent
+delete from c_f where id = 2;
+select * from c_f2 order by id;
+→ [{"id":3,"y":107}]
+
+-- Cleanup (drop dependents before their producers)
+drop materialized view c_mv3;
+drop materialized view c_mv2;
+drop materialized view c_mv1;
+drop materialized view c_sum;
+drop materialized view c_leaf;
+drop materialized view c_big2;
+drop materialized view c_big1;
+drop materialized view c_f2;
+drop materialized view c_f1;
+drop table c_t;
+drop table c_src;
+drop table c_big;
+drop table c_f;

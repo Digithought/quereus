@@ -320,10 +320,22 @@ keeps reporting the backing table.
 
 ### Limitations
 
-- **Cascading MVs (MV-over-MV) may need more than one commit to converge.** A
-  leaf MV's backing-table write happens *during* the post-commit pass and is not
-  itself in the current change log, so a dependent MV does not observe it this
-  commit. Tracked: `materialized-view-incremental-cascading-convergence`.
+- **Cascading MVs (MV-over-MV) converge in a single commit.** When an
+  incremental MV's body reads another incremental MV's backing table, both are
+  maintained in the same post-commit pass: the manager processes incremental MVs
+  in dependency-topological order and feeds each producer's backing-table write
+  to its dependents through a per-pass *delta overlay* layered on the change log
+  (a producer's per-binding writes are captured as insert/update/delete deltas;
+  a wholesale rebuild — global binding, cost-fallback, or recovery — forces a
+  full rebuild of every dependent, always correct). Because the MV-dependency
+  graph is a DAG (a body is fixed at create and any upstream MV must already
+  exist), one topologically-ordered pass converges the whole chain — no fixpoint
+  loop. A structurally-impossible cycle degrades loudly (a diagnostic plus
+  insertion-order fallback) rather than looping. *Caveat — cascading divergence:*
+  if an upstream MV itself diverges (Tier-2: even its rebuild failed), its
+  dependents are maintained against the upstream's stale backing data without
+  erroring — only direct reads of the diverged MV error (via the `diverged`
+  read-guard). Propagating divergence to dependents is out of scope.
 - **Keyless / bag bodies** (all-columns PK) inherit the "must be a set"
   diagnostic *only on the full-rebuild branch* — a `'global'` binding or a
   cost-fallback demotion routes through `rebuildBacking` → `replaceBaseLayer`,

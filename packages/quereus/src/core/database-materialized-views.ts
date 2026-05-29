@@ -52,7 +52,7 @@ import {
 import { rebuildBacking, getBackingManager } from '../runtime/emit/materialized-view-helpers.js';
 import { buildPrimaryKeyFromValues } from '../vtab/memory/utils/primary-key.js';
 import type { BTreeKeyForPrimary } from '../vtab/memory/types.js';
-import type { MaintenanceOp } from '../vtab/memory/layer/manager.js';
+import type { MaintenanceOp, MemoryTableManager } from '../vtab/memory/layer/manager.js';
 import type { MaterializedViewSchema } from '../schema/view.js';
 import type { Database } from './database.js';
 import type * as AST from '../parser/ast.js';
@@ -111,8 +111,28 @@ interface CompiledIncrementalMV {
 	residualsByRelation: Map<string, ResidualArtifacts>;
 	/** Backing-table physical primary-key definition (column order the btree keys on). */
 	backingPkDefinition: ReadonlyArray<{ index: number; desc?: boolean; collation?: string }>;
+	/** This MV's backing table as a lowercased `schema.table` base key. A dependent
+	 *  MV's body references resolve to this name, so it is the join point for the
+	 *  MV-dependency graph (producer backing base → consumer) and the overlay key. */
+	backingBase: string;
+	/** The `DeltaSubscription.id` this entry registers — used to map the cached
+	 *  topological rank onto the live subscription snapshot. */
+	subscriptionId: string;
 	captureDisposers: Array<() => void>;
 	subscriptionDisposer: () => void;
+}
+
+/**
+ * One captured change to a materialized view's backing table, recorded by the
+ * per-binding apply path so a dependent MV processed later in the same
+ * post-commit pass observes it as a delta (see {@link MaterializedViewManager}'s
+ * overlay change source). Full rows are stored so the overlay can project any
+ * requested columns directly — no capture-demand bookkeeping for backing tables.
+ */
+interface OverlayChange {
+	op: 'insert' | 'update' | 'delete';
+	oldRow?: Row;
+	newRow?: Row;
 }
 
 export class MaterializedViewManager {
@@ -120,6 +140,31 @@ export class MaterializedViewManager {
 	private readonly executor: DeltaExecutor;
 	/** Compiled incremental entries keyed by `schema.name` (lowercase). */
 	private readonly incremental = new Map<string, CompiledIncrementalMV>();
+
+	/**
+	 * Per-pass delta overlay layered on top of the {@link TransactionManager}
+	 * change log: backing base (lowercased `schema.table`) → captured changes by
+	 * serialized PK. Populated by a producer MV's per-binding apply so its
+	 * dependents, processed later in the same topologically-ordered pass, read
+	 * its backing-table writes as deltas. Reset at the top of every
+	 * {@link runPostCommit}.
+	 */
+	private readonly pendingDelta = new Map<string, Map<string, OverlayChange>>();
+
+	/**
+	 * Per-pass set of backing bases whose entire contents were rebuilt wholesale
+	 * (global binding, cost-fallback, `deleteKeyOrder === null`, or recovery
+	 * rebuild) — no per-row deltas were captured, so any dependent must rebuild in
+	 * full. Surfaced to the kernel via `isGloballyChanged`. Reset per pass.
+	 */
+	private readonly globallyChangedBacking = new Set<string>();
+
+	/**
+	 * Cached topological rank per `DeltaSubscription.id` over the incremental MVs
+	 * (Kahn over backing-base dependency edges). `null` ⇒ recompute on next use;
+	 * invalidated whenever an incremental entry is registered or released.
+	 */
+	private topoRanks: Map<string, number> | null = null;
 
 	/**
 	 * @internal Test-only fault-injection seam. When set, it is invoked with the
@@ -131,9 +176,22 @@ export class MaterializedViewManager {
 	maintenanceFaultInjector?: (phase: MaintenanceFaultPhase) => void;
 
 	constructor(private readonly ctx: MaterializedViewManagerContext) {
+		// Overlay-aware change source: the underlying TransactionManager change log
+		// unioned with this pass's backing-table deltas (`pendingDelta`) and
+		// wholesale-rebuilt backing bases (`globallyChangedBacking`). A backing base
+		// in `pendingDelta` reads from the overlay; everything else (genuine user
+		// tables) delegates to the change log. Backing-table names use the reserved
+		// `sqlite_mv_` prefix and never collide with user-table names, so per-base
+		// routing is unambiguous.
 		const executorCtx: DeltaExecutorContext = {
-			getChangedBaseTables: () => ctx.getChangedBaseTables(),
-			getChangedTuples: (base, cols, pk) => ctx.getChangedTuples(base, cols, pk),
+			getChangedBaseTables: () => {
+				const out = ctx.getChangedBaseTables();
+				for (const base of this.pendingDelta.keys()) out.add(base);
+				for (const base of this.globallyChangedBacking) out.add(base);
+				return out;
+			},
+			getChangedTuples: (base, cols, pk) => this.overlayChangedTuples(base, cols, pk),
+			isGloballyChanged: (base) => this.globallyChangedBacking.has(base),
 			getRowCount: (base) => {
 				const [schemaName, tableName] = base.split('.');
 				const table = ctx._findTable(tableName, schemaName);
@@ -143,6 +201,35 @@ export class MaterializedViewManager {
 		};
 		this.executor = new DeltaExecutor(executorCtx);
 		this.subscribeToSchemaChanges();
+	}
+
+	/**
+	 * Change-tuple source for the overlay executor. A backing base present in the
+	 * overlay projects the requested columns out of the captured old/new rows
+	 * (mirroring the TransactionManager's insert→new, delete→old, update→old&new
+	 * emission with the same de-duplication); any other base delegates to the
+	 * genuine change log.
+	 */
+	private overlayChangedTuples(base: string, cols: readonly number[], pk: readonly number[]): SqlValue[][] {
+		const overlay = this.pendingDelta.get(base);
+		if (!overlay) return this.ctx.getChangedTuples(base, cols, pk);
+
+		const out: SqlValue[][] = [];
+		const seen = new Set<string>();
+		const emit = (row: Row | undefined): void => {
+			if (!row) return;
+			const tuple = cols.map(c => row[c]);
+			const key = serializeTuple(tuple);
+			if (seen.has(key)) return;
+			seen.add(key);
+			out.push(tuple);
+		};
+		for (const change of overlay.values()) {
+			if (change.op === 'insert') emit(change.newRow);
+			else if (change.op === 'delete') emit(change.oldRow);
+			else { emit(change.oldRow); emit(change.newRow); }
+		}
+		return out;
 	}
 
 	private subscribeToSchemaChanges(): void {
@@ -187,6 +274,9 @@ export class MaterializedViewManager {
 		const subscription = this.buildSubscription(mv, compiled);
 		compiled.subscriptionDisposer = this.executor.register(subscription);
 		this.incremental.set(key, compiled);
+		// A new incremental entry changes the MV-dependency graph (it may produce
+		// or consume another MV's backing table) — recompute the topo order lazily.
+		this.topoRanks = null;
 		log('Registered incremental materialized view %s.%s', mv.schemaName, mv.name);
 	}
 
@@ -203,8 +293,23 @@ export class MaterializedViewManager {
 	 */
 	async runPostCommit(): Promise<void> {
 		if (this.incremental.size === 0) return;
+		// Reset the per-pass delta overlay. Each producer MV's per-binding apply
+		// repopulates it (and `globallyChangedBacking`) so its dependents converge
+		// this same commit.
+		this.pendingDelta.clear();
+		this.globallyChangedBacking.clear();
 		try {
-			await this.executor.runAll();
+			// Process MVs in dependency-topological order and rescan the change
+			// source between subscriptions, so a producer's backing-table write is
+			// visible to its consumers in this single pass (the MV-dependency graph
+			// is a DAG, so one ordered pass converges the whole chain).
+			const ranks = this.getTopoRanks();
+			await this.executor.runAll({
+				order: (subs) => [...subs].sort(
+					(a, b) => (ranks.get(a.id) ?? Number.POSITIVE_INFINITY) - (ranks.get(b.id) ?? Number.POSITIVE_INFINITY),
+				),
+				rescanPerSubscription: true,
+			});
 		} catch (err) {
 			// apply() swallows its own errors; this is defensive against a kernel throw.
 			log('Post-commit materialized-view maintenance threw: %O', err);
@@ -226,6 +331,8 @@ export class MaterializedViewManager {
 		const entry = this.incremental.get(key);
 		if (!entry) return;
 		this.incremental.delete(key);
+		// Removing an incremental entry changes the MV-dependency graph.
+		this.topoRanks = null;
 		try { entry.subscriptionDisposer(); } catch (err) { log('MV subscription disposer for %s threw: %O', key, err); }
 		for (const d of entry.captureDisposers) {
 			try { d(); } catch (err) { log('MV capture disposer for %s threw: %O', key, err); }
@@ -369,6 +476,8 @@ export class MaterializedViewManager {
 			pkIndicesByBase,
 			residualsByRelation,
 			backingPkDefinition,
+			backingBase: mvKey(mv.schemaName, mv.backingTableName),
+			subscriptionId: subscriptionIdFor(mv),
 			captureDisposers,
 			subscriptionDisposer: () => { /* replaced by register() */ },
 		};
@@ -390,6 +499,7 @@ export class MaterializedViewManager {
 				if (mv.diverged) {
 					await this.recoveryRebuild(db, mv);
 					mv.diverged = false;
+					this.markBackingRebuilt(compiled);
 					log('Materialized view %s.%s recovered from diverged state via full rebuild', mv.schemaName, mv.name);
 					return;
 				}
@@ -398,6 +508,7 @@ export class MaterializedViewManager {
 				// cost-fallback demotion) makes a full rebuild the only correct option.
 				if (input.globalRelations.size > 0) {
 					await rebuildBacking(db, mv);
+					this.markBackingRebuilt(compiled);
 					return;
 				}
 
@@ -407,6 +518,7 @@ export class MaterializedViewManager {
 					if (!residual || residual.deleteKeyOrder === null) {
 						// No clean per-binding delete mapping — rebuild (always correct).
 						await rebuildBacking(db, mv);
+						this.markBackingRebuilt(compiled);
 						return;
 					}
 					for (const tuple of tuples) {
@@ -425,8 +537,9 @@ export class MaterializedViewManager {
 						StatusCode.INTERNAL,
 					);
 				}
-				this.maintenanceFaultInjector?.('apply');
-				await getBackingManager(backing).applyMaintenance(ops);
+				// Write the backing table, then capture the resulting per-row deltas so a
+				// dependent MV processed later in this pass observes them via the overlay.
+				await this.applyMaintenanceAndCapture(mv, compiled, ops, getBackingManager(backing));
 			} catch (err) {
 				// Tier 1 — self-heal (the common case). The incremental apply failed;
 				// the user's commit always stands (no rollback). The always-correct
@@ -437,6 +550,7 @@ export class MaterializedViewManager {
 				warnLog('Incremental maintenance for %s.%s failed; attempting full rebuild (commit stands): %O', mv.schemaName, mv.name, err);
 				try {
 					await this.recoveryRebuild(db, mv);
+					this.markBackingRebuilt(compiled);
 					if (mv.diverged) {
 						mv.diverged = false;
 						log('Materialized view %s.%s recovered via full rebuild', mv.schemaName, mv.name);
@@ -454,7 +568,7 @@ export class MaterializedViewManager {
 		};
 
 		return {
-			id: `materialized-view:${mv.schemaName}.${mv.name}`,
+			id: subscriptionIdFor(mv),
 			dependencies: compiled.baseTablesInPlan,
 			bindings: bindingsForExecutor,
 			relationToBase,
@@ -507,12 +621,167 @@ export class MaterializedViewManager {
 		}
 		return rows;
 	}
+
+	/**
+	 * Write a per-binding maintenance batch to the backing table, then capture the
+	 * resulting per-row deltas into the pass overlay so a dependent MV processed
+	 * later in this same pass observes them. Reads each touched backing row just
+	 * before and just after the (synchronous, latched) write to synthesize an
+	 * insert/update/delete overlay change keyed by serialized PK. Full rows are
+	 * stored so the overlay can project any column a dependent's binding requests.
+	 */
+	private async applyMaintenanceAndCapture(
+		mv: MaterializedViewSchema,
+		compiled: CompiledIncrementalMV,
+		ops: MaintenanceOp[],
+		manager: MemoryTableManager,
+	): Promise<void> {
+		// De-duplicated set of touched backing PKs. Delete-key ops carry the key
+		// directly; upsert ops derive it from the row's physical-PK columns via the
+		// same `buildPrimaryKeyFromValues(..., backingPkDefinition)` `buildDeleteKey`
+		// uses, so the two serialize identically and dedup cleanly.
+		const touched = new Map<string, BTreeKeyForPrimary>();
+		for (const op of ops) {
+			const key = op.kind === 'delete-key'
+				? op.key
+				: buildPrimaryKeyFromValues(compiled.backingPkDefinition.map(d => op.row[d.index]), compiled.backingPkDefinition);
+			touched.set(pkToString(key), key);
+		}
+
+		// Snapshot the touched rows from the committed base BEFORE the write.
+		const beforeRows = new Map<string, Row | null>();
+		for (const [s, key] of touched) {
+			beforeRows.set(s, manager.lookupEffectiveRow(key, manager.currentCommittedLayer));
+		}
+
+		this.maintenanceFaultInjector?.('apply');
+		await manager.applyMaintenance(ops);
+
+		// Read the touched rows AFTER the write and synthesize the overlay deltas.
+		const overlay = this.overlayFor(compiled.backingBase);
+		for (const [s, key] of touched) {
+			const before = beforeRows.get(s) ?? null;
+			const after = manager.lookupEffectiveRow(key, manager.currentCommittedLayer);
+			const change = synthesizeOverlayChange(before, after);
+			if (change) overlay.set(s, change);
+			else overlay.delete(s);
+		}
+	}
+
+	/** Record that a backing table was rebuilt wholesale this pass — dependents
+	 *  must re-evaluate globally (no per-row deltas were captured). */
+	private markBackingRebuilt(compiled: CompiledIncrementalMV): void {
+		this.globallyChangedBacking.add(compiled.backingBase);
+	}
+
+	/** Get (creating if absent) the overlay map for a backing base. */
+	private overlayFor(base: string): Map<string, OverlayChange> {
+		let m = this.pendingDelta.get(base);
+		if (!m) { m = new Map(); this.pendingDelta.set(base, m); }
+		return m;
+	}
+
+	/**
+	 * Topological rank per `DeltaSubscription.id` over the incremental MVs. Edges
+	 * run producer-backing-base → consumer (a consumer whose body reads another
+	 * MV's backing table). The MV-dependency graph is a DAG — an MV's body is fixed
+	 * at create and any upstream MV must already exist — so Kahn's algorithm yields
+	 * a total order in a single pass. A (structurally impossible) cycle degrades
+	 * loudly: the unprocessed nodes are logged and appended in insertion order.
+	 */
+	private getTopoRanks(): Map<string, number> {
+		if (this.topoRanks) return this.topoRanks;
+		this.topoRanks = this.computeTopoRanks();
+		return this.topoRanks;
+	}
+
+	private computeTopoRanks(): Map<string, number> {
+		const entries = [...this.incremental.entries()];
+		// backing base → owning MV key (each backing table has exactly one MV).
+		const producerByBacking = new Map<string, string>();
+		for (const [key, c] of entries) producerByBacking.set(c.backingBase, key);
+
+		const consumersOf = new Map<string, string[]>();
+		const inDegree = new Map<string, number>();
+		for (const [key] of entries) inDegree.set(key, 0);
+		for (const [key, c] of entries) {
+			for (const base of c.baseTablesInPlan) {
+				const producer = producerByBacking.get(base);
+				if (!producer || producer === key) continue;
+				let list = consumersOf.get(producer);
+				if (!list) { list = []; consumersOf.set(producer, list); }
+				list.push(key);
+				inDegree.set(key, (inDegree.get(key) ?? 0) + 1);
+			}
+		}
+
+		const ordered: string[] = [];
+		const queue: string[] = [];
+		for (const [key] of entries) if ((inDegree.get(key) ?? 0) === 0) queue.push(key);
+		while (queue.length > 0) {
+			const k = queue.shift()!;
+			ordered.push(k);
+			for (const consumer of consumersOf.get(k) ?? []) {
+				const d = (inDegree.get(consumer) ?? 0) - 1;
+				inDegree.set(consumer, d);
+				if (d === 0) queue.push(consumer);
+			}
+		}
+
+		if (ordered.length < entries.length) {
+			const seen = new Set(ordered);
+			const cyclic = entries.map(([k]) => k).filter(k => !seen.has(k));
+			warnLog('Cyclic materialized-view dependency among [%s]; processing in insertion order (convergence not guaranteed)', cyclic.join(', '));
+			for (const k of cyclic) ordered.push(k);
+		}
+
+		const ranks = new Map<string, number>();
+		ordered.forEach((mvK, i) => {
+			const c = this.incremental.get(mvK);
+			if (c) ranks.set(c.subscriptionId, i);
+		});
+		return ranks;
+	}
 }
 
 /* ─────────────────────────── helpers ─────────────────────────── */
 
 function mvKey(schemaName: string, name: string): string {
 	return `${schemaName}.${name}`.toLowerCase();
+}
+
+/** Stable diagnostic id for an MV's incremental `DeltaSubscription`. */
+function subscriptionIdFor(mv: MaterializedViewSchema): string {
+	return `materialized-view:${mv.schemaName}.${mv.name}`;
+}
+
+/** Serialize an SqlValue tuple to a stable string key. Handles bigint and bytes
+ *  (which `JSON.stringify` cannot) and is only ever used as a map key (never split). */
+function serializeTuple(values: readonly SqlValue[]): string {
+	const parts: string[] = [];
+	for (const v of values) {
+		if (v === null) parts.push('null');
+		else if (typeof v === 'bigint') parts.push(`b:${v.toString()}`);
+		else if (typeof v === 'number') parts.push(`n:${v}`);
+		else if (typeof v === 'string') parts.push(`s:${v}`);
+		else if (typeof v === 'boolean') parts.push(`B:${v}`);
+		else if (v instanceof Uint8Array) parts.push(`x:${Array.from(v).map(b => b.toString(16).padStart(2, '0')).join('')}`);
+		else parts.push(`j:${JSON.stringify(v)}`);
+	}
+	return parts.join('\u0001');
+}
+
+/** Serialize a backing-table primary key (scalar or composite) to a string. */
+function pkToString(key: BTreeKeyForPrimary): string {
+	return serializeTuple(Array.isArray(key) ? key as SqlValue[] : [key as SqlValue]);
+}
+
+/** Synthesize an overlay change from a touched backing row's before/after images. */
+function synthesizeOverlayChange(before: Row | null, after: Row | null): OverlayChange | null {
+	if (before && after) return { op: 'update', oldRow: before, newRow: after };
+	if (!before && after) return { op: 'insert', newRow: after };
+	if (before && !after) return { op: 'delete', oldRow: before };
+	return null;
 }
 
 /** Aggregate node types (logical + physical) — the analyzed plan may carry any. */
