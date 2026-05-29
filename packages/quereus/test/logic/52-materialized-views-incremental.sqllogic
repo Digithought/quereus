@@ -101,13 +101,14 @@ select * from mv_ok_manual;
 drop materialized view mv_ok_manual;
 
 -- ===================================
--- 7. Set-operation bodies are rejected under incremental refresh.
---    (Recursive-CTE bodies are NOT rejected — they are maintained via whole-MV
---    full rebuild; see the recursive-CTE oracle section below.)
+-- 7. Set-operation bodies are ACCEPTED under incremental refresh (classified
+--    whole-MV 'global' and maintained by full rebuild; see §26-30 for the
+--    maintenance oracle). A recursive body that reads no source table still fails
+--    the empty-source guard.
 -- ===================================
 
 create materialized view mv_union as select id from t union select id from agg with refresh = 'on-commit-incremental';
--- error: set-operation
+drop materialized view mv_union;
 
 -- A recursive body that reads no source table still fails the empty-source guard
 -- (nothing to bind on, nothing to trigger a rebuild from).
@@ -482,9 +483,10 @@ create materialized view mv_lj as select o.id as oid, c.name as cname from order
 create materialized view mv_aj as select c.id as cid, sum(o.total) as t from orders o join customers c on o.cust_id = c.id group by c.id with refresh = 'on-commit-incremental';
 -- error: aggregate-over-join
 
--- `union all` survives the build-time gate but is rejected in compile()
+-- `union all` is now accepted (classified whole-MV 'global'; see §29 for the
+-- accepted-but-global oracle and the bag contract).
 create materialized view mv_ua as select id from orders union all select id from customers with refresh = 'on-commit-incremental';
--- error: set-operation
+drop materialized view mv_ua;
 
 -- Cleanup (drop MVs before their source tables)
 drop materialized view mv_oc;
@@ -705,3 +707,225 @@ refresh materialized view reach_ua;
 
 drop materialized view reach_ua;
 drop table le;
+
+-- ===================================
+-- 26. `union` (distinct) under on-commit-incremental refresh. A set operation is
+--     bag-distinguishing across branches: whether a recomputed row belongs in the
+--     MV depends on the FULL state of both branches, so there is no bounded
+--     per-binding residual. The whole MV is classified 'global' and any source
+--     mutation re-derives the entire body at COMMIT via rebuildBacking — always
+--     correct, including a row that survives a delete on one branch because the
+--     other branch still contributes it. A parallel `manual` MV over the identical
+--     body shows the auto-maintain difference (it lags until an explicit refresh).
+-- ===================================
+
+create table u_a (id integer primary key, v integer);
+create table u_b (id integer primary key, v integer);
+insert into u_a values (1, 10), (2, 20);
+insert into u_b values (3, 20), (4, 30);
+
+create materialized view mv_u_inc as select v from u_a union select v from u_b with refresh = 'on-commit-incremental';
+create materialized view mv_u_manual as select v from u_a union select v from u_b;
+
+-- Create-time set: {10, 20, 30} (union dedups the shared 20)
+select * from mv_u_inc order by v;
+→ [{"v":10},{"v":20},{"v":30}]
+select * from mv_u_manual order by v;
+→ [{"v":10},{"v":20},{"v":30}]
+
+-- INSERT into the left branch adds 40, auto-maintained at COMMIT
+insert into u_a values (5, 40);
+select * from mv_u_inc order by v;
+→ [{"v":10},{"v":20},{"v":30},{"v":40}]
+
+-- INSERT a duplicate value (10) into the right branch — union dedups, set unchanged
+insert into u_b values (6, 10);
+select * from mv_u_inc order by v;
+→ [{"v":10},{"v":20},{"v":30},{"v":40}]
+
+-- THE EDGE: delete v=10 from the left branch. 10 SURVIVES because the right branch
+-- (id=6) still contributes it. A per-binding delete would wrongly drop it; the
+-- global rebuild re-derives the whole union and keeps it.
+delete from u_a where id = 1;
+select * from mv_u_inc order by v;
+→ [{"v":10},{"v":20},{"v":30},{"v":40}]
+
+-- Now delete the right-branch 10 too — 10 is gone from BOTH branches
+delete from u_b where id = 6;
+select * from mv_u_inc order by v;
+→ [{"v":20},{"v":30},{"v":40}]
+
+-- The manual MV never auto-updated — still serves the create-time set…
+select * from mv_u_manual order by v;
+→ [{"v":10},{"v":20},{"v":30}]
+
+-- …until an explicit refresh resyncs it.
+refresh materialized view mv_u_manual;
+select * from mv_u_manual order by v;
+→ [{"v":20},{"v":30},{"v":40}]
+
+drop materialized view mv_u_inc;
+drop materialized view mv_u_manual;
+drop table u_a;
+drop table u_b;
+
+-- ===================================
+-- 27. `intersect` — a row belongs only while BOTH branches contribute it. A delete
+--     on one branch removes a row from the intersection even though it still exists
+--     in the other branch (the cross-branch dependency a per-binding residual
+--     cannot model; the global rebuild handles it trivially).
+-- ===================================
+
+create table i_a (id integer primary key, v integer);
+create table i_b (id integer primary key, v integer);
+insert into i_a values (1, 10), (2, 20), (3, 30);
+insert into i_b values (4, 20), (5, 30), (6, 40);
+
+create materialized view mv_intersect as select v from i_a intersect select v from i_b with refresh = 'on-commit-incremental';
+select * from mv_intersect order by v;
+→ [{"v":20},{"v":30}]
+
+-- Insert 10 into the right branch — now 10 is in both ⇒ enters the intersection
+insert into i_b values (7, 10);
+select * from mv_intersect order by v;
+→ [{"v":10},{"v":20},{"v":30}]
+
+-- Delete v=20 from the LEFT branch — 20 leaves the intersection even though the
+-- right branch still has it.
+delete from i_a where id = 2;
+select * from mv_intersect order by v;
+→ [{"v":10},{"v":30}]
+
+drop materialized view mv_intersect;
+drop table i_a;
+drop table i_b;
+
+-- ===================================
+-- 28. `except` — left-minus-right. A delete on the RIGHT branch ADDS a row back to
+--     the result (the subtracted value reappears); an insert on the right branch
+--     removes one. The asymmetry across branches is exactly what a per-binding
+--     residual cannot capture.
+-- ===================================
+
+create table e_a (id integer primary key, v integer);
+create table e_b (id integer primary key, v integer);
+insert into e_a values (1, 10), (2, 20), (3, 30);
+insert into e_b values (4, 20);
+
+create materialized view mv_except as select v from e_a except select v from e_b with refresh = 'on-commit-incremental';
+select * from mv_except order by v;
+→ [{"v":10},{"v":30}]
+
+-- Insert 30 into the right branch — the right branch now subtracts 30
+insert into e_b values (5, 30);
+select * from mv_except order by v;
+→ [{"v":10}]
+
+-- Delete that right-branch 30 — 30 REAPPEARS (right-branch deletion adds to except)
+delete from e_b where id = 5;
+select * from mv_except order by v;
+→ [{"v":10},{"v":30}]
+
+-- Insert 40 into the left branch — straightforward add (not subtracted)
+insert into e_a values (6, 40);
+select * from mv_except order by v;
+→ [{"v":10},{"v":30},{"v":40}]
+
+drop materialized view mv_except;
+drop table e_a;
+drop table e_b;
+
+-- ===================================
+-- 29. `union all` — accepted-but-global, plus the bag contract. A duplicate-free
+--     `union all` over disjoint sources maintains at COMMIT. A `union all` body
+--     that is a bag (a value present in both branches) is NOT a set: the
+--     create-time full-rebuild fill raises the "must be a set" diagnostic. A body
+--     that is set-clean at create but becomes a bag after a source edit diverges at
+--     COMMIT (rebuild re-hits the bag → Tier-1 retry fails → Tier-2 `diverged`),
+--     mirroring the recursive late-bag §25 but non-recursive.
+-- ===================================
+
+create table ua_a (id integer primary key, v integer);
+create table ua_b (id integer primary key, v integer);
+insert into ua_a values (1, 10);
+insert into ua_b values (2, 20);
+
+create materialized view mv_ua_ok as select v from ua_a union all select v from ua_b with refresh = 'on-commit-incremental';
+select * from mv_ua_ok order by v;
+→ [{"v":10},{"v":20}]
+
+-- INSERT into the left branch (disjoint value) maintains at COMMIT
+insert into ua_a values (3, 30);
+select * from mv_ua_ok order by v;
+→ [{"v":10},{"v":20},{"v":30}]
+
+-- INSERT into the right branch (still disjoint) maintains at COMMIT
+insert into ua_b values (4, 40);
+select * from mv_ua_ok order by v;
+→ [{"v":10},{"v":20},{"v":30},{"v":40}]
+
+drop materialized view mv_ua_ok;
+drop table ua_a;
+drop table ua_b;
+
+-- Bag at create: the same value (10) in both branches makes `union all` a bag,
+-- so the create-time full-rebuild fill raises the "must be a set" diagnostic.
+create table ub_a (id integer primary key, v integer);
+create table ub_b (id integer primary key, v integer);
+insert into ub_a values (1, 10);
+insert into ub_b values (2, 10);
+create materialized view mv_ua_bag as select v from ub_a union all select v from ub_b with refresh = 'on-commit-incremental';
+-- error: must be a set
+drop table ub_a;
+drop table ub_b;
+
+-- LATE bag: set-clean at create, becomes a bag after a source insert. The COMMIT
+-- global rebuild re-runs the same body, hits the "must be a set" contract, cannot
+-- self-heal ⇒ diverged (reads error until an explicit refresh).
+create table ul_a (id integer primary key, v integer);
+create table ul_b (id integer primary key, v integer);
+insert into ul_a values (1, 10);
+insert into ul_b values (2, 20);
+create materialized view mv_ua_late as select v from ul_a union all select v from ul_b with refresh = 'on-commit-incremental';
+select * from mv_ua_late order by v;
+→ [{"v":10},{"v":20}]
+
+-- Inserting v=10 into the right branch makes (10) appear twice under `union all`
+-- ⇒ a bag. The COMMIT rebuild hits "must be a set" and cannot self-heal.
+insert into ul_b values (3, 10);
+select * from mv_ua_late order by v;
+-- error: diverged
+
+-- An explicit refresh runs the same body and hits the same bag — still diverged.
+refresh materialized view mv_ua_late;
+-- error: must be a set
+
+drop materialized view mv_ua_late;
+drop table ul_a;
+drop table ul_b;
+
+-- ===================================
+-- 30. Nested set operation (not a top-level compound) is still classified 'global'
+--     by the plan-based `containsNodeType` walk — proving the gate is plan-based,
+--     not AST-top-level-only. The union lives inside a subquery.
+-- ===================================
+
+create table n_a (id integer primary key, v integer);
+create table n_b (id integer primary key, v integer);
+insert into n_a values (1, 10), (2, 20);
+insert into n_b values (3, 20), (4, 30);
+
+create materialized view mv_nested as
+  select v from (select v from n_a union select v from n_b) t
+  with refresh = 'on-commit-incremental';
+select * from mv_nested order by v;
+→ [{"v":10},{"v":20},{"v":30}]
+
+-- A source insert is auto-maintained at COMMIT (whole-MV rebuild)
+insert into n_a values (5, 40);
+select * from mv_nested order by v;
+→ [{"v":10},{"v":20},{"v":30},{"v":40}]
+
+drop materialized view mv_nested;
+drop table n_a;
+drop table n_b;

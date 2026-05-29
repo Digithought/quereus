@@ -230,17 +230,31 @@ body is incrementally maintainable. The accepted shapes are:
   `materialized-view-recursive-semi-naive-delta`. (A recursive body that reads no
   source table is still rejected by the empty-source guard — there is nothing to
   bind on or to trigger a rebuild from.)
+- **set operation** (`union` / `intersect` / `except` / `union all`) over one or
+  more sources: *accepted, but maintained as a whole-MV `'global'` rebuild* —
+  exactly like the recursive-CTE bullet above, and via the same `compile()`
+  short-circuit (a `containsNodeType(analyzed, SetOperation)` walk, so a set op
+  nested in a subquery is caught too — not just a top-level compound). A set
+  operation is bag-distinguishing across its branches: whether a recomputed row
+  belongs in the MV depends on the *full* state of both branches (a row can
+  *vanish* because the other branch's multiplicity changed), so there is no bounded
+  per-binding residual. Every source classifies `'global'` and any source mutation
+  re-derives the **entire** body at COMMIT via `rebuildBacking`. Always correct,
+  not algorithmically incremental. The count-based delta path (multiplicity
+  counters; per-binding bag-additive `union all` fast path) is deferred to
+  `materialized-view-incremental-set-ops-delta`.
 
 Rejected up front with a diagnostic: **outer/semi/anti joins**
 (`materialized-view-incremental-outer-joins`), **aggregate over a join**
-(`materialized-view-incremental-aggregate-join`), `DISTINCT` over a join, set
-operations — bag-distinguishing ones (`union`/`intersect`/`except`) at build
-time, `union all` in `compile()` (`materialized-view-incremental-set-ops`) —
+(`materialized-view-incremental-aggregate-join`), `DISTINCT` over a join,
 whole-table aggregates (no `GROUP BY`), `GROUP BY` over non-column expressions,
 and a source without a primary key. A `manual` MV over the same body is always
-allowed (no gate). A recursive `union all` body whose fixpoint contains duplicate
-rows is still a bag, so it raises the "must be a set" diagnostic at the create-time
-full-rebuild fill.
+allowed (no gate). A `union all` (or recursive `union all`) body whose result
+contains duplicate rows is still a bag, so it raises the "must be a set"
+diagnostic at the create-time full-rebuild fill; a body that is set-clean at
+create but becomes a bag after a source edit diverges at the COMMIT rebuild
+(`diverged`, refresh required) — the loud, correct outcome, since a from-scratch
+recompute cannot silently de-duplicate a `union all` bag.
 
 > **Note on classification.** This eligibility is *not* the `extractBindings`
 > 'row'/'group' classification used by assertions/watchers — that surface is
@@ -570,14 +584,16 @@ tracked separately and build on this substrate:
 - **Incremental refresh** — *delivered* for row-preserving bodies over one or
   more **inner/cross-joined** sources and single-source aggregate bodies
   (`with refresh = 'on-commit-incremental'`; see
-  [Incremental refresh](#incremental-refresh)). Recursive-CTE bodies are
-  *delivered as a whole-MV global rebuild* (full fixpoint recompute on any source
-  commit — correct, not algorithmically incremental); the true semi-naïve/DRed
-  delta path is deferred to `materialized-view-recursive-semi-naive-delta`.
-  Remaining work: outer/semi/anti join bodies
-  (`materialized-view-incremental-outer-joins`), aggregate over a join
-  (`materialized-view-incremental-aggregate-join`), set-ops
-  (`materialized-view-incremental-set-ops`), cascading-MV convergence
+  [Incremental refresh](#incremental-refresh)). Recursive-CTE and set-operation
+  (`union`/`intersect`/`except`/`union all`) bodies are *delivered as a whole-MV
+  global rebuild* (full recompute on any source commit — correct, not
+  algorithmically incremental); the true delta paths are deferred to
+  `materialized-view-recursive-semi-naive-delta` (recursion) and
+  `materialized-view-incremental-set-ops-delta` (count-based set-op deltas + the
+  bag-additive `union all` per-binding fast path). Remaining work:
+  outer/semi/anti join bodies (`materialized-view-incremental-outer-joins`),
+  aggregate over a join (`materialized-view-incremental-aggregate-join`),
+  cascading-MV convergence
   (`materialized-view-incremental-cascading-convergence`), and the
   `getChangeScope()` source projection (`materialized-view-incremental-changescope`).
 - **Write-through** (`materialized-view-writes-through-body`) — accept DML

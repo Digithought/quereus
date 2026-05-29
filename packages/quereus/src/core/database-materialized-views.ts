@@ -369,9 +369,10 @@ export class MaterializedViewManager {
 		// each source binds on its own PK and is gated independently downstream by
 		// `computeDeleteKeyOrder` — a source whose PK does not cleanly cover the
 		// backing physical PK falls back to a full rebuild (always correct, just not
-		// incremental). Row-collapsing shapes (outer/semi/anti joins,
-		// aggregate-over-join, set operations, multi-source DISTINCT) are rejected
-		// and deferred.
+		// incremental). Recursive-CTE and set-operation bodies have no bounded
+		// per-binding residual, so they classify whole-MV 'global' (full rebuild on
+		// any source change). The remaining row-collapsing shapes (outer/semi/anti
+		// joins, aggregate-over-join, multi-source DISTINCT) are rejected and deferred.
 		const tableRefByRelKey = collectTableRefs(analyzed);
 		if (tableRefByRelKey.size === 0) {
 			throw new QuereusError(
@@ -397,6 +398,24 @@ export class MaterializedViewManager {
 		// delta evaluation (semi-naïve insert + DRed delete) is deferred to
 		// materialized-view-recursive-semi-naive-delta.
 		if (containsNodeType(analyzed, PlanNodeType.RecursiveCTE)) {
+			for (const [relKey, ref] of tableRefByRelKey) {
+				const base = `${ref.tableSchema.schemaName}.${ref.tableSchema.name}`.toLowerCase();
+				perRelation.set(relKey, { kind: 'global' });
+				relationToBase.set(relKey, base);
+			}
+		} else if (containsNodeType(analyzed, PlanNodeType.SetOperation)) {
+			// A set operation (union / intersect / except / union all) is bag-distinguishing
+			// across its branches: whether a recomputed row belongs in the MV depends on the
+			// *full* state of both branches, not just the changed tuples — so there is no
+			// bounded per-binding residual (the same "no bounded residual" property the
+			// recursive branch above has). Classify every source as 'global' so any source
+			// mutation re-derives the entire body at COMMIT via rebuildBacking (the same
+			// recompute manual `refresh` runs) — always correct, including rows that should
+			// *vanish* because the other branch's multiplicity changed, but not algorithmically
+			// incremental. This must run BEFORE the aggregate / join branches: a set-op body
+			// whose branches aggregate or join must not be misrouted into those rejections.
+			// True count-based delta evaluation (and the bag-additive `union all` per-binding
+			// fast path) is deferred to materialized-view-incremental-set-ops-delta.
 			for (const [relKey, ref] of tableRefByRelKey) {
 				const base = `${ref.tableSchema.schemaName}.${ref.tableSchema.name}`.toLowerCase();
 				perRelation.set(relKey, { kind: 'global' });
@@ -443,19 +462,9 @@ export class MaterializedViewManager {
 		} else {
 			// Row-preserving path — one or more inner/cross-joined sources. Reject
 			// the row-collapsing shapes a per-binding delete-then-recompute cannot
-			// maintain, then bind every source on its own primary key.
+			// maintain, then bind every source on its own primary key. (Set-op bodies
+			// were already routed to 'global' above, so none reach here.)
 			//
-			// `union all` survives the build-time `rejectUnsupportedIncrementalBody`
-			// gate (only bag-distinguishing set-ops fail there) and used to reach the
-			// now-relaxed single-source throw; reject it explicitly here.
-			if (containsNodeType(analyzed, PlanNodeType.SetOperation)) {
-				throw new QuereusError(
-					`materialized view '${mv.name}': 'on-commit-incremental' refresh does not support `
-						+ `set-operation bodies yet `
-						+ `(filed: materialized-view-incremental-set-ops); use 'manual' refresh`,
-					StatusCode.UNSUPPORTED,
-				);
-			}
 			// A multi-source DISTINCT collapses rows other sources also contribute, so
 			// a per-binding delete can remove rows that should survive. Single-source
 			// DISTINCT keeps its existing behavior untouched.
