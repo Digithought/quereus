@@ -1,8 +1,9 @@
 /**
- * Materialized-view maintenance: schema-change staleness tracking (phase 1) plus
- * incremental on-commit maintenance (phase 2).
+ * Materialized-view maintenance: schema-change staleness tracking (phase 1),
+ * incremental on-commit maintenance (phase 2), plus row-time write-through
+ * maintenance (phase 3).
  *
- * Two responsibilities:
+ * Three responsibilities:
  *
  *  1. **Staleness** — a *schema* change to a source table (drop / alter) can break
  *     an MV's body. This manager subscribes to schema-change events and marks any
@@ -18,10 +19,21 @@
  *     delete-then-upserts the recomputed slice; a `'global'` binding or the
  *     cost-fallback triggers a full rebuild. Failed maintenance logs-and-skips
  *     and never rolls the user's commit back (mirrors `database-watchers.ts`).
+ *     This write path bypasses the user write-boundary via
+ *     `MemoryTableManager.applyMaintenance` (delete/upsert) and `replaceBaseLayer`
+ *     (rebuild) — both manager-level, off the user-transaction path.
  *
- * The maintenance write path bypasses the user write-boundary via
- * `MemoryTableManager.applyMaintenance` (delete/upsert) and `replaceBaseLayer`
- * (rebuild) — both manager-level, off the user-transaction path.
+ *  3. **Row-time write-through** (`maintainRowTime`) — for a `row-time` MV (gated
+ *     at create to the covering-index shape), the backing table is kept consistent
+ *     *synchronously* with each source row-write, driven from the runtime DML
+ *     boundary (not at COMMIT). Each source row maps to exactly one backing row,
+ *     so maintenance is a pure projection of the changed row — delete the old
+ *     image's backing key, upsert the new image's backing row; no body
+ *     re-execution, no scan. Unlike (2) this writes the backing table's *pending*
+ *     transaction layer through the same connection a `select` from the MV uses,
+ *     so the change is visible mid-transaction (reads-own-writes) and is
+ *     committed/rolled-back in lockstep with the source write by the coordinated
+ *     commit — no `pendingDelta`-style overlay is needed.
  */
 
 import type { SchemaManager } from '../schema/manager.js';
@@ -55,6 +67,9 @@ import { rebuildBacking, getBackingManager } from '../runtime/emit/materialized-
 import { buildPrimaryKeyFromValues } from '../vtab/memory/utils/primary-key.js';
 import type { BTreeKeyForPrimary } from '../vtab/memory/types.js';
 import type { MaintenanceOp, MemoryTableManager } from '../vtab/memory/layer/manager.js';
+import { MemoryVirtualTableConnection } from '../vtab/memory/connection.js';
+import type { MemoryTableConnection } from '../vtab/memory/layer/connection.js';
+import { compilePredicate, type CompiledPredicate } from '../vtab/memory/utils/predicate.js';
 import type { MaterializedViewSchema } from '../schema/view.js';
 import type { Database } from './database.js';
 import type * as AST from '../parser/ast.js';
@@ -160,11 +175,46 @@ interface OverlayChange {
 	newRow?: Row;
 }
 
+/**
+ * Compiled per-MV row-time (write-through) maintenance plan, derived once at
+ * registration from the covering-index shape. Per source row-write, the backing
+ * delta is a pure projection of the changed row: project the source row to a
+ * backing row (a column permutation — passthrough columns only), key it by the
+ * backing physical PK, and (if the partial predicate admits it) delete the old
+ * image / upsert the new image. No body re-execution, no scan, no compiled
+ * residual — see `docs/materialized-views.md` § Row-time refresh.
+ */
+interface RowTimeMaintenancePlan {
+	/** The MV this plan maintains. */
+	mv: MaterializedViewSchema;
+	/** Lowercased `schema.table` of the single source `T`. */
+	sourceBase: string;
+	backingSchema: string;
+	backingTableName: string;
+	/** Backing-table physical primary-key definition (the column order the btree keys on). */
+	backingPkDefinition: ReadonlyArray<{ index: number; desc?: boolean; collation?: string }>;
+	/** `projectionSourceCols[j]` = the source column index supplying backing output
+	 *  column `j`. A pure passthrough permutation (every backing column resolves to a
+	 *  source column via attribute provenance — eligibility rejects expression columns). */
+	projectionSourceCols: number[];
+	/** Partial-WHERE predicate evaluated on a single source row; absent ⇒ every row
+	 *  is in scope. A source row contributes a backing row only when this is
+	 *  unambiguously TRUE (mirrors partial-UNIQUE / partial-index semantics). */
+	predicate?: CompiledPredicate;
+}
+
 export class MaterializedViewManager {
 	private unsubscribeSchemaChanges: (() => void) | null = null;
 	private readonly executor: DeltaExecutor;
 	/** Compiled incremental entries keyed by `schema.name` (lowercase). */
 	private readonly incremental = new Map<string, CompiledIncrementalMV>();
+
+	/** Compiled row-time plans keyed by MV `schema.name` (lowercase). */
+	private readonly rowTime = new Map<string, RowTimeMaintenancePlan>();
+
+	/** Source base (lowercased `schema.table`) → set of MV keys with a row-time plan
+	 *  reading it. The per-row DML maintenance hook looks plans up by source base. */
+	private readonly rowTimeBySource = new Map<string, Set<string>>();
 
 	/**
 	 * Per-pass delta overlay layered on top of the {@link TransactionManager}
@@ -277,47 +327,67 @@ export class MaterializedViewManager {
 							mv.stale = true;
 							log('Marked materialized view %s.%s stale due to %s on %s', mv.schemaName, mv.name, event.type, changed);
 						}
-						// A source schema change invalidates any compiled residual; detach
-						// the incremental subscription. The MV reads "stale" until refreshed
-						// or recreated, which re-registers it.
-						this.releaseEntry(mvKey(mv.schemaName, mv.name));
+						// A source schema change invalidates any compiled residual / row-time
+						// plan; detach both. The MV reads "stale" until refreshed or recreated,
+						// which re-registers it.
+						const mk = mvKey(mv.schemaName, mv.name);
+						this.releaseEntry(mk);
+						this.releaseRowTime(mk);
 					}
 				}
 			} else if (event.type === 'materialized_view_removed') {
-				this.releaseEntry(mvKey(event.schemaName, event.objectName));
+				const mk = mvKey(event.schemaName, event.objectName);
+				this.releaseEntry(mk);
+				this.releaseRowTime(mk);
 			}
 		});
 	}
 
 	/**
-	 * Compile + register an MV for incremental maintenance if its policy is
-	 * `on-commit-incremental`. No-op for `manual`. Throws (with the offending
-	 * `'global'` sources named) when the body is not incrementally maintainable
-	 * — the create emitter rolls the MV back on throw.
+	 * Compile + register an MV for incremental (`on-commit-incremental`) or
+	 * row-time write-through (`row-time`) maintenance. No-op for `manual`. Throws
+	 * when the body is ineligible for the chosen policy — the create emitter rolls
+	 * the MV back on throw.
 	 */
 	registerMaterializedView(mv: MaterializedViewSchema): void {
-		if (mv.refreshPolicy?.kind !== 'on-commit-incremental') return;
-		// Cache the source-union change-scope so a `select` from this MV projects to
-		// its sources in `analyzeChangeScope` (the backing table is never written
-		// through the user change log — it is maintained at COMMIT). v1 is the
-		// conservative union of a `full` watch per source table.
-		mv.sourceScope = buildSourceUnionScope(mv.sourceTables);
 		const key = mvKey(mv.schemaName, mv.name);
-		this.releaseEntry(key);
-		const compiled = this.compile(mv);
-		const subscription = this.buildSubscription(mv, compiled);
-		compiled.subscriptionDisposer = this.executor.register(subscription);
-		this.incremental.set(key, compiled);
-		// A new incremental entry changes the MV-dependency graph (it may produce
-		// or consume another MV's backing table) — recompute the cached graph lazily.
-		this.topoRanks = null;
-		this.consumedBacking = null;
-		log('Registered incremental materialized view %s.%s', mv.schemaName, mv.name);
+		if (mv.refreshPolicy?.kind === 'on-commit-incremental') {
+			// Cache the source-union change-scope so a `select` from this MV projects to
+			// its sources in `analyzeChangeScope` (the backing table is never written
+			// through the user change log — it is maintained at COMMIT). v1 is the
+			// conservative union of a `full` watch per source table.
+			mv.sourceScope = buildSourceUnionScope(mv.sourceTables);
+			this.releaseEntry(key);
+			const compiled = this.compile(mv);
+			const subscription = this.buildSubscription(mv, compiled);
+			compiled.subscriptionDisposer = this.executor.register(subscription);
+			this.incremental.set(key, compiled);
+			// A new incremental entry changes the MV-dependency graph (it may produce
+			// or consume another MV's backing table) — recompute the cached graph lazily.
+			this.topoRanks = null;
+			this.consumedBacking = null;
+			log('Registered incremental materialized view %s.%s', mv.schemaName, mv.name);
+		} else if (mv.refreshPolicy?.kind === 'row-time') {
+			// Same change-scope substitution as incremental: the backing table is
+			// maintained off the user change log (here, synchronously at the DML
+			// boundary), so a `Database.watch` on this MV must project to its sources
+			// rather than the never-change-logged backing table.
+			mv.sourceScope = buildSourceUnionScope(mv.sourceTables);
+			this.releaseRowTime(key);
+			const plan = this.buildRowTimePlan(mv); // throws on ineligible shape
+			this.rowTime.set(key, plan);
+			let set = this.rowTimeBySource.get(plan.sourceBase);
+			if (!set) { set = new Set(); this.rowTimeBySource.set(plan.sourceBase, set); }
+			set.add(key);
+			log('Registered row-time materialized view %s.%s', mv.schemaName, mv.name);
+		}
 	}
 
-	/** Detach an MV's incremental subscription + capture demand (DROP path). */
+	/** Detach an MV's incremental subscription / row-time plan + capture demand (DROP path). */
 	unregisterMaterializedView(schemaName: string, name: string): void {
-		this.releaseEntry(mvKey(schemaName, name));
+		const key = mvKey(schemaName, name);
+		this.releaseEntry(key);
+		this.releaseRowTime(key);
 	}
 
 	/**
@@ -359,6 +429,9 @@ export class MaterializedViewManager {
 		for (const key of [...this.incremental.keys()]) {
 			this.releaseEntry(key);
 		}
+		for (const key of [...this.rowTime.keys()]) {
+			this.releaseRowTime(key);
+		}
 		this.executor.disposeAll();
 	}
 
@@ -374,6 +447,18 @@ export class MaterializedViewManager {
 			try { d(); } catch (err) { log('MV capture disposer for %s threw: %O', key, err); }
 		}
 		entry.captureDisposers.length = 0;
+	}
+
+	/** Drop a row-time plan and its source-base index entry (DROP / schema-change / re-register). */
+	private releaseRowTime(key: string): void {
+		const plan = this.rowTime.get(key);
+		if (!plan) return;
+		this.rowTime.delete(key);
+		const set = this.rowTimeBySource.get(plan.sourceBase);
+		if (set) {
+			set.delete(key);
+			if (set.size === 0) this.rowTimeBySource.delete(plan.sourceBase);
+		}
 	}
 
 	/* ─────────────────────────── compilation ─────────────────────────── */
@@ -942,6 +1027,209 @@ export class MaterializedViewManager {
 		});
 		return ranks;
 	}
+
+	/* ──────────────────── row-time write-through ──────────────────── */
+
+	/**
+	 * True iff a row-time covering structure reads `sourceBase` (lowercased
+	 * `schema.table`). The DML write boundary consults this synchronously so the
+	 * per-row maintenance hook is a zero-allocation no-op when nothing depends on
+	 * the written table.
+	 */
+	hasRowTimePlanFor(sourceBase: string): boolean {
+		const set = this.rowTimeBySource.get(sourceBase.toLowerCase());
+		return set !== undefined && set.size > 0;
+	}
+
+	/**
+	 * Synchronously maintain every row-time covering structure on `sourceBase` for
+	 * one source row-write. Each plan computes the per-row backing delta (a pure
+	 * projection of the changed row) and applies it to the backing table's pending
+	 * transaction layer through the connection a `select` from the MV would use —
+	 * so the write is visible mid-transaction and rides the coordinated commit.
+	 */
+	async maintainRowTime(
+		sourceBase: string,
+		change: { op: 'insert' | 'update' | 'delete'; oldRow?: Row; newRow?: Row },
+	): Promise<void> {
+		const keys = this.rowTimeBySource.get(sourceBase.toLowerCase());
+		if (!keys || keys.size === 0) return;
+		for (const key of keys) {
+			const plan = this.rowTime.get(key);
+			if (plan) await this.applyRowTimeChange(plan, change);
+		}
+	}
+
+	/** Compute and apply one plan's per-row backing delta. */
+	private async applyRowTimeChange(
+		plan: RowTimeMaintenancePlan,
+		change: { op: 'insert' | 'update' | 'delete'; oldRow?: Row; newRow?: Row },
+	): Promise<void> {
+		const inScope = (row: Row): boolean => plan.predicate === undefined || plan.predicate.evaluate(row) === true;
+		const project = (row: Row): Row => plan.projectionSourceCols.map(sc => row[sc]) as Row;
+		const keyOf = (backingRow: Row): BTreeKeyForPrimary =>
+			buildPrimaryKeyFromValues(plan.backingPkDefinition.map(d => backingRow[d.index]), plan.backingPkDefinition);
+
+		const ops: MaintenanceOp[] = [];
+		if (change.op === 'insert') {
+			const r = change.newRow!;
+			if (inScope(r)) ops.push({ kind: 'upsert', row: project(r) });
+		} else if (change.op === 'delete') {
+			const r = change.oldRow!;
+			if (inScope(r)) ops.push({ kind: 'delete-key', key: keyOf(project(r)) });
+		} else {
+			// UPDATE: delete the old image if it was in scope, upsert the new image if
+			// it is — covers predicate-scope transitions and key-changing updates.
+			const oldR = change.oldRow!;
+			const newR = change.newRow!;
+			if (inScope(oldR)) ops.push({ kind: 'delete-key', key: keyOf(project(oldR)) });
+			if (inScope(newR)) ops.push({ kind: 'upsert', row: project(newR) });
+		}
+		if (ops.length === 0) return;
+
+		const backing = this.ctx.schemaManager.getTable(plan.backingSchema, plan.backingTableName);
+		if (!backing) {
+			throw new QuereusError(
+				`Internal error: backing table '${plan.backingTableName}' for materialized view '${plan.mv.name}' not found`,
+				StatusCode.INTERNAL,
+			);
+		}
+		const manager = getBackingManager(backing);
+		const connection = await this.getBackingConnection(manager, `${plan.backingSchema}.${plan.backingTableName}`);
+		manager.applyMaintenanceToLayer(connection, ops);
+	}
+
+	/**
+	 * Obtain (lazily create + register) the backing table's
+	 * {@link MemoryTableConnection} for the current transaction. Reuses the same
+	 * connection a `select` from the MV resolves to (so reads-own-writes holds);
+	 * a freshly created connection is registered with the Database so the
+	 * coordinated commit/rollback covers its pending layer in lockstep with the
+	 * source write.
+	 */
+	private async getBackingConnection(manager: MemoryTableManager, qualifiedName: string): Promise<MemoryTableConnection> {
+		const db = this.ctx as unknown as Database;
+		for (const c of db.getConnectionsForTable(qualifiedName)) {
+			if (c instanceof MemoryVirtualTableConnection) {
+				const mc = c.getMemoryConnection();
+				if (mc.tableManager === manager) return mc;
+			}
+		}
+		const memConn = manager.connect();
+		const vtabConn = new MemoryVirtualTableConnection(qualifiedName, memConn);
+		await db.registerConnection(vtabConn);
+		return memConn;
+	}
+
+	/**
+	 * Build the row-time maintenance plan for an eligible MV, or throw with a
+	 * shape-naming diagnostic. Eligibility is the covering-index shape: a single
+	 * row-preserving source `T` with a primary key, a linear
+	 * `TableReference → optional Filter → Project → optional Sort` body
+	 * (no aggregate / join / DISTINCT / set op / recursive CTE / TVF / LIMIT/OFFSET),
+	 * a **passthrough** projection (every backing column resolves to a source column
+	 * via attribute provenance) that covers every source PK column, and a partial
+	 * WHERE evaluable on a single source row. This is a strict superset of the
+	 * coverage prover's recognized shape — it reuses the same shape primitives the
+	 * incremental gate uses (`collectTableRefs`, provenance via `resolveSourceCol`).
+	 */
+	private buildRowTimePlan(mv: MaterializedViewSchema): RowTimeMaintenancePlan {
+		const db = this.ctx as unknown as Database;
+		const { plan } = this.ctx._buildPlan([mv.selectAst as AST.Statement]);
+		const analyzed = this.ctx.optimizer.optimizeForAnalysis(plan, db) as BlockNode;
+
+		const reject = (detail: string): never => {
+			throw new QuereusError(
+				`materialized view '${mv.name}': 'row-time' refresh ${detail}; `
+					+ `use 'on-commit-incremental' or 'manual' refresh`,
+				StatusCode.UNSUPPORTED,
+			);
+		};
+
+		// Single source `T`. (A join, self-join, or TVF fan-out surfaces ≥2 table
+		// references or a TVF node — caught here and by the node-type checks below.)
+		const tableRefs = [...collectTableRefs(analyzed).values()];
+		if (tableRefs.length === 0) reject('requires the body to read exactly one source table');
+		if (tableRefs.length > 1) reject('supports only a single-source body (no joins)');
+		const tableRef = tableRefs[0];
+		const sourceSchema = tableRef.tableSchema;
+		const sourceBase = `${sourceSchema.schemaName}.${sourceSchema.name}`.toLowerCase();
+
+		// Row-collapsing / fan-out / unbounded shapes break one-source-row →
+		// one-backing-row, so write-through could not be a pure projection.
+		if (findAggregate(analyzed)) reject('does not support aggregate bodies');
+		if (containsAnyJoin(analyzed)) reject('does not support join bodies');
+		if (containsNodeType(analyzed, PlanNodeType.Distinct)) reject('does not support DISTINCT bodies');
+		if (containsNodeType(analyzed, PlanNodeType.SetOperation)) reject('does not support set-operation bodies');
+		if (containsNodeType(analyzed, PlanNodeType.RecursiveCTE)) reject('does not support recursive-CTE bodies');
+		if (containsNodeType(analyzed, PlanNodeType.TableFunctionCall)) reject('does not support table-valued-function bodies');
+		if (mv.selectAst.type === 'select' && (mv.selectAst.limit !== undefined || mv.selectAst.offset !== undefined)) {
+			reject('does not support LIMIT/OFFSET bodies');
+		}
+
+		const sourcePkCols = sourceSchema.primaryKeyDefinition.map(d => d.index);
+		if (sourcePkCols.length === 0) reject(`requires source '${sourceBase}' to have a primary key`);
+
+		const backing = this.ctx._findTable(mv.backingTableName, mv.schemaName);
+		if (!backing) {
+			throw new QuereusError(
+				`Internal error: backing table '${mv.backingTableName}' for materialized view '${mv.name}' not found`,
+				StatusCode.INTERNAL,
+			);
+		}
+
+		// Passthrough projection: every backing output column must forward a source
+		// column (attribute-id provenance, exactly as `computeDeleteKeyOrder`),
+		// making maintenance a pure column permutation of the changed row.
+		const sourceAttrToCol = new Map<number, number>();
+		tableRef.getAttributes().forEach((a, i) => sourceAttrToCol.set(a.id, i));
+		const producingByAttrId = collectProducingExprs(analyzed);
+		const rootAttrs = relationalAttributes(analyzed);
+		if (!rootAttrs) reject('body produced no relational output');
+
+		const projectionSourceCols: number[] = [];
+		for (let outCol = 0; outCol < rootAttrs!.length; outCol++) {
+			const attr = rootAttrs![outCol];
+			const sourceCol = attr ? resolveSourceCol(attr.id, sourceAttrToCol, producingByAttrId) : undefined;
+			if (sourceCol === undefined) {
+				reject('requires every projected column to be a passthrough source column (no computed/expression columns)');
+			}
+			projectionSourceCols.push(sourceCol!);
+		}
+
+		// Every source PK column must be projected so the backing key is a
+		// deterministic function of the source row (and identifies that row).
+		const projected = new Set(projectionSourceCols);
+		for (const pk of sourcePkCols) {
+			if (!projected.has(pk)) {
+				reject(`requires the body to project every source primary-key column (missing '${sourceSchema.columns[pk]?.name ?? pk}')`);
+			}
+		}
+
+		const backingPkDefinition = backing.primaryKeyDefinition.map(d => ({ index: d.index, desc: d.desc, collation: d.collation }));
+
+		// Partial WHERE must be evaluable on a single source row (no subqueries /
+		// cross-row references). `compilePredicate` throws on unsupported forms.
+		let predicate: CompiledPredicate | undefined;
+		const bodyWhere = mv.selectAst.type === 'select' ? mv.selectAst.where : undefined;
+		if (bodyWhere) {
+			try {
+				predicate = compilePredicate(bodyWhere, sourceSchema.columns);
+			} catch (e) {
+				reject(`requires a WHERE evaluable on a single source row (${e instanceof Error ? e.message : String(e)})`);
+			}
+		}
+
+		return {
+			mv,
+			sourceBase,
+			backingSchema: mv.schemaName,
+			backingTableName: mv.backingTableName,
+			backingPkDefinition,
+			projectionSourceCols,
+			predicate,
+		};
+	}
 }
 
 /* ─────────────────────────── helpers ─────────────────────────── */
@@ -1027,6 +1315,15 @@ function containsNodeType(node: PlanNode, type: PlanNodeType): boolean {
 	if (node.nodeType === type) return true;
 	for (const child of node.getChildren()) {
 		if (containsNodeType(child as unknown as PlanNode, type)) return true;
+	}
+	return false;
+}
+
+/** True if the plan carries any join node (logical or physical). Used by the
+ *  row-time gate, which is single-source — any join is ineligible. */
+function containsAnyJoin(node: PlanNode): boolean {
+	for (const t of JOIN_NODE_TYPES) {
+		if (containsNodeType(node, t)) return true;
 	}
 	return false;
 }

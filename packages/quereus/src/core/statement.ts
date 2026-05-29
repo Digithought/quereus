@@ -615,15 +615,17 @@ export class Statement {
 		const sm = this.db.schemaManager;
 		return analyzeChangeScope(plan, {
 			...(effectiveParams !== undefined ? { params: effectiveParams } : {}),
-			// Project an `on-commit-incremental` MV backing-table reference onto its
-			// cached source-union scope: such a backing table is maintained at COMMIT
-			// from its sources and never user-written, so watching it directly would
-			// never fire. Manual MVs (and ordinary tables) return undefined and keep
-			// reporting the backing table.
+			// Project a maintained MV's backing-table reference onto its cached
+			// source-union scope: an `on-commit-incremental` backing table is
+			// maintained at COMMIT and a `row-time` backing table at the DML boundary —
+			// both off the user change log, so watching the backing table directly
+			// would never fire. Manual MVs (and ordinary tables) return undefined and
+			// keep reporting the backing table.
 			resolveMaterializedViewSource: (table) => {
 				const mv = sm.getMaterializedViewByBackingTable(table.schema, table.table);
-				if (mv?.refreshPolicy?.kind !== 'on-commit-incremental') return undefined;
-				return mv.sourceScope;
+				const kind = mv?.refreshPolicy?.kind;
+				if (kind !== 'on-commit-incremental' && kind !== 'row-time') return undefined;
+				return mv!.sourceScope;
 			},
 		});
 	}

@@ -39,12 +39,21 @@ export interface ViewSchema {
  *   with the {@link import('../core/database-materialized-views.js').MaterializedViewManager}.
  *   Only bodies whose sources all classify as `'row'`/`'group'` (not `'global'`)
  *   qualify — see `docs/materialized-views.md` § Incremental refresh.
+ * - `row-time`: write-through maintenance — the backing table is kept consistent
+ *   *synchronously* with each source row-write, within the same transaction and
+ *   visible mid-statement (not deferred to COMMIT like `on-commit-incremental`).
+ *   Gated to the covering-index shape (a single row-preserving source whose body
+ *   projects every source PK column via passthrough columns), so each source row
+ *   maps to exactly one backing row and maintenance is a pure projection of the
+ *   changed row — no body re-execution, no scan. General bodies are rejected at
+ *   create. See `docs/materialized-views.md` § Row-time refresh.
  *
  * A future `on-commit-full` policy is out of scope (filed to backlog).
  */
 export type RefreshPolicy =
 	| { kind: 'manual' }
-	| { kind: 'on-commit-incremental' };
+	| { kind: 'on-commit-incremental' }
+	| { kind: 'row-time' };
 
 /** The default refresh policy: manual full-refresh (phase-1 behavior). */
 export const DEFAULT_REFRESH_POLICY: RefreshPolicy = { kind: 'manual' };
@@ -114,7 +123,8 @@ export interface MaterializedViewSchema {
 
 	/** When and how the backing table is brought back in sync with its sources.
 	 *  Absent on already-serialized MVs ⇒ treat as {@link DEFAULT_REFRESH_POLICY}
-	 *  (`manual`). Set to `on-commit-incremental` to enable delta maintenance. */
+	 *  (`manual`). Set to `on-commit-incremental` for post-commit delta maintenance,
+	 *  or `row-time` for synchronous write-through maintenance (covering-index shape only). */
 	refreshPolicy?: RefreshPolicy;
 
 	/**

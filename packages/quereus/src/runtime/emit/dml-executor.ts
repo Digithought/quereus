@@ -68,6 +68,24 @@ function emitAutoDataEvent(
 	);
 }
 
+/**
+ * Synchronously drive row-time (write-through) materialized-view maintenance for
+ * one source row-write, immediately after the change is recorded. A no-op fast
+ * path (one synchronous map lookup) when no `row-time` MV depends on `tableKey`,
+ * so non-covered tables pay effectively nothing. The maintenance writes the
+ * covering MV's backing table within the same transaction (visible mid-statement;
+ * committed/rolled-back in lockstep with this write) — see
+ * `core/database-materialized-views.ts` § row-time write-through.
+ */
+async function maintainRowTimeStructures(
+	ctx: RuntimeContext,
+	tableKey: string,
+	change: { op: 'insert' | 'update' | 'delete'; oldRow?: Row; newRow?: Row },
+): Promise<void> {
+	if (!ctx.db._hasRowTimeCoveringStructures(tableKey)) return;
+	await ctx.db._maintainRowTimeCoveringStructures(tableKey, change);
+}
+
 export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): Instruction {
 	const tableSchema = plan.table.tableSchema;
 
@@ -430,6 +448,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 						updateResult.updatedRow,
 						pkColumnIndicesInSchema,
 					);
+					await maintainRowTimeStructures(ctx, `${tableSchema.schemaName}.${tableSchema.name}`,
+						{ op: 'update', oldRow: result.existingRow!, newRow: updateResult.updatedRow });
 					await executeForeignKeyActions(ctx.db, tableSchema, 'update', result.existingRow!, updateResult.updatedRow);
 
 					if (needsAutoEvents) {
@@ -464,6 +484,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		if (replacedRow) {
 			const newKeyValues = pkColumnIndicesInSchema.map(idx => newRow[idx]);
 			ctx.db._recordUpdate(tableKey, replacedRow, newRow, pkColumnIndicesInSchema);
+			await maintainRowTimeStructures(ctx, tableKey, { op: 'update', oldRow: replacedRow, newRow });
 			await executeForeignKeyActions(ctx.db, tableSchema, 'delete', replacedRow);
 
 			if (needsAutoEvents) {
@@ -478,6 +499,7 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 		} else {
 			const pkValues = pkColumnIndicesInSchema.map(idx => newRow[idx]);
 			ctx.db._recordInsert(tableKey, newRow, pkColumnIndicesInSchema);
+			await maintainRowTimeStructures(ctx, tableKey, { op: 'insert', newRow });
 
 			if (needsAutoEvents) {
 				emitAutoDataEvent(ctx, tableSchema, 'insert', pkValues, undefined, [...newRow]);
@@ -572,6 +594,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 						result.replacedRow,
 						pkColumnIndicesInSchema,
 					);
+					await maintainRowTimeStructures(ctx, `${tableSchema.schemaName}.${tableSchema.name}`,
+						{ op: 'delete', oldRow: result.replacedRow });
 					await executeForeignKeyActions(ctx.db, tableSchema, 'delete', result.replacedRow);
 					if (needsAutoEvents) {
 						emitAutoDataEvent(ctx, tableSchema, 'delete', evictedKeyValues, [...result.replacedRow]);
@@ -586,6 +610,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					newRow,
 					pkColumnIndicesInSchema,
 				);
+				await maintainRowTimeStructures(ctx, `${tableSchema.schemaName}.${tableSchema.name}`,
+					{ op: 'update', oldRow, newRow });
 
 				// Execute FK cascading actions (CASCADE, SET NULL, SET DEFAULT)
 				await executeForeignKeyActions(ctx.db, tableSchema, 'update', oldRow, newRow);
@@ -678,6 +704,8 @@ export function emitDmlExecutor(plan: DmlExecutorNode, ctx: EmissionContext): In
 					oldRow,
 					pkColumnIndicesInSchema,
 				);
+				await maintainRowTimeStructures(ctx, `${tableSchema.schemaName}.${tableSchema.name}`,
+					{ op: 'delete', oldRow });
 
 				// Execute FK cascading actions (CASCADE, SET NULL, SET DEFAULT)
 				await executeForeignKeyActions(ctx.db, tableSchema, 'delete', oldRow);

@@ -10,10 +10,20 @@ serves subsequent reads from that stored copy. The default refresh policy is
 an explicit `REFRESH MATERIALIZED VIEW`. An MV may instead opt into
 **`on-commit-incremental`** refresh (`with refresh = 'on-commit-incremental'`),
 which maintains the backing table at every COMMIT that touches a source — see
-[Incremental refresh](#incremental-refresh).
+[Incremental refresh](#incremental-refresh) — or into **`row-time`** refresh
+(`with refresh = 'row-time'`), which maintains the backing table *synchronously*
+with each source row-write (visible mid-transaction, not at COMMIT), gated to the
+covering-index shape — see [Row-time refresh](#row-time-refresh).
 
-This document covers the substrate as it exists today. The concurrent-refresh,
-write-through, and lens-integration extensions are tracked in
+The refresh-policy spectrum, weakest to strongest coupling:
+
+```
+manual  →  on-commit-incremental  →  row-time
+(refresh)   (post-commit delta)      (synchronous write-through)
+```
+
+This document covers the substrate as it exists today. The concurrent-refresh and
+broader lens-integration extensions are tracked in
 [Out of scope / roadmap](#out-of-scope--roadmap).
 
 ## Substrate: a keyed derived relation
@@ -105,7 +115,7 @@ contextual keywords — no new reserved words are introduced.
 create materialized view mv [if not exists] [(col, ...)]
   [using <module>(...)]
   as <body>
-  [with refresh = 'manual' | 'on-commit-incremental']
+  [with refresh = 'manual' | 'on-commit-incremental' | 'row-time']
   [with tags (...)];
 ```
 
@@ -116,11 +126,12 @@ create materialized view mv [if not exists] [(col, ...)]
 - An explicit column list renames the body's output columns (arity must match).
 - `with refresh = '...'` selects the refresh policy (trailing, alongside the
   existing `with tags`; default `manual`). `on-commit-incremental` is gated to
-  incrementally-maintainable bodies — see [Incremental refresh](#incremental-refresh).
+  incrementally-maintainable bodies — see [Incremental refresh](#incremental-refresh);
+  `row-time` is gated to the covering-index shape — see [Row-time refresh](#row-time-refresh).
 - The body is evaluated immediately and the result stored. On any failure
-  during the fill — or if an `on-commit-incremental` body is ineligible — the
-  backing table is rolled back and the MV is **not** registered; a create is
-  all-or-nothing.
+  during the fill — or if an `on-commit-incremental` / `row-time` body is
+  ineligible — the backing table is rolled back and the MV is **not** registered;
+  a create is all-or-nothing.
 
 ### `REFRESH MATERIALIZED VIEW`
 
@@ -452,6 +463,113 @@ keeps reporting the backing table.
   mirroring the maintenance bindings the manager already derives, is a future
   refinement.
 
+## Row-time refresh
+
+An MV created `with refresh = 'row-time'` is maintained **synchronously with each
+source row-write** — within the writing statement's transaction, visible
+mid-statement (reads-own-writes), and committed/rolled-back in lockstep with the
+source write. This is the strongest coupling point: unlike `on-commit-incremental`
+(which defers a delta to COMMIT), a `select` from a row-time MV inside an open
+transaction reflects rows the same transaction just wrote and has not yet
+committed.
+
+Row-time is implemented as user-declared, synchronously-maintained *materialized
+index*: it is the maintenance capability the lens layer's row-time UNIQUE
+enforcement is built on (enforcement routing through the backing table is a
+separate downstream ticket; this section delivers maintenance only).
+
+### Eligibility (checked at create time)
+
+`row-time` is accepted **only** for the covering-index shape — a strict superset
+of the coverage prover's recognized shape (`planner/analysis/coverage-prover.ts`),
+recognized at create from the optimized/analyzed body. The MV is rolled back (like
+the incremental gate) when any of these does not hold:
+
+- a **single** source table `T` with a primary key (no joins / self-joins);
+- a row-preserving linear body `TableReference → optional Filter → Project →
+  optional Sort` — **no** aggregate, set operation, `DISTINCT`, recursive CTE,
+  table-valued function, or `LIMIT`/`OFFSET`;
+- a **passthrough** projection: every projected (backing) column resolves to a
+  source column via attribute provenance — there are no computed/expression
+  columns. (This makes maintenance a pure column permutation. An expression
+  projection is rejected; use `on-commit-incremental`. *Known v1 gap.*)
+- the projection includes **every** PK column of `T`, so each source row maps to a
+  unique backing key (and the backing key identifies the source row);
+- a partial `WHERE`, if present, must be evaluable on a single source row
+  (compiled via `compilePredicate`; subqueries / cross-row references are
+  rejected).
+
+> Note: in Quereus a table declared without an explicit `primary key` defaults to
+> an **all-columns** PK (`schema/table.ts`), so the "source without a PK" rejection
+> is effectively unreachable for memory tables — a PK-less source is keyed on all
+> its columns. The relevant create-time failure is "projection drops a source PK
+> column."
+
+### Maintenance (per source row-write)
+
+For an eligible MV the manager caches a `RowTimeMaintenancePlan` (projection
+column map + backing PK + optional predicate), keyed by source base. The per-row
+backing delta is a **pure projection of the changed row** — no body re-execution,
+no scan, no compiled residual:
+
+| source op | maintenance |
+|---|---|
+| insert `r` | if `predicate(r)` → upsert `project(r)` |
+| delete `r` | if `predicate(r)` (was in scope) → delete the backing key of `project(r)` |
+| update `old→new` | delete old image if in scope; upsert new image if in scope |
+
+The update arm covers predicate-scope transitions and key-changing updates. This
+bounded O(log n) per-row cost (a btree delete + insert) — identical to the
+secondary-index maintenance a UNIQUE auto-index already performs — is the whole
+reason row-time is affordable for this shape and not for general bodies.
+
+### Synchronous, transactional integration
+
+Maintenance is driven from the **runtime DML write boundary**
+(`runtime/emit/dml-executor.ts`), immediately after each source row is recorded
+(`_recordInsert/_recordUpdate/_recordDelete`), via
+`Database._maintainRowTimeCoveringStructures(sourceBase, change)`. A cheap
+synchronous guard (`_hasRowTimeCoveringStructures`) makes this a no-op fast path
+for tables no row-time MV reads, so non-covered writes pay effectively nothing.
+
+The backing write is routed through the **same `MemoryTableConnection` a `select`
+from the MV would use** in this transaction (obtained/registered lazily). A new
+privileged transaction-layer write —
+`MemoryTableManager.applyMaintenanceToLayer(connection, ops)`, the analogue of the
+committed-base `applyMaintenance` — applies the ordered `delete-key` / `upsert`
+ops to that connection's **pending** `TransactionLayer`, bypassing
+`validateMutationPermissions` (backing tables are read-only to user DML) and
+reusing `recordUpsert`/`recordDelete` so secondary-index bookkeeping stays
+correct. Because the connection is in the Database's active set:
+
+- a later read of the MV in the same transaction sees the pending writes **for
+  free** (reads-own-writes — this is the row-time analogue of, and replacement
+  for, the on-commit `pendingDelta` overlay; no overlay is needed);
+- the pending layer is committed atomically by the existing coordinated commit
+  (`database-transaction.ts`) and discarded by the existing rollback broadcast —
+  so a rollback (or a failed source write inside the statement savepoint) reverts
+  the backing delta in lockstep; and
+- an autocommit `insert into T` rides the **statement-level** autocommit boundary
+  (driven above the per-manager autocommit), so source and backing commit
+  together — no orphaned/uncommitted backing pending layer.
+
+`Database.watch` on a row-time MV projects to the MV's **sources** (the backing
+table is maintained off the user change log), the same substitution
+`on-commit-incremental` uses.
+
+### What row-time does NOT do
+
+- **No enforcement routing.** `findIndexForConstraint` still never returns the
+  `materialized-view` covering variant, and `checkSingleUniqueConstraint`'s
+  `materialized-view` arm still throws `UNSUPPORTED`. Consuming the now-row-time
+  backing table for conflict resolution is the downstream
+  `covering-structure-mv-rowtime-enforcement` ticket.
+- **No general-body row-time** (joins, aggregates, recursion, set ops) — parked in
+  `backlog/materialized-view-rowtime-general-bodies.md`.
+- **No store-module path** — the runtime seam is module-agnostic, but the
+  privileged transactional write is implemented for the memory module here; store
+  parity rides the enforcement ticket.
+
 ## Declarative-schema integration
 
 Materialized views participate in the [declarative-schema](schema.md#declarative-schema)
@@ -578,23 +696,29 @@ UNIQUE enforcement (the in-place substitution of `insert or replace`, the skip o
 `insert or ignore`, the conflict diagnostic of the default `abort`) requires the
 covering structure to be consistent *at the moment of the write*. The implicit
 secondary BTree is synchronously maintained, so it can drive row-time
-enforcement; an explicit MV's backing table **cannot**:
+enforcement; an explicit MV's backing table can do so **only once it is
+write-through maintained**:
 
-- MV-core materializes the backing table once at create / refresh (manual
-  refresh); source DML does not update it.
-- Even the sibling commit-time `materialized-view-incremental-refresh` maintains
-  backing tables at COMMIT, not at row-write time.
+- A `manual` MV materializes the backing table once at create / refresh; source
+  DML does not update it.
+- The commit-time `on-commit-incremental` policy maintains backing tables at
+  COMMIT, not at row-write time.
+- The **`row-time`** policy (see [Row-time refresh](#row-time-refresh)) *does*
+  maintain the backing table synchronously with each source row-write, for the
+  covering-index shape — so the **write-through prerequisite now exists** for that
+  shape.
 
-So routing row-time enforcement through an explicit MV's backing table is
-**unsound until row-time write-through MV maintenance exists**. For *physical*
-schemas this is moot: the auto-index already enforces, so an explicit covering MV
-adds a read-answering copy plus the recognized link. The explicit MV becomes the
-*sole* enforcement structure only in the **logical-schema** world (the lens
-layer), where the auto-index is retired; that work is gated on row-time
-write-through. The `materialized-view` variant of `CoveringStructure` exists so
-that surface is stable to compile against, but `findIndexForConstraint` never
-returns it today — the unsound path fails loudly (`StatusCode.UNSUPPORTED`) if
-ever reached.
+The write-through prerequisite is therefore satisfied for a `row-time` covering MV,
+but **enforcement routing is still not wired**: `findIndexForConstraint` never
+returns the `materialized-view` variant of `CoveringStructure`, and
+`checkSingleUniqueConstraint`'s `materialized-view` arm still fails loudly
+(`StatusCode.UNSUPPORTED`) if ever reached. Consuming a row-time backing table for
+conflict resolution is the downstream `covering-structure-mv-rowtime-enforcement`
+ticket (which lists row-time write-through as its prereq). For *physical* schemas
+this remains moot — the auto-index already enforces, so an explicit covering MV
+adds a read-answering copy plus the recognized link; the explicit MV becomes the
+*sole* enforcement structure only in the **logical-schema** world (the lens layer),
+where the auto-index is retired.
 
 **FD-derived "body proves it" is a different proof.** Separate from base-table
 covering, `coverage-prover.ts` exposes `proveEffectiveKeyUnique`, which proves the
@@ -609,9 +733,9 @@ two `x = 5` base rows into one output row) and so cannot witness a base-table
 and [Lenses § the constraint-role split](lens.md).
 
 Deferred follow-ups: `covering-structure-mv-rowtime-enforcement` (route
-enforcement through a covering MV, blocked on
-`materialized-view-rowtime-write-through`) and
-`coverage-prover-inner-join-fk-preservation` (admit an `inner`/`cross` lookup
+enforcement through a covering MV — its prereq, `materialized-view-rowtime-write-through`,
+is now **delivered** for the covering-index shape, see [Row-time refresh](#row-time-refresh))
+and `coverage-prover-inner-join-fk-preservation` (admit an `inner`/`cross` lookup
 join when enforced referential integrity — a NOT-NULL FK aligned with the
 equi-pairs — proves every `T` row matches, closing the no-row-loss obligation
 the outer-join path gets structurally). Multi-source (join) bodies on the
@@ -642,8 +766,15 @@ tracked separately and build on this substrate:
   cascading-MV convergence
   (`materialized-view-incremental-cascading-convergence`), and the
   `getChangeScope()` source projection (`materialized-view-incremental-changescope`).
-- **Write-through** (`materialized-view-writes-through-body`) — accept DML
+- **Row-time write-through** — *delivered* for the covering-index shape
+  (`with refresh = 'row-time'`; see [Row-time refresh](#row-time-refresh)). General
+  bodies (joins, aggregates, recursion, set ops) are parked in
+  `materialized-view-rowtime-general-bodies`; routing row-time UNIQUE enforcement
+  through the maintained backing table is `covering-structure-mv-rowtime-enforcement`.
+- **Write-through DML** (`materialized-view-writes-through-body`) — accept DML
   against an MV and propagate to sources via [view updateability](view-updateability.md).
+  (Distinct from row-time *maintenance* above: this is writing *the MV*, not
+  keeping it in sync with source writes.)
 - **Backing-module pluggability** — honor `USING <module>(...)` so the stored
   relation can live in a module other than the in-memory table.
 - **Lens / covering structures** — indexes and set-level constraint enforcement

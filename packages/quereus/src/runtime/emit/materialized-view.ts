@@ -7,7 +7,7 @@ import type { Instruction, RuntimeContext } from '../types.js';
 import type { EmissionContext } from '../emission-context.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type SqlValue, type Row } from '../../common/types.js';
-import type { MaterializedViewSchema } from '../../schema/view.js';
+import type { MaterializedViewSchema, RefreshPolicy } from '../../schema/view.js';
 import { backingTableNameFor } from '../../schema/view.js';
 import { astToString } from '../../emit/ast-stringify.js';
 import {
@@ -22,6 +22,16 @@ import {
 	unlinkCoveredUniqueConstraints,
 	materializedViewNotASetError,
 } from './materialized-view-helpers.js';
+
+/** Map the parsed `with refresh = '...'` literal onto a {@link RefreshPolicy} kind
+ *  (absent ⇒ `manual`). */
+function refreshPolicyKind(policy: CreateMaterializedViewNode['refreshPolicy']): RefreshPolicy['kind'] {
+	switch (policy) {
+		case 'on-commit-incremental': return 'on-commit-incremental';
+		case 'row-time': return 'row-time';
+		default: return 'manual';
+	}
+}
 
 export function emitCreateMaterializedView(plan: CreateMaterializedViewNode, _ctx: EmissionContext): Instruction {
 	async function run(rctx: RuntimeContext): Promise<SqlValue> {
@@ -78,7 +88,7 @@ export function emitCreateMaterializedView(plan: CreateMaterializedViewNode, _ct
 			sourceTables: shape.sourceTables,
 			stale: false,
 			origin: 'explicit',
-			refreshPolicy: { kind: plan.refreshPolicy === 'on-commit-incremental' ? 'on-commit-incremental' : 'manual' },
+			refreshPolicy: { kind: refreshPolicyKind(plan.refreshPolicy) },
 		};
 		// Eagerly record the constraint↔structure link if this MV covers a UNIQUE
 		// constraint (informational — enforcement still routes through the

@@ -7,7 +7,10 @@ back), **`Database.watch` reactive signals** (post-commit, fire-and-forget), and
 `apply` *writes* a backing table — see
 [Third consumer](#third-consumer-materializedviewmanager)). Manual-refresh
 materialized views ([Materialized Views](materialized-views.md)) still
-re-materialize in full on `REFRESH` and do not consume this kernel. Still to come
+re-materialize in full on `REFRESH` and do not consume this kernel; **`row-time`**
+materialized views are maintained *synchronously at the DML boundary*, also off
+this kernel — see [Row-time write-through](#row-time-write-through-synchronous-off-the-kernel).
+Still to come
 — covering structures (indexes / unique-constraint enforcement) and triggers —
 all of which plug into the same surface without reinventing change capture or
 binding-key analysis. The [lens layer](lens.md) routes set-level constraint
@@ -305,6 +308,34 @@ reset at the top of `runPostCommit`:
   rebuild failed) records nothing — see the cascading-divergence caveat in
   [Materialized Views § Limitations](materialized-views.md#limitations).
 
+## Row-time write-through (synchronous, off the kernel)
+
+A `row-time` materialized view ([Materialized Views § Row-time refresh](materialized-views.md#row-time-refresh))
+is **not** a kernel consumer. The post-commit `DeltaExecutor` path above defers a
+*delta computed from the change log* to COMMIT; row-time instead maintains the
+backing table **synchronously, within the writing transaction**, driven from the
+runtime DML write boundary (`runtime/emit/dml-executor.ts`) immediately after each
+`_recordInsert/_recordUpdate/_recordDelete`. The distinction matters:
+
+- **No `DeltaSubscription`, no residual scheduler, no change-log read.** Row-time
+  is gated to the covering-index shape, where each source row maps to exactly one
+  backing row, so the per-row backing delta is a pure projection of the changed
+  row (delete old image's key, upsert new image) — bounded O(log n), no body
+  re-execution. The `MaterializedViewManager` holds these plans in a separate map
+  keyed by source base (`maintainRowTime`), not in the incremental subscription
+  set.
+- **In-transaction, reads-own-writes, no `pendingDelta` overlay.** The write goes
+  to the backing table's *pending* `TransactionLayer` through the same connection a
+  `select` from the MV uses (via `MemoryTableManager.applyMaintenanceToLayer`), so
+  a later read in the same transaction sees it for free — the row-time analogue of,
+  and replacement for, the post-commit `pendingDelta` cascade overlay. It commits /
+  rolls back in lockstep with the source write via the coordinated commit.
+
+So the post-commit `pendingDelta` overlay and `globallyChangedBacking` machinery
+above are specific to the *post-commit* (`on-commit-incremental`) cascade; row-time
+needs neither because the shared transaction layer already gives it
+reads-own-writes within the commit.
+
 ## Plug-in pattern for future consumers
 
 A new consumer follows the same shape — `Database.watch` and the
@@ -363,6 +394,6 @@ const dispose = deltaExecutor.register({
 - Public reactive API: [Change-scope Documentation](change-scope.md)
 - Layered schemas / lenses: [Lenses and Layered Schemas](lens.md)
 - Source: `src/planner/analysis/binding-extractor.ts`, `src/planner/analysis/key-filter.ts`, `src/runtime/delta-executor.ts`, `src/core/database-transaction.ts`, `src/core/database-assertions.ts`, `src/core/database-watchers.ts`, `src/core/database-materialized-views.ts`
-- Keyed derived relations / covering structures: [Materialized Views](materialized-views.md) (manual full-refresh + `on-commit-incremental` maintenance)
+- Keyed derived relations / covering structures: [Materialized Views](materialized-views.md) (manual full-refresh, `on-commit-incremental`, and synchronous `row-time` write-through maintenance)
 - Cross-process reactive transport: out of scope here; see the sync packages
   under `packages/quereus-sync-*`.

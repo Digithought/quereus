@@ -1237,6 +1237,55 @@ export class MemoryTableManager {
 	}
 
 	/**
+	 * Privileged **transactional** maintenance write: apply an ordered
+	 * {@link MaintenanceOp} batch to a given connection's *pending*
+	 * {@link TransactionLayer} (creating it lazily, exactly as a user write would).
+	 * This is the transaction-layer analogue of {@link applyMaintenance} (which
+	 * mutates the committed base): the row-time materialized-view maintenance path
+	 * uses it so a covering structure's backing table is kept consistent
+	 * synchronously with each source row-write — within the same transaction,
+	 * visible to later reads on this connection (reads-own-writes), and
+	 * committed/rolled-back in lockstep with the source write by the Database's
+	 * coordinated commit.
+	 *
+	 * Like {@link applyMaintenance}, it deliberately bypasses
+	 * {@link validateMutationPermissions} (which throws READONLY for MV backing
+	 * tables) and reuses {@link TransactionLayer.recordUpsert} /
+	 * {@link TransactionLayer.recordDelete} so secondary-index and change-tracking
+	 * bookkeeping stay correct. No latch is taken: the pending layer is private to
+	 * `connection`, only this synchronous path writes it, and the tree mutations are
+	 * synchronous — so a multi-row statement's later rows observe earlier rows'
+	 * pending writes with no interleaving.
+	 */
+	applyMaintenanceToLayer(connection: MemoryTableConnection, ops: readonly MaintenanceOp[]): void {
+		if (ops.length === 0) return;
+		this.ensureTransactionLayer(connection);
+		const layer = connection.pendingTransactionLayer!;
+		for (const op of ops) {
+			switch (op.kind) {
+				case 'delete-key': {
+					const existing = this.lookupEffectiveRow(op.key, layer);
+					if (existing) layer.recordDelete(op.key, existing);
+					break;
+				}
+				case 'upsert': {
+					const key = this.primaryKeyFunctions.extractFromRow(op.row);
+					const existing = this.lookupEffectiveRow(key, layer);
+					layer.recordUpsert(key, op.row, existing);
+					break;
+				}
+				case 'delete-by-prefix':
+					// Row-time maintenance (covering-index shape) is one-source-row →
+					// one-backing-row, so it never emits a fan-out prefix delete.
+					throw new QuereusError(
+						`delete-by-prefix is not supported by transactional row-time maintenance`,
+						StatusCode.INTERNAL,
+					);
+			}
+		}
+	}
+
+	/**
 	 * Delete every committed base-layer row whose leading `prefixLength` primary-key
 	 * columns equal `prefix`. The fan-out half of the lateral-TVF maintenance op:
 	 * one base-row change maps to many backing rows sharing a base-PK prefix.

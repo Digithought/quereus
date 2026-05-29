@@ -1740,6 +1740,27 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		this.materializedViewManager.unregisterMaterializedView(schemaName, name);
 	}
 
+	/** @internal Cheap synchronous guard for the per-row DML maintenance hook: true
+	 *  iff a `row-time` covering structure reads `sourceBase` (lowercased or raw
+	 *  `schema.table`). Lets a hot write path skip the maintenance call entirely when
+	 *  no row-time MV depends on the written table. */
+	public _hasRowTimeCoveringStructures(sourceBase: string): boolean {
+		return this.materializedViewManager.hasRowTimePlanFor(sourceBase);
+	}
+
+	/** @internal Synchronously maintain every `row-time` covering structure on
+	 *  `sourceBase` for one source row-write, before the writing statement observes
+	 *  its own effects. Drives a per-row backing delta through the backing table's
+	 *  coordinated transactional connection (reads-own-writes within the txn;
+	 *  committed/rolled-back in lockstep with the source write). See
+	 *  `database-materialized-views.ts` § row-time write-through. */
+	public async _maintainRowTimeCoveringStructures(
+		sourceBase: string,
+		change: { op: 'insert' | 'update' | 'delete'; oldRow?: Row; newRow?: Row },
+	): Promise<void> {
+		await this.materializedViewManager.maintainRowTime(sourceBase, change);
+	}
+
 	/** @internal Test-only: install (or clear, with `undefined`) a fault injector
 	 *  on the incremental materialized-view maintenance path. Throwing from the
 	 *  injector simulates a failure at the given phase so the two-tier recovery
