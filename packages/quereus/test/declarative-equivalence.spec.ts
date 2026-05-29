@@ -806,6 +806,80 @@ describe('declarative-equivalence: materialized views', () => {
 		});
 	});
 
+	it('explicit column-list MV round-trips and renames the body columns', async function () {
+		await runCase({
+			name: 'mv-roundtrip-collist',
+			directDDL: [
+				'create table t (id integer primary key, x integer not null)',
+				'create materialized view mv (a, b) as select id, x from t',
+			],
+			declarativeBody: `table t { id INTEGER PRIMARY KEY, x INTEGER NOT NULL }
+
+			materialized view mv (a, b) as select id, x from t`,
+			expectTables: ['t'],
+			expectMaterializedViews: ['mv'],
+			postSetup: [
+				'insert into t values (1, 10), (2, 20)',
+				'refresh materialized view mv',
+			],
+			probes: [
+				{
+					sql: 'select a, b from mv order by a',
+					expect: { rows: [{ a: 1, b: 10 }, { a: 2, b: 20 }] },
+				},
+			],
+		});
+	});
+
+	it('tagged MV round-trips and the schema hash is tag-invariant', async function () {
+		await runCase({
+			name: 'mv-roundtrip-tagged',
+			directDDL: [
+				'create table t (id integer primary key, x integer not null)',
+				`create materialized view mv as select id, x from t with tags (owner = 'analytics')`,
+			],
+			declarativeBody: `table t { id INTEGER PRIMARY KEY, x INTEGER NOT NULL }
+
+			materialized view mv as select id, x from t with tags (owner = 'analytics')`,
+			expectTables: ['t'],
+			// assertMaterializedViewSchemaEqual compares tags, so a dropped/garbled
+			// tag would fail the round-trip here.
+			expectMaterializedViews: ['mv'],
+			probes: [
+				{ sql: 'select count(*) as n from mv', expect: { rows: [{ n: 0 }] } },
+			],
+		});
+
+		// Tags are non-behavioral metadata: a tagged MV and an otherwise-identical
+		// untagged MV must hash the same, and re-applying the tagged schema is a no-op.
+		const tagged = new Database();
+		const untagged = new Database();
+		try {
+			await tagged.exec(`declare schema main {
+				table t { id INTEGER PRIMARY KEY, x INTEGER NOT NULL }
+				materialized view mv as select id, x from t with tags (owner = 'analytics')
+			}`);
+			await tagged.exec('apply schema main');
+			await untagged.exec(`declare schema main {
+				table t { id INTEGER PRIMARY KEY, x INTEGER NOT NULL }
+				materialized view mv as select id, x from t
+			}`);
+			const hTagged = computeSchemaHash(tagged.declaredSchemaManager.getDeclaredSchema('main')!);
+			const hUntagged = computeSchemaHash(untagged.declaredSchemaManager.getDeclaredSchema('main')!);
+			expect(hTagged, 'tags must not perturb the schema hash').to.equal(hUntagged);
+
+			const diff = computeSchemaDiff(
+				tagged.declaredSchemaManager.getDeclaredSchema('main')!,
+				collectSchemaCatalog(tagged, 'main'),
+			);
+			expect(diff.materializedViewsToCreate, 'tagged unchanged MV should not recreate').to.deep.equal([]);
+			expect(diff.materializedViewsToDrop, 'tagged unchanged MV should not drop').to.deep.equal([]);
+		} finally {
+			await tagged.close();
+			await untagged.close();
+		}
+	});
+
 	it('changing the MV body triggers a drop+recreate rebuild on re-apply', async function () {
 		const db = new Database();
 		try {
