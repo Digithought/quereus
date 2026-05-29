@@ -14,7 +14,7 @@ import { StatusCode } from '../../common/types.js';
  * would re-drive writes on every read, which is incoherent with view
  * semantics. Mutations must be expressed in the query that *uses* the view.
  */
-function planViewBody(ctx: PlanningContext, viewName: string, body: AST.QueryExpr): RelationalPlanNode {
+export function planViewBody(ctx: PlanningContext, viewName: string, body: AST.QueryExpr): RelationalPlanNode {
 	switch (body.type) {
 		case 'select': {
 			const planned = buildSelectStmt(ctx, body);

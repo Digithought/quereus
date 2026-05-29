@@ -19,7 +19,7 @@ import { DmlExecutorNode } from '../nodes/dml-executor-node.js';
 import { buildConstraintChecks } from './constraint-builder.js';
 import { buildParentSideFKChecks } from './foreign-key-builder.js';
 import { validateReturningQualifiers } from '../validation/returning-qualifier-validator.js';
-import { isCommittedSchemaRef } from './schema-resolution.js';
+import { isCommittedSchemaRef, assertNotMaterializedView } from './schema-resolution.js';
 
 export function buildDeleteStmt(
   ctx: PlanningContext,
@@ -29,6 +29,9 @@ export function buildDeleteStmt(
   if (isCommittedSchemaRef(stmt.table.schema)) {
     throw new QuereusError(`Cannot modify committed-state table 'committed.${stmt.table.name}'`, StatusCode.ERROR);
   }
+
+  // Materialized views are read-only — reject before resolving the target.
+  assertNotMaterializedView(ctx, stmt.table.name, stmt.table.schema);
 
   // Apply schema path from statement if present
   const contextWithSchemaPath = stmt.schemaPath

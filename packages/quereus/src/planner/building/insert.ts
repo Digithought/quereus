@@ -26,7 +26,7 @@ import { buildConstraintChecks, buildNotNullDefaults } from './constraint-builde
 import { buildChildSideFKChecks } from './foreign-key-builder.js';
 import { validateDeterministicDefault, validateDeterministicGenerated } from '../validation/determinism-validator.js';
 import { validateReturningQualifiers } from '../validation/returning-qualifier-validator.js';
-import { isCommittedSchemaRef } from './schema-resolution.js';
+import { isCommittedSchemaRef, assertNotMaterializedView } from './schema-resolution.js';
 
 /**
  * Creates a uniform row expansion projection that maps any relational source
@@ -373,6 +373,9 @@ export function buildInsertStmt(
 	if (isCommittedSchemaRef(stmt.table.schema)) {
 		throw new QuereusError(`Cannot modify committed-state table 'committed.${stmt.table.name}'`, StatusCode.ERROR);
 	}
+
+	// Materialized views are read-only — reject before resolving the target.
+	assertNotMaterializedView(ctx, stmt.table.name, stmt.table.schema);
 
 	const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, contextWithSchemaPath);
 	const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode

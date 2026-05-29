@@ -8,6 +8,11 @@ import { buildCreateIndexStmt } from './ddl.js';
 import { buildDropTableStmt } from './drop-table.js';
 import { buildCreateViewStmt } from './create-view.js';
 import { buildDropViewStmt } from './drop-view.js';
+import {
+	buildCreateMaterializedViewStmt,
+	buildRefreshMaterializedViewStmt,
+	buildDropMaterializedViewStmt,
+} from './materialized-view.js';
 import { buildCreateAssertionStmt } from './create-assertion.js';
 import { buildDropAssertionStmt } from './drop-assertion.js';
 import { buildDropIndexStmt } from './drop-index.js';
@@ -35,6 +40,10 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 				return buildCreateIndexStmt(ctx, stmt as AST.CreateIndexStmt);
 			case 'createView':
 				return buildCreateViewStmt(ctx, stmt as AST.CreateViewStmt);
+			case 'createMaterializedView':
+				return buildCreateMaterializedViewStmt(ctx, stmt as AST.CreateMaterializedViewStmt);
+			case 'refreshMaterializedView':
+				return buildRefreshMaterializedViewStmt(ctx, stmt as AST.RefreshMaterializedViewStmt);
 			case 'createAssertion':
 				return buildCreateAssertionStmt(ctx, stmt as AST.CreateAssertionStmt);
 			case 'drop': {
@@ -43,6 +52,8 @@ export function buildBlock(ctx: PlanningContext, statements: AST.Statement[]): B
 					return buildDropTableStmt(ctx, dropStmt);
 				} else if (dropStmt.objectType === 'view') {
 					return buildDropViewStmt(ctx, dropStmt);
+				} else if (dropStmt.objectType === 'materializedView') {
+					return buildDropMaterializedViewStmt(ctx, dropStmt);
 				} else if (dropStmt.objectType === 'assertion') {
 					return buildDropAssertionStmt(ctx, dropStmt);
 				} else if (dropStmt.objectType === 'index') {

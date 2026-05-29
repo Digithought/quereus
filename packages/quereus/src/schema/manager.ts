@@ -9,7 +9,7 @@ import type { AnyVirtualTableModule, BaseModuleConfig } from '../vtab/module.js'
 import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
 import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, mutationContextVarToSchema, extractGeneratedColumnDependencies, topoSortGeneratedColumns } from './table.js';
-import type { ViewSchema } from './view.js';
+import type { ViewSchema, MaterializedViewSchema } from './view.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
 import { Parser } from '../parser/parser.js';
@@ -365,6 +365,7 @@ export class SchemaManager {
 			schema.clearFunctions();
 			schema.clearTables();
 			schema.clearViews();
+			schema.clearMaterializedViews();
 			schema.clearAssertions();
 			this.schemas.delete(lowerName);
 			log(`Removed schema '%s'`, name);
@@ -462,6 +463,49 @@ export class SchemaManager {
 		const targetSchemaName = (schemaName ?? this.currentSchemaName).toLowerCase();
 		const schema = this.schemas.get(targetSchemaName);
 		return schema?.getView(viewName);
+	}
+
+	/**
+	 * Retrieves a materialized view schema definition.
+	 *
+	 * @param schemaName The schema name ('main', etc.). Defaults to current schema
+	 * @param name The materialized view name
+	 */
+	getMaterializedView(schemaName: string | null, name: string): MaterializedViewSchema | undefined {
+		const targetSchemaName = (schemaName ?? this.currentSchemaName).toLowerCase();
+		const schema = this.schemas.get(targetSchemaName);
+		return schema?.getMaterializedView(name);
+	}
+
+	/**
+	 * Returns all materialized views across all schemas.
+	 */
+	getAllMaterializedViews(): MaterializedViewSchema[] {
+		const result: MaterializedViewSchema[] = [];
+		for (const schema of this.schemas.values()) {
+			for (const mv of schema.getAllMaterializedViews()) result.push(mv);
+		}
+		return result;
+	}
+
+	/**
+	 * Registers a materialized view definition in the target schema.
+	 */
+	addMaterializedView(mv: MaterializedViewSchema): void {
+		const schema = this.getSchemaOrFail(mv.schemaName);
+		schema.addMaterializedView(mv);
+	}
+
+	/**
+	 * Removes a materialized view definition from the catalog (does NOT drop its
+	 * backing table — the caller drops that separately so `table_removed` fires).
+	 *
+	 * @returns true if found and removed, false otherwise
+	 */
+	removeMaterializedView(schemaName: string, name: string): boolean {
+		const schema = this.schemas.get(schemaName.toLowerCase());
+		if (!schema) return false;
+		return schema.removeMaterializedView(name);
 	}
 
 	/**
@@ -686,6 +730,7 @@ export class SchemaManager {
 			schema.clearTables();
 			schema.clearFunctions();
 			schema.clearViews();
+			schema.clearMaterializedViews();
 			schema.clearAssertions();
 		});
 		log("Cleared all schemas.");
@@ -1517,6 +1562,70 @@ export class SchemaManager {
 
 		schema.addTable(completeTableSchema);
 		log(`Successfully created table %s.%s using module %s`, targetSchemaName, tableName, moduleName);
+
+		this.changeNotifier.notifyChange({
+			type: 'table_added',
+			schemaName: targetSchemaName,
+			objectName: tableName,
+			newObject: completeTableSchema
+		});
+
+		this.emitAutoSchemaEventIfNeeded(moduleName, {
+			type: 'create',
+			objectType: 'table',
+			schemaName: targetSchemaName,
+			objectName: tableName,
+		});
+
+		return completeTableSchema;
+	}
+
+	/**
+	 * Creates a backing table from a pre-built `TableSchema` rather than a
+	 * CREATE TABLE AST. Used by materialized views, whose backing-table columns
+	 * and primary key are derived from the optimized body relation (carrying
+	 * full {@link import('../common/datatype.js').ScalarType} fidelity that a
+	 * round-trip through SQL type strings would lose).
+	 *
+	 * Reuses the same internal sequence as {@link createTable} — `module.create`
+	 * → `finalizeCreatedTableSchema` → `addTable` → `table_added` notify — so the
+	 * backing table behaves like any other table. The supplied schema must carry
+	 * `vtabModule`/`vtabModuleName` (typically `memory`).
+	 */
+	async createBackingTable(tableSchema: TableSchema): Promise<TableSchema> {
+		const targetSchemaName = tableSchema.schemaName;
+		const tableName = tableSchema.name;
+
+		const schema = this.getSchema(targetSchemaName);
+		if (!schema) {
+			throw new QuereusError(`Internal error: Schema '${targetSchemaName}' not found.`, StatusCode.INTERNAL);
+		}
+
+		if (schema.getTable(tableName) || schema.getView(tableName)) {
+			throw new QuereusError(`Backing table ${targetSchemaName}.${tableName} already exists`, StatusCode.CONSTRAINT);
+		}
+
+		const moduleName = tableSchema.vtabModuleName;
+		const moduleInfo = this.getModule(moduleName);
+		if (!moduleInfo || !moduleInfo.module) {
+			throw new QuereusError(`No virtual table module named '${moduleName}'`, StatusCode.ERROR);
+		}
+
+		let tableInstance: VirtualTable;
+		try {
+			tableInstance = await moduleInfo.module.create(this.db, tableSchema);
+		} catch (e: unknown) {
+			const message = e instanceof Error ? e.message : String(e);
+			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;
+			throw new QuereusError(`Module '${moduleName}' create failed for backing table '${tableName}': ${message}`, code, e instanceof Error ? e : undefined);
+		}
+
+		const completeTableSchema = this.finalizeCreatedTableSchema(
+			tableInstance, tableName, targetSchemaName, moduleName, tableSchema.vtabArgs ?? {}, moduleInfo
+		);
+
+		schema.addTable(completeTableSchema);
+		log(`Successfully created backing table %s.%s using module %s`, targetSchemaName, tableName, moduleName);
 
 		this.changeNotifier.notifyChange({
 			type: 'table_added',

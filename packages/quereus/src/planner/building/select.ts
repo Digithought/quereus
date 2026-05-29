@@ -387,6 +387,7 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 			// Check if this is a view
 			const schemaName = fromClause.table.schema || parentContext.db.schemaManager.getCurrentSchemaName();
 			const viewSchema = parentContext.db.schemaManager.getView(schemaName, fromClause.table.name);
+			const mvSchema = viewSchema ? undefined : parentContext.db.schemaManager.getMaterializedView(schemaName, fromClause.table.name);
 
 			if (viewSchema) {
 				// Build the view's body. The body is a QueryExpr — today only
@@ -436,6 +437,43 @@ export function buildFrom(fromClause: AST.FromClause, parentContext: PlanningCon
 				} else {
 					fromTable = viewSelectNode;
 				}
+
+				columnScope = registerColumnScope(parentContext.scope, fromTable, fromClause.table.name.toLowerCase(), fromClause.alias?.toLowerCase() ?? fromClause.table.name.toLowerCase());
+			} else if (mvSchema) {
+				// Materialized view: resolve to a reference against the BACKING TABLE
+				// (not a body expansion). The optimizer then sees the backing table's
+				// physical-property surface and `getChangeScope()` reports it.
+				if (mvSchema.stale) {
+					// Re-validate the body against current source schemas. An
+					// incompatible change (dropped source, dropped column, …) makes
+					// the body fail to plan — surface the staleness diagnostic.
+					try {
+						if (mvSchema.selectAst.type === 'select') {
+							buildSelectStmt(parentContext, mvSchema.selectAst, cteNodes);
+						} else if (mvSchema.selectAst.type === 'values') {
+							buildValuesStmt(parentContext, mvSchema.selectAst);
+						}
+					} catch (e) {
+						const message = e instanceof Error ? e.message : String(e);
+						throw new QuereusError(
+							`materialized view '${fromClause.table.name}' is stale; a source changed in an incompatible way — drop and recreate (${message})`,
+							StatusCode.ERROR,
+							e instanceof Error ? e : undefined,
+						);
+					}
+				}
+
+				const backingFrom: AST.TableSource = {
+					type: 'table',
+					table: { type: 'identifier', name: mvSchema.backingTableName, schema: schemaName },
+				};
+				let tableNode: RelationalPlanNode = buildTableReference(backingFrom, parentContext);
+
+				if (fromClause.alias) {
+					tableNode = new AliasNode(parentContext.scope, tableNode, fromClause.alias.toLowerCase());
+				}
+
+				fromTable = tableNode;
 
 				columnScope = registerColumnScope(parentContext.scope, fromTable, fromClause.table.name.toLowerCase(), fromClause.alias?.toLowerCase() ?? fromClause.table.name.toLowerCase());
 			} else {

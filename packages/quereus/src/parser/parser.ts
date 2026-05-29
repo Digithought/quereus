@@ -346,6 +346,7 @@ export class Parser {
 			case 'DELETE': this.advance(); stmt = this.deleteStatement(startToken, withClause); break;
 			case 'VALUES': this.advance(); stmt = this.valuesStatementWithOptionalCompound(startToken, withClause); break;
 			case 'CREATE': this.advance(); stmt = this.createStatement(startToken, withClause); break;
+			case 'REFRESH': this.advance(); stmt = this.refreshStatement(startToken, withClause); break;
 			case 'DROP': this.advance(); stmt = this.dropStatement(startToken, withClause); break;
 			case 'ALTER': this.advance(); stmt = this.alterTableStatement(startToken, withClause); break;
 			case 'BEGIN': this.advance(); stmt = this.beginStatement(startToken, withClause); break;
@@ -2254,7 +2255,7 @@ export class Parser {
 	}
 
 	/** @internal */
-	private createStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt | AST.CreateAssertionStmt {
+	private createStatement(startToken: Token, withClause?: AST.WithClause): AST.CreateTableStmt | AST.CreateIndexStmt | AST.CreateViewStmt | AST.CreateMaterializedViewStmt | AST.CreateAssertionStmt {
 		let isTemporary = false;
 		if (this.peekKeyword('TEMP') || this.peekKeyword('TEMPORARY')) {
 			isTemporary = true;
@@ -2267,6 +2268,10 @@ export class Parser {
 		} else if (this.peekKeyword('VIEW')) {
 			this.consumeKeyword('VIEW', "Expected 'VIEW' after CREATE.");
 			return this.createViewStatement(startToken, isTemporary, withClause);
+		} else if (this.peekKeyword('MATERIALIZED')) {
+			this.consumeKeyword('MATERIALIZED', "Expected 'MATERIALIZED' after CREATE.");
+			this.consumeKeyword('VIEW', "Expected 'VIEW' after CREATE MATERIALIZED.");
+			return this.createMaterializedViewStatement(startToken, isTemporary, withClause);
 		} else if (isTemporary) {
 			throw this.error(this.peek(), "Expected TABLE or VIEW after CREATE TEMP/TEMPORARY.");
 		} else if (this.peekKeyword('INDEX')) {
@@ -2280,7 +2285,7 @@ export class Parser {
 			this.consumeKeyword('INDEX', "Expected 'INDEX' after CREATE UNIQUE.");
 			return this.createIndexStatement(startToken, true, withClause);
 		}
-		throw this.error(this.peek(), "Expected TABLE, [UNIQUE] INDEX, VIEW, ASSERTION, or VIRTUAL after CREATE.");
+		throw this.error(this.peek(), "Expected TABLE, [UNIQUE] INDEX, VIEW, MATERIALIZED VIEW, ASSERTION, or VIRTUAL after CREATE.");
 	}
 
 	/**
@@ -2511,6 +2516,106 @@ export class Parser {
 	}
 
 	/**
+	 * Parse CREATE MATERIALIZED VIEW statement.
+	 *
+	 * Syntax: `create materialized view <name> [(cols)] [using <module>(args)] as <query-expr> [with tags ...]`.
+	 * The optional `using` clause is parsed before `as` to stay unambiguous with the query body;
+	 * v1 restricts the backing module to `memory` at build time (the AST keeps the slot forward-compatible).
+	 */
+	private createMaterializedViewStatement(startToken: Token, isTemporary: boolean, withClause?: AST.WithClause): AST.CreateMaterializedViewStmt {
+		let ifNotExists = false;
+		if (this.matchKeyword('IF')) {
+			this.consumeKeyword('NOT', "Expected 'NOT' after 'IF'.");
+			this.consumeKeyword('EXISTS', "Expected 'EXISTS' after 'IF NOT'.");
+			ifNotExists = true;
+		}
+
+		const view = this.tableIdentifier();
+
+		let columns: string[] | undefined;
+		if (this.check(TokenType.LPAREN)) {
+			this.consume(TokenType.LPAREN, "Expected '(' to start view column list.");
+			columns = [];
+			if (!this.check(TokenType.RPAREN)) {
+				do {
+					columns.push(this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name in view column list."));
+				} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
+			}
+			this.consume(TokenType.RPAREN, "Expected ')' after view column list.");
+		}
+
+		// Optional backing-module clause (`using mem(...)`) before the body.
+		let moduleName: string | undefined;
+		const moduleArgs: Record<string, SqlValue> = {};
+		if (this.matchKeyword('USING')) {
+			moduleName = this.consumeIdentifier("Expected module name after 'USING'.");
+			if (this.match(TokenType.LPAREN)) {
+				let positionalIndex = 0;
+				if (!this.check(TokenType.RPAREN)) {
+					do {
+						if (this.check(TokenType.STRING) || this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT)) {
+							const token = this.advance();
+							moduleArgs[String(positionalIndex++)] = token.literal;
+						} else if (this.check(TokenType.IDENTIFIER)) {
+							const nameValue = this.nameValueItem('module argument');
+							moduleArgs[nameValue.name] = nameValue.value && nameValue.value.type === 'literal'
+								? getSyncLiteral(nameValue.value)
+								: (nameValue.value && nameValue.value.type === 'identifier' ? nameValue.value.name : nameValue.name);
+						} else {
+							throw this.error(this.peek(), "Expected module argument (string, number, or name=value pair).");
+						}
+					} while (this.match(TokenType.COMMA));
+				}
+				this.consume(TokenType.RPAREN, "Expected ')' after module arguments.");
+			}
+		}
+
+		this.consumeKeyword('AS', "Expected 'AS' before view body in CREATE MATERIALIZED VIEW.");
+
+		// Body is any QueryExpr — bare SELECT / VALUES / WITH … SELECT all qualify.
+		// DML bodies parse here but the planner rejects them.
+		const select = this.parseQueryExpr(withClause, /*requireReturning*/ true);
+
+		// Parse optional WITH TAGS
+		let tags: Record<string, SqlValue> | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('TAGS')) {
+				tags = this.parseTags();
+			} else {
+				this.current--;
+			}
+		}
+
+		return {
+			type: 'createMaterializedView',
+			view,
+			ifNotExists,
+			columns,
+			select,
+			moduleName,
+			moduleArgs: moduleName && Object.keys(moduleArgs).length > 0 ? moduleArgs : undefined,
+			isTemporary,
+			tags,
+			loc: _createLoc(startToken, this.previous()),
+		};
+	}
+
+	/**
+	 * Parse REFRESH MATERIALIZED VIEW statement.
+	 * Syntax: `refresh materialized view <name>`.
+	 */
+	private refreshStatement(startToken: Token, _withClause?: AST.WithClause): AST.RefreshMaterializedViewStmt {
+		this.consumeKeyword('MATERIALIZED', "Expected 'MATERIALIZED' after REFRESH.");
+		this.consumeKeyword('VIEW', "Expected 'VIEW' after REFRESH MATERIALIZED.");
+		const name = this.tableIdentifier();
+		return {
+			type: 'refreshMaterializedView',
+			name,
+			loc: _createLoc(startToken, this.previous()),
+		};
+	}
+
+	/**
 	 * Parse CREATE ASSERTION statement
 	 * @returns AST for CREATE ASSERTION
 	 */
@@ -2537,11 +2642,15 @@ export class Parser {
 	 * @returns AST for DROP statement
 	 */
 	private dropStatement(startToken: Token, _withClause?: AST.WithClause): AST.DropStmt {
-		let objectType: 'table' | 'view' | 'index' | 'trigger' | 'assertion';
+		let objectType: 'table' | 'view' | 'materializedView' | 'index' | 'trigger' | 'assertion';
 
 		if (this.peekKeyword('TABLE')) {
 			this.consumeKeyword('TABLE', "Expected TABLE after DROP.");
 			objectType = 'table';
+		} else if (this.peekKeyword('MATERIALIZED')) {
+			this.consumeKeyword('MATERIALIZED', "Expected MATERIALIZED after DROP.");
+			this.consumeKeyword('VIEW', "Expected VIEW after DROP MATERIALIZED.");
+			objectType = 'materializedView';
 		} else if (this.peekKeyword('VIEW')) {
 			this.consumeKeyword('VIEW', "Expected VIEW after DROP.");
 			objectType = 'view';
@@ -2552,7 +2661,7 @@ export class Parser {
 			this.consumeKeyword('ASSERTION', "Expected ASSERTION after DROP.");
 			objectType = 'assertion';
 		} else {
-			throw this.error(this.peek(), "Expected TABLE, VIEW, INDEX, or ASSERTION after DROP.");
+			throw this.error(this.peek(), "Expected TABLE, VIEW, MATERIALIZED VIEW, INDEX, or ASSERTION after DROP.");
 		}
 
 		let ifExists = false;

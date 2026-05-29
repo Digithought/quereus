@@ -13,6 +13,11 @@ import { emitDropTable } from './emit/drop-table.js';
 import { emitDropIndex } from './emit/drop-index.js';
 import { emitCreateView } from './emit/create-view.js';
 import { emitDropView } from './emit/drop-view.js';
+import {
+	emitCreateMaterializedView,
+	emitRefreshMaterializedView,
+	emitDropMaterializedView,
+} from './emit/materialized-view.js';
 import { emitCreateAssertion } from './emit/create-assertion.js';
 import { emitDropAssertion } from './emit/drop-assertion.js';
 import { emitCTE } from './emit/cte.js';
@@ -133,6 +138,9 @@ export function registerEmitters() {
 	registerEmitter(PlanNodeType.DropIndex, emitDropIndex as EmitterFunc);
 	registerEmitter(PlanNodeType.CreateView, emitCreateView as EmitterFunc);
 	registerEmitter(PlanNodeType.DropView, emitDropView as EmitterFunc);
+	registerEmitter(PlanNodeType.CreateMaterializedView, emitCreateMaterializedView as EmitterFunc);
+	registerEmitter(PlanNodeType.RefreshMaterializedView, emitRefreshMaterializedView as EmitterFunc);
+	registerEmitter(PlanNodeType.DropMaterializedView, emitDropMaterializedView as EmitterFunc);
 	registerEmitter(PlanNodeType.CreateAssertion, emitCreateAssertion as EmitterFunc);
 	registerEmitter(PlanNodeType.DropAssertion, emitDropAssertion as EmitterFunc);
 	registerEmitter(PlanNodeType.Insert, emitInsert as EmitterFunc);

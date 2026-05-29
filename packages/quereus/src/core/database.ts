@@ -54,6 +54,7 @@ import {
 import { TransactionManager, type TransactionManagerContext } from './database-transaction.js';
 import { AssertionEvaluator, type AssertionEvaluatorContext } from './database-assertions.js';
 import { WatcherManager, type WatcherManagerContext } from './database-watchers.js';
+import { MaterializedViewManager } from './database-materialized-views.js';
 import type { ChangeScope, Subscription, WatchHandler } from '../planner/analysis/change-scope.js';
 import { tryGetEventEmitter } from '../vtab/events.js';
 import { Table } from './table-handle.js';
@@ -103,6 +104,8 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	private readonly assertionEvaluator: AssertionEvaluator;
 	/** Post-commit watcher dispatch */
 	private readonly watcherManager: WatcherManager;
+	/** Materialized-view schema-change staleness tracking */
+	private readonly materializedViewManager: MaterializedViewManager;
 	/** Per-database collation registry — comparator + optional key normalizer.
 	 *  The normalizer is required for index participation; comparator-only
 	 *  collations may still be used in ORDER BY but cannot back a compound index. */
@@ -134,6 +137,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		this.transactionManager = new TransactionManager(this);
 		this.assertionEvaluator = new AssertionEvaluator(this);
 		this.watcherManager = new WatcherManager(this);
+		this.materializedViewManager = new MaterializedViewManager(this.schemaManager);
 
 		// Set up option change listeners
 		this.setupOptionListeners();
@@ -813,6 +817,9 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 
 		// Clean up watcher manager (dispose all subscriptions + schema listener)
 		this.watcherManager.dispose();
+
+		// Clean up materialized-view manager (unsubscribe schema listener)
+		this.materializedViewManager.dispose();
 
 		// Clear schemas, ensuring VTabs are potentially disconnected
 		// This will also call destroy on VTabs via SchemaManager.clearAll -> schema.clearTables -> schemaManager.dropTable

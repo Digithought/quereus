@@ -18,7 +18,7 @@ import { ReturningNode } from '../nodes/returning-node.js';
 import { buildOldNewRowDescriptors } from '../../util/row-descriptor.js';
 import { buildConstraintChecks, buildNotNullDefaults } from './constraint-builder.js';
 import { buildChildSideFKChecks, buildParentSideFKChecks } from './foreign-key-builder.js';
-import { isCommittedSchemaRef } from './schema-resolution.js';
+import { isCommittedSchemaRef, assertNotMaterializedView } from './schema-resolution.js';
 import { validateDeterministicGenerated } from '../validation/determinism-validator.js';
 
 export function buildUpdateStmt(
@@ -29,6 +29,9 @@ export function buildUpdateStmt(
   if (isCommittedSchemaRef(stmt.table.schema)) {
     throw new QuereusError(`Cannot modify committed-state table 'committed.${stmt.table.name}'`, StatusCode.ERROR);
   }
+
+  // Materialized views are read-only — reject before resolving the target.
+  assertNotMaterializedView(ctx, stmt.table.name, stmt.table.schema);
 
   // Apply schema path from statement if present
   const contextWithSchemaPath = stmt.schemaPath

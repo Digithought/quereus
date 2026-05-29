@@ -9,6 +9,14 @@ export function emitDropView(plan: DropViewNode, _ctx: EmissionContext): Instruc
 		// Ensure we're in a transaction before DDL (lazy/JIT transaction start)
 		await rctx.db._ensureTransaction();
 
+		// A materialized view must be dropped with DROP MATERIALIZED VIEW.
+		if (rctx.db.schemaManager.getMaterializedView(plan.schemaName, plan.viewName)) {
+			throw new QuereusError(
+				`'${plan.viewName}' is a materialized view — use DROP MATERIALIZED VIEW`,
+				StatusCode.ERROR
+			);
+		}
+
 		// Check if view exists
 		const existingView = rctx.db.schemaManager.getView(plan.schemaName, plan.viewName);
 

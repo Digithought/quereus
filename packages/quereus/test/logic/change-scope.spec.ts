@@ -62,6 +62,21 @@ describe('Statement.getChangeScope (integration)', () => {
 		const r = scope.watches[0].scope as Extract<WatchScope, { kind: 'rows' }>;
 		expect(r.values).to.deep.equal([[99]]);
 	});
+
+	it('a materialized-view reference reports the BACKING table in its change scope', async () => {
+		// Because an MV reference resolves to a TableReference on the backing
+		// table, change-scope reports the backing table for free. Phase 2 will
+		// sharpen this to the underlying sources.
+		await db.exec('CREATE TABLE src (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+		await db.exec("INSERT INTO src VALUES (1, 'a')");
+		await db.exec('CREATE MATERIALIZED VIEW mv AS SELECT id, v FROM src');
+
+		const scope = db.prepare('select * from mv').getChangeScope();
+		const tables = scope.watches.map(w => `${w.table.schema}.${w.table.table}`);
+		expect(tables).to.deep.equal(['main.sqlite_mv_mv']);
+		// Phase 1: the source table is NOT (yet) part of the watch set.
+		expect(tables).to.not.include('main.src');
+	});
 });
 
 describe('Database.watch (integration)', () => {

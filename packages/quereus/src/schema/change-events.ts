@@ -1,6 +1,7 @@
 import type { TableSchema } from './table.js';
 import type { FunctionSchema } from './function.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
+import type { MaterializedViewSchema } from './view.js';
 import { createLogger } from '../common/logger.js';
 
 const log = createLogger('schema:change-events');
@@ -47,6 +48,19 @@ export type AssertionAddedEvent = SchemaObjectAdded<'assertion_added', Integrity
 export type AssertionRemovedEvent = SchemaObjectRemoved<'assertion_removed', IntegrityAssertionSchema>;
 export type AssertionModifiedEvent = SchemaObjectModified<'assertion_modified', IntegrityAssertionSchema>;
 
+// ── Materialized view events ───────────────────────────────────────
+
+export type MaterializedViewAddedEvent = SchemaObjectAdded<'materialized_view_added', MaterializedViewSchema>;
+export type MaterializedViewRemovedEvent = SchemaObjectRemoved<'materialized_view_removed', MaterializedViewSchema>;
+
+/** Emitted after a successful `REFRESH MATERIALIZED VIEW`. Carries the current schema. */
+export interface MaterializedViewRefreshedEvent {
+	type: 'materialized_view_refreshed';
+	schemaName: string;
+	objectName: string;
+	object: MaterializedViewSchema;
+}
+
 // ── Module / collation events (name-only payload) ──────────────────
 
 interface SchemaNameEvent<Type extends string> {
@@ -72,6 +86,9 @@ export type SchemaChangeEvent =
 	| AssertionAddedEvent
 	| AssertionRemovedEvent
 	| AssertionModifiedEvent
+	| MaterializedViewAddedEvent
+	| MaterializedViewRemovedEvent
+	| MaterializedViewRefreshedEvent
 	| ModuleAddedEvent
 	| ModuleRemovedEvent
 	| CollationAddedEvent

@@ -1,0 +1,140 @@
+-- 51-materialized-views.sqllogic — materialized view core (phase 1, manual refresh)
+
+-- ===================================
+-- 1. Initial materialization
+-- ===================================
+
+create table t (x integer primary key, y text);
+insert into t values (1, 'a'), (2, 'b'), (3, 'c');
+create materialized view mv as select x, y from t;
+
+-- MV equals the body at create time
+select * from mv order by x;
+→ [{"x":1,"y":"a"},{"x":2,"y":"b"},{"x":3,"y":"c"}]
+
+select x, y from t order by x;
+→ [{"x":1,"y":"a"},{"x":2,"y":"b"},{"x":3,"y":"c"}]
+
+-- ===================================
+-- 2. Source mutation does NOT update the MV until refresh (phase 1)
+-- ===================================
+
+insert into t values (4, 'd');
+
+-- MV still reflects create-time snapshot
+select * from mv order by x;
+→ [{"x":1,"y":"a"},{"x":2,"y":"b"},{"x":3,"y":"c"}]
+
+refresh materialized view mv;
+
+-- After refresh the new source row appears
+select * from mv order by x;
+→ [{"x":1,"y":"a"},{"x":2,"y":"b"},{"x":3,"y":"c"},{"x":4,"y":"d"}]
+
+-- ===================================
+-- 3. Read-only boundary — DML on the MV is rejected
+-- ===================================
+
+insert into mv values (9, 'z');
+-- error: read-only
+
+update mv set y = 'zz' where x = 1;
+-- error: read-only
+
+delete from mv where x = 1;
+-- error: read-only
+
+-- Source remains writable; reflected only after refresh
+insert into t values (5, 'e');
+select * from mv order by x;
+→ [{"x":1,"y":"a"},{"x":2,"y":"b"},{"x":3,"y":"c"},{"x":4,"y":"d"}]
+refresh materialized view mv;
+select * from mv order by x;
+→ [{"x":1,"y":"a"},{"x":2,"y":"b"},{"x":3,"y":"c"},{"x":4,"y":"d"},{"x":5,"y":"e"}]
+
+-- ===================================
+-- 4. Drop cascades — backing table goes away, name no longer resolves
+-- ===================================
+
+drop materialized view mv;
+
+select * from mv;
+-- error: not found
+
+drop table t;
+
+-- ===================================
+-- 5. order by in the body seeds the backing-table scan order
+-- ===================================
+
+create table ot (x integer primary key, y integer);
+insert into ot values (1, 30), (2, 10), (3, 20);
+create materialized view omv as select x, y from ot order by y;
+
+-- No explicit ORDER BY: scan follows the body's order by y
+select * from omv;
+→ [{"x":2,"y":10},{"x":3,"y":20},{"x":1,"y":30}]
+
+drop materialized view omv;
+drop table ot;
+
+-- ===================================
+-- 6. PK fallback — body with no provable key materializes on the all-columns key
+-- ===================================
+
+create table pt (x integer primary key, y text);
+insert into pt values (1, 'a'), (2, 'b'), (3, 'c');
+-- `select y from pt` projects away the key; keysOf yields no smaller key, so the
+-- backing table uses the all-columns PK. Rows are distinct, so no crash.
+create materialized view pmv as select y from pt;
+select * from pmv order by y;
+→ [{"y":"a"},{"y":"b"},{"y":"c"}]
+drop materialized view pmv;
+drop table pt;
+
+-- ===================================
+-- 7. Error paths
+-- ===================================
+
+refresh materialized view missing_mv;
+-- error: no such materialized view
+
+drop materialized view missing_mv;
+-- error: no such materialized view
+
+create table plain (id integer primary key);
+drop materialized view plain;
+-- error: not a materialized view
+
+-- DROP TABLE / DROP VIEW must not target a materialized view
+create materialized view plain_mv as select id from plain;
+drop table plain_mv;
+-- error: use DROP MATERIALIZED VIEW
+drop view plain_mv;
+-- error: use DROP MATERIALIZED VIEW
+drop materialized view plain_mv;
+drop table plain;
+
+-- ===================================
+-- 8. Schema-change staleness
+-- ===================================
+
+create table s (x integer primary key, y text);
+insert into s values (1, 'a');
+create materialized view smv as select x, y from s;
+
+-- Dropping a source makes the body unplannable → staleness diagnostic on next read
+drop table s;
+select * from smv;
+-- error: stale
+drop materialized view smv;
+
+-- An incompatible ALTER (dropping a referenced column) → staleness diagnostic
+create table s2 (x integer primary key, y text);
+insert into s2 values (1, 'a');
+create materialized view smv2 as select x, y from s2;
+alter table s2 drop column y;
+select * from smv2;
+-- error: stale
+drop materialized view smv2;
+drop table s2;

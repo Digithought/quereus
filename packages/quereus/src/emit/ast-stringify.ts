@@ -84,6 +84,10 @@ export function astToString(node: AST.AstNode): string {
 			return createIndexToString(node as AST.CreateIndexStmt);
 		case 'createView':
 			return createViewToString(node as AST.CreateViewStmt);
+		case 'createMaterializedView':
+			return createMaterializedViewToString(node as AST.CreateMaterializedViewStmt);
+		case 'refreshMaterializedView':
+			return refreshMaterializedViewToString(node as AST.RefreshMaterializedViewStmt);
 		case 'createAssertion':
 			return createAssertionToString(node as AST.CreateAssertionStmt);
 		case 'alterTable':
@@ -758,6 +762,41 @@ export function createViewToString(stmt: AST.CreateViewStmt): string {
 	return parts.join(' ');
 }
 
+export function createMaterializedViewToString(stmt: AST.CreateMaterializedViewStmt): string {
+	const parts: string[] = ['create'];
+	if (stmt.isTemporary) parts.push('temp');
+	parts.push('materialized', 'view');
+	if (stmt.ifNotExists) parts.push('if not exists');
+
+	parts.push(expressionToString(stmt.view));
+
+	if (stmt.columns && stmt.columns.length > 0) {
+		parts.push(`(${stmt.columns.map(quoteIdentifier).join(', ')})`);
+	}
+
+	if (stmt.moduleName) {
+		let usingClause = `using ${stmt.moduleName}`;
+		if (stmt.moduleArgs && Object.keys(stmt.moduleArgs).length > 0) {
+			const args = Object.entries(stmt.moduleArgs).map(([k, v]) =>
+				`${quoteIdentifier(k)} = ${JSON.stringify(v)}`
+			);
+			usingClause += ` (${args.join(', ')})`;
+		}
+		parts.push(usingClause);
+	}
+
+	parts.push('as', astToString(stmt.select));
+
+	const viewTagStr = tagsClauseToString(stmt.tags);
+	if (viewTagStr) parts.push(viewTagStr.trimStart());
+
+	return parts.join(' ');
+}
+
+export function refreshMaterializedViewToString(stmt: AST.RefreshMaterializedViewStmt): string {
+	return `refresh materialized view ${expressionToString(stmt.name)}`;
+}
+
 export function createAssertionToString(stmt: AST.CreateAssertionStmt): string {
 	return `create assertion ${quoteIdentifier(stmt.name)} check (${expressionToString(stmt.check)})`;
 }
@@ -814,7 +853,8 @@ function analyzeToString(stmt: AST.AnalyzeStmt): string {
 }
 
 function dropToString(stmt: AST.DropStmt): string {
-	const parts: string[] = ['drop', stmt.objectType.toLowerCase()];
+	const objectKeyword = stmt.objectType === 'materializedView' ? 'materialized view' : stmt.objectType.toLowerCase();
+	const parts: string[] = ['drop', objectKeyword];
 	if (stmt.ifExists) parts.push('if exists');
 	parts.push(expressionToString(stmt.name));
 	return parts.join(' ');

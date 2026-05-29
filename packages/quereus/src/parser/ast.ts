@@ -9,7 +9,7 @@ import type { ConflictResolution } from '../common/constants.js';
 // Base for all AST nodes
 export interface AstNode {
 	type: 'literal' | 'identifier' | 'column' | 'binary' | 'unary' | 'function' | 'cast' | 'parameter' | 'subquery' | 'select'
-		| 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'createAssertion' | 'alterTable' | 'drop' | 'begin' | 'commit'
+		| 'insert' | 'update' | 'delete' | 'createTable' | 'createIndex' | 'createView' | 'createMaterializedView' | 'refreshMaterializedView' | 'createAssertion' | 'alterTable' | 'drop' | 'begin' | 'commit'
 		| 'rollback' | 'table' | 'join' | 'savepoint' | 'release' | 'functionSource' | 'with' | 'commonTableExpr' | 'pragma'
 		| 'collate' | 'primaryKey' | 'notNull' | 'null' | 'unique' | 'check' | 'default' | 'foreignKey' | 'generated' | 'windowFunction'
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
@@ -322,6 +322,28 @@ export interface CreateViewStmt extends AstNode {
 	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
 }
 
+// CREATE MATERIALIZED VIEW statement
+export interface CreateMaterializedViewStmt extends AstNode {
+	type: 'createMaterializedView';
+	view: IdentifierExpr;
+	ifNotExists: boolean;
+	columns?: string[];
+	/** View body — any relation-producing form. Bare `VALUES (...)` is permitted. */
+	select: QueryExpr;
+	/** Optional backing-module name from a `USING mod(...)` clause. v1 only accepts `memory`. */
+	moduleName?: string;
+	/** Optional backing-module arguments (forward-compatible; ignored in v1). */
+	moduleArgs?: Record<string, SqlValue>;
+	isTemporary?: boolean;
+	tags?: Record<string, SqlValue>; // Optional metadata tags from WITH TAGS clause
+}
+
+// REFRESH MATERIALIZED VIEW statement
+export interface RefreshMaterializedViewStmt extends AstNode {
+	type: 'refreshMaterializedView';
+	name: IdentifierExpr;
+}
+
 // ALTER TABLE statement
 export interface AlterTableStmt extends AstNode {
 	type: 'alterTable';
@@ -332,7 +354,7 @@ export interface AlterTableStmt extends AstNode {
 // DROP statement
 export interface DropStmt extends AstNode {
 	type: 'drop';
-	objectType: 'table' | 'view' | 'index' | 'trigger' | 'assertion';
+	objectType: 'table' | 'view' | 'materializedView' | 'index' | 'trigger' | 'assertion';
 	name: IdentifierExpr;
 	ifExists: boolean;
 }
@@ -575,6 +597,8 @@ export type Statement =
 	| CreateTableStmt
 	| CreateIndexStmt
 	| CreateViewStmt
+	| CreateMaterializedViewStmt
+	| RefreshMaterializedViewStmt
 	| CreateAssertionStmt
 	| DropStmt
 	| AlterTableStmt

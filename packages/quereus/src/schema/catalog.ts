@@ -75,8 +75,18 @@ export function collectSchemaCatalog(db: Database, schemaName: string = 'main'):
 	const indexes: CatalogIndex[] = [];
 	const assertions: CatalogAssertion[] = [];
 
+	// Materialized-view backing tables are an implementation detail and are
+	// excluded from user-facing catalog enumeration (the same way `isView`
+	// tables are filtered below). The MV record itself round-trips separately
+	// (sibling declarative-schema ticket).
+	const backingTableNames = new Set<string>();
+	for (const mv of schema.getAllMaterializedViews()) {
+		backingTableNames.add(mv.backingTableName.toLowerCase());
+	}
+
 	// Collect tables
 	for (const tableSchema of schema.getAllTables()) {
+		if (backingTableNames.has(tableSchema.name.toLowerCase())) continue;
 		if (!tableSchema.isView) {
 			tables.push(tableSchemaToCatalog(tableSchema, db));
 

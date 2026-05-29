@@ -21,6 +21,15 @@ export function emitDropTable(plan: DropTableNode, ctx: EmissionContext): Instru
 		// Ensure we're in a transaction before DDL (lazy/JIT transaction start)
 		await rctx.db._ensureTransaction();
 
+		// A materialized view must be dropped with DROP MATERIALIZED VIEW (this also
+		// keeps the MV's hidden backing table from being dropped out from under it).
+		if (rctx.db.schemaManager.getMaterializedView(targetSchemaName, objectName)) {
+			throw new QuereusError(
+				`'${objectName}' is a materialized view — use DROP MATERIALIZED VIEW`,
+				StatusCode.ERROR
+			);
+		}
+
 		await rctx.db.schemaManager.dropTable(targetSchemaName, objectName, stmt.ifExists);
 
 		return null;

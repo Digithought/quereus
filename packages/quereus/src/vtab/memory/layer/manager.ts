@@ -989,6 +989,57 @@ export class MemoryTableManager {
 		this.baseLayer.primaryTree.insert(row);
 	}
 
+	/**
+	 * Atomically replaces the entire committed contents with `rows` by building a
+	 * fresh {@link BaseLayer} and swapping it in under the SchemaChange latch.
+	 * Used to (re)materialize a materialized view: callers run the view body to
+	 * completion and hand the result rows here. Concurrent readers block on the
+	 * latch and observe either the fully-old or fully-new base — never a partial
+	 * state — consistent with `alter table`.
+	 *
+	 * Throws on a duplicate primary key among `rows` (the caller rolls back).
+	 */
+	async replaceBaseLayer(rows: readonly Row[]): Promise<void> {
+		if (this.isReadOnly) {
+			throw new QuereusError(`Table '${this._tableName}' is read-only`, StatusCode.READONLY);
+		}
+		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this._tableName}`;
+		const release = await Latches.acquire(lockKey);
+		try {
+			// Drain any in-flight transaction layers down to the base so the swap
+			// below isn't shadowed by a committed transaction layer ahead of base.
+			await this.ensureSchemaChangeSafety();
+
+			const oldBase = this.baseLayer;
+			const newBase = new BaseLayer(this.tableSchema);
+			for (const row of rows) {
+				const key = this.primaryKeyFunctions.extractFromRow(row);
+				const path = newBase.primaryTree.find(key);
+				if (path.on) {
+					throw new QuereusError(
+						`UNIQUE constraint failed: ${this._tableName} PK.`,
+						StatusCode.CONSTRAINT,
+					);
+				}
+				newBase.primaryTree.insert(row);
+			}
+			newBase.rebuildAllSecondaryIndexes();
+
+			this.baseLayer = newBase;
+			this._currentCommittedLayer = newBase;
+
+			// Re-point any connection still reading the old base at the new base so
+			// the next statement observes refreshed contents.
+			for (const conn of this.connections.values()) {
+				if (conn.readLayer === oldBase) {
+					conn.readLayer = newBase;
+				}
+			}
+		} finally {
+			release();
+		}
+	}
+
 	// --- Schema Operations (simplified with inherited BTrees) ---
 	async addColumn(columnDefAst: ASTColumnDef): Promise<void> {
 		if (this.isReadOnly) throw new QuereusError(`Table '${this._tableName}' is read-only`, StatusCode.READONLY);

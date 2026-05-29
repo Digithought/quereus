@@ -1,6 +1,8 @@
 import { expect } from 'chai';
 import { parse, parseAll, type BinaryExpr, type UnaryExpr, type LiteralExpr, type SelectStmt, type Expression, type BetweenExpr } from '../src/parser/index.js';
 import { ParseError } from '../src/parser/parser.js';
+import { astToString } from '../src/emit/index.js';
+import type { CreateMaterializedViewStmt, RefreshMaterializedViewStmt, DropStmt } from '../src/parser/ast.js';
 
 /** Shorthand to parse an expression from a SELECT wrapper */
 function parseExpr(exprSql: string): Expression {
@@ -410,6 +412,59 @@ describe('Parser', () => {
 			expect(() => parse(`with references as (select 1 as a) select * from references`)).to.throw(/CTE name/);
 			// ...yet the same word is accepted as a table name:
 			expect(() => parse(`select * from references`)).to.not.throw();
+		});
+	});
+
+	describe('Materialized Views', () => {
+		it('parses CREATE MATERIALIZED VIEW with a SELECT body', () => {
+			const stmt = parse(`create materialized view mv as select x, y from t`) as CreateMaterializedViewStmt;
+			expect(stmt.type).to.equal('createMaterializedView');
+			expect(stmt.view.name).to.equal('mv');
+			expect(stmt.ifNotExists).to.equal(false);
+			expect(stmt.select.type).to.equal('select');
+		});
+
+		it('parses an explicit column list', () => {
+			const stmt = parse(`create materialized view mv(a, b) as select x, y from t`) as CreateMaterializedViewStmt;
+			expect(stmt.columns).to.deep.equal(['a', 'b']);
+		});
+
+		it('parses IF NOT EXISTS', () => {
+			const stmt = parse(`create materialized view if not exists mv as select 1 as x`) as CreateMaterializedViewStmt;
+			expect(stmt.ifNotExists).to.equal(true);
+		});
+
+		it('parses an optional USING backing-module clause', () => {
+			const stmt = parse(`create materialized view mv using mem() as select x from t`) as CreateMaterializedViewStmt;
+			expect(stmt.moduleName).to.equal('mem');
+		});
+
+		it('parses REFRESH MATERIALIZED VIEW', () => {
+			const stmt = parse(`refresh materialized view mv`) as RefreshMaterializedViewStmt;
+			expect(stmt.type).to.equal('refreshMaterializedView');
+			expect(stmt.name.name).to.equal('mv');
+		});
+
+		it('parses DROP MATERIALIZED VIEW with objectType materializedView', () => {
+			const stmt = parse(`drop materialized view mv`) as DropStmt;
+			expect(stmt.type).to.equal('drop');
+			expect(stmt.objectType).to.equal('materializedView');
+			expect(stmt.name.name).to.equal('mv');
+		});
+
+		it('round-trips through ast-stringify', () => {
+			const sql = `create materialized view mv as select x, y from t order by y`;
+			const stmt = parse(sql);
+			const reparsed = parse(astToString(stmt)) as CreateMaterializedViewStmt;
+			expect(reparsed.type).to.equal('createMaterializedView');
+			expect(reparsed.view.name).to.equal('mv');
+			expect(reparsed.select.type).to.equal('select');
+		});
+
+		it('round-trips DROP MATERIALIZED VIEW (not "drop materializedview")', () => {
+			const out = astToString(parse(`drop materialized view mv`));
+			expect(out).to.equal('drop materialized view mv');
+			expect(parse(out)).to.have.property('type', 'drop');
 		});
 	});
 });
