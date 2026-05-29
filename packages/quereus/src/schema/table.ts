@@ -473,6 +473,18 @@ export interface UniqueConstraintSchema {
 	 *  index removes this constraint. Unset for constraints declared at
 	 *  CREATE TABLE time. */
 	derivedFromIndex?: string;
+	/**
+	 * Forward pointer to the covering structure that realizes this constraint —
+	 * the name of an auto-built secondary index (the implicit covering structure)
+	 * or of an explicit materialized view recognized by the coverage prover. This
+	 * is the **source of truth** for the constraint↔structure link; a covering
+	 * MV's {@link MaterializedViewSchema.covers} is the convenience reverse link.
+	 * Set eagerly at MV-creation time, cleared when that MV is dropped. A
+	 * "constraint is logical, structure is optional" surface — informational in
+	 * the covering-structure ticket (enforcement still routes through the
+	 * synchronously-maintained BTree). See `docs/schema.md`.
+	 */
+	coveringStructureName?: string;
 	/** Arbitrary metadata tags (informational only) */
 	tags?: Readonly<Record<string, SqlValue>>;
 }

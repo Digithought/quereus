@@ -22,9 +22,36 @@ import type { VTableEventEmitter } from '../../events.js';
 import { inferType } from '../../../types/registry.js';
 import type { Expression } from '../../../parser/ast.js';
 import { compilePredicate } from '../utils/predicate.js';
+import type { MemoryIndex } from '../index.js';
+import type { MaterializedViewSchema } from '../../../schema/view.js';
 
 let tableManagerCounter = 0;
 const logger = createMemoryTableLoggers('layer:manager');
+
+/**
+ * Unified surface for the structure that enforces a UNIQUE constraint. A
+ * constraint is logical; its backing structure is optional and may take one of
+ * several physical shapes. Today the only shape produced is `memory-index` — the
+ * synchronously-maintained secondary BTree auto-built per UNIQUE constraint
+ * (reframed as an *implicit* covering structure in the materialized-view
+ * vocabulary). The `materialized-view` variant is part of the type so the lens
+ * layer can pattern-match a stable surface, but {@link MemoryTableManager.findIndexForConstraint}
+ * does NOT return it here: routing row-time enforcement through an explicit MV's
+ * backing table is unsound until row-time write-through MV maintenance exists
+ * (see `docs/materialized-views.md` § Covering structures, the soundness note).
+ */
+export type CoveringStructure =
+	| { kind: 'memory-index'; index: MemoryIndex }
+	// Produced ONLY once row-time write-through MV maintenance lands.
+	| { kind: 'materialized-view'; view: MaterializedViewSchema };
+
+/** Origin + structure name for a UNIQUE constraint's implicit covering structure. */
+export interface ImplicitCoveringStructure {
+	/** Name of the secondary index (the synchronously-maintained BTree) that realizes the constraint. */
+	indexName: string;
+	/** Always `'implicit-from-unique-constraint'` — the auto-built secondary BTree. */
+	origin: 'implicit-from-unique-constraint';
+}
 
 export class MemoryTableManager {
 	public readonly managerId: number;
@@ -40,6 +67,16 @@ export class MemoryTableManager {
 	public tableSchema: TableSchema;
 
 	private primaryKeyFunctions!: PrimaryKeyFunctions;
+
+	/**
+	 * Implicit covering structures: constraint identity → the auto-index that
+	 * realizes it. The physical structure is the synchronously-maintained
+	 * secondary BTree; this association lets `findIndexForConstraint` and
+	 * introspection speak the materialized-view vocabulary (an `origin`) for the
+	 * implicit structure, the same way an explicit covering MV is described.
+	 * Keyed by constraint name when present, else by the auto-index name.
+	 */
+	private readonly implicitCoveringStructures = new Map<string, ImplicitCoveringStructure>();
 
 	/** Optional event emitter for mutation and schema hooks */
 	private eventEmitter?: VTableEventEmitter;
@@ -76,6 +113,12 @@ export class MemoryTableManager {
 	 * Auto-creates secondary indexes for UNIQUE constraints that don't already
 	 * have a matching index. This mirrors standard SQL behavior where UNIQUE
 	 * constraints imply an index for efficient enforcement.
+	 *
+	 * Alongside each such index, records an *implicit covering structure*
+	 * descriptor in {@link implicitCoveringStructures} (the materialized-view
+	 * vocabulary) so the implicit BTree and a future explicit covering MV share
+	 * one schema shape. The physical structure is unchanged — observation-
+	 * equivalent, zero behavioral difference.
 	 */
 	private ensureUniqueConstraintIndexes(): void {
 		const uniqueConstraints = this.tableSchema.uniqueConstraints;
@@ -86,14 +129,17 @@ export class MemoryTableManager {
 		let added = false;
 
 		for (const uc of uniqueConstraints) {
-			const hasMatchingIndex = existingIndexes.some(idx =>
+			const matchingIndex = existingIndexes.find(idx =>
 				idx.columns.length === uc.columns.length &&
 				idx.columns.every((col, i) => col.index === uc.columns[i])
 			);
 
-			if (!hasMatchingIndex) {
+			let indexName: string;
+			if (matchingIndex) {
+				indexName = matchingIndex.name;
+			} else {
 				const colNames = uc.columns.map(i => this.tableSchema.columns[i]?.name ?? String(i));
-				const indexName = uc.name ?? `_uc_${colNames.join('_')}`;
+				indexName = uc.name ?? `_uc_${colNames.join('_')}`;
 				newIndexes.push({
 					name: indexName,
 					columns: uc.columns.map(colIdx => ({ index: colIdx })),
@@ -101,6 +147,13 @@ export class MemoryTableManager {
 				});
 				added = true;
 			}
+
+			// Reframe the (auto or pre-existing) secondary index as the implicit
+			// covering structure realizing this constraint.
+			this.implicitCoveringStructures.set(
+				uc.name ?? indexName,
+				{ indexName, origin: 'implicit-from-unique-constraint' },
+			);
 		}
 
 		if (added) {
@@ -109,6 +162,24 @@ export class MemoryTableManager {
 				indexes: Object.freeze(newIndexes),
 			};
 		}
+	}
+
+	/**
+	 * Returns the implicit covering structure realizing the given UNIQUE
+	 * constraint, or undefined when none was synthesized. Part of the unified
+	 * covering-structure surface the lens layer and introspection consume — the
+	 * physical structure is the synchronously-maintained secondary BTree named
+	 * {@link ImplicitCoveringStructure.indexName}.
+	 */
+	getImplicitCoveringStructure(uc: UniqueConstraintSchema): ImplicitCoveringStructure | undefined {
+		const indexName = uc.name ?? this.implicitIndexNameFor(uc);
+		return this.implicitCoveringStructures.get(indexName);
+	}
+
+	/** Conventional auto-index name for an unnamed UNIQUE constraint (mirrors {@link ensureUniqueConstraintIndexes}). */
+	private implicitIndexNameFor(uc: UniqueConstraintSchema): string {
+		const colNames = uc.columns.map(i => this.tableSchema.columns[i]?.name ?? String(i));
+		return `_uc_${colNames.join('_')}`;
 	}
 
 	/**
@@ -778,8 +849,9 @@ export class MemoryTableManager {
 				if (compareSqlValues(oldRow[colIdx], newRow[colIdx]) !== 0) return true;
 			}
 			if (uc.predicate) {
-				const idx = this.findIndexForConstraint(this._currentCommittedLayer, uc);
-				const referenced = idx?.predicate?.referencedColumns;
+				const covering = this.findIndexForConstraint(this._currentCommittedLayer, uc);
+				const index = covering?.kind === 'memory-index' ? covering.index : undefined;
+				const referenced = index?.predicate?.referencedColumns;
 				if (referenced) {
 					for (const colIdx of referenced) {
 						if (compareSqlValues(oldRow[colIdx], newRow[colIdx]) !== 0) return true;
@@ -825,37 +897,61 @@ export class MemoryTableManager {
 		// SQL semantics: UNIQUE allows multiple NULLs — skip if any constrained column is NULL
 		if (uc.columns.some(colIdx => newRowData[colIdx] === null)) return null;
 
-		// Find the matching secondary index for this constraint
-		const index = this.findIndexForConstraint(targetLayer, uc);
+		// Find the covering structure enforcing this constraint.
+		const covering = this.findIndexForConstraint(targetLayer, uc);
 
 		// Partial UNIQUE: a row whose predicate is not unambiguously TRUE is
 		// outside the index's scope and contributes nothing to uniqueness.
-		if (index?.predicate && !index.rowMatchesPredicate(newRowData)) {
+		if (covering?.kind === 'memory-index'
+			&& covering.index.predicate
+			&& !covering.index.rowMatchesPredicate(newRowData)) {
 			return null;
 		}
 
 		// Resolve effective action: statement OR > constraint default > ABORT.
 		const effective = onConflict ?? uc.defaultConflict ?? ConflictResolution.ABORT;
 
-		if (index) {
-			return this.checkUniqueViaIndex(targetLayer, schema, uc, index, newRowData, newPrimaryKey, effective);
+		if (covering) {
+			switch (covering.kind) {
+				case 'memory-index':
+					return this.checkUniqueViaIndex(targetLayer, schema, uc, covering.index, newRowData, newPrimaryKey, effective);
+				case 'materialized-view':
+					// Unreachable today: findIndexForConstraint never returns this variant.
+					// Kept so the switch is total and the unsound path fails loudly if
+					// ever wired up before row-time write-through MV maintenance exists.
+					throw new QuereusError(
+						`row-time UNIQUE enforcement through a materialized view is not yet implemented`,
+						StatusCode.UNSUPPORTED,
+					);
+				default: {
+					const exhaustive: never = covering;
+					throw new QuereusError(`Unknown covering structure: ${JSON.stringify(exhaustive)}`, StatusCode.INTERNAL);
+				}
+			}
 		}
 
 		// Fallback: scan primary tree
 		return this.checkUniqueByScanning(targetLayer, schema, uc, newRowData, newPrimaryKey, effective);
 	}
 
+	/**
+	 * Resolves the {@link CoveringStructure} enforcing a UNIQUE constraint. Today
+	 * this only ever returns the `memory-index` variant (the synchronously-
+	 * maintained secondary BTree). The `materialized-view` variant is part of the
+	 * unified surface but is not produced here — see {@link CoveringStructure}.
+	 */
 	private findIndexForConstraint(
 		targetLayer: Layer,
 		uc: UniqueConstraintSchema
-	): import('../index.js').MemoryIndex | undefined {
+	): CoveringStructure | undefined {
 		const schema = targetLayer.getSchema();
 		if (!schema.indexes) return undefined;
 
 		for (const idx of schema.indexes) {
 			if (idx.columns.length === uc.columns.length &&
 				idx.columns.every((col, i) => col.index === uc.columns[i])) {
-				return targetLayer.getSecondaryIndex?.(idx.name);
+				const index = targetLayer.getSecondaryIndex?.(idx.name);
+				return index ? { kind: 'memory-index', index } : undefined;
 			}
 		}
 		return undefined;

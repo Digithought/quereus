@@ -4,8 +4,10 @@ import { StatusCode, type Row } from '../../common/types.js';
 import type { PlanNode, RelationalPlanNode } from '../../planner/nodes/plan-node.js';
 import { TableReferenceNode } from '../../planner/nodes/reference.js';
 import { keysOf } from '../../planner/util/fd-utils.js';
+import { proveCoverage } from '../../planner/analysis/coverage-prover.js';
 import type { ColumnSchema } from '../../schema/column.js';
 import { type TableSchema, type PrimaryKeyColumnDefinition, buildColumnIndexMap, requireVtabModule } from '../../schema/table.js';
+import type { MaterializedViewSchema } from '../../schema/view.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
 import type { MemoryTableManager } from '../../vtab/memory/layer/manager.js';
 
@@ -193,6 +195,56 @@ export function getBackingManager(backingSchema: TableSchema): MemoryTableManage
 		throw new QuereusError(`backing table manager not found for '${key}'`, StatusCode.INTERNAL);
 	}
 	return manager;
+}
+
+/**
+ * Eagerly records the constraint↔structure link when this MV covers a UNIQUE
+ * constraint on one of its single source tables. Runs the coverage prover
+ * (`coverage-prover.ts`) over the optimized body and, on the first match, stamps
+ * the MV's `origin`/`covers` reverse link and the constraint's
+ * `coveringStructureName` forward pointer (the source of truth). Informational
+ * in this ticket — nothing enforces through the MV's backing table yet.
+ *
+ * Best-effort and side-effect-bounded: the body has already planned (during
+ * shape derivation), so re-planning here is cheap and safe; a non-covering MV
+ * simply records nothing.
+ */
+export function linkCoveredUniqueConstraints(db: Database, mv: MaterializedViewSchema, bodySql: string): void {
+	const root = db.getPlan(bodySql).getRelations()[0];
+	if (!root) return;
+	const sm = db.schemaManager;
+	for (const qualified of mv.sourceTables) {
+		const dot = qualified.indexOf('.');
+		const schemaName = dot >= 0 ? qualified.slice(0, dot) : 'main';
+		const tableName = dot >= 0 ? qualified.slice(dot + 1) : qualified;
+		const table = sm.getTable(schemaName, tableName);
+		if (!table || !table.uniqueConstraints) continue;
+		for (const uc of table.uniqueConstraints) {
+			const result = proveCoverage(root, mv, uc, table);
+			if (result.covers) {
+				mv.origin = 'explicit';
+				mv.covers = { schemaName: table.schemaName, tableName: table.name, constraintName: uc.name };
+				// Forward pointer is the source of truth (see docs/schema.md).
+				uc.coveringStructureName = mv.name;
+				return; // singular back-pointer: link the first covered constraint.
+			}
+		}
+	}
+}
+
+/**
+ * Clears the constraint↔structure link a covering MV established (drop path).
+ * Matches on the forward pointer (`coveringStructureName === mv.name`) so it
+ * works for unnamed constraints too; no enforcement demotion — physical schemas
+ * still enforce via the implicit auto-index.
+ */
+export function unlinkCoveredUniqueConstraints(db: Database, mv: MaterializedViewSchema): void {
+	if (!mv.covers) return;
+	const table = db.schemaManager.getTable(mv.covers.schemaName, mv.covers.tableName);
+	if (!table?.uniqueConstraints) return;
+	for (const uc of table.uniqueConstraints) {
+		if (uc.coveringStructureName === mv.name) uc.coveringStructureName = undefined;
+	}
 }
 
 /** Re-validates a stale MV's body against the current source schemas. Throws the

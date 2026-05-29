@@ -188,6 +188,8 @@ Indexes are a basis-layer concern, expressed as **materialized views**: a materi
 
 Unique enforcement is a key existence lookup against that covering materialized view when present (row-time, conflict-resolution-capable), falling back to a commit-time `DeltaExecutor` scan when absent. See [Materialized Views](materialized-views.md) for the keyed-derived-relation framing, covering-structure semantics, and the incremental-maintenance path.
 
+**Surface already shipped.** The unified covering-structure surface this layer consumes — the `CoveringStructure` discriminated union (`memory-index` | `materialized-view`), the eager constraint↔structure linking (`UniqueConstraintSchema.coveringStructureName` ↔ `MaterializedViewSchema.covers`), and the coverage prover that recognizes a covering `order by` MV — lands with the [covering-structure work](materialized-views.md#covering-structures). What is *not* yet wired is the row-time lookup against an explicit MV's backing table: that is unsound until row-time write-through MV maintenance exists, so `findIndexForConstraint` returns only the synchronously-maintained `memory-index` variant today. The logical-schema world — where the auto-index is retired and an explicit covering MV becomes the *sole* enforcement structure — is exactly where that path becomes load-bearing, and the ticket that lands it (`lens-prover-and-constraint-attachment`) must chain the row-time-write-through prerequisite. Until then, the `lens.no-answering-structure` advisory governs the gap.
+
 ## Syntax
 
 ```sql

@@ -31,13 +31,29 @@ Describes a secondary index by name and an ordered list of column references (by
 
 A CHECK constraint with an AST expression, an operation bitmask (insert/update/delete), and deferral settings. Optional `tags` field holds arbitrary key-value metadata.
 
+### UniqueConstraintSchema
+
+A UNIQUE constraint over one or more columns (beyond the primary key): column indices, optional name, default conflict action, optional partial-index `predicate`, and `derivedFromIndex` (set when synthesized from `CREATE UNIQUE INDEX`). Carries an optional `coveringStructureName` — see [Covering-structure links](#covering-structure-links). Optional `tags` field holds arbitrary key-value metadata.
+
 ### ViewSchema
 
 Describes a view: name, schema, SQL text, and parsed SELECT AST. Optional `tags` field holds arbitrary key-value metadata.
 
 ### MaterializedViewSchema
 
-Describes a materialized view — a *keyed derived relation* stored in a hidden backing table. Carries the body AST, the inferred primary key, a `bodyHash` (used by the declarative-schema differ to detect "body changed → rebuild"), the backing-table name, and source-table dependencies. Registered in `Schema.materializedViews` (see `getMaterializedView` / `getAllMaterializedViews`), distinct from `views`. Full design: [Materialized Views](materialized-views.md).
+Describes a materialized view — a *keyed derived relation* stored in a hidden backing table. Carries the body AST, the inferred primary key, a `bodyHash` (used by the declarative-schema differ to detect "body changed → rebuild"), the backing-table name, and source-table dependencies. Registered in `Schema.materializedViews` (see `getMaterializedView` / `getAllMaterializedViews`), distinct from `views`. Optional `origin` / `covers` fields record a covering-structure link — see [Covering-structure links](#covering-structure-links). Full design: [Materialized Views](materialized-views.md).
+
+### Covering-structure links
+
+A UNIQUE constraint is logical; the structure that enforces it is optional (see [Materialized Views § Covering structures](materialized-views.md#covering-structures)). Two schema fields record the constraint↔structure association:
+
+- **`UniqueConstraintSchema.coveringStructureName`** — the **forward pointer** and **source of truth**: the name of the covering structure realizing this constraint (an auto-built secondary index, or an explicit materialized view recognized by the coverage prover). Set eagerly when a covering MV is created; cleared when that MV is dropped.
+- **`MaterializedViewSchema.origin`** — `'explicit'` (default; an ordinary user-declared MV) or `'implicit-from-unique-constraint'` (reserved for the auto-built secondary BTree, which is described in this vocabulary but held on the memory-table manager, never registered as an MV).
+- **`MaterializedViewSchema.covers`** — the convenience **reverse link** `{ schemaName, tableName, constraintName? }` back to the covered constraint.
+
+These links are informational in the current release (enforcement still routes through the synchronously-maintained auto-index — see the materialized-views soundness note).
+
+**Introspection.** The implicit covering structure (a UNIQUE constraint's auto-built index) is a backing detail and is **omitted from `collectSchemaCatalog` / schema export by default**. It is surfaced only when the originating constraint carries the tag `quereus.expose_implicit_index = true`. Indexes from an explicit `CREATE [UNIQUE] INDEX` are always shown.
 
 ## SchemaManager API
 

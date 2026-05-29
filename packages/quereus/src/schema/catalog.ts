@@ -102,9 +102,16 @@ export function collectSchemaCatalog(db: Database, schemaName: string = 'main'):
 		if (!tableSchema.isView) {
 			tables.push(tableSchemaToCatalog(tableSchema, db));
 
-			// Collect indexes for this table
+			// Collect indexes for this table. Implicit covering structures (the
+			// auto-built secondary BTree a declared UNIQUE constraint synthesizes for
+			// enforcement) are a backing detail and are omitted by default, surfaced
+			// only when the originating constraint opts in via
+			// `quereus.expose_implicit_index` — preserving the user-visible shape.
 			if (tableSchema.indexes && tableSchema.indexes.length > 0) {
+				const implicit = implicitCoveringIndexExposure(tableSchema);
 				for (const indexSchema of tableSchema.indexes) {
+					const exposed = implicit.get(indexSchema.name);
+					if (exposed === false) continue; // hidden implicit covering structure
 					indexes.push(indexSchemaToCatalog(indexSchema, tableSchema, db));
 				}
 			}
@@ -208,6 +215,35 @@ function materializedViewSchemaToCatalog(mvSchema: MaterializedViewSchema): Cata
 		bodyHash: mvSchema.bodyHash,
 		tags: mvSchema.tags,
 	};
+}
+
+/**
+ * Tag opting a UNIQUE constraint's implicit covering structure into catalog /
+ * `export_schema` visibility. Off by default — the auto-built secondary BTree is
+ * a backing detail of enforcement, not part of the user-visible schema shape.
+ */
+const EXPOSE_IMPLICIT_INDEX_TAG = 'quereus.expose_implicit_index';
+
+/**
+ * Maps each implicit-covering-structure index name to its exposure flag. An index
+ * is an implicit covering structure when it is the secondary BTree auto-built to
+ * back a declared (inline) UNIQUE constraint — identified by the deterministic
+ * auto-index name `uc.name ?? '_uc_<cols>'` (see
+ * `MemoryTableManager.ensureUniqueConstraintIndexes`). Constraints synthesized
+ * from a real `CREATE UNIQUE INDEX` (`derivedFromIndex` set) are excluded — that
+ * index is the user's, always shown. The flag is `true` when the constraint
+ * carries {@link EXPOSE_IMPLICIT_INDEX_TAG} (surface it), `false` otherwise
+ * (hide). Index names absent from the map are ordinary indexes (always shown).
+ */
+function implicitCoveringIndexExposure(tableSchema: TableSchema): Map<string, boolean> {
+	const map = new Map<string, boolean>();
+	for (const uc of tableSchema.uniqueConstraints ?? []) {
+		if (uc.derivedFromIndex) continue;
+		const colNames = uc.columns.map(i => tableSchema.columns[i]?.name ?? String(i));
+		const name = uc.name ?? `_uc_${colNames.join('_')}`;
+		map.set(name, uc.tags?.[EXPOSE_IMPLICIT_INDEX_TAG] === true);
+	}
+	return map;
 }
 
 function indexSchemaToCatalog(

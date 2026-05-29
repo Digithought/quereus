@@ -80,6 +80,27 @@ export interface MaterializedViewSchema {
 	/** Staleness flag set by the schema-change subscription when a source table
 	 *  is modified/removed in a way that may break the body. */
 	stale?: boolean;
+
+	/**
+	 * How this covering structure came to be. An ordinary user-declared MV is
+	 * `'explicit'` (the default; absent on already-serialized MVs ⇒ treat as
+	 * explicit). `'implicit-from-unique-constraint'` is reserved for the
+	 * synchronously-maintained secondary BTree that a UNIQUE constraint
+	 * auto-builds — described in this same vocabulary but held as a lightweight
+	 * association on the memory-table manager, never registered here. See
+	 * `docs/materialized-views.md` § Covering structures.
+	 */
+	origin?: 'explicit' | 'implicit-from-unique-constraint';
+
+	/**
+	 * Back-pointer to the UNIQUE constraint this structure realizes, recorded
+	 * eagerly when the coverage prover (`planner/analysis/coverage-prover.ts`)
+	 * recognizes that this MV covers the constraint. Informational in this
+	 * ticket — nothing enforces through the MV's backing table yet. The
+	 * authoritative link is the constraint's `coveringStructureName` forward
+	 * pointer (see `docs/schema.md`); this is the convenience reverse link.
+	 */
+	covers?: { schemaName: string; tableName: string; constraintName?: string };
 }
 
 /** Conventional derived name for a materialized view's backing table. Reserved

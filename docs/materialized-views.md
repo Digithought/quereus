@@ -183,6 +183,103 @@ apply schema main;
   no drop, and leaves the schema hash unchanged. Tags do not perturb the schema
   version (they are stripped before hashing).
 
+## Covering structures
+
+A UNIQUE constraint is *logical*; the structure that enforces it is *optional*
+and may take more than one physical shape. Quereus describes every such shape in
+one vocabulary — the **covering structure** — so the enforcement layer (and the
+lens layer above it) can pattern-match a single surface
+(`CoveringStructure` in `vtab/memory/layer/manager.ts`):
+
+```
+type CoveringStructure =
+  | { kind: 'memory-index';      index: MemoryIndex }            // produced today
+  | { kind: 'materialized-view'; view:  MaterializedViewSchema } // reserved (see soundness note)
+```
+
+### Implicit covering structures (the auto-index, reframed)
+
+Every declared UNIQUE constraint auto-builds a synchronously-maintained
+secondary BTree for efficient enforcement (`ensureUniqueConstraintIndexes`).
+That BTree is reframed as an **implicit covering structure** —
+`origin: 'implicit-from-unique-constraint'` in the materialized-view vocabulary —
+held as a lightweight association on the memory-table manager (it is *not*
+registered as a `MaterializedViewSchema`; the BTree is the structure). Row-time
+enforcement (`findIndexForConstraint`) returns this `memory-index` variant. The
+physical structure is unchanged from before the reframe — behavior is
+observation-equivalent.
+
+Implicit covering structures are a backing detail and are **hidden from
+`collectSchemaCatalog` / schema export by default**, surfaced only when the
+originating constraint carries the tag `quereus.expose_implicit_index = true`.
+
+### Explicit covering structures (the coverage prover)
+
+A user-declared materialized view can *cover* a UNIQUE constraint. The
+**coverage prover** (`planner/analysis/coverage-prover.ts`) recognizes the
+canonical covering shape and records the link eagerly at MV-creation time. For
+
+```sql
+create table t (id integer primary key, x integer not null, y integer not null, unique (x, y));
+create materialized view ix_t_xy as select x, y, id from t order by x, y;   -- covers unique(x,y)
+```
+
+the prover proves `ix_t_xy` covers `unique(x, y)` and stamps the link (see
+[Schema § Covering-structure links](schema.md#covering-structure-links)).
+
+Recognition rules (narrow v1 — every check is conservative; a false *NotCovers*
+only forgoes an optimization, a false *Covers* would be unsound):
+
+- **Shape.** The optimized body is a linear chain over a single base table `T`
+  (`TableReference → optional Filter → Project → optional Sort`; physical access
+  nodes are transparent). Joins, aggregation, `DISTINCT`, set operations, or
+  multiple sources ⇒ not covering.
+- **Projection.** The output must include every UC column **and** every primary
+  key column of `T` (the PK identifies the source row for conflict resolution).
+- **Ordering.** The body's `order by` columns must be a permutation of the UC
+  columns. A missing `order by` does not cover — the prover never invents an
+  ordering. (Ordering and the WHERE predicate are read from the **body AST**, not
+  the optimized plan: the optimizer drops the `Sort` and absorbs a `WHERE` into
+  an index range seek whenever an index already provides them, so the plan is not
+  a faithful source for either.)
+- **Predicate alignment.** The body's materialized row set must equal the set the
+  constraint governs: the WHERE predicate must entail `uc.predicate` (for partial
+  UNIQUE) and an `is not null` per nullable UC column (NULL-skip), and must add no
+  restriction beyond that (else it would drop governed rows and miss conflicts).
+  Entailment reuses the partial-UNIQUE clause vocabulary — see
+  [Optimizer § Coverage proving](optimizer.md#coverage-proving).
+
+### Soundness boundary — why nothing enforces through an explicit MV yet
+
+The link the prover records is **informational in this release**. Row-time
+UNIQUE enforcement (the in-place substitution of `insert or replace`, the skip of
+`insert or ignore`, the conflict diagnostic of the default `abort`) requires the
+covering structure to be consistent *at the moment of the write*. The implicit
+secondary BTree is synchronously maintained, so it can drive row-time
+enforcement; an explicit MV's backing table **cannot**:
+
+- MV-core materializes the backing table once at create / refresh (manual
+  refresh); source DML does not update it.
+- Even the sibling commit-time `materialized-view-incremental-refresh` maintains
+  backing tables at COMMIT, not at row-write time.
+
+So routing row-time enforcement through an explicit MV's backing table is
+**unsound until row-time write-through MV maintenance exists**. For *physical*
+schemas this is moot: the auto-index already enforces, so an explicit covering MV
+adds a read-answering copy plus the recognized link. The explicit MV becomes the
+*sole* enforcement structure only in the **logical-schema** world (the lens
+layer), where the auto-index is retired; that work is gated on row-time
+write-through. The `materialized-view` variant of `CoveringStructure` exists so
+that surface is stable to compile against, but `findIndexForConstraint` never
+returns it today — the unsound path fails loudly (`StatusCode.UNSUPPORTED`) if
+ever reached.
+
+Deferred follow-ups: `covering-structure-mv-rowtime-enforcement` (route
+enforcement through a covering MV, blocked on
+`materialized-view-rowtime-write-through`), `coverage-prover-fd-driven-coverage`
+(FD-closure coverage beyond literal projection), and
+`coverage-prover-multi-source-bodies` (join MVs covering a single-table UC).
+
 ## Out of scope / roadmap
 
 Phase 1 deliberately stops at manual full-refresh. The following extensions are

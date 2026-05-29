@@ -17,6 +17,8 @@ import {
 	collectBodyRows,
 	getBackingManager,
 	revalidateBody,
+	linkCoveredUniqueConstraints,
+	unlinkCoveredUniqueConstraints,
 } from './materialized-view-helpers.js';
 
 export function emitCreateMaterializedView(plan: CreateMaterializedViewNode, _ctx: EmissionContext): Instruction {
@@ -73,7 +75,12 @@ export function emitCreateMaterializedView(plan: CreateMaterializedViewNode, _ct
 			ordering: shape.ordering,
 			sourceTables: shape.sourceTables,
 			stale: false,
+			origin: 'explicit',
 		};
+		// Eagerly record the constraint↔structure link if this MV covers a UNIQUE
+		// constraint (informational — enforcement still routes through the
+		// synchronously-maintained auto-index).
+		linkCoveredUniqueConstraints(db, mv, plan.bodySql);
 		sm.addMaterializedView(mv);
 		sm.getChangeNotifier().notifyChange({
 			type: 'materialized_view_added',
@@ -154,6 +161,10 @@ export function emitDropMaterializedView(plan: DropMaterializedViewNode, _ctx: E
 		}
 
 		// (Phase 2 placeholder) detach any DeltaSubscription — no-op in v1.
+
+		// Clear any constraint↔structure link this MV established. No enforcement
+		// demotion: physical schemas still enforce via the implicit auto-index.
+		unlinkCoveredUniqueConstraints(db, mv);
 
 		// Drop the backing table (fires table_removed) then unregister the MV.
 		await sm.dropTable(plan.schemaName, mv.backingTableName, /*ifExists*/ true);

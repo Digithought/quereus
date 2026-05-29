@@ -1463,6 +1463,15 @@ If **any** conjunct fails to map, the whole FD is dropped — a partial guard wo
 
 Extraction is cached per `TableSchema` via `getPartialUniqueGuardedFds`. The downstream activation path is identical to the implication-form CHECK case: a Filter whose predicate entails `P` strips the guard and the FD becomes an ordinary key downstream, unlocking DISTINCT elimination, GROUP BY simplification, ORDER BY pruning, and FK→PK join elimination for queries inside the partial scope.
 
+#### Coverage proving
+
+`planner/analysis/coverage-prover.ts` reuses this same clause vocabulary to decide whether an explicit materialized view *covers* a UNIQUE constraint — i.e. its materialized row set is observation-equivalent to the set of rows the constraint governs, keyed for a point lookup. The recognition rules (shape / projection / ordering / predicate alignment) and the soundness boundary are documented in [Materialized Views § Covering structures](materialized-views.md#covering-structures). Two reusable pieces live alongside the partial-UNIQUE extractor:
+
+- `recognizeConjunctiveClauses(expr, tableSchema)` — a side-effect-free wrapper over the same conjunct recognizer used for guarded FDs (no new predicate shapes), decomposing a predicate AST into the `GuardClause` vocabulary above.
+- `guardClausesEntail(a, b)` — conservative conjunction entailment: every clause of `b` is entailed by some clause of `a` (clause-set superset, range subsumption on the same column, and `is not null` satisfied by any clause that pins the column non-NULL). A false result is always safe.
+
+The prover reads the body's `WHERE` and `ORDER BY` from the **body AST**, not the optimized plan, because the optimizer absorbs a sargable `WHERE` into an index range seek and drops the `Sort` once an index supplies the order — so the plan understates the predicate and ordering. It uses the optimized plan only for the structural shape check and the output→base-column projection mapping (via stable attribute IDs). The link the prover records is informational in the current release.
+
 #### Assertion-derived premises
 
 `CREATE ASSERTION` whose CHECK matches the canonical *trivially universal* shape
