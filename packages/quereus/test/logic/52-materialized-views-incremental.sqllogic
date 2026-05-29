@@ -662,3 +662,46 @@ select * from closure_count;
 
 drop materialized view closure_count;
 drop table g_edges;
+
+-- ===================================
+-- 25. `union all` recursive body — LATE bag (set at create, bag after a source
+--     change). A `union all` fixpoint that is duplicate-free at create succeeds
+--     (the create-time full-rebuild fill sees a set), but a later source change
+--     can make a row both base-derivable and recursively-derived → a duplicate.
+--     The post-commit global rebuild re-runs the SAME body and hits the backing
+--     "must be a set" contract; Tier-1 recovery re-runs the same body and fails
+--     again → Tier-2 `diverged` (reads error until an explicit refresh). This is
+--     loud and correct — a recompute cannot silently dedup a `union all` bag — and
+--     differs from the per-binding path. (A `union`/distinct body can never become
+--     a late bag, so this edge is `union all`-specific.)
+-- ===================================
+
+create table le (id integer primary key, src integer, dst integer);
+insert into le values (1, 1, 2), (2, 2, 3);
+
+-- Chain 1→2→3 is duplicate-free under `union all`: base {(1,2),(2,3)} + derived
+-- (1,3), all distinct ⇒ create-time fill sees a set and succeeds.
+create materialized view reach_ua as
+  with recursive r(src, dst) as (
+    select src, dst from le
+    union all
+    select r.src, e.dst from r join le e on r.dst = e.src
+  )
+  select src, dst from r
+  with refresh = 'on-commit-incremental';
+select * from reach_ua order by src, dst;
+→ [{"src":1,"dst":2},{"src":1,"dst":3},{"src":2,"dst":3}]
+
+-- Inserting edge 1→3 makes (1,3) both a base row AND recursively derived
+-- (1→2→3) ⇒ a duplicate under `union all`. The COMMIT global rebuild hits the
+-- "must be a set" contract and cannot self-heal ⇒ the MV reads as diverged.
+insert into le values (3, 1, 3);
+select * from reach_ua order by src, dst;
+-- error: diverged
+
+-- An explicit refresh runs the same body and hits the same bag — still diverged.
+refresh materialized view reach_ua;
+-- error: must be a set
+
+drop materialized view reach_ua;
+drop table le;
