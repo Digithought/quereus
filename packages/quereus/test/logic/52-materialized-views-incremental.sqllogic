@@ -489,3 +489,38 @@ drop table orders;
 drop table customers;
 drop table ta;
 drop table tb;
+
+-- ===================================
+-- 22. CROSS join (row-preserving, no ON). The backing PK is composite
+--     {a,b} = {sa.id, sb.id}, which no single source PK covers cleanly, so every
+--     source change falls back to a full rebuild — correct, just not incremental.
+--     Also asserts that DISTINCT over a multi-source body is rejected at create.
+-- ===================================
+
+create table sa (id integer primary key, v integer);
+create table sb (id integer primary key, w integer);
+insert into sa values (1, 10), (2, 20);
+insert into sb values (1, 100), (2, 200);
+create materialized view mv_cross as
+  select sa.id as a, sb.id as b, sa.v as v, sb.w as w
+  from sa cross join sb
+  with refresh = 'on-commit-incremental';
+
+-- cartesian product at create time
+select * from mv_cross order by a, b;
+→ [{"a":1,"b":1,"v":10,"w":100},{"a":1,"b":2,"v":10,"w":200},{"a":2,"b":1,"v":20,"w":100},{"a":2,"b":2,"v":20,"w":200}]
+
+-- a source-side update is reflected (rebuild path) across all product rows
+update sa set v = 11 where id = 1;
+select * from mv_cross order by a, b;
+→ [{"a":1,"b":1,"v":11,"w":100},{"a":1,"b":2,"v":11,"w":200},{"a":2,"b":1,"v":20,"w":100},{"a":2,"b":2,"v":20,"w":200}]
+
+-- DISTINCT over a join is rejected at create
+create materialized view mv_distj as
+  select distinct sa.v as v from sa join sb on sa.id = sb.id
+  with refresh = 'on-commit-incremental';
+-- error: DISTINCT over a join
+
+drop materialized view mv_cross;
+drop table sa;
+drop table sb;
