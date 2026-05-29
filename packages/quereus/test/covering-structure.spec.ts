@@ -642,3 +642,182 @@ describe('coverage prover — effective-key (stub unit)', () => {
 		expect(proveEffectiveKeyUnique(bag, [])).to.deep.equal({ proved: false, reason: 'not-a-key' });
 	});
 });
+
+/**
+ * Row-time covering enforcement — a UNIQUE constraint whose conflict resolution
+ * is answered by an explicit `row-time` covering MV's backing table rather than
+ * the auto-index (`covering-structure-mv-rowtime-enforcement`). The covering MV
+ * is `select <uc-cols>, <pk> from T order by <uc-cols> with refresh = 'row-time'`,
+ * so it is both *covering* (the prover links it) and *row-time* (its backing is
+ * consistent mid-statement). `findIndexForConstraint` then prefers it over the
+ * auto-index, and the source PK is recovered from the MV projection so
+ * IGNORE/ABORT/REPLACE resolve against the correct source row.
+ */
+describe('row-time covering enforcement', () => {
+	let db: Database;
+	afterEach(async () => { if (db) await db.close(); });
+
+	async function selectAll(sql: string): Promise<Record<string, unknown>[]> {
+		const rows: Record<string, unknown>[] = [];
+		for await (const row of db.eval(sql)) rows.push(row);
+		return rows;
+	}
+
+	async function expectThrows(fn: () => Promise<unknown>, substr: string): Promise<void> {
+		let err: unknown;
+		try { await fn(); } catch (e) { err = e; }
+		expect(err, `expected an error containing "${substr}"`).to.not.be.undefined;
+		expect(String((err as Error).message)).to.contain(substr);
+	}
+
+	/** t(id pk, x, y, unique(x,y)) covered by a row-time MV `ix`. */
+	async function freshCovered(extra: string[] = []): Promise<void> {
+		db = new Database();
+		await db.exec('create table t (id integer primary key, x integer not null, y integer not null, unique (x, y))');
+		await db.exec("create materialized view ix as select x, y, id from t order by x, y with refresh = 'row-time'");
+		for (const stmt of extra) await db.exec(stmt);
+	}
+
+	it('resolver: a row-time covering MV is found; manual / on-commit-incremental are not', async () => {
+		db = new Database();
+		await db.exec('create table t (id integer primary key, x integer not null, y integer not null, unique (x, y))');
+		await db.exec("create materialized view rt as select x, y, id from t order by x, y with refresh = 'row-time'");
+		const uc = () => db.schemaManager.getTable('main', 't')!.uniqueConstraints![0];
+		expect(uc().coveringStructureName, 'forward pointer set').to.equal('rt');
+		expect(db._findRowTimeCoveringStructure('main', 't', uc())?.name, 'row-time MV is enforcement-ready').to.equal('rt');
+
+		// A second table whose covering MV is `manual` must NOT be enforcement-ready.
+		await db.exec('create table u (id integer primary key, x integer not null, y integer not null, unique (x, y))');
+		await db.exec('create materialized view man as select x, y, id from u order by x, y');
+		const ucu = db.schemaManager.getTable('main', 'u')!.uniqueConstraints![0];
+		expect(ucu.coveringStructureName, 'manual MV still links').to.equal('man');
+		expect(db._findRowTimeCoveringStructure('main', 'u', ucu), 'manual MV is not row-time consistent').to.be.undefined;
+
+		// An on-commit-incremental covering MV is likewise not row-time consistent.
+		await db.exec('create table w (id integer primary key, x integer not null, y integer not null, unique (x, y))');
+		await db.exec("create materialized view ci as select x, y, id from w order by x, y with refresh = 'on-commit-incremental'");
+		const ucw = db.schemaManager.getTable('main', 'w')!.uniqueConstraints![0];
+		expect(db._findRowTimeCoveringStructure('main', 'w', ucw), 'on-commit-incremental MV is not row-time consistent').to.be.undefined;
+	});
+
+	it('INSERT conflict, default ABORT → UNIQUE constraint failed: t (x, y)', async () => {
+		await freshCovered(['insert into t values (1, 5, 5)']);
+		await expectThrows(() => db.exec('insert into t values (2, 5, 5)'), 'UNIQUE constraint failed: t (x, y)');
+		expect(await selectAll('select * from t order by id')).to.deep.equal([{ id: 1, x: 5, y: 5 }]);
+	});
+
+	it('ABORT reports the prior source row recovered via the MV projection (ON CONFLICT upsert)', async () => {
+		db = new Database();
+		await db.exec('create table t (id integer primary key, x integer not null, y integer not null, n text, unique (x, y))');
+		await db.exec("create materialized view ix as select x, y, id, n from t order by x, y with refresh = 'row-time'");
+		await db.exec("insert into t values (1, 5, 5, 'orig')");
+		// The conflict must resolve against the prior source row (id=1) the MV recovers:
+		// the upsert updates id=1 in place (id stays 1, n←'new') rather than inserting id=2,
+		// proving the correct source row — not a backing-shaped projection — flowed through.
+		await db.exec("insert into t values (2, 5, 5, 'new') on conflict (x, y) do update set n = excluded.n");
+		expect(await selectAll('select * from t order by id')).to.deep.equal([{ id: 1, x: 5, y: 5, n: 'new' }]);
+	});
+
+	it('INSERT OR IGNORE → duplicate silently skipped, row count unchanged', async () => {
+		await freshCovered(['insert into t values (1, 5, 5)']);
+		await db.exec('insert or ignore into t values (2, 5, 5)');
+		expect(await selectAll('select * from t order by id')).to.deep.equal([{ id: 1, x: 5, y: 5 }]);
+	});
+
+	it('INSERT OR REPLACE → prior source row evicted by recovered PK, new row present, no phantom backing', async () => {
+		await freshCovered(['insert into t values (1, 5, 5)']);
+		await db.exec('insert or replace into t values (10, 5, 5)');
+		// Correct source PK (id=1) recovered + evicted; new row present.
+		expect(await selectAll('select * from t order by id')).to.deep.equal([{ id: 10, x: 5, y: 5 }]);
+		// Regression for the eviction-maintenance edge: the evicted row's backing
+		// entry must be gone (the MV — which resolves to the backing — shows only id=10).
+		expect(await selectAll('select * from ix order by x, y')).to.deep.equal([{ x: 5, y: 5, id: 10 }]);
+	});
+
+	it('multi-row INSERT with an intra-statement duplicate (reads-own-writes)', async () => {
+		// ABORT: the second row conflicts with the first written mid-statement.
+		await freshCovered();
+		await expectThrows(() => db.exec('insert into t values (1, 5, 5), (2, 5, 5)'), 'UNIQUE constraint failed: t (x, y)');
+		expect(await selectAll('select count(*) as n from t')).to.deep.equal([{ n: 0 }]);
+
+		// OR IGNORE: the second (intra-statement) duplicate is skipped, the first lands.
+		await db.exec('insert or ignore into t values (1, 5, 5), (2, 5, 5)');
+		expect(await selectAll('select * from t order by id')).to.deep.equal([{ id: 1, x: 5, y: 5 }]);
+	});
+
+	it('UPDATE moving a row onto an existing UC value (no PK change), default ABORT', async () => {
+		await freshCovered(['insert into t values (1, 5, 5), (2, 6, 6)']);
+		// Moving id=1 onto (6,6) collides with id=2 (UPDATE OR <action> is unsupported,
+		// so the constraint's ABORT default governs).
+		await expectThrows(() => db.exec('update t set x = 6, y = 6 where id = 1'), 'UNIQUE constraint failed: t (x, y)');
+		expect(await selectAll('select * from t order by id')).to.deep.equal([{ id: 1, x: 5, y: 5 }, { id: 2, x: 6, y: 6 }]);
+	});
+
+	it('UPDATE onto an existing UC value with a schema-level ON CONFLICT REPLACE default evicts + maintains', async () => {
+		// Per-statement UPDATE OR REPLACE is unsupported; the constraint's
+		// `on conflict replace` default drives REPLACE for the conflicting UPDATE.
+		db = new Database();
+		await db.exec('create table t (id integer primary key, x integer not null, y integer not null, unique (x, y) on conflict replace)');
+		await db.exec("create materialized view ix as select x, y, id from t order by x, y with refresh = 'row-time'");
+		await db.exec('insert into t values (1, 5, 5), (2, 6, 6)');
+		// id=1 moves onto (6,6): id=2 is evicted (recovered by PK) + its backing entry maintained.
+		await db.exec('update t set x = 6, y = 6 where id = 1');
+		expect(await selectAll('select * from t order by id')).to.deep.equal([{ id: 1, x: 6, y: 6 }]);
+		expect(await selectAll('select * from ix order by x, y')).to.deep.equal([{ x: 6, y: 6, id: 1 }]);
+	});
+
+	it('UPDATE that changes the PK only (UC unchanged) is not a self-conflict', async () => {
+		// The internal old-row delete bypasses the row-time hook, so the backing
+		// transiently still carries id=1's (5,5) entry. The live-source validation
+		// must skip that stale candidate rather than raise a phantom conflict.
+		await freshCovered(['insert into t values (1, 5, 5)']);
+		await db.exec('update t set id = 10 where id = 1');
+		expect(await selectAll('select * from t order by id')).to.deep.equal([{ id: 10, x: 5, y: 5 }]);
+		expect(await selectAll('select * from ix order by x, y')).to.deep.equal([{ x: 5, y: 5, id: 10 }]);
+	});
+
+	it('UPDATE that changes the PK and moves onto an existing UC value', async () => {
+		await freshCovered(['insert into t values (1, 5, 5), (2, 6, 6)']);
+		await expectThrows(() => db.exec('update t set id = 99, x = 6, y = 6 where id = 1'), 'UNIQUE constraint failed: t (x, y)');
+
+		// With a schema-level REPLACE default the PK-changing move evicts id=2.
+		db = new Database();
+		await db.exec('create table t2 (id integer primary key, x integer not null, y integer not null, unique (x, y) on conflict replace)');
+		await db.exec("create materialized view ix2 as select x, y, id from t2 order by x, y with refresh = 'row-time'");
+		await db.exec('insert into t2 values (1, 5, 5), (2, 6, 6)');
+		await db.exec('update t2 set id = 99, x = 6, y = 6 where id = 1');
+		expect(await selectAll('select * from t2 order by id')).to.deep.equal([{ id: 99, x: 6, y: 6 }]);
+	});
+
+	it('partial covering MV: out-of-scope rows are not checked', async () => {
+		db = new Database();
+		await db.exec('create table t (id integer primary key, x integer not null, y integer not null, active integer not null)');
+		await db.exec('create unique index uq on t (x, y) where active = 1');
+		await db.exec("create materialized view ix as select x, y, id from t where active = 1 order by x, y with refresh = 'row-time'");
+		const uc = db.schemaManager.getTable('main', 't')!.uniqueConstraints![0];
+		expect(uc.coveringStructureName, 'partial covering MV linked').to.equal('ix');
+		expect(db._findRowTimeCoveringStructure('main', 't', uc)?.name).to.equal('ix');
+
+		await db.exec('insert into t values (1, 5, 5, 1)'); // in scope
+		// An out-of-scope row sharing (x,y) does NOT conflict.
+		await db.exec('insert into t values (2, 5, 5, 0)');
+		// Two out-of-scope rows sharing (x,y) do NOT conflict.
+		await db.exec('insert into t values (3, 7, 7, 0), (4, 7, 7, 0)');
+		expect(await selectAll('select count(*) as n from t')).to.deep.equal([{ n: 4 }]);
+		// A second in-scope row sharing (x,y) DOES conflict.
+		await expectThrows(() => db.exec('insert into t values (5, 5, 5, 1)'), 'UNIQUE constraint failed: t (x, y)');
+	});
+
+	it('non-row-time covering MV falls through to the auto-index (still enforced)', async () => {
+		db = new Database();
+		await db.exec('create table t (id integer primary key, x integer not null, y integer not null, unique (x, y))');
+		// A `manual` covering MV links but is NOT row-time consistent ⇒ not used for enforcement.
+		await db.exec('create materialized view man as select x, y, id from t order by x, y');
+		const uc = db.schemaManager.getTable('main', 't')!.uniqueConstraints![0];
+		expect(uc.coveringStructureName).to.equal('man');
+		expect(db._findRowTimeCoveringStructure('main', 't', uc), 'manual MV is not enforcement-ready').to.be.undefined;
+		// Enforcement still works (via the auto-index).
+		await db.exec('insert into t values (1, 5, 5)');
+		await expectThrows(() => db.exec('insert into t values (2, 5, 5)'), 'UNIQUE constraint failed: t (x, y)');
+	});
+});

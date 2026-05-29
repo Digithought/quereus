@@ -9,6 +9,9 @@
  */
 
 import type { VirtualTableConnection } from '../vtab/connection.js';
+import type { Row, SqlValue } from '../common/types.js';
+import type { UniqueConstraintSchema } from '../schema/table.js';
+import type { MaterializedViewSchema } from '../schema/view.js';
 
 /**
  * Internal database methods for virtual table connection management.
@@ -81,4 +84,44 @@ export interface DatabaseInternal {
 	 * @returns Array of all active connections
 	 */
 	getAllConnections(): VirtualTableConnection[];
+
+	/**
+	 * Resolve the linked, `row-time`, enforcement-ready covering materialized view
+	 * for a UNIQUE constraint on `schema.table`, or `undefined` when none applies.
+	 *
+	 * When present, the source vtab routes the constraint's conflict resolution
+	 * through the covering MV's backing table (in preference to its own auto-index /
+	 * source scan) — the structure the lens layer makes sole once the auto-index is
+	 * retired. Synchronous with an O(1) negative fast path.
+	 */
+	_findRowTimeCoveringStructure(
+		schemaName: string,
+		tableName: string,
+		uc: UniqueConstraintSchema,
+	): MaterializedViewSchema | undefined;
+
+	/**
+	 * Point-look up a row-time covering MV's backing table for rows whose backing
+	 * columns equal `newRow`'s UNIQUE values, returning the conflicting **source**
+	 * PK(s) (excluding `newSourcePk`, the row being written). Reads-own-writes through
+	 * the backing table's coordinated connection; the caller validates each candidate
+	 * against its live source row and applies IGNORE/ABORT/REPLACE.
+	 */
+	_lookupCoveringConflicts(
+		mv: MaterializedViewSchema,
+		uc: UniqueConstraintSchema,
+		newRow: Row,
+		newSourcePk: readonly SqlValue[],
+	): Promise<Array<{ pk: SqlValue[]; row?: Row }>>;
+
+	/**
+	 * Synchronously maintain every `row-time` covering structure on `sourceBase`
+	 * for one source row-write. Used by a source vtab to keep a covering MV's
+	 * backing table consistent for an eviction performed directly on its storage
+	 * (which bypasses the DML-executor row-time hook).
+	 */
+	_maintainRowTimeCoveringStructures(
+		sourceBase: string,
+		change: { op: 'insert' | 'update' | 'delete'; oldRow?: Row; newRow?: Row },
+	): Promise<void>;
 }

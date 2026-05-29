@@ -5,7 +5,7 @@ import type { ScalarType } from '../common/datatype.js';
 import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
 import { SchemaManager } from '../schema/manager.js';
-import type { TableSchema } from '../schema/table.js';
+import type { TableSchema, UniqueConstraintSchema } from '../schema/table.js';
 import type { MaterializedViewSchema } from '../schema/view.js';
 import type { FunctionSchema } from '../schema/function.js';
 import { BUILTIN_FUNCTIONS } from '../func/builtins/index.js';
@@ -1759,6 +1759,34 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		change: { op: 'insert' | 'update' | 'delete'; oldRow?: Row; newRow?: Row },
 	): Promise<void> {
 		await this.materializedViewManager.maintainRowTime(sourceBase, change);
+	}
+
+	/** @internal Resolve the linked, `row-time`, enforcement-ready covering MV for a
+	 *  UNIQUE constraint on `schema.table`, or `undefined`. Synchronous (a map lookup
+	 *  plus name/staleness checks) with an O(1) negative fast path, so the UNIQUE-check
+	 *  path can consult it without async overhead. When it returns an MV, conflict
+	 *  resolution routes through the covering MV's backing table (in preference to the
+	 *  auto-index) — see `docs/materialized-views.md` § Covering structures. */
+	public _findRowTimeCoveringStructure(
+		schemaName: string,
+		tableName: string,
+		uc: UniqueConstraintSchema,
+	): MaterializedViewSchema | undefined {
+		return this.materializedViewManager.findRowTimeCoveringStructure(schemaName, tableName, uc);
+	}
+
+	/** @internal Point-look up a row-time covering MV's backing table for rows whose
+	 *  backing columns equal `newRow`'s UNIQUE values, returning the conflicting
+	 *  **source** PK(s) (excluding `newSourcePk`, the row being written). Reads-own-writes
+	 *  through the backing table's coordinated connection. The caller validates each
+	 *  candidate against its live source row and applies IGNORE/ABORT/REPLACE. */
+	public async _lookupCoveringConflicts(
+		mv: MaterializedViewSchema,
+		uc: UniqueConstraintSchema,
+		newRow: Row,
+		newSourcePk: readonly SqlValue[],
+	): Promise<Array<{ pk: SqlValue[]; row?: Row }>> {
+		return this.materializedViewManager.lookupCoveringConflicts(mv, uc, newRow, newSourcePk);
 	}
 
 	/** @internal Test-only: install (or clear, with `undefined`) a fault injector

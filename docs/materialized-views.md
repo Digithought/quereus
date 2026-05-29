@@ -474,9 +474,9 @@ transaction reflects rows the same transaction just wrote and has not yet
 committed.
 
 Row-time is implemented as user-declared, synchronously-maintained *materialized
-index*: it is the maintenance capability the lens layer's row-time UNIQUE
-enforcement is built on (enforcement routing through the backing table is a
-separate downstream ticket; this section delivers maintenance only).
+index*: it is the maintenance capability row-time UNIQUE enforcement is built on.
+Enforcement routing through the backing table is now **delivered** for a linked
+covering MV — see [Enforcement through a row-time covering MV](#enforcement-through-a-row-time-covering-mv-delivered).
 
 ### Eligibility (checked at create time)
 
@@ -559,16 +559,12 @@ table is maintained off the user change log), the same substitution
 
 ### What row-time does NOT do
 
-- **No enforcement routing.** `findIndexForConstraint` still never returns the
-  `materialized-view` covering variant, and `checkSingleUniqueConstraint`'s
-  `materialized-view` arm still throws `UNSUPPORTED`. Consuming the now-row-time
-  backing table for conflict resolution is the downstream
-  `covering-structure-mv-rowtime-enforcement` ticket.
 - **No general-body row-time** (joins, aggregates, recursion, set ops) — parked in
   `backlog/materialized-view-rowtime-general-bodies.md`.
-- **No store-module path** — the runtime seam is module-agnostic, but the
-  privileged transactional write is implemented for the memory module here; store
-  parity rides the enforcement ticket.
+
+(Row-time UNIQUE **enforcement routing** — consuming the maintained backing table
+for conflict resolution — is now *delivered* for both the memory and store source
+modules; see [Covering structures](#covering-structures) below.)
 
 ## Declarative-schema integration
 
@@ -606,8 +602,8 @@ lens layer above it) can pattern-match a single surface
 
 ```
 type CoveringStructure =
-  | { kind: 'memory-index';      index: MemoryIndex }            // produced today
-  | { kind: 'materialized-view'; view:  MaterializedViewSchema } // reserved (see soundness note)
+  | { kind: 'memory-index';      index: MemoryIndex }            // the auto-built secondary BTree
+  | { kind: 'materialized-view'; view:  MaterializedViewSchema } // an explicit row-time covering MV
 ```
 
 ### Implicit covering structures (the auto-index, reframed)
@@ -689,36 +685,68 @@ only forgoes an optimization, a false *Covers* would be unsound):
   Entailment reuses the partial-UNIQUE clause vocabulary — see
   [Optimizer § Coverage proving](optimizer.md#coverage-proving).
 
-### Soundness boundary — why nothing enforces through an explicit MV yet
+### Enforcement through a row-time covering MV (delivered)
 
-The link the prover records is **informational in this release**. Row-time
-UNIQUE enforcement (the in-place substitution of `insert or replace`, the skip of
-`insert or ignore`, the conflict diagnostic of the default `abort`) requires the
-covering structure to be consistent *at the moment of the write*. The implicit
-secondary BTree is synchronously maintained, so it can drive row-time
-enforcement; an explicit MV's backing table can do so **only once it is
-write-through maintained**:
+Row-time UNIQUE enforcement (the in-place substitution of `insert or replace`, the
+skip of `insert or ignore`, the conflict diagnostic of the default `abort`) requires
+the covering structure to be consistent *at the moment of the write*. Which physical
+shapes satisfy that:
 
 - A `manual` MV materializes the backing table once at create / refresh; source
   DML does not update it.
 - The commit-time `on-commit-incremental` policy maintains backing tables at
   COMMIT, not at row-write time.
-- The **`row-time`** policy (see [Row-time refresh](#row-time-refresh)) *does*
-  maintain the backing table synchronously with each source row-write, for the
-  covering-index shape — so the **write-through prerequisite now exists** for that
-  shape.
+- The **`row-time`** policy (see [Row-time refresh](#row-time-refresh)) maintains
+  the backing table synchronously with each source row-write, for the covering-index
+  shape — so it is consistent mid-statement, the same property the auto-index has.
 
-The write-through prerequisite is therefore satisfied for a `row-time` covering MV,
-but **enforcement routing is still not wired**: `findIndexForConstraint` never
-returns the `materialized-view` variant of `CoveringStructure`, and
-`checkSingleUniqueConstraint`'s `materialized-view` arm still fails loudly
-(`StatusCode.UNSUPPORTED`) if ever reached. Consuming a row-time backing table for
-conflict resolution is the downstream `covering-structure-mv-rowtime-enforcement`
-ticket (which lists row-time write-through as its prereq). For *physical* schemas
-this remains moot — the auto-index already enforces, so an explicit covering MV
-adds a read-answering copy plus the recognized link; the explicit MV becomes the
-*sole* enforcement structure only in the **logical-schema** world (the lens layer),
-where the auto-index is retired.
+Only a **`row-time`** covering MV is therefore row-time consistent enough to answer
+conflict resolution. `findIndexForConstraint` resolves it via
+`Database._findRowTimeCoveringStructure(schema, table, uc)` — a synchronous map
+lookup keyed on the constraint's `coveringStructureName` forward pointer, gated on a
+live `row-time` plan that is neither `stale` (structural breakage) nor `diverged`
+(data drift), with an O(1) negative fast path off `rowTimeBySource` so a non-covered
+table pays effectively nothing — and returns the `materialized-view` covering variant
+**in preference to** the `memory-index` auto-index. `checkSingleUniqueConstraint`'s
+`materialized-view` arm then point-looks-up the covering MV's backing table
+(`Database._lookupCoveringConflicts`, reads-own-writes through the backing's
+coordinated connection — v1 is a full backing scan; a backing-PK prefix scan is a
+sound later optimization) and recovers each conflicting **source** PK from the MV
+projection so REPLACE / IGNORE / ABORT resolve against the correct source row. A
+`manual` / `on-commit-incremental` covering MV is mid-statement-inconsistent and is
+**never** used for enforcement — those fall through to the auto-index.
+
+**The preference tradeoff.** With a linked row-time covering MV present, the covering
+MV — not the auto-index — answers conflict resolution. The auto-index remains
+maintained but *unconsulted* (a redundant read-answering copy). For *physical*
+schemas this makes the MV path live and testable in v1 (the auto-index always exists,
+so the MV path is otherwise unreachable); it becomes the *sole* enforcement structure
+in the **logical-schema** world (the lens layer), where the auto-index is retired.
+
+**The eviction-maintenance edge.** A REPLACE evicts the conflicting **source** row
+directly on the source storage (memory transaction layer / store delete), which
+*bypasses* the DML-executor row-time maintenance hook (it fires only for DML-executor
+row writes, not for evictions internal to a vtab's update). So every REPLACE eviction
+on this path also drives `Database._maintainRowTimeCoveringStructures(sourceBase,
+{ op: 'delete', oldRow })` to remove the evicted row's backing entry within the same
+statement — otherwise that entry would go stale and produce a phantom conflict for a
+later same-UC row. Symmetrically, the conflict path validates every backing candidate
+against the *live* source row before acting (a backing entry can momentarily lag a row
+deleted/updated internally this statement — e.g. a PK-changing UPDATE's old-row delete),
+so a stale candidate is skipped rather than raised as a false conflict.
+
+**Store-module parity.** `store-table.ts` routes UNIQUE conflict resolution through the
+same `_findRowTimeCoveringStructure` / `_lookupCoveringConflicts` surface (the backing
+table is always the memory module, queried through the db), validating candidates
+against the live store row (committed + this transaction's pending overlay). Note: the
+constraint's `coveringStructureName` forward pointer is set by the eager prove-and-link
+on the *schema-manager's* constraint; a store table holds a copied schema whose
+constraint never received that mutation, so the resolver falls back to the authoritative
+schema-manager constraint matched by column set (`resolveCoveringStructureName`). The
+**isolation-wrapped** store path (`createIsolatedStoreModule`, exercised by
+`yarn test:store`) enforces UNIQUE via its own merged-view (overlay + underlying)
+detection rather than the covering MV, so routing *that* layer through the covering MV
+is not done here.
 
 **FD-derived "body proves it" is a different proof.** Separate from base-table
 covering, `coverage-prover.ts` exposes `proveEffectiveKeyUnique`, which proves the
@@ -732,10 +760,10 @@ two `x = 5` base rows into one output row) and so cannot witness a base-table
 `unique`. See [Optimizer § Effective-key proving](optimizer.md#effective-key-proving-body-proves-it)
 and [Lenses § the constraint-role split](lens.md).
 
-Deferred follow-ups: `covering-structure-mv-rowtime-enforcement` (route
-enforcement through a covering MV — its prereq, `materialized-view-rowtime-write-through`,
-is now **delivered** for the covering-index shape, see [Row-time refresh](#row-time-refresh))
-and `coverage-prover-inner-join-fk-preservation` (admit an `inner`/`cross` lookup
+Deferred follow-ups: `covering-structure-mv-rowtime-enforcement` (route enforcement
+through a covering MV) is now **delivered** for the covering-index shape — see
+[Enforcement through a row-time covering MV](#enforcement-through-a-row-time-covering-mv-delivered)
+above. Remaining: `coverage-prover-inner-join-fk-preservation` (admit an `inner`/`cross` lookup
 join when enforced referential integrity — a NOT-NULL FK aligned with the
 equi-pairs — proves every `T` row matches, closing the no-row-loss obligation
 the outer-join path gets structurally). Multi-source (join) bodies on the
@@ -769,8 +797,9 @@ tracked separately and build on this substrate:
 - **Row-time write-through** — *delivered* for the covering-index shape
   (`with refresh = 'row-time'`; see [Row-time refresh](#row-time-refresh)). General
   bodies (joins, aggregates, recursion, set ops) are parked in
-  `materialized-view-rowtime-general-bodies`; routing row-time UNIQUE enforcement
-  through the maintained backing table is `covering-structure-mv-rowtime-enforcement`.
+  `materialized-view-rowtime-general-bodies`. Routing row-time UNIQUE enforcement
+  through the maintained backing table is **delivered** for memory and (direct)
+  store sources — see [Enforcement through a row-time covering MV](#enforcement-through-a-row-time-covering-mv-delivered).
 - **Write-through DML** (`materialized-view-writes-through-body`) — accept DML
   against an MV and propagate to sources via [view updateability](view-updateability.md).
   (Distinct from row-time *maintenance* above: this is writing *the MV*, not

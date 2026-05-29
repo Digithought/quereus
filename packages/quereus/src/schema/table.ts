@@ -480,9 +480,12 @@ export interface UniqueConstraintSchema {
 	 * is the **source of truth** for the constraint↔structure link; a covering
 	 * MV's {@link MaterializedViewSchema.covers} is the convenience reverse link.
 	 * Set eagerly at MV-creation time, cleared when that MV is dropped. A
-	 * "constraint is logical, structure is optional" surface — informational in
-	 * the covering-structure ticket (enforcement still routes through the
-	 * synchronously-maintained BTree). See `docs/schema.md`.
+	 * "constraint is logical, structure is optional" surface. When the named
+	 * structure is a `row-time` covering MV, UNIQUE conflict resolution routes
+	 * through its backing table in preference to the auto-index (see
+	 * `docs/materialized-views.md` § Enforcement through a row-time covering MV);
+	 * a `manual`/`on-commit-incremental` covering MV is not row-time consistent and
+	 * is not used for enforcement. See `docs/schema.md`.
 	 */
 	coveringStructureName?: string;
 	/** Arbitrary metadata tags (informational only) */

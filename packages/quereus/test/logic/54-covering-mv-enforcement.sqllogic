@@ -1,0 +1,142 @@
+-- 54-covering-mv-enforcement.sqllogic — row-time UNIQUE enforcement routed
+-- through an explicit `row-time` covering materialized view's backing table
+-- (covering-structure-mv-rowtime-enforcement). The covering MV
+-- `select <uc-cols>, <pk> from T order by <uc-cols> with refresh = 'row-time'`
+-- is both *covering* (the prover links it to the UNIQUE constraint) and
+-- *row-time* (its backing is consistent mid-statement), so `findIndexForConstraint`
+-- prefers it over the auto-index and the source PK is recovered from the MV
+-- projection to resolve IGNORE / ABORT / REPLACE against the correct source row.
+--
+-- This file runs under BOTH the memory module (`yarn test`) and the store module
+-- (`yarn test:store`); under the store the source table is a store table while the
+-- covering MV's backing table is always the memory module, queried through the db.
+
+-- ===================================
+-- 1. INSERT — default ABORT, OR IGNORE, OR REPLACE through the covering MV.
+-- ===================================
+
+create table t (id integer primary key, x integer not null, y integer not null, unique (x, y));
+create materialized view ix as select x, y, id from t order by x, y with refresh = 'row-time';
+insert into t values (1, 5, 5);
+
+-- default ABORT: a duplicate (x,y) with a different PK is rejected
+insert into t values (2, 5, 5);
+-- error: UNIQUE constraint failed
+
+select id, x, y from t order by id;
+→ [{"id":1,"x":5,"y":5}]
+
+-- OR IGNORE: the duplicate is silently skipped
+insert or ignore into t values (2, 5, 5);
+select id, x, y from t order by id;
+→ [{"id":1,"x":5,"y":5}]
+
+-- OR REPLACE: the prior source row (recovered by PK = 1) is evicted, the new row lands
+insert or replace into t values (10, 5, 5);
+select id, x, y from t order by id;
+→ [{"id":10,"x":5,"y":5}]
+-- NOTE: the backing table reflecting the internal REPLACE eviction (the MV showing
+-- only id=10) is asserted in the memory-module spec (test/covering-structure.spec.ts)
+-- and the direct store-table spec (quereus-store/test/unique-constraints.spec.ts).
+-- It is NOT asserted here because the isolation-wrapped store path (yarn test:store)
+-- enforces UNIQUE via its own merged-view detection rather than the covering MV, so
+-- the internal eviction's backing maintenance does not run on that path.
+
+-- ===================================
+-- 2. Multi-row INSERT with an intra-statement duplicate (reads-own-writes through
+--    the coordinated backing connection mid-statement).
+-- ===================================
+
+create table m (id integer primary key, x integer not null, y integer not null, unique (x, y));
+create materialized view m_ix as select x, y, id from m order by x, y with refresh = 'row-time';
+
+-- ABORT: the second row collides with the first written earlier in the statement
+insert into m values (1, 7, 7), (2, 7, 7);
+-- error: UNIQUE constraint failed
+
+select count(*) as n from m;
+→ [{"n":0}]
+
+-- OR IGNORE: the first row lands, the intra-statement duplicate is skipped
+insert or ignore into m values (1, 7, 7), (2, 7, 7);
+select id, x, y from m order by id;
+→ [{"id":1,"x":7,"y":7}]
+
+-- ===================================
+-- 3. UPDATE — moving a row onto an existing UC value (default ABORT), and a
+--    schema-level ON CONFLICT REPLACE default that evicts + maintains the backing.
+-- ===================================
+
+create table u (id integer primary key, x integer not null, y integer not null, unique (x, y));
+create materialized view u_ix as select x, y, id from u order by x, y with refresh = 'row-time';
+insert into u values (1, 5, 5), (2, 6, 6);
+
+-- moving id=1 onto (6,6) collides with id=2 (UPDATE OR <action> is unsupported,
+-- so the constraint's ABORT default governs)
+update u set x = 6, y = 6 where id = 1;
+-- error: UNIQUE constraint failed
+
+select id, x, y from u order by id;
+→ [{"id":1,"x":5,"y":5},{"id":2,"x":6,"y":6}]
+
+create table ur (id integer primary key, x integer not null, y integer not null, unique (x, y) on conflict replace);
+create materialized view ur_ix as select x, y, id from ur order by x, y with refresh = 'row-time';
+insert into ur values (1, 5, 5), (2, 6, 6);
+
+-- the REPLACE default drives eviction of id=2 when id=1 moves onto (6,6)
+update ur set x = 6, y = 6 where id = 1;
+select id, x, y from ur order by id;
+→ [{"id":1,"x":6,"y":6}]
+
+-- ===================================
+-- 4. UPDATE that changes the PK only (UC value unchanged) is NOT a self-conflict.
+--    The internal old-row delete bypasses the row-time hook, leaving id=1's backing
+--    entry transiently present; the live-source validation must skip that stale
+--    candidate rather than raise a phantom conflict.
+-- ===================================
+
+create table pk (id integer primary key, x integer not null, y integer not null, unique (x, y));
+create materialized view pk_ix as select x, y, id from pk order by x, y with refresh = 'row-time';
+insert into pk values (1, 5, 5);
+
+update pk set id = 10 where id = 1;
+select id, x, y from pk order by id;
+→ [{"id":10,"x":5,"y":5}]
+select x, y, id from pk_ix order by x, y;
+→ [{"x":5,"y":5,"id":10}]
+
+-- ===================================
+-- 5. Partial covering MV — a source row outside the predicate is not checked.
+-- ===================================
+
+create table p (id integer primary key, x integer not null, y integer not null, active integer not null);
+create unique index p_uq on p (x, y) where active = 1;
+create materialized view p_ix as select x, y, id from p where active = 1 order by x, y with refresh = 'row-time';
+
+insert into p values (1, 5, 5, 1);
+-- an out-of-scope row sharing (x,y) does NOT conflict
+insert into p values (2, 5, 5, 0);
+-- two out-of-scope rows sharing (x,y) do NOT conflict
+insert into p values (3, 8, 8, 0), (4, 8, 8, 0);
+select count(*) as n from p;
+→ [{"n":4}]
+
+-- a second in-scope row sharing (x,y) DOES conflict
+insert into p values (5, 5, 5, 1);
+-- error: UNIQUE constraint failed
+
+select count(*) as n from p;
+→ [{"n":4}]
+
+-- ===================================
+-- 6. A non-row-time (manual) covering MV is NOT used for enforcement — the
+--    auto-index still enforces, so the constraint holds either way.
+-- ===================================
+
+create table man (id integer primary key, x integer not null, y integer not null, unique (x, y));
+create materialized view man_ix as select x, y, id from man order by x, y;
+insert into man values (1, 5, 5);
+insert into man values (2, 5, 5);
+-- error: UNIQUE constraint failed
+select id, x, y from man order by id;
+→ [{"id":1,"x":5,"y":5}]

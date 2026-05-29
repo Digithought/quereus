@@ -208,4 +208,58 @@ describe('StoreTable UNIQUE constraints', () => {
 			]);
 		});
 	});
+
+	// StoreTable routes UNIQUE conflict resolution through a linked `row-time`
+	// covering materialized view's backing table when one is present (the store
+	// analogue of the memory enforcement path; see
+	// covering-structure-mv-rowtime-enforcement). The backing table is the memory
+	// module, queried through the db with reads-own-writes. Exercised directly here
+	// (no isolation overlay), since the isolation-wrapped logic sweep enforces UNIQUE
+	// via its own merged-view detection rather than the covering MV.
+	describe('covering materialized-view enforcement', () => {
+		beforeEach(async () => {
+			await db.exec(`CREATE TABLE cm (id INTEGER PRIMARY KEY, x INTEGER NOT NULL, y INTEGER NOT NULL, UNIQUE (x, y)) USING store`);
+			await db.exec(`CREATE MATERIALIZED VIEW cm_ix AS SELECT x, y, id FROM cm ORDER BY x, y WITH refresh = 'row-time'`);
+			await db.exec(`INSERT INTO cm VALUES (1, 5, 5)`);
+		});
+
+		it('routes ABORT through the covering MV', async () => {
+			let err: Error | null = null;
+			try {
+				await db.exec(`INSERT INTO cm VALUES (2, 5, 5)`);
+			} catch (e) { err = e as Error; }
+			expect(err).to.not.be.null;
+			expect(err!.message).to.match(/UNIQUE constraint failed/i);
+			expect(await collect(db, `SELECT * FROM cm ORDER BY id`)).to.deep.equal([{ id: 1, x: 5, y: 5 }]);
+		});
+
+		it('routes OR IGNORE through the covering MV', async () => {
+			await db.exec(`INSERT OR IGNORE INTO cm VALUES (2, 5, 5)`);
+			expect(await collect(db, `SELECT * FROM cm ORDER BY id`)).to.deep.equal([{ id: 1, x: 5, y: 5 }]);
+		});
+
+		it('routes OR REPLACE through the covering MV — evicts the recovered source row and maintains the backing', async () => {
+			await db.exec(`INSERT OR REPLACE INTO cm VALUES (10, 5, 5)`);
+			// Correct source PK (id=1) recovered + evicted; new row present.
+			expect(await collect(db, `SELECT * FROM cm ORDER BY id`)).to.deep.equal([{ id: 10, x: 5, y: 5 }]);
+			// The evicted row's backing entry is gone (MV resolves to the backing table).
+			expect(await collect(db, `SELECT x, y, id FROM cm_ix ORDER BY x, y`)).to.deep.equal([{ x: 5, y: 5, id: 10 }]);
+		});
+
+		it('detects an intra-statement duplicate via reads-own-writes', async () => {
+			await db.exec(`DELETE FROM cm`);
+			let err: Error | null = null;
+			try {
+				await db.exec(`INSERT INTO cm VALUES (1, 7, 7), (2, 7, 7)`);
+			} catch (e) { err = e as Error; }
+			expect(err).to.not.be.null;
+			expect(err!.message).to.match(/UNIQUE constraint failed/i);
+			expect(await collect(db, `SELECT count(*) AS n FROM cm`)).to.deep.equal([{ n: 0 }]);
+		});
+
+		it('a PK-only UPDATE (UC unchanged) is not a self-conflict', async () => {
+			await db.exec(`UPDATE cm SET id = 99 WHERE id = 1`);
+			expect(await collect(db, `SELECT * FROM cm ORDER BY id`)).to.deep.equal([{ id: 99, x: 5, y: 5 }]);
+		});
+	});
 });

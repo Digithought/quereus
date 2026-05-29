@@ -154,9 +154,10 @@ export interface MaterializedViewSchema {
 	/**
 	 * Back-pointer to the UNIQUE constraint this structure realizes, recorded
 	 * eagerly when the coverage prover (`planner/analysis/coverage-prover.ts`)
-	 * recognizes that this MV covers the constraint. Informational in this
-	 * ticket — nothing enforces through the MV's backing table yet. The
-	 * authoritative link is the constraint's `coveringStructureName` forward
+	 * recognizes that this MV covers the constraint. When this MV is `row-time`,
+	 * its backing table answers the constraint's UNIQUE conflict resolution (see
+	 * `docs/materialized-views.md` § Enforcement through a row-time covering MV).
+	 * The authoritative link is the constraint's `coveringStructureName` forward
 	 * pointer (see `docs/schema.md`); this is the convenience reverse link.
 	 */
 	covers?: { schemaName: string; tableName: string; constraintName?: string };

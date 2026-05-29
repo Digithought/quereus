@@ -69,8 +69,11 @@ import type { BTreeKeyForPrimary } from '../vtab/memory/types.js';
 import type { MaintenanceOp, MemoryTableManager } from '../vtab/memory/layer/manager.js';
 import { MemoryVirtualTableConnection } from '../vtab/memory/connection.js';
 import type { MemoryTableConnection } from '../vtab/memory/layer/connection.js';
+import type { ScanPlan } from '../vtab/memory/layer/scan-plan.js';
 import { compilePredicate, type CompiledPredicate } from '../vtab/memory/utils/predicate.js';
+import { compareSqlValues } from '../util/comparison.js';
 import type { MaterializedViewSchema } from '../schema/view.js';
+import type { UniqueConstraintSchema } from '../schema/table.js';
 import type { Database } from './database.js';
 import type * as AST from '../parser/ast.js';
 
@@ -1229,6 +1232,144 @@ export class MaterializedViewManager {
 			projectionSourceCols,
 			predicate,
 		};
+	}
+
+	/* ──────────────── row-time covering enforcement ──────────────── */
+
+	/**
+	 * Resolve the linked, `row-time`, enforcement-ready covering MV for a UNIQUE
+	 * constraint on `schema.table`, or `undefined`. The constraint's
+	 * `coveringStructureName` forward pointer (set by the eager prove-and-link) is
+	 * the source of truth; this confirms a live `row-time` plan exists for the
+	 * source and the MV is neither `stale` (structural breakage) nor `diverged`
+	 * (data drift) — only then is its backing table row-time consistent enough to
+	 * answer conflict resolution. O(1) negative fast path off {@link rowTimeBySource}
+	 * so a source table with no row-time covering MV pays a single map lookup and
+	 * stays on the synchronous index/scan path.
+	 */
+	findRowTimeCoveringStructure(
+		schemaName: string,
+		tableName: string,
+		uc: UniqueConstraintSchema,
+	): MaterializedViewSchema | undefined {
+		const sourceBase = `${schemaName}.${tableName}`.toLowerCase();
+		const keys = this.rowTimeBySource.get(sourceBase);
+		if (!keys || keys.size === 0) return undefined; // O(1) negative fast path
+		const mvName = this.resolveCoveringStructureName(schemaName, tableName, uc);
+		if (!mvName) return undefined;
+		for (const key of keys) {
+			const plan = this.rowTime.get(key);
+			if (!plan) continue;
+			const mv = plan.mv;
+			if (mv.name !== mvName) continue; // must be THE linked covering MV
+			if (mv.stale || mv.diverged) return undefined; // not row-time consistent
+			return mv;
+		}
+		return undefined;
+	}
+
+	/**
+	 * Resolve a constraint's `coveringStructureName` forward pointer. Prefers the
+	 * pointer already on the passed `uc` (the memory source shares the
+	 * schema-manager's frozen constraint, so the eager link's mutation is visible).
+	 * A store source holds a *copied* schema whose constraint never received the
+	 * mutation, so fall back to the authoritative schema-manager constraint matched
+	 * by column set — keeping the covering-structure lookup module-agnostic.
+	 */
+	private resolveCoveringStructureName(
+		schemaName: string,
+		tableName: string,
+		uc: UniqueConstraintSchema,
+	): string | undefined {
+		if (uc.coveringStructureName) return uc.coveringStructureName;
+		const table = this.ctx._findTable(tableName, schemaName);
+		const live = table?.uniqueConstraints?.find(c =>
+			c.columns.length === uc.columns.length
+			&& c.columns.every((col, i) => col === uc.columns[i]));
+		return live?.coveringStructureName;
+	}
+
+	/**
+	 * Point-look up the covering MV's backing table for rows whose backing columns
+	 * equal `newRow`'s UNIQUE-constraint values, recover each conflicting **source**
+	 * PK from the projected PK columns, and exclude the row being written
+	 * (`newSourcePk`). Returns the conflicting source PK(s) — the caller resolves
+	 * IGNORE/ABORT/REPLACE against its own source storage (recovering the live
+	 * source row and validating the candidate against it, since the backing entry
+	 * for an internally-deleted/updated source row can lag within a statement).
+	 *
+	 * Reads-own-writes: the scan resolves to the backing table's coordinated
+	 * connection (the same one {@link maintainRowTime} writes), so the backing
+	 * reflects all prior rows of the statement. v1 is a full layer scan of the
+	 * backing (always the `memory` module regardless of the source module); a
+	 * backing-PK prefix scan is a sound later optimization (see
+	 * `docs/materialized-views.md` § Covering structures).
+	 */
+	async lookupCoveringConflicts(
+		mv: MaterializedViewSchema,
+		uc: UniqueConstraintSchema,
+		newRow: Row,
+		newSourcePk: readonly SqlValue[],
+	): Promise<Array<{ pk: SqlValue[]; row?: Row }>> {
+		const plan = this.rowTime.get(mvKey(mv.schemaName, mv.name));
+		if (!plan) return [];
+
+		const [srcSchemaName, srcTableName] = plan.sourceBase.split('.');
+		const sourceSchema = this.ctx._findTable(srcTableName, srcSchemaName);
+		if (!sourceSchema) return [];
+
+		// Inverse projection: source column index → backing column index (first
+		// occurrence). `projectionSourceCols[j]` is the source column behind backing
+		// column `j`, so this reverses it.
+		const sourceColToBacking = new Map<number, number>();
+		plan.projectionSourceCols.forEach((sc, backingCol) => {
+			if (!sourceColToBacking.has(sc)) sourceColToBacking.set(sc, backingCol);
+		});
+
+		const ucBackingCols: number[] = [];
+		for (const c of uc.columns) {
+			const b = sourceColToBacking.get(c);
+			if (b === undefined) return []; // the prover guarantees this; defensive
+			ucBackingCols.push(b);
+		}
+		const pkDef = sourceSchema.primaryKeyDefinition;
+		const pkBackingCols: number[] = [];
+		for (const d of pkDef) {
+			const b = sourceColToBacking.get(d.index);
+			if (b === undefined) return [];
+			pkBackingCols.push(b);
+		}
+
+		const backing = this.ctx.schemaManager.getTable(plan.backingSchema, plan.backingTableName);
+		if (!backing) return [];
+		const manager = getBackingManager(backing);
+		const connection = await this.getBackingConnection(manager, `${plan.backingSchema}.${plan.backingTableName}`);
+		const startLayer = connection.pendingTransactionLayer ?? connection.readLayer;
+
+		const conflicts: Array<{ pk: SqlValue[]; row?: Row }> = [];
+		const scanPlan: ScanPlan = { indexName: 'primary', descending: false };
+		for await (const backingRow of manager.scanLayer(startLayer, scanPlan)) {
+			let match = true;
+			for (let k = 0; k < uc.columns.length; k++) {
+				const coll = sourceSchema.columns[uc.columns[k]]?.collation;
+				if (compareSqlValues(newRow[uc.columns[k]], backingRow[ucBackingCols[k]], coll) !== 0) {
+					match = false;
+					break;
+				}
+			}
+			if (!match) continue;
+
+			const sourcePk = pkBackingCols.map(b => backingRow[b]);
+			// Exclude the row currently being written (its own source PK).
+			let isSelf = sourcePk.length === newSourcePk.length;
+			for (let i = 0; isSelf && i < sourcePk.length; i++) {
+				if (compareSqlValues(sourcePk[i], newSourcePk[i], pkDef[i]?.collation) !== 0) isSelf = false;
+			}
+			if (isSelf) continue;
+
+			conflicts.push({ pk: sourcePk });
+		}
+		return conflicts;
 	}
 }
 

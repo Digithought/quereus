@@ -21,6 +21,7 @@ import {
 	compilePredicate,
 	type Database,
 	type DatabaseInternal,
+	type MaterializedViewSchema,
 	type TableSchema,
 	type UniqueConstraintSchema,
 	type CompiledPredicate,
@@ -1001,7 +1002,14 @@ export class StoreTable extends VirtualTable {
 			const predicate = this.compileFor(uc);
 			if (predicate && predicate.evaluate(newRow) !== true) continue;
 
-			const conflict = await this.findUniqueConflict(uc, predicate, newRow, selfPks);
+			// Prefer a linked row-time covering MV: its backing table (always the
+			// `memory` module, queried through the db with reads-own-writes) answers
+			// the uniqueness question, mirroring the memory enforcement path. Falls
+			// back to the per-scan source search when no row-time covering MV exists.
+			const coveringMv = (this.db as DatabaseInternal)._findRowTimeCoveringStructure(schema.schemaName, schema.name, uc);
+			const conflict = coveringMv
+				? await this.findUniqueConflictViaCoveringMv(coveringMv, uc, predicate, newRow, selfPks)
+				: await this.findUniqueConflict(uc, predicate, newRow, selfPks);
 			if (!conflict) continue;
 
 			// Resolve action per-constraint: statement OR > per-UC default > ABORT.
@@ -1011,6 +1019,15 @@ export class StoreTable extends VirtualTable {
 			}
 			if (effective === ConflictResolution.REPLACE) {
 				await this.deleteRowAt(inTransaction, conflict.pk, conflict.row);
+				// The eviction bypasses the DML-executor row-time hook, so maintain the
+				// covering structure directly: drop the evicted source row's backing entry
+				// within this statement (else a later same-UC row sees a phantom).
+				if (coveringMv) {
+					await (this.db as DatabaseInternal)._maintainRowTimeCoveringStructures(
+						`${schema.schemaName}.${schema.name}`,
+						{ op: 'delete', oldRow: conflict.row },
+					);
+				}
 				continue;
 			}
 			const colNames = uc.columns.map(i => schema.columns[i].name).join(', ');
@@ -1075,6 +1092,56 @@ export class StoreTable extends VirtualTable {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * Find a UNIQUE conflict through a linked row-time covering MV's backing table
+	 * (the store analogue of the memory `checkUniqueViaMaterializedView`). The
+	 * backing scan yields candidate conflicting **source** PKs (reads-own-writes via
+	 * the backing's coordinated connection); each is validated against the *live*
+	 * store row (committed + this transaction's pending overlay) so a backing entry
+	 * that lags a row deleted/updated internally this statement is skipped rather
+	 * than raised as a false conflict. Returns the first real conflict or null.
+	 */
+	private async findUniqueConflictViaCoveringMv(
+		mv: MaterializedViewSchema,
+		uc: UniqueConstraintSchema,
+		predicate: CompiledPredicate | undefined,
+		newRow: Row,
+		selfPks: SqlValue[][],
+	): Promise<{ pk: SqlValue[]; row: Row } | null> {
+		const newSourcePk = this.extractPK(newRow);
+		const candidates = await (this.db as DatabaseInternal)._lookupCoveringConflicts(mv, uc, newRow, newSourcePk);
+		for (const cand of candidates) {
+			const liveRow = await this.readLiveRowByPk(cand.pk);
+			if (!liveRow) continue; // stale backing candidate (source row gone)
+			if (selfPks.some(pk => this.keysEqual(pk, cand.pk))) continue;
+			if (uc.columns.some(c => compareSqlValues(newRow[c], liveRow[c]) !== 0)) continue;
+			if (predicate && predicate.evaluate(liveRow) !== true) continue;
+			return { pk: cand.pk, row: liveRow };
+		}
+		return null;
+	}
+
+	/**
+	 * Read the live row at `pk` — this transaction's pending overlay (a pending
+	 * delete ⇒ gone; a pending put ⇒ its value) shadowing the committed store.
+	 * Used to validate covering-MV conflict candidates against the source of truth.
+	 */
+	private async readLiveRowByPk(pk: SqlValue[]): Promise<Row | null> {
+		const store = await this.ensureStore();
+		const key = buildDataKey(pk, this.encodeOptions, this.pkDirections);
+		const pending = this.coordinator?.isInTransaction()
+			? this.coordinator.getPendingOpsForStore(store)
+			: null;
+		if (pending) {
+			const hex = bytesToHex(key);
+			if (pending.deletes.has(hex)) return null;
+			const overlay = pending.puts.get(hex);
+			if (overlay) return deserializeRow(overlay.value);
+		}
+		const value = await store.get(key);
+		return value ? deserializeRow(value) : null;
 	}
 
 	/**
