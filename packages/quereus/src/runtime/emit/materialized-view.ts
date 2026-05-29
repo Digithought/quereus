@@ -20,6 +20,7 @@ import {
 	revalidateBody,
 	linkCoveredUniqueConstraints,
 	unlinkCoveredUniqueConstraints,
+	materializedViewNotASetError,
 } from './materialized-view-helpers.js';
 
 export function emitCreateMaterializedView(plan: CreateMaterializedViewNode, _ctx: EmissionContext): Instruction {
@@ -54,7 +55,7 @@ export function emitCreateMaterializedView(plan: CreateMaterializedViewNode, _ct
 		try {
 			const rows: Row[] = await collectBodyRows(db, plan.bodySql);
 			const manager = getBackingManager(completeBacking);
-			await manager.replaceBaseLayer(rows);
+			await manager.replaceBaseLayer(rows, () => materializedViewNotASetError(plan.schemaName, plan.viewName));
 		} catch (e) {
 			// Roll back: drop the backing table, do not register the MV.
 			try {

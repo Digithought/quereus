@@ -1113,8 +1113,16 @@ export class MemoryTableManager {
 	 * table` and other refreshes, not with readers).
 	 *
 	 * Throws on a duplicate primary key among `rows` (the caller rolls back).
+	 * Callers may pass `onDuplicateKey` to substitute a purpose-built diagnostic
+	 * for the duplicate-PK case (e.g. the materialized-view "must be a set"
+	 * message); when omitted, the generic backing-table message is thrown. The
+	 * factory only controls the wording — duplicate detection still uses the
+	 * btree's collation/desc/composite-correct key comparison.
 	 */
-	async replaceBaseLayer(rows: readonly Row[]): Promise<void> {
+	async replaceBaseLayer(
+		rows: readonly Row[],
+		onDuplicateKey?: () => QuereusError,
+	): Promise<void> {
 		if (this.isReadOnly) {
 			throw new QuereusError(`Table '${this._tableName}' is read-only`, StatusCode.READONLY);
 		}
@@ -1131,10 +1139,12 @@ export class MemoryTableManager {
 				const key = this.primaryKeyFunctions.extractFromRow(row);
 				const path = newBase.primaryTree.find(key);
 				if (path.on) {
-					throw new QuereusError(
-						`UNIQUE constraint failed: ${this._tableName} PK.`,
-						StatusCode.CONSTRAINT,
-					);
+					throw onDuplicateKey
+						? onDuplicateKey()
+						: new QuereusError(
+							`UNIQUE constraint failed: ${this._tableName} PK.`,
+							StatusCode.CONSTRAINT,
+						);
 				}
 				newBase.primaryTree.insert(row);
 			}

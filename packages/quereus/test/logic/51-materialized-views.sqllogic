@@ -138,3 +138,40 @@ select * from smv2;
 -- error: stale
 drop materialized view smv2;
 drop table s2;
+
+-- ===================================
+-- 9. Bag-body contract — a materialized view must be a set
+-- ===================================
+
+-- A duplicate-producing ("bag") body fails loudly at CREATE with a purpose-built
+-- diagnostic that names the MV and the set-semantics contract, NOT the hidden
+-- backing table's raw `UNIQUE constraint failed: sqlite_mv_... PK` (see the
+-- focused spec for the no-backing-table-name assertion).
+create table orders (id integer primary key, status text);
+insert into orders values (1, 'open'), (2, 'open'), (3, 'shipped');
+create materialized view mv_status as select status from orders;
+-- error: must be a set
+
+-- The failed create rolled the backing table back, so the name is free: a
+-- de-duplicated (`distinct`) body over the same source materializes cleanly.
+create materialized view mv_status as select distinct status from orders;
+select * from mv_status order by status;
+→ [{"status":"open"},{"status":"shipped"}]
+drop materialized view mv_status;
+drop table orders;
+
+-- Late duplicate at REFRESH: a body that is duplicate-free at create but becomes
+-- duplicate-producing after source edits fails with the same diagnostic at the
+-- next refresh (inherent to the bag case under set semantics; see docs).
+create table u (id integer primary key, k text);
+insert into u values (1, 'a'), (2, 'b');
+-- distinct at create → materializes on the all-columns key
+create materialized view mv_u as select k from u;
+select * from mv_u order by k;
+→ [{"k":"a"},{"k":"b"}]
+-- now two 'a' rows → the body is a bag
+update u set k = 'a' where id = 2;
+refresh materialized view mv_u;
+-- error: must be a set
+drop materialized view mv_u;
+drop table u;

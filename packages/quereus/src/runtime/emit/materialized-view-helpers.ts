@@ -17,6 +17,24 @@ import type { MemoryTableManager } from '../../vtab/memory/layer/manager.js';
 // for the create/refresh emitters that already import from this module.
 export { computeBodyHash } from '../../schema/view.js';
 
+/**
+ * Purpose-built diagnostic for a bag (duplicate-producing) materialized-view
+ * body. A v1 materialized view is a *keyed* derived relation: its body must
+ * produce a **set** (no duplicate rows under the backing-table key). This
+ * replaces the raw `UNIQUE constraint failed: <backing table> PK` message —
+ * which named a hidden implementation detail — with one that names the MV and
+ * explains the contract. Raised at create (loud, immediate) or at the next
+ * refresh if a duplicate-free body later becomes duplicate-producing.
+ */
+export function materializedViewNotASetError(schemaName: string, viewName: string): QuereusError {
+	return new QuereusError(
+		`materialized view '${schemaName}.${viewName}' body produces duplicate rows, `
+			+ `but a materialized view must be a set: its body needs a unique key. `
+			+ `Add \`distinct\`, a \`group by\`/aggregation, or project a key column so every row is unique.`,
+		StatusCode.CONSTRAINT,
+	);
+}
+
 /** Backing-table column/PK/ordering shape derived from the optimized body relation. */
 export interface BackingShape {
 	columns: ColumnSchema[];
@@ -202,7 +220,7 @@ export async function rebuildBacking(db: Database, mv: MaterializedViewSchema): 
 		);
 	}
 	const manager = getBackingManager(backing);
-	await manager.replaceBaseLayer(rows);
+	await manager.replaceBaseLayer(rows, () => materializedViewNotASetError(mv.schemaName, mv.name));
 }
 
 /** Resolves the {@link MemoryTableManager} backing a materialized view's table. */

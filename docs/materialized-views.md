@@ -63,13 +63,26 @@ This keeps every materialized view addressable, but has two consequences:
 - **Such a view is incremental-ineligible** until the Phase-2 incremental path
   lands: with the whole row as the key there is no stable identity to apply a
   delta against.
-- **A duplicate-row body fails loudly.** If the body emits two identical rows
-  under an all-columns key, materialization hits a `UNIQUE constraint failed`
-  on the backing PK and the `CREATE` / `REFRESH` statement fails. A body that
-  becomes duplicate-producing only after source edits therefore fails at the
-  next `REFRESH`, not at create time. This is a loud failure, not silent
-  corruption; choosing a friendlier contract for bag bodies is tracked
-  separately (`materialized-view-bag-body-duplicates`).
+- **A materialized view must be a set.** The all-columns fallback is itself a
+  legitimate key *only* when the body's rows are all distinct — a duplicate-free
+  keyless body (e.g. `select y from pt` where the `y` values differ)
+  materializes fine on the all-columns key. The contract is violated only when
+  the body actually emits a **duplicate row** under the backing key. A v1
+  materialized view is a keyed derived relation, so a duplicate-producing
+  ("bag") body is rejected with a purpose-built diagnostic
+  (`materializedViewNotASetError`) that names the view and explains the
+  contract — *"... body produces duplicate rows, but a materialized view must be
+  a set: its body needs a unique key. Add `distinct`, a `group by`/aggregation,
+  or project a key column ..."* — rather than the raw
+  `UNIQUE constraint failed: sqlite_mv_<name> PK` that leaked the hidden backing
+  table. The diagnostic fires at `CREATE` (loud, immediate) for a body that is
+  already a bag, or at the next `REFRESH` for a body that is duplicate-free at
+  create but becomes duplicate-producing after source edits. This late-refresh
+  failure is inherent to the bag case under set semantics: enforcement stays at
+  fill time (where the collision is detected with the backing table's real,
+  collation/desc/composite-correct key comparison), so keyless bodies are *not*
+  statically rejected. Quereus does **not** silently de-duplicate, and does
+  **not** synthesize a row identity.
 
 > **Physical vs logical key.** The backing table's *physical*
 > `primaryKeyDefinition` may lead with the body's `order by` columns (so a btree
@@ -114,7 +127,8 @@ refresh materialized view mv;
 
 Re-evaluates the body against current source data and atomically replaces the
 backing table's contents (`replaceBaseLayer` builds a fresh base layer, guards
-duplicate PKs, and swaps it under the schema-change latch). Readers use
+duplicate PKs — raising the caller-supplied "must be a set" diagnostic for a
+bag MV body — and swaps it under the schema-change latch). Readers use
 start-of-call snapshot isolation, so a concurrent scan sees either the old
 contents or the new — never a torn state. Refresh clears the staleness flag (see
 below).
@@ -254,9 +268,11 @@ keeps reporting the backing table.
   leaf MV's backing-table write happens *during* the post-commit pass and is not
   itself in the current change log, so a dependent MV does not observe it this
   commit. Tracked: `materialized-view-incremental-cascading-convergence`.
-- **Keyless / bag bodies** (all-columns PK) hit the same `UNIQUE constraint
-  failed` on a duplicate-producing upsert that manual refresh hits — the contract
-  fix lives in `materialized-view-bag-body-duplicates`.
+- **Keyless / bag bodies** (all-columns PK) raise the same "must be a set"
+  diagnostic on a duplicate-producing rebuild that manual refresh raises (a
+  `'global'` rebuild routes through `rebuildBacking` → `replaceBaseLayer`). In
+  practice a bag body is incremental-ineligible, so this path should not see one;
+  it inherits the better message for free.
 - **`getChangeScope()` projection is conservative.** `Database.watch` on an
   incremental MV now fires on *source* mutations (delivered — see
   [Change-scope projection](#change-scope-projection)), but v1 projects to a
@@ -453,6 +469,10 @@ tracked separately and build on this substrate:
 - **Lens / covering structures** — indexes and set-level constraint enforcement
   expressed as covering materialized views in the basis layer. See
   [Lenses and Layered Schemas](lens.md).
-- **Bag-body contract** (`materialized-view-bag-body-duplicates`) — a chosen
-  contract for keyless, duplicate-producing bodies in place of the current raw
-  `UNIQUE constraint failed`.
+- **Bag-body contract** — *delivered.* A v1 materialized view must be a **set**:
+  a duplicate-producing ("bag") body is rejected with a purpose-built "must be a
+  set" diagnostic (at create, or at the next refresh if the body only later
+  becomes duplicate-producing) instead of the raw `UNIQUE constraint failed` that
+  named the hidden backing table. See [Primary key inference (and the all-columns
+  fallback)](#primary-key-inference-and-the-all-columns-fallback). No silent
+  de-duplication and no synthetic row identity.
