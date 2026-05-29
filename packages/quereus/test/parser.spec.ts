@@ -413,6 +413,17 @@ describe('Parser', () => {
 			expect(stmt.withClause!.ctes[0].name).to.equal('references');
 			// ...consistent with the same word being accepted as a table name:
 			expect(() => parse(`select * from references`)).to.not.throw();
+			// `on` is in CONTEXTUAL_KEYWORDS too — exercise it explicitly, not just transitively.
+			const onStmt = parse(`with on as (select 1 as a) select * from on`) as SelectStmt;
+			expect(onStmt.withClause!.ctes[0].name).to.equal('on');
+		});
+
+		it('round-trips a keyword-named CTE through ast-stringify', () => {
+			// The emitter must quote the keyword (e.g. `with "references" as ...`) so the
+			// widened parser accepts it on re-parse and the name survives unchanged.
+			const stmt = parse(`with references as (select 1 as a) select * from references`) as SelectStmt;
+			const reparsed = parse(astToString(stmt)) as SelectStmt;
+			expect(reparsed.withClause!.ctes[0].name).to.equal('references');
 		});
 
 		it('accepts a previously-omitted reserved-but-table-legal keyword in a CTE column list', () => {
