@@ -13,6 +13,8 @@ import { collectSchemaCatalog } from '../src/schema/catalog.js';
 import { proveCoverage, proveEffectiveKeyUnique, type CoverageResult } from '../src/planner/analysis/coverage-prover.js';
 import type { FunctionalDependency, PhysicalProperties, RelationalPlanNode } from '../src/planner/nodes/plan-node.js';
 import type { ColRef, RelationType } from '../src/common/datatype.js';
+import type { MaterializedViewSchema } from '../src/schema/view.js';
+import { parseSelect } from '../src/parser/index.js';
 import { INTEGER_TYPE } from '../src/types/builtin-types.js';
 
 async function freshDb(ddl: string[]): Promise<Database> {
@@ -43,6 +45,25 @@ async function prove(
 	const table = db.schemaManager.getTable('main', tableName)!;
 	const uc = table.uniqueConstraints![ucIndex];
 	return proveCoverage(bodyRoot(db, bodySql), mv!, uc, table);
+}
+
+/**
+ * Runs the prover against a body that is *planned but not materialized*. Needed
+ * for RIGHT JOIN, which plans correctly but is not executable yet (so it cannot
+ * back a real MV — `collectBodyRows` throws "RIGHT JOIN is not supported yet").
+ * `proveCoverage` reads only `mv.selectAst`, so a stub carrying the parsed body
+ * suffices to exercise the prover's `'right'`-join branch end to end.
+ */
+function proveUnmaterialized(
+	db: Database,
+	bodySql: string,
+	tableName: string,
+	ucIndex = 0,
+): CoverageResult {
+	const table = db.schemaManager.getTable('main', tableName)!;
+	const uc = table.uniqueConstraints![ucIndex];
+	const mvStub = { selectAst: parseSelect(bodySql) } as unknown as MaterializedViewSchema;
+	return proveCoverage(bodyRoot(db, bodySql), mvStub, uc, table);
 }
 
 describe('coverage prover — positive', () => {
@@ -233,6 +254,150 @@ describe('eager prove-and-link', () => {
 		]);
 		try {
 			expect(db.schemaManager.getTable('main', 't')!.uniqueConstraints![0].coveringStructureName).to.be.undefined;
+			expect(db.schemaManager.getMaterializedView('main', 'ix')!.covers).to.be.undefined;
+		} finally {
+			await db.close();
+		}
+	});
+});
+
+/**
+ * Multi-source (join) bodies — the prover admits a join body as covering a
+ * single-table UNIQUE constraint when `T` provably contributes exactly one MV
+ * row per governed `T` row (no row loss + no fan-out). See the coverage-prover
+ * module doc § "The 1:1 join decomposition".
+ *
+ * NOTE on join survival: none of these DDLs declare a foreign key, so
+ * `rule-join-elimination` (which needs FK→PK alignment) never fires and the join
+ * survives to the optimized plan — exercising the new multi-source walk rather
+ * than collapsing to the v1 single-source path.
+ */
+describe('coverage prover — multi-source (join) bodies', () => {
+	// orders(unique(customer_id, sku)) left-joined to a unique lookup key: 1:1.
+	const ORDERS_CUSTOMERS = [
+		'create table orders (id integer primary key, customer_id integer not null, sku text not null, unique (customer_id, sku))',
+		'create table customers (id integer primary key, name text)',
+	];
+
+	it('positive: LEFT join to a unique lookup key (T on the preserving left side) covers', async () => {
+		const body = 'select o.customer_id, o.sku, o.id from orders o left join customers c on o.customer_id = c.id order by o.customer_id, o.sku';
+		const db = await freshDb([...ORDERS_CUSTOMERS, `create materialized view ix as ${body}`]);
+		try {
+			expect((await prove(db, 'ix', body, 'orders')).covers, 'left-join to unique lookup is 1:1').to.be.true;
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('positive: RIGHT join with the lookup on the left (T on the preserving right side) covers', async () => {
+		// RIGHT JOIN is not executable yet, so the MV cannot be materialized; prove
+		// against the planned body directly (the prover's `'right'`-join branch).
+		const body = 'select o.customer_id, o.sku, o.id from customers c right join orders o on o.customer_id = c.id order by o.customer_id, o.sku';
+		const db = await freshDb(ORDERS_CUSTOMERS);
+		try {
+			expect(proveUnmaterialized(db, body, 'orders').covers, 'symmetric right-join case').to.be.true;
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('negative fanout: LEFT join on a NON-unique lookup key multiplies T rows', async () => {
+		// tags.val is not unique (PK is on a different column) ⇒ one orders row can
+		// match many tags rows ⇒ the join fans out.
+		const body = 'select o.customer_id, o.sku, o.id from orders o left join tags t on o.customer_id = t.val order by o.customer_id, o.sku';
+		const db = await freshDb([
+			'create table orders (id integer primary key, customer_id integer not null, sku text not null, unique (customer_id, sku))',
+			'create table tags (id integer primary key, val integer not null, label text)',
+			`create materialized view ix as ${body}`,
+		]);
+		try {
+			const result = await prove(db, 'ix', body, 'orders');
+			expect(result.covers, 'a fanning lookup join must not cover').to.be.false;
+			if (!result.covers) expect(result.reason).to.equal('fanout');
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('negative shape: the same body as an INNER join loses unmatched T rows', async () => {
+		const body = 'select o.customer_id, o.sku, o.id from orders o inner join customers c on o.customer_id = c.id order by o.customer_id, o.sku';
+		const db = await freshDb([...ORDERS_CUSTOMERS, `create materialized view ix as ${body}`]);
+		try {
+			const result = await prove(db, 'ix', body, 'orders');
+			expect(result.covers, 'inner join cannot prove no-row-loss').to.be.false;
+			if (!result.covers) expect(result.reason).to.equal('shape');
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('negative shape: T on the dropping side of an outer join', async () => {
+		// customers LEFT JOIN orders preserves customers; orders rows with no
+		// matching customer are dropped ⇒ row loss for orders.
+		const body = 'select o.customer_id, o.sku, o.id from customers c left join orders o on o.customer_id = c.id order by o.customer_id, o.sku';
+		const db = await freshDb([...ORDERS_CUSTOMERS, `create materialized view ix as ${body}`]);
+		try {
+			const result = await prove(db, 'ix', body, 'orders');
+			expect(result.covers, 'T on the non-preserving side cannot cover').to.be.false;
+			if (!result.covers) expect(result.reason).to.equal('shape');
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('negative shape: self-join of T to T is ambiguous', async () => {
+		const body = 'select o1.customer_id, o1.sku, o1.id from orders o1 join orders o2 on o1.id = o2.id order by o1.customer_id, o1.sku';
+		const db = await freshDb([
+			'create table orders (id integer primary key, customer_id integer not null, sku text not null, unique (customer_id, sku))',
+			`create materialized view ix as ${body}`,
+		]);
+		try {
+			const result = await prove(db, 'ix', body, 'orders');
+			expect(result.covers, 'self-join puts T on both sides ⇒ ambiguous').to.be.false;
+			if (!result.covers) expect(result.reason).to.equal('shape');
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('negative: WHERE referencing a lookup column cannot sneak through', async () => {
+		const body = 'select o.customer_id, o.sku, o.id from orders o left join customers c on o.customer_id = c.id where c.name is not null order by o.customer_id, o.sku';
+		const db = await freshDb([...ORDERS_CUSTOMERS, `create materialized view ix as ${body}`]);
+		try {
+			const result = await prove(db, 'ix', body, 'orders');
+			expect(result.covers, 'a non-T filter must not be accepted').to.be.false;
+			// Either the optimizer null-rejected the LEFT join into an INNER join
+			// (rejected by the structural side/type gate ⇒ 'shape') or it survived as
+			// a LEFT join and the AST WHERE (on a non-T column) failed predicate
+			// alignment ⇒ 'predicate-entailment'. Both are sound rejections.
+			if (!result.covers) expect(['shape', 'predicate-entailment']).to.include(result.reason);
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('eager link: a covering join MV stamps covers + coveringStructureName', async () => {
+		const body = 'select o.customer_id, o.sku, o.id from orders o left join customers c on o.customer_id = c.id order by o.customer_id, o.sku';
+		const db = await freshDb([...ORDERS_CUSTOMERS, `create materialized view ix as ${body}`]);
+		try {
+			const uc = db.schemaManager.getTable('main', 'orders')!.uniqueConstraints![0];
+			expect(uc.coveringStructureName, 'forward pointer set to the join MV').to.equal('ix');
+			const mv = db.schemaManager.getMaterializedView('main', 'ix')!;
+			expect(mv.covers).to.deep.include({ schemaName: 'main', tableName: 'orders' });
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('eager link: a fanning join MV stamps nothing', async () => {
+		const body = 'select o.customer_id, o.sku, o.id from orders o left join tags t on o.customer_id = t.val order by o.customer_id, o.sku';
+		const db = await freshDb([
+			'create table orders (id integer primary key, customer_id integer not null, sku text not null, unique (customer_id, sku))',
+			'create table tags (id integer primary key, val integer not null, label text)',
+			`create materialized view ix as ${body}`,
+		]);
+		try {
+			expect(db.schemaManager.getTable('main', 'orders')!.uniqueConstraints![0].coveringStructureName).to.be.undefined;
 			expect(db.schemaManager.getMaterializedView('main', 'ix')!.covers).to.be.undefined;
 		} finally {
 			await db.close();

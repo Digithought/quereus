@@ -337,11 +337,37 @@ the prover proves `ix_t_xy` covers `unique(x, y)` and stamps the link (see
 Recognition rules (narrow v1 — every check is conservative; a false *NotCovers*
 only forgoes an optimization, a false *Covers* would be unsound):
 
-- **Shape.** The optimized body is a linear chain over a single base table `T`
-  (`TableReference → optional Filter → Project → optional Sort`; physical access
-  nodes are transparent). Joins, aggregation, `DISTINCT`, set operations, or
-  multiple sources, or a `LIMIT`/`OFFSET` row cap (which materializes only a
-  prefix of the governed rows) ⇒ not covering.
+- **Shape.** The optimized body walks down to a single constrained base table
+  `T` (`TableReference → optional Filter/Alias → Project → optional Sort`;
+  physical access nodes are transparent). A **binary join** is admitted when `T`
+  provably contributes *exactly one* MV row per governed `T` row (see the join
+  decomposition below). Aggregation, `DISTINCT`, set operations,
+  `FanOutLookupJoin`, `AsofScan`, or a `LIMIT`/`OFFSET` row cap (which
+  materializes only a prefix of the governed rows) ⇒ not covering.
+- **Join (1:1) decomposition.** "Exactly one MV row per governed `T` row" splits
+  into two independent obligations, each proven by a distinct surface:
+    - *No row loss (≥1):* `T` must sit on the row-**preserving** side of every
+      join between the body root and `T`'s reference — a `left` join with `T` in
+      the left subtree, or a `right` join with `T` in the right subtree.
+      `inner`/`cross` (drop unmatched `T` rows), `semi`/`anti` (filter), `full`
+      (inject lookup-only rows), and `T` on the dropping side are all rejected as
+      *shape*. This is a structural plan-walk check — FDs encode uniqueness, not
+      existence, so they cannot prove it.
+    - *No fan-out (≤1):* `T`'s primary key must be a unique key of the **topmost
+      join's output relation** (read via `isUnique`). The optimizer emits
+      `T.pk → all_join_cols` into the join's FDs exactly when the equi-pairs cover
+      a unique key of the lookup side (each `T` row matches ≤1 lookup row); the
+      moment the lookup side can multiply a `T` row, no such FD is emitted and the
+      gate fails (`fanout`). The check is against the *join* frame, **not** the
+      projected body root: a fanning `left` join still carries `T`'s own PK FD
+      `T.pk → T-cols`, which — once the lookup columns are projected away — would
+      make `T.pk` a derived key of the narrowed relation and silently mask the
+      fan-out; at the join frame the retained lookup columns witness it. (Example:
+      `orders o left join customers c on o.customer_id = c.id` covers
+      `unique(customer_id, sku)` on `orders` iff `customers.id` is unique.) When
+      the optimizer instead *eliminates* a key-preserving join (FK→PK aligned,
+      lookup unprojected — see `rule-join-elimination`), the body collapses to a
+      single-source chain and the v1 path covers it directly.
 - **Projection.** The output must include every UC column **and** every primary
   key column of `T` (the PK identifies the source row for conflict resolution).
 - **Ordering.** The body's `order by` columns must be a permutation of the UC
@@ -397,7 +423,11 @@ and [Lenses § the constraint-role split](lens.md).
 Deferred follow-ups: `covering-structure-mv-rowtime-enforcement` (route
 enforcement through a covering MV, blocked on
 `materialized-view-rowtime-write-through`) and
-`coverage-prover-multi-source-bodies` (join MVs covering a single-table UC).
+`coverage-prover-inner-join-fk-preservation` (admit an `inner`/`cross` lookup
+join when enforced referential integrity — a NOT-NULL FK aligned with the
+equi-pairs — proves every `T` row matches, closing the no-row-loss obligation
+the outer-join path gets structurally). Multi-source (join) bodies on the
+*outer*-join 1:1 path are **delivered** (`coverage-prover-multi-source-bodies`).
 Whether a covering *enforcement* structure (detection-only, ABORT) can ever be
 FD-derived is a separate question for the row-time-enforcement / lens tickets —
 `proveEffectiveKeyUnique` does not address it.

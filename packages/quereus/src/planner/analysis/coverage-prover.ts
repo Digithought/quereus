@@ -7,19 +7,81 @@
  * backing table in this ticket** (that needs row-time write-through maintenance
  * — see `docs/materialized-views.md` § Covering structures, the soundness note).
  *
- * Narrow v1 — the body, after optimization, must be a linear chain over a single
- * base table `T`:
+ * Shape — the body, after optimization, walks down to a single constrained base
+ * table `T` through a chain of:
  *
  *     TableReference(T) → optional Filter(P) → Project(...) → optional Sort
  *
  * (physical access nodes such as IndexScan / SeqScan are transparent links in
- * the chain). Anything else — joins, aggregation, DISTINCT, set operations,
- * multiple sources — is `NotCovers('shape')`.
+ * the chain). A binary **join** is admitted when `T` provably contributes
+ * *exactly one* MV row per governed `T` row — see the 1:1 decomposition below.
+ * Aggregation, DISTINCT, set operations, `FanOutLookupJoin`, and `AsofScan` are
+ * always `NotCovers('shape')`.
  *
  * Soundness is paramount: a false `Covers` would (once the lens layer routes
  * enforcement through the structure) silently miss conflicts. Every check is
- * conservative — a false `NotCovers` only forgoes an optimization. Multi-source
- * bodies are deferred (see the backlog tickets named in the implement ticket's
+ * conservative — a false `NotCovers` only forgoes an optimization.
+ *
+ * ---
+ *
+ * **The 1:1 join decomposition.** "Exactly one MV row per governed `T` row"
+ * splits into two independent obligations, each proven by a distinct surface:
+ *
+ *  - **No row loss (≥1).** `T` must sit on the row-*preserving* side of every
+ *    join between the body root and `T`'s reference: a `left` join with `T` in
+ *    the left subtree, or a `right` join with `T` in the right subtree. All
+ *    other join types/positions (`inner`/`cross` drop unmatched `T` rows;
+ *    `semi`/`anti` filter; `full` injects lookup-only rows; `T` on the dropping
+ *    side) are rejected as `shape`. This is a *structural* check during the
+ *    plan walk — FDs encode uniqueness, not existence, so they cannot prove it.
+ *
+ *  - **No fan-out (≤1).** `T`'s primary key must be a unique key of the
+ *    **topmost join's output relation**, read through `isUnique`. The optimizer
+ *    propagates join key-preservation into the join's `physical.fds`
+ *    (`analyzeJoinKeyCoverage` → `propagateJoinFds`): for `T LEFT JOIN L on
+ *    T.fk = L.ukey` it emits `T.pk → all_join_cols` *iff* the equi-pairs cover a
+ *    unique key of `L`, i.e. iff each `T` row matches ≤1 `L` row. The moment the
+ *    lookup side can multiply a `T` row, no preserved-key FD is emitted and
+ *    `T.pk` is not a superkey of the join output ⇒ `NotCovers('fanout')`.
+ *
+ *    **Why the join frame, not the projected `root`.** The check is deliberately
+ *    against the topmost join node, where the lookup columns are still present.
+ *    A fanning `left` join still carries `T`'s own PK FD `T.pk → T-cols` (from
+ *    the left input's `physical.fds`); once the lookup columns are *projected
+ *    away* in `root`, that FD would make `T.pk` a derived key of the narrowed
+ *    relation and silently mask the fan-out (the duplicate `T` rows survive
+ *    projection without `DISTINCT`). At the join frame the retained lookup
+ *    columns witness the fan-out, so `isUnique` is faithful regardless of what
+ *    the projection keeps.
+ *
+ * Both obligations are required and neither implies the other: a `left` join to
+ * a *non-unique* lookup key is row-preserving but fans out (caught by the fan-out
+ * gate); an `inner` join to a unique lookup key does not fan out but loses
+ * unmatched `T` rows (caught by the structural side/type gate).
+ *
+ * **NOT the `extractBindings` `'row'` classification.** A tempting-but-wrong
+ * signal is the binding extractor's `'row'` class (`binding-extractor.ts`,
+ * `analyzeRowSpecific`). That is *equality-pinned* — it fires only when equality
+ * constraints cover `T`'s key at the reference, and reports a bare join scan as
+ * `'global'`. The sound realization of "exactly one MV row per source row" is
+ * `T`'s primary key being preserved as a key of the join output — the FD-surface
+ * fact `isUnique` already consumes — so `binding-extractor.ts` needs no change.
+ *
+ * The v1 projection / ordering / predicate checks are frame-correct for a join
+ * body unchanged: the covering columns all belong to `T` (UC + PK), the
+ * lookup-side attributes simply are not in `baseAttrToCol` and are ignored, the
+ * join `ON` lives in the AST `from` clause (not `WHERE`), and a name-collision
+ * guard (`proveJoinOneToOne`) rejects a join whose lookup side shares a UC column
+ * name — since the AST ORDER BY / WHERE checks resolve columns by *bare name*.
+ *
+ * **Join elimination, not handled here.** When the optimizer eliminates a
+ * key-preserving lookup join (lookup columns unprojected + FK→PK alignment, see
+ * `rule-join-elimination.ts`) the body collapses to a single-source chain and the
+ * v1 path covers it with no join-specific code. This module handles the residual
+ * cases where the join survives the optimizer but is still provably 1:1.
+ *
+ * Inner/cross covering via enforced referential integrity, and full-outer
+ * covering, remain deferred (see the backlog tickets in the implement ticket's
  * out-of-scope list).
  *
  * ---
@@ -62,15 +124,17 @@ import type { RelationalPlanNode, GuardClause } from '../nodes/plan-node.js';
 import { PlanNodeType } from '../nodes/plan-node-type.js';
 import { TableReferenceNode } from '../nodes/reference.js';
 import { FilterNode } from '../nodes/filter.js';
+import { CapabilityDetectors } from '../framework/characteristics.js';
 import type { MaterializedViewSchema } from '../../schema/view.js';
 import type { TableSchema, UniqueConstraintSchema } from '../../schema/table.js';
 import type * as AST from '../../parser/ast.js';
 import { recognizeConjunctiveClauses, guardClausesEntail } from './partial-unique-extraction.js';
-import { columnIndexFromExpr } from './predicate-shape.js';
+import { columnIndexFromExpr, collectColumnNames } from './predicate-shape.js';
 import { isUnique } from '../util/fd-utils.js';
 
 export type CoverageFailureReason =
 	| 'shape'
+	| 'fanout'
 	| 'missing-uc-column'
 	| 'missing-pk-column'
 	| 'ordering-mismatch'
@@ -111,10 +175,26 @@ const PASS_THROUGH: ReadonlySet<PlanNodeType> = new Set([
 	PlanNodeType.Sort,
 	PlanNodeType.Project,
 	PlanNodeType.Retrieve,
+	PlanNodeType.Alias,
 	PlanNodeType.SeqScan,
 	PlanNodeType.IndexScan,
 	PlanNodeType.IndexSeek,
 	PlanNodeType.TableSeek,
+]);
+
+/**
+ * Binary (left/right/inner/cross/semi/anti) join node types the shape walk may
+ * descend through. These all implement `JoinCapable` (logical `JoinNode`,
+ * `BloomJoinNode` = `HashJoin`, `MergeJoinNode`), so `CapabilityDetectors.isJoin`
+ * exposes `getJoinType` / `getLeftSource` / `getRightSource`. `FanOutLookupJoin`
+ * and `AsofScan` are deliberately absent — they are not `JoinCapable` and fall
+ * through to the walk's `shape` rejection.
+ */
+const BINARY_JOIN_TYPES: ReadonlySet<PlanNodeType> = new Set([
+	PlanNodeType.Join,
+	PlanNodeType.NestedLoopJoin,
+	PlanNodeType.HashJoin,
+	PlanNodeType.MergeJoin,
 ]);
 
 /**
@@ -137,25 +217,47 @@ export function proveCoverage(
 		return notCovers('shape');
 	}
 
-	// ---- Shape: walk the single-relation chain to the terminal table reference.
-	//      Reject anything that changes the row set's cardinality/identity (joins,
-	//      aggregation, DISTINCT, set operations, …); Filter and physical access
-	//      nodes are transparent links — the *predicate* is taken from the AST
-	//      below (the optimizer may absorb a WHERE into an index range seek and
-	//      drop the FilterNode, so the plan is not a faithful predicate source). ----
+	// ---- Shape: walk down to the constrained base table `T`. Single-source
+	//      pass-throughs (Filter + physical access nodes) are transparent links;
+	//      a binary join is descended into `T`'s side iff `T` is on the join's
+	//      row-preserving side (the no-row-loss obligation). Reject aggregation,
+	//      DISTINCT, set operations, FanOutLookupJoin, AsofScan, … as `shape`.
+	//      The *predicate* is taken from the AST below (the optimizer may absorb
+	//      a WHERE into an index range seek and drop the FilterNode, so the plan
+	//      is not a faithful predicate source). The topmost join (if any) is
+	//      captured for the fan-out gate — see `proveJoinOneToOne`. ----
 	let tableRef: TableReferenceNode | undefined;
+	let topJoin: RelationalPlanNode | undefined;
 	let node: RelationalPlanNode | undefined = root;
 	while (node) {
 		if (node instanceof TableReferenceNode) {
 			tableRef = node;
 			break;
 		}
-		if (!(node instanceof FilterNode) && !PASS_THROUGH.has(node.nodeType)) {
-			return notCovers('shape');
+		if (BINARY_JOIN_TYPES.has(node.nodeType) && CapabilityDetectors.isJoin(node)) {
+			const left = node.getLeftSource();
+			const right = node.getRightSource();
+			const joinType = node.getJoinType();
+			const leftHasT = subtreeContainsConstrainedTable(left, baseTable);
+			const rightHasT = subtreeContainsConstrainedTable(right, baseTable);
+			// `T` on both sides (self-join) or neither ⇒ ambiguous / not our table.
+			if (leftHasT === rightHasT) return notCovers('shape');
+			// No row loss: `T` must be on the preserving side — `left` preserves the
+			// left subtree, `right` preserves the right subtree. Every other join
+			// type/position drops or duplicates governed `T` rows.
+			if (leftHasT && joinType !== 'left') return notCovers('shape');
+			if (rightHasT && joinType !== 'right') return notCovers('shape');
+			if (topJoin === undefined) topJoin = node;
+			node = leftHasT ? left : right;
+			continue;
 		}
-		const relations: readonly RelationalPlanNode[] = node.getRelations();
-		if (relations.length !== 1) return notCovers('shape');
-		node = relations[0];
+		if (node instanceof FilterNode || PASS_THROUGH.has(node.nodeType)) {
+			const relations: readonly RelationalPlanNode[] = node.getRelations();
+			if (relations.length !== 1) return notCovers('shape');
+			node = relations[0];
+			continue;
+		}
+		return notCovers('shape');
 	}
 	if (!tableRef) return notCovers('shape');
 	if (tableRef.tableSchema.name.toLowerCase() !== baseTable.name.toLowerCase()
@@ -180,6 +282,15 @@ export function proveCoverage(
 	}
 	for (const pk of baseTable.primaryKeyDefinition) {
 		if (!coveredBaseCols.has(pk.index)) return notCovers('missing-pk-column');
+	}
+
+	// ---- Multi-source (join body) obligations: the name-collision guard (so the
+	//      AST-based ORDER BY / WHERE name resolution below cannot mis-resolve a
+	//      lookup column to a UC column) and the no-fan-out gate. Vacuous — and
+	//      v1 behavior unchanged — for a single-source chain (`topJoin` absent). ----
+	if (topJoin !== undefined) {
+		const oneToOne = proveJoinOneToOne(topJoin, tableRef, baseAttrToCol, uc, baseTable);
+		if (!oneToOne.covers) return oneToOne;
 	}
 
 	// ---- Ordering: the body's declared ORDER BY columns must be a permutation of
@@ -302,10 +413,94 @@ function provePredicateAlignment(
 }
 
 /**
+ * True iff `node`'s subtree contains a `TableReferenceNode` over `baseTable`
+ * (matched by lowercased schema + name). Walks `getRelations()` recursively, so
+ * it descends through physical access / Retrieve wrappers and nested joins. A
+ * self-join of `T` makes *both* of a join's subtrees report true — the walk
+ * treats that as ambiguous (`shape`).
+ */
+function subtreeContainsConstrainedTable(node: RelationalPlanNode, baseTable: TableSchema): boolean {
+	if (node instanceof TableReferenceNode) {
+		return node.tableSchema.name.toLowerCase() === baseTable.name.toLowerCase()
+			&& node.tableSchema.schemaName.toLowerCase() === baseTable.schemaName.toLowerCase();
+	}
+	for (const rel of node.getRelations()) {
+		if (subtreeContainsConstrainedTable(rel, baseTable)) return true;
+	}
+	return false;
+}
+
+/**
+ * Join-body obligations beyond the v1 single-source checks (the no-row-loss
+ * obligation is the structural side/type gate in the shape walk; here we cover
+ * name-resolution safety and the no-fan-out gate). `topJoin` is the topmost
+ * binary join in the body; `tableRef` is the bound `T`; `baseAttrToCol` maps
+ * `T`'s attribute ids to its column indices (its keys identify `T`'s attributes,
+ * so every join-output attribute *not* in it is a lookup-side column).
+ *
+ *  - **Name-collision guard.** The ORDER BY and WHERE checks resolve columns by
+ *    *bare name* against `baseTable` (`columnIndexFromExpr` ignores any
+ *    table/alias qualifier). In a join body a lookup column sharing a UC (or
+ *    UC-predicate) column's name would mis-resolve to `T`'s column, so a
+ *    sort/filter on the *lookup* column could be wrongly accepted — a false
+ *    `Covers`. Reject (`shape`) on any such name collision. PK names are exempt:
+ *    the PK is consumed only via stable attribute ids, never resolved by name.
+ *
+ *  - **No fan-out.** `T`'s primary key must be a unique key of `topJoin`'s output
+ *    relation (`isUnique`). Checked at the join frame rather than the projected
+ *    `root` — see the module doc ("Why the join frame, not the projected root").
+ */
+function proveJoinOneToOne(
+	topJoin: RelationalPlanNode,
+	tableRef: TableReferenceNode,
+	baseAttrToCol: ReadonlyMap<number, number>,
+	uc: UniqueConstraintSchema,
+	baseTable: TableSchema,
+): CoverageResult {
+	const joinAttrs = topJoin.getAttributes();
+
+	// Lookup-side column names anywhere in the join's output frame (a `T`
+	// attribute is exactly one whose id is a key of `baseAttrToCol`).
+	const lookupNames = new Set<string>();
+	for (const attr of joinAttrs) {
+		if (!baseAttrToCol.has(attr.id)) lookupNames.add(attr.name.toLowerCase());
+	}
+	// `T` columns the AST-based ORDER BY / WHERE checks can resolve by name: the
+	// UC columns plus any column referenced by a partial-UC predicate.
+	const nameSensitiveCols = new Set<number>(uc.columns);
+	if (uc.predicate) {
+		for (const c of collectColumnNames(uc.predicate, baseTable.columnIndexMap)) nameSensitiveCols.add(c);
+	}
+	for (const c of nameSensitiveCols) {
+		const name = baseTable.columns[c]?.name.toLowerCase();
+		if (name !== undefined && lookupNames.has(name)) return notCovers('shape');
+	}
+
+	// Fan-out gate: `T.pk`, mapped into the join output frame via stable attribute
+	// ids, must be a unique key of the join output.
+	const joinAttrToIndex = new Map<number, number>();
+	joinAttrs.forEach((a, i) => joinAttrToIndex.set(a.id, i));
+	const tAttrs = tableRef.getAttributes();
+	const pkInJoinFrame: number[] = [];
+	for (const pk of baseTable.primaryKeyDefinition) {
+		const attrId = tAttrs[pk.index]?.id;
+		const joinIdx = attrId !== undefined ? joinAttrToIndex.get(attrId) : undefined;
+		if (joinIdx === undefined) return notCovers('fanout');
+		pkInJoinFrame.push(joinIdx);
+	}
+	if (!isUnique(pkInJoinFrame, topJoin)) return notCovers('fanout');
+
+	return COVERS;
+}
+
+/**
  * Base-table column indices named by the body's `ORDER BY`, in order, or
  * `undefined` when there is no `ORDER BY`, the body is not a plain SELECT, or any
  * ordering term is not a bare column of the base table (the prover never invents
- * an ordering).
+ * an ordering). A table/alias qualifier on the term is ignored — the parser emits
+ * `alias.col` as an `AST.ColumnExpr` (`type: 'column'`) which `columnIndexFromExpr`
+ * resolves by bare name; the join-body name-collision guard (`proveJoinOneToOne`)
+ * has already rejected the case where that bare name is ambiguous across sources.
  */
 function bodyOrderByColumns(selectAst: AST.QueryExpr, baseTable: TableSchema): number[] | undefined {
 	if (selectAst.type !== 'select') return undefined;
