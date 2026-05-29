@@ -364,28 +364,45 @@ export class MaterializedViewManager {
 		// as 'global'), which is the right notion for assertions/watchers but not
 		// for MV maintenance. MV maintenance binds on a source's identity:
 		//   - an aggregate over bare source columns → 'group' on those columns;
-		//   - otherwise a row-preserving body → 'row' on the source's primary key.
-		// v1 supports single-source bodies; joins / set-ops are out of scope.
+		//   - otherwise a row-preserving body → 'row' on each source's primary key.
+		// Row-preserving bodies may read one *or more* sources (inner/cross joins);
+		// each source binds on its own PK and is gated independently downstream by
+		// `computeDeleteKeyOrder` — a source whose PK does not cleanly cover the
+		// backing physical PK falls back to a full rebuild (always correct, just not
+		// incremental). Row-collapsing shapes (outer/semi/anti joins,
+		// aggregate-over-join, set operations, multi-source DISTINCT) are rejected
+		// and deferred.
 		const tableRefByRelKey = collectTableRefs(analyzed);
-		if (tableRefByRelKey.size !== 1) {
-			const bases = [...tableRefByRelKey.values()]
-				.map(r => `${r.tableSchema.schemaName}.${r.tableSchema.name}`.toLowerCase());
+		if (tableRefByRelKey.size === 0) {
 			throw new QuereusError(
-				`materialized view '${mv.name}': 'on-commit-incremental' refresh supports single-source bodies in v1, `
-					+ `but the body reads [${[...new Set(bases)].join(', ') || '(no source table)'}]; use 'manual' refresh`,
+				`materialized view '${mv.name}': 'on-commit-incremental' refresh requires the body to read at `
+					+ `least one source table; use 'manual' refresh`,
 				StatusCode.UNSUPPORTED,
 			);
 		}
-		const [srcRelKey, srcRef] = [...tableRefByRelKey.entries()][0];
-		const srcBase = `${srcRef.tableSchema.schemaName}.${srcRef.tableSchema.name}`.toLowerCase();
-		const srcAttrToCol = new Map<number, number>();
-		srcRef.getAttributes().forEach((a, i) => srcAttrToCol.set(a.id, i));
 
 		const perRelation = new Map<string, BindingMode>();
-		const relationToBase = new Map<string, string>([[srcRelKey, srcBase]]);
+		const relationToBase = new Map<string, string>();
 
 		const agg = findAggregate(analyzed);
 		if (agg) {
+			// Aggregate maintenance binds on the group key of a single source. An
+			// aggregate over a join would need OLD/NEW group recompute across the
+			// join's fan-in, which v1 does not model — defer.
+			if (tableRefByRelKey.size > 1) {
+				throw new QuereusError(
+					`materialized view '${mv.name}': 'on-commit-incremental' refresh does not support `
+						+ `aggregate-over-join bodies yet `
+						+ `(filed: materialized-view-incremental-aggregate-join); use 'manual' refresh`,
+					StatusCode.UNSUPPORTED,
+				);
+			}
+			const [srcRelKey, srcRef] = [...tableRefByRelKey.entries()][0];
+			const srcBase = `${srcRef.tableSchema.schemaName}.${srcRef.tableSchema.name}`.toLowerCase();
+			relationToBase.set(srcRelKey, srcBase);
+			const srcAttrToCol = new Map<number, number>();
+			srcRef.getAttributes().forEach((a, i) => srcAttrToCol.set(a.id, i));
+
 			if (agg.groupBy.length === 0) {
 				throw new QuereusError(
 					`materialized view '${mv.name}': 'on-commit-incremental' refresh does not support `
@@ -407,15 +424,55 @@ export class MaterializedViewManager {
 			}
 			perRelation.set(srcRelKey, { kind: 'group', groupColumns });
 		} else {
-			const pkCols = srcRef.tableSchema.primaryKeyDefinition.map(d => d.index);
-			if (pkCols.length === 0) {
+			// Row-preserving path — one or more inner/cross-joined sources. Reject
+			// the row-collapsing shapes a per-binding delete-then-recompute cannot
+			// maintain, then bind every source on its own primary key.
+			//
+			// `union all` survives the build-time `rejectUnsupportedIncrementalBody`
+			// gate (only bag-distinguishing set-ops fail there) and used to reach the
+			// now-relaxed single-source throw; reject it explicitly here.
+			if (containsNodeType(analyzed, PlanNodeType.SetOperation)) {
 				throw new QuereusError(
-					`materialized view '${mv.name}': 'on-commit-incremental' refresh requires the source to have a `
-						+ `primary key; use 'manual' refresh`,
+					`materialized view '${mv.name}': 'on-commit-incremental' refresh does not support `
+						+ `set-operation bodies yet `
+						+ `(filed: materialized-view-incremental-set-ops); use 'manual' refresh`,
 					StatusCode.UNSUPPORTED,
 				);
 			}
-			perRelation.set(srcRelKey, { kind: 'row', keyColumns: pkCols });
+			// A multi-source DISTINCT collapses rows other sources also contribute, so
+			// a per-binding delete can remove rows that should survive. Single-source
+			// DISTINCT keeps its existing behavior untouched.
+			if (tableRefByRelKey.size > 1 && containsNodeType(analyzed, PlanNodeType.Distinct)) {
+				throw new QuereusError(
+					`materialized view '${mv.name}': 'on-commit-incremental' refresh does not support `
+						+ `DISTINCT over a join yet; use 'manual' refresh`,
+					StatusCode.UNSUPPORTED,
+				);
+			}
+			// Outer/semi/anti joins null-extend or filter rows on the non-clean side,
+			// complicating the recompute slice — defer. Inner/cross joins are
+			// row-preserving and maintainable per the per-source gate below.
+			if (tableRefByRelKey.size > 1 && hasNonInnerJoin(analyzed)) {
+				throw new QuereusError(
+					`materialized view '${mv.name}': 'on-commit-incremental' refresh supports only inner/cross `
+						+ `joins for multi-source bodies; outer/semi/anti joins are not maintainable yet `
+						+ `(filed: materialized-view-incremental-outer-joins); use 'manual' refresh`,
+					StatusCode.UNSUPPORTED,
+				);
+			}
+			for (const [relKey, ref] of tableRefByRelKey) {
+				const base = `${ref.tableSchema.schemaName}.${ref.tableSchema.name}`.toLowerCase();
+				const pkCols = ref.tableSchema.primaryKeyDefinition.map(d => d.index);
+				if (pkCols.length === 0) {
+					throw new QuereusError(
+						`materialized view '${mv.name}': 'on-commit-incremental' refresh requires every source to `
+							+ `have a primary key, but '${base}' has none; use 'manual' refresh`,
+						StatusCode.UNSUPPORTED,
+					);
+				}
+				perRelation.set(relKey, { kind: 'row', keyColumns: pkCols });
+				relationToBase.set(relKey, base);
+			}
 		}
 		const bindings: PlanBindings = { perRelation, relationToBase };
 
@@ -837,7 +894,7 @@ interface AggregateLike {
 	readonly aggregates: readonly { readonly expression: ScalarPlanNode }[];
 }
 
-/** Find the first aggregate node anywhere in the plan (single-source bodies in v1). */
+/** Find the first aggregate node anywhere in the plan. */
 function findAggregate(node: PlanNode): AggregateLike | undefined {
 	if (AGGREGATE_NODE_TYPES.has(node.nodeType)) return node as unknown as AggregateLike;
 	for (const child of node.getChildren()) {
@@ -845,6 +902,48 @@ function findAggregate(node: PlanNode): AggregateLike | undefined {
 		if (found) return found;
 	}
 	return undefined;
+}
+
+/**
+ * Join-bearing PlanNodeTypes (logical + physical). `optimizeForAnalysis` stops
+ * before physical join selection, so the analyzed plan carries the logical
+ * {@link PlanNodeType.Join}; the physical variants are included so the
+ * eligibility gate stays correct if analysis ever surfaces them.
+ */
+const JOIN_NODE_TYPES = new Set<PlanNodeType>([
+	PlanNodeType.Join,
+	PlanNodeType.NestedLoopJoin,
+	PlanNodeType.HashJoin,
+	PlanNodeType.MergeJoin,
+	PlanNodeType.FanOutLookupJoin,
+	PlanNodeType.AsofScan,
+]);
+
+/** True if any node in the plan has the given type (recursive `getChildren` walk). */
+function containsNodeType(node: PlanNode, type: PlanNodeType): boolean {
+	if (node.nodeType === type) return true;
+	for (const child of node.getChildren()) {
+		if (containsNodeType(child as unknown as PlanNode, type)) return true;
+	}
+	return false;
+}
+
+/**
+ * True if the plan carries any join that is not a plain inner/cross join.
+ * Duck-types a `joinType` property so it spans the logical {@link JoinNode} and
+ * the physical join variants (mirroring how {@link findAggregate} spans the
+ * logical/physical aggregates); a join-bearing node whose join type is absent or
+ * unreadable is treated conservatively as non-inner (⇒ rejected).
+ */
+function hasNonInnerJoin(node: PlanNode): boolean {
+	if (JOIN_NODE_TYPES.has(node.nodeType)) {
+		const jt = (node as Partial<{ joinType: unknown }>).joinType;
+		if (jt !== 'inner' && jt !== 'cross') return true;
+	}
+	for (const child of node.getChildren()) {
+		if (hasNonInnerJoin(child as unknown as PlanNode)) return true;
+	}
+	return false;
 }
 
 /** Collect `relationKey → TableReferenceNode` over a plan. */

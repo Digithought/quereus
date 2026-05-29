@@ -371,3 +371,121 @@ drop table c_src;
 drop table c_big;
 drop table c_f;
 drop table c_mc;
+
+-- ===================================
+-- 19. Multi-source INNER JOIN — parent/child flatten. The backing PK is the
+--     child's (orders.id), so a CHILD-side change maintains incrementally
+--     (orders.id ↦ physical PK, clean), while a PARENT-side change (customers)
+--     does not cleanly cover the physical PK and falls back to a full rebuild.
+--     Both outcomes converge the MV to the correct state. (Whichever path fires
+--     is invisible to these correctness-only assertions.)
+-- ===================================
+
+create table customers (id integer primary key, name text);
+create table orders (id integer primary key, cust_id integer, total integer);
+insert into customers values (1, 'Alice'), (2, 'Bob'), (3, 'Carol');
+insert into orders values (10, 1, 100), (11, 1, 200), (12, 2, 300), (20, 3, 500);
+create materialized view mv_oc as
+  select o.id as oid, c.name as cname, o.total as total
+  from orders o join customers c on o.cust_id = c.id
+  with refresh = 'on-commit-incremental';
+
+-- MV equals the flattened join at create time
+select * from mv_oc order by oid;
+→ [{"oid":10,"cname":"Alice","total":100},{"oid":11,"cname":"Alice","total":200},{"oid":12,"cname":"Bob","total":300},{"oid":20,"cname":"Carol","total":500}]
+
+-- CHILD UPDATE (orders.total) is reflected (clean child-side maintenance)
+update orders set total = 999 where id = 10;
+select * from mv_oc order by oid;
+→ [{"oid":10,"cname":"Alice","total":999},{"oid":11,"cname":"Alice","total":200},{"oid":12,"cname":"Bob","total":300},{"oid":20,"cname":"Carol","total":500}]
+
+-- CHILD INSERT (a new matching order) appears
+insert into orders values (13, 2, 400);
+select * from mv_oc order by oid;
+→ [{"oid":10,"cname":"Alice","total":999},{"oid":11,"cname":"Alice","total":200},{"oid":12,"cname":"Bob","total":300},{"oid":13,"cname":"Bob","total":400},{"oid":20,"cname":"Carol","total":500}]
+
+-- CHILD DELETE removes its MV row
+delete from orders where id = 11;
+select * from mv_oc order by oid;
+→ [{"oid":10,"cname":"Alice","total":999},{"oid":12,"cname":"Bob","total":300},{"oid":13,"cname":"Bob","total":400},{"oid":20,"cname":"Carol","total":500}]
+
+-- CHILD moved to a non-existent customer ⇒ inner join drops that MV row
+-- (the residual recomputes zero rows, so the delete stands)
+update orders set cust_id = 99 where id = 10;
+select * from mv_oc order by oid;
+→ [{"oid":12,"cname":"Bob","total":300},{"oid":13,"cname":"Bob","total":400},{"oid":20,"cname":"Carol","total":500}]
+
+-- PARENT UPDATE (rename) ⇒ rebuild path; all that customer's MV rows show the new name
+update customers set name = 'Robert' where id = 2;
+select * from mv_oc order by oid;
+→ [{"oid":12,"cname":"Robert","total":300},{"oid":13,"cname":"Robert","total":400},{"oid":20,"cname":"Carol","total":500}]
+
+-- PARENT DELETE ⇒ rebuild path; the matching orders' MV rows vanish
+delete from customers where id = 2;
+select * from mv_oc order by oid;
+→ [{"oid":20,"cname":"Carol","total":500}]
+
+-- Manual refresh still resyncs a join MV (escape valve)
+refresh materialized view mv_oc;
+select * from mv_oc order by oid;
+→ [{"oid":20,"cname":"Carol","total":500}]
+
+-- BOTH sides change in one commit: the clean (child) side does point work, the
+-- fan-out (parent) side forces a rebuild that also subsumes the child change —
+-- correct regardless of dispatch order.
+begin;
+update orders set total = 555 where id = 20;
+update customers set name = 'Caroline' where id = 3;
+commit;
+select * from mv_oc order by oid;
+→ [{"oid":20,"cname":"Caroline","total":555}]
+
+-- ===================================
+-- 20. Both-clean 1:1 inner join (equal keys). Each side's PK equals the backing
+--     PK, so an update on either side reflects correctly.
+-- ===================================
+
+create table ta (id integer primary key, x integer);
+create table tb (id integer primary key, y integer);
+insert into ta values (1, 10), (2, 20);
+insert into tb values (1, 100), (2, 200);
+create materialized view mv_ab as
+  select ta.id as id, ta.x as x, tb.y as y
+  from ta join tb on ta.id = tb.id
+  with refresh = 'on-commit-incremental';
+select * from mv_ab order by id;
+→ [{"id":1,"x":10,"y":100},{"id":2,"x":20,"y":200}]
+
+-- Update on the ta side reflects
+update ta set x = 99 where id = 1;
+select * from mv_ab order by id;
+→ [{"id":1,"x":99,"y":100},{"id":2,"x":20,"y":200}]
+
+-- Update on the tb side reflects
+update tb set y = 999 where id = 2;
+select * from mv_ab order by id;
+→ [{"id":1,"x":99,"y":100},{"id":2,"x":20,"y":999}]
+
+-- ===================================
+-- 21. Eligibility rejections for multi-source bodies (all rejected at create).
+-- ===================================
+
+-- Outer join (left) is not maintainable yet
+create materialized view mv_lj as select o.id as oid, c.name as cname from orders o left join customers c on o.cust_id = c.id with refresh = 'on-commit-incremental';
+-- error: inner/cross
+
+-- Aggregate over a join is deferred
+create materialized view mv_aj as select c.id as cid, sum(o.total) as t from orders o join customers c on o.cust_id = c.id group by c.id with refresh = 'on-commit-incremental';
+-- error: aggregate-over-join
+
+-- `union all` survives the build-time gate but is rejected in compile()
+create materialized view mv_ua as select id from orders union all select id from customers with refresh = 'on-commit-incremental';
+-- error: set-operation
+
+-- Cleanup (drop MVs before their source tables)
+drop materialized view mv_oc;
+drop materialized view mv_ab;
+drop table orders;
+drop table customers;
+drop table ta;
+drop table tb;

@@ -205,21 +205,28 @@ not the assertion one) — but a failure is no longer silently skipped: see
 ### Eligibility (checked at create time)
 
 `on-commit-incremental` is rejected at create — rolling the MV back — unless the
-body is incrementally maintainable. v1 accepts **single-source** bodies of two
-shapes:
+body is incrementally maintainable. The accepted shapes are:
 
-- **row-preserving** (projection / filter, no aggregate): maintenance binds on
-  the source's **primary key**. Each changed source row recomputes its MV
-  row(s). The source must have a primary key.
+- **row-preserving** (projection / filter, no aggregate) over **one or more**
+  **inner/cross-joined** sources: maintenance binds **per source** on that
+  source's **primary key**. Each changed source row recomputes its affected MV
+  slice. A source whose PK cleanly covers the backing physical PK maintains
+  incrementally; a source that fans out (its PK does not determine the physical
+  PK) falls back to a full rebuild — see [Apply contract](#apply-contract). Every
+  source must have a primary key.
 - **single-source aggregate** with `GROUP BY` over **bare source columns**:
   maintenance binds on the **group key**. Each changed group (OLD and NEW on an
   update that moves a row between groups) is recomputed.
 
-Rejected up front with a diagnostic: multiple sources / joins, set operations
-other than `union all` (`materialized-view-incremental-set-ops`), recursive CTE
-bodies (`materialized-view-incremental-recursive-cte`), whole-table aggregates
-(no `GROUP BY`), and `GROUP BY` over non-column expressions. A `manual` MV over
-the same body is always allowed (no gate).
+Rejected up front with a diagnostic: **outer/semi/anti joins**
+(`materialized-view-incremental-outer-joins`), **aggregate over a join**
+(`materialized-view-incremental-aggregate-join`), `DISTINCT` over a join, set
+operations — bag-distinguishing ones (`union`/`intersect`/`except`) at build
+time, `union all` in `compile()` (`materialized-view-incremental-set-ops`) —
+recursive CTE bodies (`materialized-view-incremental-recursive-cte`), whole-table
+aggregates (no `GROUP BY`), `GROUP BY` over non-column expressions, and a source
+without a primary key. A `manual` MV over the same body is always allowed (no
+gate).
 
 > **Note on classification.** This eligibility is *not* the `extractBindings`
 > 'row'/'group' classification used by assertions/watchers — that surface is
@@ -248,6 +255,19 @@ aggregate group-by output ids resolve through the aggregate's producing
 expression). When that mapping is not clean — e.g. an `order by` body whose
 physical PK is seeded with ordering columns outside the binding — the relation
 falls back to a **full rebuild** (always correct, just not incremental).
+
+For a **multi-source (inner-join) body**, each source is gated **independently**
+by this same clean-mapping test — there is no whole-MV rejection. The source(s)
+whose PK covers the backing physical PK (typically the child in a parent/child
+flatten, e.g. `orders` in `orders o join customers c on o.cust_id = c.id` keyed
+on `orders.id`) maintain incrementally: the residual is the whole join body with
+that source filtered to the changed key, so it recomputes exactly the affected
+MV row(s) — including the case where the row should *vanish* (an inner-join
+partner went away ⇒ the residual yields zero rows ⇒ the delete stands). A source
+that fans out (the parent, whose PK does **not** determine the physical PK)
+maps to `null` and routes that source's delta to a full rebuild. When *both*
+sides change in one commit, the fan-out side's rebuild also fixes the clean
+side — correct regardless of dispatch order.
 
 ### Cost fallback and global rebuild
 
@@ -533,10 +553,13 @@ tracked separately and build on this substrate:
 
 - **Concurrent refresh** (`materialized-view-concurrent-refresh`) — overlapping
   refreshes and refresh-while-read beyond today's atomic base-layer swap.
-- **Incremental refresh** — *delivered* for single-source row-preserving and
-  single-source aggregate bodies (`with refresh = 'on-commit-incremental'`; see
-  [Incremental refresh](#incremental-refresh)). Remaining work: multi-source /
-  join bodies, set-ops (`materialized-view-incremental-set-ops`), recursive CTEs
+- **Incremental refresh** — *delivered* for row-preserving bodies over one or
+  more **inner/cross-joined** sources and single-source aggregate bodies
+  (`with refresh = 'on-commit-incremental'`; see
+  [Incremental refresh](#incremental-refresh)). Remaining work: outer/semi/anti
+  join bodies (`materialized-view-incremental-outer-joins`), aggregate over a
+  join (`materialized-view-incremental-aggregate-join`), set-ops
+  (`materialized-view-incremental-set-ops`), recursive CTEs
   (`materialized-view-incremental-recursive-cte`), cascading-MV convergence
   (`materialized-view-incremental-cascading-convergence`), and the
   `getChangeScope()` source projection (`materialized-view-incremental-changescope`).
