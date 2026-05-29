@@ -398,20 +398,26 @@ describe('Parser', () => {
 			expect(bFrom.table.name).to.equal('temporary');
 		});
 
-		it('accepts a contextual keyword as a CTE name (CTE subset)', () => {
+		it('accepts a contextual keyword as a CTE name (shared CONTEXTUAL_KEYWORDS set)', () => {
 			const stmt = parse(`with "key" as (select 1 as a) select * from "key"`) as SelectStmt;
 			expect(stmt.withClause).to.exist;
 			expect(stmt.withClause!.ctes[0].name).to.equal('key');
 		});
 
-		// Characterizes a *pre-existing* inconsistency (see backlog ticket
-		// parser-cte-contextual-keyword-subset): the CTE name/column set omits
-		// references/on/cascade/restrict, so an unquoted CTE named `references`
-		// fails to parse even though a table named `references` is accepted.
-		it('rejects an unquoted reserved-but-table-legal keyword as a CTE name (documents narrower CTE set)', () => {
-			expect(() => parse(`with references as (select 1 as a) select * from references`)).to.throw(/CTE name/);
-			// ...yet the same word is accepted as a table name:
+		// The CTE name/column list now shares the full CONTEXTUAL_KEYWORDS set
+		// (ticket parser-cte-contextual-keyword-subset), so the keywords formerly
+		// omitted from the CTE subset — references/on/cascade/restrict — are accepted
+		// as CTE names too, matching how they are already accepted as table names.
+		it('accepts a previously-omitted reserved-but-table-legal keyword as a CTE name', () => {
+			const stmt = parse(`with references as (select 1 as a) select * from references`) as SelectStmt;
+			expect(stmt.withClause!.ctes[0].name).to.equal('references');
+			// ...consistent with the same word being accepted as a table name:
 			expect(() => parse(`select * from references`)).to.not.throw();
+		});
+
+		it('accepts a previously-omitted reserved-but-table-legal keyword in a CTE column list', () => {
+			const stmt = parse(`with c(cascade, restrict) as (select 1, 2) select * from c`) as SelectStmt;
+			expect(stmt.withClause!.ctes[0].columns).to.deep.equal(['cascade', 'restrict']);
 		});
 	});
 

@@ -290,7 +290,7 @@ export class Parser {
 	 */
 	private commonTableExpression(): AST.CommonTableExpr {
 		const startToken = this.peek(); // Peek before consuming name
-		const name = this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'like'], "Expected CTE name.");
+		const name = this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected CTE name.");
 		let endToken = this.previous(); // End token initially is the name
 
 		let columns: string[] | undefined;
@@ -298,7 +298,7 @@ export class Parser {
 			columns = [];
 			if (!this.check(TokenType.RPAREN)) {
 				do {
-					columns.push(this.consumeIdentifier(['key', 'action', 'set', 'default', 'check', 'unique', 'like'], "Expected column name in CTE definition."));
+					columns.push(this.consumeIdentifier(CONTEXTUAL_KEYWORDS, "Expected column name in CTE definition."));
 				} while (this.match(TokenType.COMMA) && !this.check(TokenType.RPAREN));
 			}
 			endToken = this.consume(TokenType.RPAREN, "Expected ')' after CTE column list.");
