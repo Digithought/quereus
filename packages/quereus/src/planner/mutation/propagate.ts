@@ -17,6 +17,12 @@ import type { MutationDiagnosticReason } from './mutation-diagnostic.js';
  * VALUES bodies are rejected with a structured reason; the broader FD/EC-driven
  * fan-out is Phase 2+.
  *
+ * `Sort` / `Limit` / `Distinct` are tolerated *here* only so the walk can reach
+ * the base table through them; the AST-driven rewrite layer
+ * (`building/view-mutation.ts`) separately rejects `LIMIT`/`OFFSET`/`DISTINCT`
+ * bodies, since a predicate-conjoin cannot faithfully reproduce a row-count
+ * window or duplicate-collapse (a mutation would otherwise escape the window).
+ *
  * The walk descends only *relational* children (`getRelations()`), so scalar
  * subqueries embedded in predicates/projections never pollute the base-table
  * count.

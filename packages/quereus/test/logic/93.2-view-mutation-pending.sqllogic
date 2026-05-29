@@ -49,3 +49,19 @@ create view vr as select id, name from t;
 
 insert into vr (id, name) values (3, 'y') returning id;
 -- error: RETURNING through view
+
+-- LIMIT body: the predicate-conjoin rewrite cannot reproduce the row-count
+-- window, so a mutation could escape it. Reject rather than widen the write.
+create view vlim as select id, name from t limit 5;
+
+delete from vlim;
+-- error: LIMIT/OFFSET body
+
+update vlim set name = 'z' where id = 1;
+-- error: LIMIT/OFFSET body
+
+-- DISTINCT body: no 1:1 base-row lineage.
+create view vdist as select distinct name from t;
+
+delete from vdist where name = 'a';
+-- error: DISTINCT body

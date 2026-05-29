@@ -127,6 +127,21 @@ function cloneExpr(expr: AST.Expression): AST.Expression {
 }
 
 /**
+ * Rewrite base-term column references so they resolve against the single base
+ * table after the rewrite. The view body may qualify its base columns by the
+ * source's alias or the base table name (`x.col` / `pa.col`); the rewritten
+ * statement has exactly one source, so those qualifiers are dropped (an
+ * unqualified reference resolves unambiguously). Subqueries are not descended
+ * into — `transformExpr` passes them through structurally, preserving any inner
+ * correlation (a Phase-1 limitation noted in the docs).
+ */
+function normalizeBaseRefs(expr: AST.Expression, aliases: ReadonlySet<string>): AST.Expression {
+	return transformExpr(expr, (col) =>
+		col.table && aliases.has(col.table.toLowerCase()) ? { type: 'column', name: col.name } : undefined,
+	);
+}
+
+/**
  * Plan the view body, gate it for phase-1 mutability, and derive the
  * view→base column model. Throws a structured diagnostic on any unsupported
  * shape.
@@ -182,22 +197,52 @@ function analyzeView(ctx: PlanningContext, view: ViewSchema): ViewAnalysis {
 		});
 	}
 
+	// LIMIT / OFFSET / DISTINCT are accepted by the plan-walk classifier as
+	// pass-through operators (so it can still reach the base table), but the
+	// predicate-conjoin rewrite cannot faithfully reproduce them: a row-count
+	// window or duplicate-collapse is not capturable as a WHERE predicate, so a
+	// mutation would affect base rows outside what the view exposes. Reject here
+	// rather than silently widening the write. (Phase 2 substrate territory.)
+	if (sel.limit || sel.offset) {
+		raiseMutationDiagnostic({
+			reason: 'unsupported-limit',
+			table: view.name,
+			message: `cannot write through view '${view.name}': a LIMIT/OFFSET body is not decomposable in phase 1 (a mutation would escape the limited window)`,
+		});
+	}
+	if (sel.distinct) {
+		raiseMutationDiagnostic({
+			reason: 'unsupported-distinct',
+			table: view.name,
+			message: `cannot write through view '${view.name}': a DISTINCT body has no 1:1 base-row lineage and is not updateable in phase 1`,
+		});
+	}
+
+	// Names that qualify the single base source inside the body — its alias (if
+	// any) and the table name as written. References so qualified are normalized
+	// to unqualified form when threaded into the rewritten single-source statement.
+	const baseAliases = new Set<string>([fromTable.table.name.toLowerCase()]);
+	if (fromTable.alias) baseAliases.add(fromTable.alias.toLowerCase());
+
 	// Build the view-column lineage model from the projection list (shared with
 	// the update-lineage analysis surface).
 	const viewColumns = deriveViewColumns(sel, baseTable, view.columns);
 
-	// Build the remap table: each view column → its base-term replacement.
+	// Build the remap table: each view column → its base-term replacement
+	// (computed expressions are normalized so any alias-qualified base column
+	// resolves against the rewritten single-source statement).
 	const columnMap = new Map<string, AST.Expression>();
 	for (const vc of viewColumns) {
 		columnMap.set(
 			vc.name.toLowerCase(),
-			vc.lineage.kind === 'base' ? columnExpr(vc.lineage.baseColumnName) : vc.lineage.expr,
+			vc.lineage.kind === 'base' ? columnExpr(vc.lineage.baseColumnName) : normalizeBaseRefs(vc.lineage.expr, baseAliases),
 		);
 	}
 
 	const filterConstants = extractFilterConstants(sel.where, baseTable);
+	const filterPredicate = sel.where ? normalizeBaseRefs(sel.where, baseAliases) : undefined;
 
-	return { baseTable, viewColumns, filterPredicate: sel.where, filterConstants, columnMap };
+	return { baseTable, viewColumns, filterPredicate, filterConstants, columnMap };
 }
 
 /** Extract `baseColumn = literal` bindings from the view's selection predicate. */

@@ -87,6 +87,29 @@ select id, label from acct order by id;
 → [{"id":6,"label":"b"},{"id":7,"label":"C"}]
 
 -- ===================================
+-- Aliased base table + alias-qualified filter/projection: the alias qualifier
+-- is normalized away when threading the body predicate into the base statement.
+-- ===================================
+
+create table al (id integer primary key, active integer, label text);
+insert into al values (1, 1, 'a'), (2, 0, 'b'), (3, 1, 'c');
+create view AliasView as select x.id as aid, x.label as alabel from al as x where x.active = 1;
+
+-- visible row (active=1): update applies through the alias-qualified predicate.
+update AliasView set alabel = 'Z' where aid = 1;
+select id, label from al order by id;
+→ [{"id":1,"label":"Z"},{"id":2,"label":"b"},{"id":3,"label":"c"}]
+
+-- invisible row (active=0): conjoined alias predicate matches no base row.
+update AliasView set alabel = 'X' where aid = 2;
+select id, label from al order by id;
+→ [{"id":1,"label":"Z"},{"id":2,"label":"b"},{"id":3,"label":"c"}]
+
+delete from AliasView where aid = 3;
+select id, label from al order by id;
+→ [{"id":1,"label":"Z"},{"id":2,"label":"b"}]
+
+-- ===================================
 -- Phase 1b: per-statement mutation context threaded through the view
 -- (one captured value stamped onto every row of the statement).
 -- ===================================

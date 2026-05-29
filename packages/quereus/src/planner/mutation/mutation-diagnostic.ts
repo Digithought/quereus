@@ -19,6 +19,8 @@ export type MutationDiagnosticReason =
 	| 'unsupported-aggregate'      // aggregate / grouping body
 	| 'unsupported-set-op'         // union / intersect / except body
 	| 'unsupported-window'         // window function in body
+	| 'unsupported-limit'          // LIMIT / OFFSET body — a mutation would escape the window
+	| 'unsupported-distinct'       // DISTINCT body — not row-decomposable (no 1:1 base lineage)
 	| 'no-base-lineage'            // VALUES body / no reachable base table
 	| 'nested-view'                // body sources another view / CTE (inline-propagation deferred)
 	| 'unsupported-source'         // INSERT source shape we cannot thread filter defaults through yet

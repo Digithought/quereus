@@ -1,6 +1,5 @@
 import type { PlanningContext, SchemaDependency } from '../planning-context.js';
 import type { TableSchema } from '../../schema/table.js';
-import type { ViewSchema } from '../../schema/view.js';
 import type { FunctionSchema } from '../../schema/function.js';
 import type { AnyVirtualTableModule } from '../../vtab/module.js';
 import type { CollationFunction } from '../../util/comparison.js';
@@ -32,32 +31,6 @@ export function assertNotMaterializedView(ctx: PlanningContext, tableName: strin
 			StatusCode.ERROR,
 		);
 	}
-}
-
-/**
- * A DML target resolved to either a base table or a view. View targets route
- * through the view-mediated mutation rewrite (see `building/view-mutation.ts`);
- * table targets take the ordinary base-table path.
- */
-export type MutationTarget =
-	| { kind: 'table'; table: TableSchema }
-	| { kind: 'view'; view: ViewSchema };
-
-/**
- * Resolve a DML target, distinguishing views from base tables. A name that
- * resolves to a view (in the explicit or current schema) returns `{kind:'view'}`;
- * otherwise the base-table resolver runs (and throws "not found" on a miss).
- */
-export function resolveMutationTarget(
-	ctx: PlanningContext,
-	tableName: string,
-	schemaName?: string,
-): MutationTarget {
-	if (!isCommittedSchemaRef(schemaName)) {
-		const view = ctx.schemaManager.getView(schemaName ?? null, tableName);
-		if (view) return { kind: 'view', view };
-	}
-	return { kind: 'table', table: resolveTableSchema(ctx, tableName, schemaName) };
 }
 
 /**
