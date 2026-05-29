@@ -25,7 +25,9 @@ export class CreateMaterializedViewNode extends VoidNode {
 		public readonly bodySql: string,
 		/** Original full DDL text (round-trippable). */
 		public readonly sql: string,
-		public readonly tags?: Readonly<Record<string, SqlValue>>
+		public readonly tags?: Readonly<Record<string, SqlValue>>,
+		/** Refresh policy (`manual` default; `on-commit-incremental` enables delta maintenance). */
+		public readonly refreshPolicy?: 'manual' | 'on-commit-incremental'
 	) {
 		super(scope, 1); // Low cost for DDL operations
 	}

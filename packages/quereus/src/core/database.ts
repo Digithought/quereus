@@ -6,6 +6,7 @@ import type { AnyVirtualTableModule } from '../vtab/module.js';
 import { Statement } from './statement.js';
 import { SchemaManager } from '../schema/manager.js';
 import type { TableSchema } from '../schema/table.js';
+import type { MaterializedViewSchema } from '../schema/view.js';
 import type { FunctionSchema } from '../schema/function.js';
 import { BUILTIN_FUNCTIONS } from '../func/builtins/index.js';
 import { createScalarFunction, createAggregateFunction } from '../func/registration.js';
@@ -137,7 +138,7 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 		this.transactionManager = new TransactionManager(this);
 		this.assertionEvaluator = new AssertionEvaluator(this);
 		this.watcherManager = new WatcherManager(this);
-		this.materializedViewManager = new MaterializedViewManager(this.schemaManager);
+		this.materializedViewManager = new MaterializedViewManager(this);
 
 		// Set up option change listeners
 		this.setupOptionListeners();
@@ -1720,6 +1721,23 @@ export class Database implements TransactionManagerContext, AssertionEvaluatorCo
 	 *  and before the change log is cleared. */
 	public async runPostCommitWatchers(): Promise<void> {
 		await this.watcherManager.runPostCommit();
+	}
+
+	/** @internal Fire incremental materialized-view maintenance after a commit,
+	 *  while the change log is still alive. Errors are logged, never rolled back. */
+	public async runPostCommitMaterializedViews(): Promise<void> {
+		await this.materializedViewManager.runPostCommit();
+	}
+
+	/** @internal Compile + register an `on-commit-incremental` MV for delta
+	 *  maintenance (no-op for `manual`). Throws on an ineligible body. */
+	public registerMaterializedView(mv: MaterializedViewSchema): void {
+		this.materializedViewManager.registerMaterializedView(mv);
+	}
+
+	/** @internal Detach an MV's incremental subscription (DROP path). */
+	public unregisterMaterializedView(schemaName: string, name: string): void {
+		this.materializedViewManager.unregisterMaterializedView(schemaName, name);
 	}
 
 	/** @internal Invalidate cached assertion plan (called on DROP ASSERTION) */

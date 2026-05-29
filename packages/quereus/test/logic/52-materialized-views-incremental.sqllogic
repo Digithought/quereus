@@ -1,0 +1,135 @@
+-- 52-materialized-views-incremental.sqllogic — incremental materialized views
+-- (phase 2, refresh = 'on-commit-incremental'). Source mutations maintain the
+-- backing table at COMMIT; no manual refresh required.
+
+-- ===================================
+-- 1. Per-row apply — keyed row-preserving body
+-- ===================================
+
+create table t (id integer primary key, x integer);
+insert into t values (1, 10), (2, 20), (3, 30);
+create materialized view mv_row as select id, x + 1 as x1 from t with refresh = 'on-commit-incremental';
+
+-- MV equals the body at create time
+select * from mv_row order by id;
+→ [{"id":1,"x1":11},{"id":2,"x1":21},{"id":3,"x1":31}]
+
+-- INSERT on the source is reflected at commit, no manual refresh
+insert into t values (4, 40);
+select * from mv_row order by id;
+→ [{"id":1,"x1":11},{"id":2,"x1":21},{"id":3,"x1":31},{"id":4,"x1":41}]
+
+-- UPDATE on the source is reflected
+update t set x = 100 where id = 2;
+select * from mv_row order by id;
+→ [{"id":1,"x1":11},{"id":2,"x1":101},{"id":3,"x1":31},{"id":4,"x1":41}]
+
+-- DELETE on the source is reflected
+delete from t where id = 1;
+select * from mv_row order by id;
+→ [{"id":2,"x1":101},{"id":3,"x1":31},{"id":4,"x1":41}]
+
+-- ===================================
+-- 2. Per-group apply — aggregate body
+-- ===================================
+
+create table g (id integer primary key, k integer, v integer);
+insert into g values (1, 100, 5), (2, 100, 7), (3, 200, 3);
+create materialized view mv_grp as select k, sum(v) as sv from g group by k with refresh = 'on-commit-incremental';
+
+select * from mv_grp order by k;
+→ [{"k":100,"sv":12},{"k":200,"sv":3}]
+
+-- New row in an existing group recomputes that group
+insert into g values (4, 100, 1);
+select * from mv_grp order by k;
+→ [{"k":100,"sv":13},{"k":200,"sv":3}]
+
+-- New group creates a new MV row
+insert into g values (5, 300, 9);
+select * from mv_grp order by k;
+→ [{"k":100,"sv":13},{"k":200,"sv":3},{"k":300,"sv":9}]
+
+-- Deleting the only row of a group removes the MV row
+delete from g where id = 3;
+select * from mv_grp order by k;
+→ [{"k":100,"sv":13},{"k":300,"sv":9}]
+
+-- ===================================
+-- 3. OLD/NEW group transition — UPDATE moves a row between groups
+-- ===================================
+
+-- id=4 moves from group 100 → 200: group 100 recomputes (5+7=12), group 200 appears (1)
+update g set k = 200 where id = 4;
+select * from mv_grp order by k;
+→ [{"k":100,"sv":12},{"k":200,"sv":1},{"k":300,"sv":9}]
+
+-- ===================================
+-- 4. Manual refresh still works on an incremental MV (resync escape valve)
+-- ===================================
+
+refresh materialized view mv_grp;
+select * from mv_grp order by k;
+→ [{"k":100,"sv":12},{"k":200,"sv":1},{"k":300,"sv":9}]
+
+-- ===================================
+-- 5. Cost fallback — a large fraction of changed rows still yields correct state
+--    (the kernel demotes per-binding to a full rebuild; result must be correct)
+-- ===================================
+
+create table big (id integer primary key, v integer);
+insert into big values (1, 1), (2, 1);
+create materialized view mv_big as select id, v from big with refresh = 'on-commit-incremental';
+-- Insert many rows in one transaction (> fallback ratio of base size) → rebuild path
+insert into big values (3, 1), (4, 1), (5, 1), (6, 1), (7, 1), (8, 1), (9, 1), (10, 1);
+select sum(v) as total, count(*) as n from mv_big;
+→ [{"total":10,"n":10}]
+
+-- ===================================
+-- 6. Eligibility gate — a whole-table ('global') source is rejected at create
+-- ===================================
+
+create table agg (id integer primary key, v integer);
+insert into agg values (1, 10);
+create materialized view mv_bad as select count(*) as c from agg with refresh = 'on-commit-incremental';
+-- error: on-commit-incremental
+
+-- A manual MV over the same body is fine (no eligibility gate)
+create materialized view mv_ok_manual as select count(*) as c from agg;
+select * from mv_ok_manual;
+→ [{"c":1}]
+drop materialized view mv_ok_manual;
+
+-- ===================================
+-- 7. Set-operation / recursive-CTE bodies are rejected under incremental refresh
+-- ===================================
+
+create materialized view mv_union as select id from t union select id from agg with refresh = 'on-commit-incremental';
+-- error: set-operation
+
+create materialized view mv_rec as with recursive r(n) as (select 1 union all select n + 1 from r where n < 3) select n from r with refresh = 'on-commit-incremental';
+-- error: recursive
+
+-- ===================================
+-- 8. Schema-change invalidation — dropping a source detaches + staleness diagnostic
+-- ===================================
+
+create table src (id integer primary key, v integer);
+insert into src values (1, 5);
+create materialized view mv_src as select id, v from src with refresh = 'on-commit-incremental';
+select * from mv_src order by id;
+→ [{"id":1,"v":5}]
+
+drop table src;
+select * from mv_src;
+-- error: stale
+drop materialized view mv_src;
+
+-- Cleanup
+drop materialized view mv_row;
+drop materialized view mv_grp;
+drop materialized view mv_big;
+drop table t;
+drop table g;
+drop table big;
+drop table agg;

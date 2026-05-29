@@ -2576,13 +2576,19 @@ export class Parser {
 		// DML bodies parse here but the planner rejects them.
 		const select = this.parseQueryExpr(withClause, /*requireReturning*/ true);
 
-		// Parse optional WITH TAGS
+		// Parse trailing WITH clauses, in any order: `with tags (...)` (metadata)
+		// and/or `with refresh = '<policy>'` (incremental-maintenance knob).
 		let tags: Record<string, SqlValue> | undefined;
-		if (this.matchKeyword('WITH')) {
+		let refreshPolicy: 'manual' | 'on-commit-incremental' | undefined;
+		while (this.matchKeyword('WITH')) {
 			if (this.matchKeyword('TAGS')) {
 				tags = this.parseTags();
+			} else if (this.matchKeyword('REFRESH')) {
+				this.consume(TokenType.EQUAL, "Expected '=' after 'WITH REFRESH'.");
+				refreshPolicy = this.parseRefreshPolicyValue();
 			} else {
-				this.current--;
+				this.current--; // Not a clause we own — back up the WITH and stop.
+				break;
 			}
 		}
 
@@ -2596,8 +2602,26 @@ export class Parser {
 			moduleArgs: moduleName && Object.keys(moduleArgs).length > 0 ? moduleArgs : undefined,
 			isTemporary,
 			tags,
+			refreshPolicy,
 			loc: _createLoc(startToken, this.previous()),
 		};
+	}
+
+	/**
+	 * Parse the quoted value of a `with refresh = '<policy>'` clause. Accepts
+	 * `'manual'` or `'on-commit-incremental'` (case-insensitive); anything else
+	 * is a parse error.
+	 */
+	private parseRefreshPolicyValue(): 'manual' | 'on-commit-incremental' {
+		if (!this.check(TokenType.STRING)) {
+			throw this.error(this.peek(), "Expected a quoted refresh policy ('manual' or 'on-commit-incremental') after 'WITH REFRESH ='.");
+		}
+		const token = this.advance();
+		const value = String(token.literal).toLowerCase();
+		if (value !== 'manual' && value !== 'on-commit-incremental') {
+			throw this.error(token, `Unknown refresh policy '${token.literal}'. Expected 'manual' or 'on-commit-incremental'.`);
+		}
+		return value;
 	}
 
 	/**

@@ -1,6 +1,7 @@
 import type { Database } from '../../core/database.js';
 import { QuereusError } from '../../common/errors.js';
 import { StatusCode, type Row } from '../../common/types.js';
+import { astToString } from '../../emit/ast-stringify.js';
 import type { PlanNode, RelationalPlanNode } from '../../planner/nodes/plan-node.js';
 import { TableReferenceNode } from '../../planner/nodes/reference.js';
 import { keysOf } from '../../planner/util/fd-utils.js';
@@ -178,6 +179,30 @@ export async function collectBodyRows(db: Database, bodySql: string): Promise<Ro
 	} finally {
 		await stmt.finalize();
 	}
+}
+
+/**
+ * Full-rebuild of a materialized view's backing table: re-run the body to
+ * completion and atomically swap the backing table's base layer. This is the
+ * always-correct path shared by manual `refresh materialized view` and the
+ * incremental manager's global / cost-fallback branch (`globalRelations`).
+ *
+ * The caller is responsible for staleness re-validation when relevant; this
+ * helper assumes `mv.selectAst` plans. Throws if the backing table is missing.
+ */
+export async function rebuildBacking(db: Database, mv: MaterializedViewSchema): Promise<void> {
+	const bodySql = astToString(mv.selectAst);
+	const rows: Row[] = await collectBodyRows(db, bodySql);
+
+	const backing = db.schemaManager.getTable(mv.schemaName, mv.backingTableName);
+	if (!backing) {
+		throw new QuereusError(
+			`Internal error: backing table '${mv.backingTableName}' for materialized view '${mv.name}' not found`,
+			StatusCode.INTERNAL,
+		);
+	}
+	const manager = getBackingManager(backing);
+	await manager.replaceBaseLayer(rows);
 }
 
 /** Resolves the {@link MemoryTableManager} backing a materialized view's table. */

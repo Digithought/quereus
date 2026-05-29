@@ -5,13 +5,16 @@ stored once into a backing relation, primary-keyed by the body's inferred key,
 and addressable like any other (virtual) table. Where a plain
 [view](schema.md#viewschema) re-evaluates its body on every reference, a
 materialized view evaluates the body at create time, stores the result, and
-serves subsequent reads from that stored copy. Phase 1 (what ships today) is
+serves subsequent reads from that stored copy. The default refresh policy is
 **manual full-refresh**: source mutations do not update the stored rows until
-an explicit `REFRESH MATERIALIZED VIEW`.
+an explicit `REFRESH MATERIALIZED VIEW`. An MV may instead opt into
+**`on-commit-incremental`** refresh (`with refresh = 'on-commit-incremental'`),
+which maintains the backing table at every COMMIT that touches a source — see
+[Incremental refresh](#incremental-refresh).
 
-This document covers the substrate as it exists today. The incremental,
-concurrent-refresh, write-through, and lens-integration extensions are tracked
-in [Out of scope / roadmap](#out-of-scope--roadmap).
+This document covers the substrate as it exists today. The concurrent-refresh,
+write-through, and lens-integration extensions are tracked in
+[Out of scope / roadmap](#out-of-scope--roadmap).
 
 ## Substrate: a keyed derived relation
 
@@ -86,6 +89,7 @@ contextual keywords — no new reserved words are introduced.
 create materialized view mv [if not exists] [(col, ...)]
   [using <module>(...)]
   as <body>
+  [with refresh = 'manual' | 'on-commit-incremental']
   [with tags (...)];
 ```
 
@@ -94,9 +98,13 @@ create materialized view mv [if not exists] [(col, ...)]
   but is rejected by the planner (replaying a write per materialization is
   incoherent).
 - An explicit column list renames the body's output columns (arity must match).
+- `with refresh = '...'` selects the refresh policy (trailing, alongside the
+  existing `with tags`; default `manual`). `on-commit-incremental` is gated to
+  incrementally-maintainable bodies — see [Incremental refresh](#incremental-refresh).
 - The body is evaluated immediately and the result stored. On any failure
-  during the fill, the backing table is rolled back and the MV is **not**
-  registered — a create is all-or-nothing.
+  during the fill — or if an `on-commit-incremental` body is ineligible — the
+  backing table is rolled back and the MV is **not** registered; a create is
+  all-or-nothing.
 
 ### `REFRESH MATERIALIZED VIEW`
 
@@ -156,6 +164,87 @@ the changed table as **stale**.
 
 Staleness tracks *structural* breakage, not data drift: ordinary source
 `INSERT` / `UPDATE` / `DELETE` never set the flag.
+
+## Incremental refresh
+
+An MV created `with refresh = 'on-commit-incremental'` is maintained at every
+COMMIT that touches a source table — no manual refresh needed. It is the third
+consumer of the reusable change-driven kernel
+([Incremental Maintenance](incremental-maintenance.md)): the
+`MaterializedViewManager` registers a `DeltaSubscription` whose `apply` **writes**
+the backing table (delete-then-upsert per affected binding), running in the
+post-commit window (change log alive, all connections committed). A failed apply
+**logs and skips** — it never rolls the user's commit back (the watcher
+contract, not the assertion one).
+
+### Eligibility (checked at create time)
+
+`on-commit-incremental` is rejected at create — rolling the MV back — unless the
+body is incrementally maintainable. v1 accepts **single-source** bodies of two
+shapes:
+
+- **row-preserving** (projection / filter, no aggregate): maintenance binds on
+  the source's **primary key**. Each changed source row recomputes its MV
+  row(s). The source must have a primary key.
+- **single-source aggregate** with `GROUP BY` over **bare source columns**:
+  maintenance binds on the **group key**. Each changed group (OLD and NEW on an
+  update that moves a row between groups) is recomputed.
+
+Rejected up front with a diagnostic: multiple sources / joins, set operations
+other than `union all` (`materialized-view-incremental-set-ops`), recursive CTE
+bodies (`materialized-view-incremental-recursive-cte`), whole-table aggregates
+(no `GROUP BY`), and `GROUP BY` over non-column expressions. A `manual` MV over
+the same body is always allowed (no gate).
+
+> **Note on classification.** This eligibility is *not* the `extractBindings`
+> 'row'/'group' classification used by assertions/watchers — that surface is
+> *equality-pinned* and reports a bare MV scan (and a group-by over non-key
+> columns) as `'global'`. MV maintenance instead binds on source *identity*
+> (PK / group key), which the manager derives directly.
+
+### Apply contract
+
+For each affected binding tuple the manager: binds the residual (`pk0..` / `gk0..`),
+runs a pre-compiled **residual scheduler** (the body with a key-equality filter
+injected on the source — the same `injectKeyFilter` machinery assertions use),
+**deletes** the backing rows for that binding's MV primary key, then **upserts**
+the recomputed rows. Net effect per binding is a delete-then-upsert:
+
+- a row/group that disappears (deleted, filtered out, or emptied) leaves only the
+  delete — its MV row is removed;
+- an aggregate `HAVING` that a recomputed group now fails likewise leaves the
+  delete with no re-insert;
+- an `UPDATE` moving a row between groups drives **both** the OLD and NEW group
+  keys (the change log emits both projections), so both are recomputed.
+
+The delete key is mapped from the binding tuple onto the backing table's physical
+primary key via attribute provenance (passthrough column ids forward directly;
+aggregate group-by output ids resolve through the aggregate's producing
+expression). When that mapping is not clean — e.g. an `order by` body whose
+physical PK is seeded with ordering columns outside the binding — the relation
+falls back to a **full rebuild** (always correct, just not incremental).
+
+### Cost fallback and global rebuild
+
+The kernel demotes a binding to `'global'` when the changed-tuple count is a large
+fraction of the table (`deltaPerRowFallbackRatio`). For an MV, `'global'` means a
+full rebuild via the same `replaceBaseLayer` path manual refresh uses
+(`rebuildBacking`) — so a bulk change re-materializes once instead of issuing
+thousands of per-row patches. The manual `refresh materialized view` statement
+also works on an incremental MV and is the resync escape valve.
+
+### Limitations
+
+- **Cascading MVs (MV-over-MV) may need more than one commit to converge.** A
+  leaf MV's backing-table write happens *during* the post-commit pass and is not
+  itself in the current change log, so a dependent MV does not observe it this
+  commit. Tracked: `materialized-view-incremental-cascading-convergence`.
+- **Keyless / bag bodies** (all-columns PK) hit the same `UNIQUE constraint
+  failed` on a duplicate-producing upsert that manual refresh hits — the contract
+  fix lives in `materialized-view-bag-body-duplicates`.
+- **`getChangeScope()` projection** (so `Database.watch` on an incremental MV
+  fires on *source* mutations rather than reporting the backing table) is tracked
+  as a follow-up: `materialized-view-incremental-changescope`.
 
 ## Declarative-schema integration
 
@@ -288,10 +377,13 @@ tracked separately and build on this substrate:
 
 - **Concurrent refresh** (`materialized-view-concurrent-refresh`) — overlapping
   refreshes and refresh-while-read beyond today's atomic base-layer swap.
-- **Incremental refresh** (`materialized-view-incremental-refresh`) — consume
-  the reusable change-driven kernel ([Incremental Maintenance](incremental-maintenance.md))
-  to apply ΔQ instead of re-materializing in full. Requires an inferable key
-  (all-columns-fallback views are ineligible).
+- **Incremental refresh** — *delivered* for single-source row-preserving and
+  single-source aggregate bodies (`with refresh = 'on-commit-incremental'`; see
+  [Incremental refresh](#incremental-refresh)). Remaining work: multi-source /
+  join bodies, set-ops (`materialized-view-incremental-set-ops`), recursive CTEs
+  (`materialized-view-incremental-recursive-cte`), cascading-MV convergence
+  (`materialized-view-incremental-cascading-convergence`), and the
+  `getChangeScope()` source projection (`materialized-view-incremental-changescope`).
 - **Write-through** (`materialized-view-writes-through-body`) — accept DML
   against an MV and propagate to sources via [view updateability](view-updateability.md).
 - **Backing-module pluggability** — honor `USING <module>(...)` so the stored

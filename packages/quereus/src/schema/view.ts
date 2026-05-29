@@ -28,6 +28,27 @@ export interface ViewSchema {
 }
 
 /**
+ * Refresh policy for a materialized view — when its backing table is brought
+ * back in sync with its sources.
+ *
+ * - `manual` (default): the MV is only re-materialized by an explicit
+ *   `refresh materialized view`. Bit-for-bit phase-1 behavior.
+ * - `on-commit-incremental`: the MV is maintained incrementally at every
+ *   COMMIT that touches a source table, via a `DeltaSubscription` registered
+ *   with the {@link import('../core/database-materialized-views.js').MaterializedViewManager}.
+ *   Only bodies whose sources all classify as `'row'`/`'group'` (not `'global'`)
+ *   qualify — see `docs/materialized-views.md` § Incremental refresh.
+ *
+ * A future `on-commit-full` policy is out of scope (filed to backlog).
+ */
+export type RefreshPolicy =
+	| { kind: 'manual' }
+	| { kind: 'on-commit-incremental' };
+
+/** The default refresh policy: manual full-refresh (phase-1 behavior). */
+export const DEFAULT_REFRESH_POLICY: RefreshPolicy = { kind: 'manual' };
+
+/**
  * Schema definition of a materialized view — a "keyed derived relation". The
  * query body is stored once into a backing virtual table (a normal
  * `TableSchema` in the `tables` map); references resolve to that backing table
@@ -80,6 +101,11 @@ export interface MaterializedViewSchema {
 	/** Staleness flag set by the schema-change subscription when a source table
 	 *  is modified/removed in a way that may break the body. */
 	stale?: boolean;
+
+	/** When and how the backing table is brought back in sync with its sources.
+	 *  Absent on already-serialized MVs ⇒ treat as {@link DEFAULT_REFRESH_POLICY}
+	 *  (`manual`). Set to `on-commit-incremental` to enable delta maintenance. */
+	refreshPolicy?: RefreshPolicy;
 
 	/**
 	 * How this covering structure came to be. An ordinary user-declared MV is

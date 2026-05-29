@@ -45,6 +45,22 @@ export type CoveringStructure =
 	// Produced ONLY once row-time write-through MV maintenance lands.
 	| { kind: 'materialized-view'; view: MaterializedViewSchema };
 
+/**
+ * A single incremental-maintenance operation applied to an MV backing table's
+ * committed base layer by {@link MemoryTableManager.applyMaintenance}.
+ *
+ * - `delete-key` removes the row with this full primary key (no-op if absent).
+ * - `upsert` replaces the row sharing this row's PK, or inserts when absent.
+ *
+ * The per-binding apply path emits `delete-key` (full MV-PK) + `upsert`. Range
+ * deletes for the strict-superset-PK group case are deferred — those MVs fall
+ * back to a full rebuild instead (always correct; see
+ * `docs/materialized-views.md` § Incremental refresh).
+ */
+export type MaintenanceOp =
+	| { kind: 'delete-key'; key: BTreeKeyForPrimary }
+	| { kind: 'upsert'; row: Row };
+
 /** Origin + structure name for a UNIQUE constraint's implicit covering structure. */
 export interface ImplicitCoveringStructure {
 	/** Name of the secondary index (the synchronously-maintained BTree) that realizes the constraint. */
@@ -1132,6 +1148,64 @@ export class MemoryTableManager {
 			for (const conn of this.connections.values()) {
 				if (conn.readLayer === oldBase) {
 					conn.readLayer = newBase;
+				}
+			}
+		} finally {
+			release();
+		}
+	}
+
+	/**
+	 * Apply a batch of incremental-maintenance operations directly to the
+	 * committed base layer. Used by the {@link import('../../../core/database-materialized-views.js').MaterializedViewManager}
+	 * to maintain an `on-commit-incremental` materialized view's backing table
+	 * post-commit, off the user-transaction path.
+	 *
+	 * Deliberately bypasses the user write-boundary (it is NOT gated by
+	 * `validateMutationPermissions`, which throws READONLY for MV backing tables)
+	 * and does not require a user {@link MemoryTableConnection}. Mirrors
+	 * {@link replaceBaseLayer}'s discipline: acquire the SchemaChange latch, drain
+	 * any in-flight committed transaction layers to base, then mutate the base
+	 * tree in place under the latch. Operations are applied in order, so callers
+	 * encode delete-then-upsert as two ops; secondary indexes are rebuilt once at
+	 * the end.
+	 *
+	 * Atomic from the event-loop's perspective: the only awaits are the latch and
+	 * the drain — the tree mutations + index rebuild are synchronous, so a
+	 * concurrent fresh scan never observes a partial batch.
+	 */
+	async applyMaintenance(ops: readonly MaintenanceOp[]): Promise<void> {
+		if (ops.length === 0) return;
+		const lockKey = `MemoryTable.SchemaChange:${this.schemaName}.${this._tableName}`;
+		const release = await Latches.acquire(lockKey);
+		try {
+			await this.ensureSchemaChangeSafety();
+
+			const tree = this.baseLayer.primaryTree;
+			for (const op of ops) {
+				switch (op.kind) {
+					case 'delete-key': {
+						const path = tree.find(op.key);
+						if (path.on) tree.deleteAt(path);
+						break;
+					}
+					case 'upsert': {
+						const key = this.primaryKeyFunctions.extractFromRow(op.row);
+						const path = tree.find(key);
+						if (path.on) tree.deleteAt(path);
+						tree.insert(op.row);
+						break;
+					}
+				}
+			}
+			this.baseLayer.rebuildAllSecondaryIndexes();
+
+			// The base was mutated in place; connections already referencing it
+			// observe the new state. Re-point any still reading a stale layer
+			// (mirrors replaceBaseLayer / ensureSchemaChangeSafety).
+			for (const conn of this.connections.values()) {
+				if (conn.readLayer !== this.baseLayer) {
+					conn.readLayer = this.baseLayer;
 				}
 			}
 		} finally {

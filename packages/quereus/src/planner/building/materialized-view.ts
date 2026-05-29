@@ -46,6 +46,13 @@ export function buildCreateMaterializedViewStmt(ctx: PlanningContext, stmt: AST.
 		}
 	}
 
+	// Reject body shapes incremental maintenance cannot handle yet, up front with
+	// a clear diagnostic. Binding-based ('global' source) eligibility is checked
+	// at runtime in the create emitter (it needs the optimized/analyzed body).
+	if (stmt.refreshPolicy === 'on-commit-incremental') {
+		rejectUnsupportedIncrementalBody(stmt.select, viewName);
+	}
+
 	const sql = createMaterializedViewToString(stmt);
 	const bodySql = astToString(stmt.select);
 
@@ -58,8 +65,35 @@ export function buildCreateMaterializedViewStmt(ctx: PlanningContext, stmt: AST.
 		stmt.select,
 		bodySql,
 		sql,
-		stmt.tags ? Object.freeze({ ...stmt.tags }) : undefined
+		stmt.tags ? Object.freeze({ ...stmt.tags }) : undefined,
+		stmt.refreshPolicy
 	);
+}
+
+/**
+ * Reject body shapes `on-commit-incremental` maintenance does not support yet,
+ * with diagnostics pointing at the tracking tickets. Bag-distinguishing set-ops
+ * (UNION/INTERSECT/EXCEPT — anything but `union all`) and recursive CTE bodies
+ * are out of scope for v1.
+ */
+function rejectUnsupportedIncrementalBody(select: AST.QueryExpr, viewName: string): void {
+	if (select.type !== 'select') return;
+	if (select.compound && select.compound.op !== 'unionAll') {
+		throw new QuereusError(
+			`materialized view '${viewName}': 'on-commit-incremental' refresh does not support `
+				+ `${select.compound.op} set-operation bodies yet `
+				+ `(filed: materialized-view-incremental-set-ops); use 'manual' refresh`,
+			StatusCode.UNSUPPORTED,
+		);
+	}
+	if (select.withClause?.recursive) {
+		throw new QuereusError(
+			`materialized view '${viewName}': 'on-commit-incremental' refresh does not support `
+				+ `recursive CTE bodies yet `
+				+ `(filed: materialized-view-incremental-recursive-cte); use 'manual' refresh`,
+			StatusCode.UNSUPPORTED,
+		);
+	}
 }
 
 /** Builds a plan node for REFRESH MATERIALIZED VIEW. */

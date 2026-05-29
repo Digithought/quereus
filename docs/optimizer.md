@@ -1974,7 +1974,7 @@ For `'row'` bindings, the chosen key prefers the table's primary key when it's a
 - Multiple consumers (assertions, MVs, signals) share the same kernel and the same change capture; only their `apply` callbacks differ.
 
 ### Applicability Beyond Assertions
-- Materialized Views / covering structures: compute ΔQ and merge into the cached relation. Manual-refresh materialized views exist today as keyed backing relations ([Materialized Views](materialized-views.md)); the incremental path plugs in by registering one `DeltaSubscription` per view with an `apply` that performs delete-then-upsert per binding tuple; the [lens layer](lens.md) consumes the same path for set-level constraint maintenance and enforcement.
+- Materialized Views / covering structures: compute ΔQ and merge into the cached relation. `on-commit-incremental` materialized views are **live** — the `MaterializedViewManager` registers one `DeltaSubscription` per view with an `apply` that delete-then-upserts the recomputed slice per binding tuple ([Materialized Views § Incremental refresh](materialized-views.md#incremental-refresh)). Note the MV path does **not** reuse `extractBindings`' equality-pinned classification (which reports a bare MV scan / group-by-non-key as `'global'`); it derives source-identity bindings (PK / group-key) directly. The [lens layer](lens.md) consumes the same kernel for set-level constraint maintenance and enforcement.
 - Triggers/Signals: invoke actions only for affected keys/groups.
 
 This places “what to bind” in the optimizer and “when/how to execute residuals” in the runtime, enabling reuse across features.

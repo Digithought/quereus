@@ -45,6 +45,9 @@ export interface TransactionManagerContext {
 	 *  back. Invoked after all connections commit but before the change log
 	 *  is cleared. */
 	runPostCommitWatchers(): Promise<void>;
+	/** Fire incremental materialized-view maintenance. Same post-commit window
+	 *  as watchers; errors logged, never rolled back. */
+	runPostCommitMaterializedViews(): Promise<void>;
 }
 
 /**
@@ -258,6 +261,17 @@ export class TransactionManager {
 				await this.ctx.runPostCommitWatchers();
 			} catch (err) {
 				errorLog('Post-commit watcher dispatch threw: %O', err);
+			}
+
+			// Maintain incremental materialized views in the same post-commit
+			// window (change log alive). Ordered after watchers; for MV-over-MV,
+			// a leaf MV's backing write made here is not itself in the current
+			// change log, so a dependent MV may need a later commit to converge
+			// (documented limitation — see docs/materialized-views.md).
+			try {
+				await this.ctx.runPostCommitMaterializedViews();
+			} catch (err) {
+				errorLog('Post-commit materialized-view maintenance threw: %O', err);
 			}
 		} catch (e) {
 			// On pre-commit assertion failure (or commit error), rollback all connections

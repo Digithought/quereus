@@ -1,15 +1,16 @@
 # Incremental Maintenance
 
 Quereus exposes a single, reusable change-driven kernel that runs at every COMMIT.
-Two consumers are live today: **assertions** (pre-commit, can roll the commit
-back) and **`Database.watch` reactive signals** (post-commit, fire-and-forget).
-Keyed derived relations have a first foothold — **manual-refresh materialized
-views** ([Materialized Views](materialized-views.md)) store a query body as a
-keyed backing relation today, though they re-materialize in full on `REFRESH`
-rather than consuming this kernel yet. Still to come — *incremental* MV
-maintenance and covering structures (indexes / unique-constraint enforcement),
-plus triggers — all of which plug into the same surface without reinventing
-change capture or binding-key analysis. The [lens layer](lens.md) routes set-level constraint
+Three consumers are live today: **assertions** (pre-commit, can roll the commit
+back), **`Database.watch` reactive signals** (post-commit, fire-and-forget), and
+**incremental materialized views** (post-commit, fire-and-forget, but their
+`apply` *writes* a backing table — see
+[Third consumer](#third-consumer-materializedviewmanager)). Manual-refresh
+materialized views ([Materialized Views](materialized-views.md)) still
+re-materialize in full on `REFRESH` and do not consume this kernel. Still to come
+— covering structures (indexes / unique-constraint enforcement) and triggers —
+all of which plug into the same surface without reinventing change capture or
+binding-key analysis. The [lens layer](lens.md) routes set-level constraint
 enforcement to this kernel when no covering structure is present, and maintains
 covering structures through it when one is.
 
@@ -191,12 +192,42 @@ Watchers prove the kernel is genuinely consumer-neutral: same binding
 extraction, same capture demand, same cost fallback — only the commit-phase
 placement and error policy differ from assertions.
 
+## Third consumer: MaterializedViewManager
+
+`src/core/database-materialized-views.ts` maintains `on-commit-incremental`
+materialized views ([Materialized Views § Incremental refresh](materialized-views.md#incremental-refresh)).
+It owns its own `DeltaExecutor` and runs **after** commit alongside watchers —
+but where a watcher fires a handler, the MV subscription's `apply` **writes** the
+backing table: per affected binding it issues a delete-then-upsert (the recomputed
+slice), and on a `'global'` binding or cost-fallback it rebuilds the backing
+wholesale (`replaceBaseLayer`, the manual-refresh path). The write path bypasses
+the user read-only boundary via `MemoryTableManager.applyMaintenance`
+(delete/upsert against the committed base layer, under the SchemaChange latch,
+off the user-transaction path). A failing `apply` logs and skips — the user's
+commit stands.
+
+Two MV-specific wrinkles diverge from the watcher template:
+
+- **Bindings are derived, not extracted.** `extractBindings`' 'row'/'group'
+  classification is *equality-pinned* — it reports a bare MV scan, and a
+  `GROUP BY` over non-key columns, as `'global'`. MV maintenance instead binds on
+  source *identity*: a row-preserving body binds `'row'` on the source PK; a
+  single-source aggregate binds `'group'` on the bare `GROUP BY` columns. The
+  manager builds the `BindingMode` map directly and hands it to the same kernel.
+- **`apply` writes, so it needs a delete key.** The binding tuple is projected
+  onto the backing table's physical PK via attribute provenance (passthrough ids
+  forward; aggregate group-by ids resolve through the aggregate's producing
+  expression). When the projection isn't clean (e.g. an `order by`-seeded physical
+  PK), the relation falls back to a full rebuild — always correct.
+
+The residual-injection machinery (`injectKeyFilter`) is shared with assertions in
+`src/planner/analysis/key-filter.ts`.
+
 ## Plug-in pattern for future consumers
 
-A new consumer follows the same shape — `Database.watch` (above) is the live
-template; incremental materialized-view maintenance will surface a shared
-registration path on `Database` (see the roadmap in
-[Materialized Views](materialized-views.md#out-of-scope--roadmap)):
+A new consumer follows the same shape — `Database.watch` and the
+`MaterializedViewManager` (above) are the live templates; both surface a
+registration path on `Database`:
 
 ```ts
 // 1. Analyze the consumer's plan.
@@ -249,7 +280,7 @@ const dispose = deltaExecutor.register({
 - Optimizer surface: [Optimizer § Binding-aware Delta Planning](optimizer.md#binding-aware-delta-planning-reusable)
 - Public reactive API: [Change-scope Documentation](change-scope.md)
 - Layered schemas / lenses: [Lenses and Layered Schemas](lens.md)
-- Source: `src/planner/analysis/binding-extractor.ts`, `src/runtime/delta-executor.ts`, `src/core/database-transaction.ts`, `src/core/database-assertions.ts`, `src/core/database-watchers.ts`
-- Keyed derived relations / covering structures: [Materialized Views](materialized-views.md) (manual-refresh today; incremental maintenance on the roadmap)
+- Source: `src/planner/analysis/binding-extractor.ts`, `src/planner/analysis/key-filter.ts`, `src/runtime/delta-executor.ts`, `src/core/database-transaction.ts`, `src/core/database-assertions.ts`, `src/core/database-watchers.ts`, `src/core/database-materialized-views.ts`
+- Keyed derived relations / covering structures: [Materialized Views](materialized-views.md) (manual full-refresh + `on-commit-incremental` maintenance)
 - Cross-process reactive transport: out of scope here; see the sync packages
   under `packages/quereus-sync-*`.

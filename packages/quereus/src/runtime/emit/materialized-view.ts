@@ -16,6 +16,7 @@ import {
 	computeBodyHash,
 	collectBodyRows,
 	getBackingManager,
+	rebuildBacking,
 	revalidateBody,
 	linkCoveredUniqueConstraints,
 	unlinkCoveredUniqueConstraints,
@@ -76,12 +77,29 @@ export function emitCreateMaterializedView(plan: CreateMaterializedViewNode, _ct
 			sourceTables: shape.sourceTables,
 			stale: false,
 			origin: 'explicit',
+			refreshPolicy: { kind: plan.refreshPolicy === 'on-commit-incremental' ? 'on-commit-incremental' : 'manual' },
 		};
 		// Eagerly record the constraint↔structure link if this MV covers a UNIQUE
 		// constraint (informational — enforcement still routes through the
 		// synchronously-maintained auto-index).
 		linkCoveredUniqueConstraints(db, mv, plan.bodySql);
 		sm.addMaterializedView(mv);
+
+		// Compile + register incremental maintenance (no-op for manual). The
+		// binding-based eligibility check runs here (it needs the analyzed body)
+		// and throws on a 'global'-source body — roll the whole MV back so an
+		// ineligible `on-commit-incremental` errors cleanly at create time.
+		try {
+			db.registerMaterializedView(mv);
+		} catch (e) {
+			unlinkCoveredUniqueConstraints(db, mv);
+			sm.removeMaterializedView(plan.schemaName, plan.viewName);
+			try {
+				await sm.dropTable(plan.schemaName, backingTableName, /*ifExists*/ true);
+			} catch { /* best-effort cleanup */ }
+			throw e;
+		}
+
 		sm.getChangeNotifier().notifyChange({
 			type: 'materialized_view_added',
 			schemaName: plan.schemaName,
@@ -105,23 +123,12 @@ export function emitRefreshMaterializedView(plan: RefreshMaterializedViewNode, _
 			throw new QuereusError(`no such materialized view: ${plan.viewName}`, StatusCode.ERROR);
 		}
 
-		const bodySql = astToString(mv.selectAst);
 		// A stale MV re-validates its body against current source schemas first.
 		if (mv.stale) {
-			revalidateBody(db, mv.name, bodySql);
+			revalidateBody(db, mv.name, astToString(mv.selectAst));
 		}
 
-		const rows: Row[] = await collectBodyRows(db, bodySql);
-
-		const backing = sm.getTable(plan.schemaName, mv.backingTableName);
-		if (!backing) {
-			throw new QuereusError(
-				`Internal error: backing table '${mv.backingTableName}' for materialized view '${plan.viewName}' not found`,
-				StatusCode.INTERNAL,
-			);
-		}
-		const manager = getBackingManager(backing);
-		await manager.replaceBaseLayer(rows);
+		await rebuildBacking(db, mv);
 
 		mv.stale = false;
 		sm.getChangeNotifier().notifyChange({
@@ -160,7 +167,11 @@ export function emitDropMaterializedView(plan: DropMaterializedViewNode, _ctx: E
 			throw new QuereusError(`no such materialized view: ${plan.viewName}`, StatusCode.ERROR);
 		}
 
-		// (Phase 2 placeholder) detach any DeltaSubscription — no-op in v1.
+		// Detach any incremental DeltaSubscription + release its capture demand
+		// (no-op for a manual MV). The manager also reacts to the
+		// `materialized_view_removed` event below, but detaching first keeps the
+		// stale subscription from firing on the backing-table drop's change log.
+		db.unregisterMaterializedView(plan.schemaName, plan.viewName);
 
 		// Clear any constraint↔structure link this MV established. No enforcement
 		// demotion: physical schemas still enforce via the implicit auto-index.
