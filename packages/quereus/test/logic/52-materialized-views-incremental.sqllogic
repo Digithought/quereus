@@ -332,7 +332,31 @@ delete from c_f where id = 2;
 select * from c_f2 order by id;
 → [{"id":3,"y":107}]
 
+-- ===================================
+-- 18. Composite-PK producer — a dependent over a multi-column group-by leaf MV.
+--     The producer's backing PK is (g1, g2), so the overlay capture keys touched
+--     rows via `buildPrimaryKeyFromValues` over a composite `backingPkDefinition`
+--     and `pkToString`/`serializeTuple` must serialize composite keys without
+--     collision. A source insert into one group ripples through to the dependent
+--     the same commit.
+-- ===================================
+
+create table c_mc (id integer primary key, g1 integer, g2 integer, v integer);
+insert into c_mc values (1, 1, 1, 10), (2, 1, 2, 20), (3, 2, 1, 5);
+create materialized view c_grp as select g1, g2, sum(v) as sv from c_mc group by g1, g2 with refresh = 'on-commit-incremental';
+create materialized view c_grp_d as select g1, g2, sv * 2 as sv2 from c_grp with refresh = 'on-commit-incremental';
+select * from c_grp_d order by g1, g2;
+→ [{"g1":1,"g2":1,"sv2":20},{"g1":1,"g2":2,"sv2":40},{"g1":2,"g2":1,"sv2":10}]
+
+-- Insert into group (1,2): producer sv 20→120, dependent sv2 40→240, same commit.
+-- Only that one composite-keyed group's overlay delta drives the dependent.
+insert into c_mc values (4, 1, 2, 100);
+select * from c_grp_d order by g1, g2;
+→ [{"g1":1,"g2":1,"sv2":20},{"g1":1,"g2":2,"sv2":240},{"g1":2,"g2":1,"sv2":10}]
+
 -- Cleanup (drop dependents before their producers)
+drop materialized view c_grp_d;
+drop materialized view c_grp;
 drop materialized view c_mv3;
 drop materialized view c_mv2;
 drop materialized view c_mv1;
@@ -346,3 +370,4 @@ drop table c_t;
 drop table c_src;
 drop table c_big;
 drop table c_f;
+drop table c_mc;

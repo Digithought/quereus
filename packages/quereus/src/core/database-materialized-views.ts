@@ -167,6 +167,15 @@ export class MaterializedViewManager {
 	private topoRanks: Map<string, number> | null = null;
 
 	/**
+	 * Cached set of backing bases that *another* incremental MV's body reads (the
+	 * producer side of a cascade edge). Only these need per-pass delta capture —
+	 * a leaf MV with no dependent skips the before/after backing reads entirely,
+	 * so a non-cascading MV pays zero capture overhead. `null` ⇒ recompute on next
+	 * use; shares fate (same data, same invalidation) with {@link topoRanks}.
+	 */
+	private consumedBacking: Set<string> | null = null;
+
+	/**
 	 * @internal Test-only fault-injection seam. When set, it is invoked with the
 	 * maintenance phase about to run; throwing simulates that phase failing. Used
 	 * to exercise the two-tier recovery (Tier-1 full-rebuild self-heal, Tier-2
@@ -275,8 +284,9 @@ export class MaterializedViewManager {
 		compiled.subscriptionDisposer = this.executor.register(subscription);
 		this.incremental.set(key, compiled);
 		// A new incremental entry changes the MV-dependency graph (it may produce
-		// or consume another MV's backing table) — recompute the topo order lazily.
+		// or consume another MV's backing table) — recompute the cached graph lazily.
 		this.topoRanks = null;
+		this.consumedBacking = null;
 		log('Registered incremental materialized view %s.%s', mv.schemaName, mv.name);
 	}
 
@@ -333,6 +343,7 @@ export class MaterializedViewManager {
 		this.incremental.delete(key);
 		// Removing an incremental entry changes the MV-dependency graph.
 		this.topoRanks = null;
+		this.consumedBacking = null;
 		try { entry.subscriptionDisposer(); } catch (err) { log('MV subscription disposer for %s threw: %O', key, err); }
 		for (const d of entry.captureDisposers) {
 			try { d(); } catch (err) { log('MV capture disposer for %s threw: %O', key, err); }
@@ -636,6 +647,15 @@ export class MaterializedViewManager {
 		ops: MaintenanceOp[],
 		manager: MemoryTableManager,
 	): Promise<void> {
+		// No dependent reads this backing table — nothing will consume an overlay
+		// delta, so skip the before/after backing reads and just write. Keeps a
+		// non-cascading (leaf) MV at zero capture overhead.
+		if (!this.getConsumedBackingBases().has(compiled.backingBase)) {
+			this.maintenanceFaultInjector?.('apply');
+			await manager.applyMaintenance(ops);
+			return;
+		}
+
 		// De-duplicated set of touched backing PKs. Delete-key ops carry the key
 		// directly; upsert ops derive it from the row's physical-PK columns via the
 		// same `buildPrimaryKeyFromValues(..., backingPkDefinition)` `buildDeleteKey`
@@ -693,6 +713,26 @@ export class MaterializedViewManager {
 		if (this.topoRanks) return this.topoRanks;
 		this.topoRanks = this.computeTopoRanks();
 		return this.topoRanks;
+	}
+
+	/**
+	 * Set of backing bases consumed by *another* incremental MV's body — the
+	 * producer side of a cascade edge. A backing base outside this set has no
+	 * dependent, so its producer skips per-pass delta capture. Cached; shares the
+	 * topo-cache invalidation (recomputed lazily after register/unregister).
+	 */
+	private getConsumedBackingBases(): Set<string> {
+		if (this.consumedBacking) return this.consumedBacking;
+		const producers = new Set<string>();
+		for (const c of this.incremental.values()) producers.add(c.backingBase);
+		const consumed = new Set<string>();
+		for (const c of this.incremental.values()) {
+			for (const base of c.baseTablesInPlan) {
+				if (base !== c.backingBase && producers.has(base)) consumed.add(base);
+			}
+		}
+		this.consumedBacking = consumed;
+		return consumed;
 	}
 
 	private computeTopoRanks(): Map<string, number> {
