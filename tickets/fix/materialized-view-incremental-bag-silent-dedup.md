@@ -74,6 +74,18 @@ sign-off, since the bag-body ticket's decision was explicit):
    raise here would have to surface as staleness or a logged contract violation,
    not a thrown error. Likely the wrong layer; option 1 is preferred.
 
+## Interaction with self-healing divergence
+
+`materialized-view-cascading-divergence-propagation` (plan) replaces the Tier-2
+hard-error with **live-body fallback + self-triggered repair**. That makes option 1
+(reject at incremental-registration) more clearly correct, not less: a bag-capable
+body is a *deterministic* rebuild failure, so if it were allowed to register and
+later diverge, it would never re-materialize — it would sit in **permanent**
+live-body fallback (serving a correct *bag* on read, but never healing, and
+tripping a doomed full-rebuild on every read until backoff throttles it). Refusing
+the body at create avoids ever entering that degraded-forever state. Keep option 1
+as the resolution; this is additional justification, not a new option.
+
 ## Acceptance
 
 - A bag-capable row-preserving body under `with refresh = 'on-commit-incremental'`

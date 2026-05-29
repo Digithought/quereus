@@ -42,9 +42,23 @@ The same shape reproduces for `stale` via a source `alter table ... add column`.
 
 ## Expected behavior
 
-A read against an MV whose `diverged` (or `stale`) flag is set must surface the
-diagnostic regardless of whether the reading statement's plan was cached before the
-flag flipped. No code path should silently serve diverged/stale backing rows.
+A read against an MV whose read-state flag is set must observe that state
+regardless of whether the reading statement's plan was cached before the flag
+flipped. No code path should silently serve diverged/stale backing rows.
+
+> **Note — the diverged *action* is changing.** The planned
+> `materialized-view-cascading-divergence-propagation` work replaces the
+> `diverged` hard-error with **live-body fallback** (a diverged/tainted MV
+> resolves reads to its un-materialized body instead of erroring), and adds a
+> third read-state flag — `tainted` (set when an *upstream* MV diverged). This
+> fix's contract is unchanged in spirit but should be framed as "a cached plan
+> must observe the *current* read-state and re-resolve accordingly" rather than
+> "must error": once divergence self-heals, the right cached-plan behavior is to
+> recompile onto the fallback, not to throw. Whatever mechanism this fix uses
+> (invalidation event vs. runtime-flag check) must therefore cover **three**
+> flags — `diverged`, `stale`, and the forthcoming `tainted` — and must drive a
+> *re-resolution*, not just a guard. If this fix lands first, leave the seam
+> generic over read-state rather than hard-coding the error.
 
 ## Notes for the implementer (design space, not a plan)
 
@@ -65,3 +79,7 @@ flag flipped. No code path should silently serve diverged/stale backing rows.
 
 - Parent: `materialized-view-incremental-apply-failure-visibility` (added the
   `diverged` flag + two-tier recovery; its docs now carry a caveat pointing here).
+- `materialized-view-cascading-divergence-propagation` (plan): changes the
+  diverged read action from hard-error to live-body fallback and adds the
+  `tainted` flag — the two should be implemented coherently (this fix supplies the
+  cache-invalidation/re-resolution seam that the self-healing reads ride on).

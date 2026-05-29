@@ -378,6 +378,17 @@ no signal. On an apply error the manager escalates in two tiers:
   MV and pointing at `refresh materialized view`. This stops silent wrong reads
   in the persistent-failure case for any **freshly planned** query.
 
+> **Planned — self-healing replaces the hard error.** The Tier-2 contract above
+> (error on read, manual `refresh` to recover) is being replaced by self-healing
+> degradation — see `materialized-view-cascading-divergence-propagation` (plan).
+> Because `diverged` is *data* drift while the body still plans, a diverged (or
+> upstream-`tainted`) MV will instead resolve reads to its **live body** — always
+> correct, never silently wrong, and never wedged needing a DBA — while repair is
+> retried out-of-band from commit/read/refresh with backoff. This is the right
+> contract for edge / no-DBA deployments, where the dominant Tier-2 cause is a
+> transient unreachable federated source. The text below describes today's
+> behavior until that work lands.
+
 > **Caveat — cached prepared statements.** The `diverged` check (like the `stale`
 > check beside it) runs at *plan-build* time in `select.ts`. `diverged` is set on
 > the post-commit maintenance path without emitting a schema-change event, so a
@@ -436,11 +447,17 @@ keeps reporting the backing table.
   graph is a DAG (a body is fixed at create and any upstream MV must already
   exist), one topologically-ordered pass converges the whole chain — no fixpoint
   loop. A structurally-impossible cycle degrades loudly (a diagnostic plus
-  insertion-order fallback) rather than looping. *Caveat — cascading divergence:*
-  if an upstream MV itself diverges (Tier-2: even its rebuild failed), its
-  dependents are maintained against the upstream's stale backing data without
+  insertion-order fallback) rather than looping. *Caveat — cascading divergence
+  (today):* if an upstream MV itself diverges (Tier-2: even its rebuild failed),
+  its dependents are maintained against the upstream's stale backing data without
   erroring — only direct reads of the diverged MV error (via the `diverged`
-  read-guard). Propagating divergence to dependents is out of scope.
+  read-guard). A transitive read of a dependent therefore returns silently-drifted
+  data. The resolution is **decided and planned** (not yet implemented):
+  `materialized-view-cascading-divergence-propagation` replaces the hard-error
+  contract with self-healing degradation — a diverged or upstream-**tainted** MV
+  resolves reads to its live (un-materialized) body so reads stay correct and the
+  whole chain degrades-and-heals as a unit, with repair self-triggered from
+  commit / read / refresh and no manual `refresh` required.
 - **Keyless / bag bodies** (all-columns PK) inherit the "must be a set"
   diagnostic *only on the full-rebuild branch* — a `'global'` binding or a
   cost-fallback demotion routes through `rebuildBacking` → `replaceBaseLayer`,

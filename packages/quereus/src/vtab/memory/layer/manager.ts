@@ -1377,7 +1377,8 @@ export class MemoryTableManager {
 	 * Implementation mirrors `scanLayer`'s prefix-range scan: seek to the prefix
 	 * (the composite-key comparator's length-diff branch positions a shorter probe
 	 * just before all full keys sharing it), forward-scan collecting matches, and
-	 * stop at the first post-run mismatch. Matches are collected first, then
+	 * stop at the first mismatch (the run is contiguous from the seek, so the first
+	 * non-match ends it — including an empty run). Matches are collected first, then
 	 * deleted by key, so the scan never mutates the tree it is walking. Per-column
 	 * equality is collation-aware (the prefix columns' declared collation).
 	 */
@@ -1393,7 +1394,6 @@ export class MemoryTableManager {
 		if (!path.on) tree.moveNext(path);
 
 		const toDelete: BTreeKeyForPrimary[] = [];
-		let entered = false;
 		while (path.on) {
 			const row = tree.at(path)!;
 			const key = this.primaryKeyFunctions.extractFromRow(row);
@@ -1403,13 +1403,16 @@ export class MemoryTableManager {
 				const collation = pkDef[j]?.collation ?? 'BINARY';
 				if (compareSqlValues(keyArr[j], prefix[j], collation) !== 0) { matches = false; break; }
 			}
-			if (matches) {
-				toDelete.push(key);
-				entered = true;
-			} else if (entered) {
-				// Past the contiguous matching run — nothing further can match.
+			if (!matches) {
+				// The seek lands exactly at the run's lower boundary (the comparator's
+				// length-diff branch sorts a shorter probe just before all full keys
+				// sharing its prefix), and the matching rows are contiguous, so the
+				// first mismatch ends the run — including the empty-run case (nothing
+				// to delete, e.g. a freshly inserted base row), which would otherwise
+				// scan to the end of the tree. Mirrors `scanLayer`'s prefix-range break.
 				break;
 			}
+			toDelete.push(key);
 			tree.moveNext(path);
 		}
 
