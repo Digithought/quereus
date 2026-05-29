@@ -55,6 +55,12 @@ function notCovers(reason: CoverageFailureReason): CoverageResult {
  * the projection and the table reference after optimization. They neither change
  * which base rows are present (Filter is handled separately — its predicate is
  * captured) nor split into multiple sources.
+ *
+ * Row-*dropping* nodes are deliberately excluded — notably `OrdinalSlice` (a
+ * pushed-down LIMIT/OFFSET) and `LimitOffset` itself, which materialize only a
+ * prefix of the governed rows and so can never cover. A row cap is rejected up
+ * front from the AST (see `proveCoverage`); the exclusion here is the structural
+ * backstop should the cap ever reach the plan walk by another path.
  */
 const PASS_THROUGH: ReadonlySet<PlanNodeType> = new Set([
 	PlanNodeType.Sort,
@@ -64,7 +70,6 @@ const PASS_THROUGH: ReadonlySet<PlanNodeType> = new Set([
 	PlanNodeType.IndexScan,
 	PlanNodeType.IndexSeek,
 	PlanNodeType.TableSeek,
-	PlanNodeType.OrdinalSlice,
 ]);
 
 /**
@@ -78,6 +83,15 @@ export function proveCoverage(
 	uc: UniqueConstraintSchema,
 	baseTable: TableSchema,
 ): CoverageResult {
+	// ---- Row cap: a LIMIT/OFFSET body materializes only a prefix of the
+	//      governed rows, so it can never be observation-equivalent. Read from the
+	//      AST (the faithful source): the optimizer may push the cap into an
+	//      `OrdinalSlice` over an ordinal-seek-capable leaf, which the shape walk
+	//      would otherwise traverse as a transparent link. ----
+	if (mv.selectAst.type === 'select' && (mv.selectAst.limit !== undefined || mv.selectAst.offset !== undefined)) {
+		return notCovers('shape');
+	}
+
 	// ---- Shape: walk the single-relation chain to the terminal table reference.
 	//      Reject anything that changes the row set's cardinality/identity (joins,
 	//      aggregation, DISTINCT, set operations, …); Filter and physical access

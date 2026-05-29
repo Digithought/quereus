@@ -233,7 +233,8 @@ only forgoes an optimization, a false *Covers* would be unsound):
 - **Shape.** The optimized body is a linear chain over a single base table `T`
   (`TableReference → optional Filter → Project → optional Sort`; physical access
   nodes are transparent). Joins, aggregation, `DISTINCT`, set operations, or
-  multiple sources ⇒ not covering.
+  multiple sources, or a `LIMIT`/`OFFSET` row cap (which materializes only a
+  prefix of the governed rows) ⇒ not covering.
 - **Projection.** The output must include every UC column **and** every primary
   key column of `T` (the PK identifies the source row for conflict resolution).
 - **Ordering.** The body's `order by` columns must be a permutation of the UC

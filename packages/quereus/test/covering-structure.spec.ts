@@ -180,6 +180,26 @@ describe('coverage prover — negative (one per reason)', () => {
 			'ix', 'select t.x, t.y, t.id from t join u on t.x = u.x order by t.x, t.y', 't', 'shape',
 		);
 	});
+
+	it('shape (LIMIT materializes only a prefix — never covers)', async () => {
+		await expectReason(
+			[
+				'create table t (id integer primary key, x integer not null, y integer not null, unique (x, y))',
+				'create materialized view ix as select x, y, id from t order by x, y limit 100',
+			],
+			'ix', 'select x, y, id from t order by x, y limit 100', 't', 'shape',
+		);
+	});
+
+	it('shape (OFFSET drops governed rows — never covers)', async () => {
+		await expectReason(
+			[
+				'create table t (id integer primary key, x integer not null, y integer not null, unique (x, y))',
+				'create materialized view ix as select x, y, id from t order by x, y limit 100 offset 10',
+			],
+			'ix', 'select x, y, id from t order by x, y limit 100 offset 10', 't', 'shape',
+		);
+	});
 });
 
 describe('eager prove-and-link', () => {
