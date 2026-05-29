@@ -21,7 +21,7 @@ import { expect } from 'chai';
 import type { Database } from '../../src/core/database.js';
 import type { TableSchema, RowConstraintSchema, IndexSchema, ForeignKeyConstraintSchema, UniqueConstraintSchema, PrimaryKeyColumnDefinition, IndexColumnSchema } from '../../src/schema/table.js';
 import type { ColumnSchema } from '../../src/schema/column.js';
-import type { ViewSchema } from '../../src/schema/view.js';
+import type { ViewSchema, MaterializedViewSchema } from '../../src/schema/view.js';
 import type { IntegrityAssertionSchema } from '../../src/schema/assertion.js';
 import type * as AST from '../../src/parser/ast.js';
 import type { SqlValue } from '../../src/common/types.js';
@@ -224,6 +224,30 @@ export function assertViewSchemaEqual(direct: ViewSchema, applied: ViewSchema, l
 	const aCols = (applied.columns ?? []).map(c => c.toLowerCase());
 	eqArray(dCols, aCols, `${root}columns`);
 	// View body — structural compare via assertAstEquivalent.
+	try {
+		assertAstEquivalent(direct.selectAst, applied.selectAst, `${root}selectAst`);
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		expect.fail(msg);
+	}
+}
+
+/**
+ * Compare two `MaterializedViewSchema` instances. The body AST is compared
+ * structurally (so a divergent body surfaces here), and `bodyHash` is compared
+ * directly — it is the value the declarative differ keys rebuild detection on,
+ * so a re-emit/re-parse round-trip that perturbs the canonical body SQL would
+ * fail here even if the AST still compared equal.
+ */
+export function assertMaterializedViewSchemaEqual(direct: MaterializedViewSchema, applied: MaterializedViewSchema, label?: string): void {
+	const root = label ? `[${label}] ` : '';
+	eq(direct.name.toLowerCase(), applied.name.toLowerCase(), `${root}name`);
+	eq(direct.schemaName.toLowerCase(), applied.schemaName.toLowerCase(), `${root}schemaName`);
+	eqRecord(direct.tags ?? {}, applied.tags ?? {}, `${root}tags`);
+	const dCols = (direct.columns ?? []).map(c => c.toLowerCase());
+	const aCols = (applied.columns ?? []).map(c => c.toLowerCase());
+	eqArray(dCols, aCols, `${root}columns`);
+	eq(direct.bodyHash, applied.bodyHash, `${root}bodyHash`);
 	try {
 		assertAstEquivalent(direct.selectAst, applied.selectAst, `${root}selectAst`);
 	} catch (e) {

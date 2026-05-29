@@ -1,5 +1,6 @@
 import type * as AST from '../parser/ast.js';
 import type { SqlValue } from '../common/types.js';
+import { fnv1aHash, toBase64Url } from '../util/hash.js';
 
 /**
  * Represents the schema definition of a database view.
@@ -60,7 +61,8 @@ export interface MaterializedViewSchema {
 	 *  (Quereus default). Such an MV is incremental-ineligible until Phase 2. */
 	primaryKey: ReadonlyArray<{ index: number; desc: boolean }>;
 
-	/** `fnv1aHash(toBase64Url(...))` of the optimized body's structural shape.
+	/** `toBase64Url(fnv1aHash(...))` of the canonical body SQL (astToString of the
+	 *  parsed body — not a plan-structure serialization, which embeds unstable node ids).
 	 *  Consumed by the declarative-schema differ (sibling ticket) to detect
 	 *  "body changed → rebuild". Populated here even though the differ wiring
 	 *  lands next ticket. */
@@ -84,4 +86,20 @@ export interface MaterializedViewSchema {
  *  prefix; backing tables are hidden from user-facing catalog enumeration. */
 export function backingTableNameFor(mvName: string): string {
 	return `sqlite_mv_${mvName}`;
+}
+
+/**
+ * Canonical body hash for a materialized view: `toBase64Url(fnv1aHash(bodySql))`
+ * over the body's canonical SQL (`astToString` of the parsed body, supplied by
+ * the caller — NOT a plan-structure serialization, which embeds unstable node
+ * ids). Stable per body; changes when the body changes.
+ *
+ * Single source of truth shared by MV creation (which stamps
+ * {@link MaterializedViewSchema.bodyHash}) and the declarative-schema differ
+ * (which recomputes it from a declared MV's body to detect "body changed →
+ * rebuild"). Both sides MUST hash the same canonical-SQL form, so they call
+ * this one function.
+ */
+export function computeBodyHash(bodySql: string): string {
+	return toBase64Url(fnv1aHash(bodySql));
 }

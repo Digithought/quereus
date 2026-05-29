@@ -186,7 +186,7 @@ A useful subset of that backfill obligation is **engine-expressible rather than 
 
 Indexes are a basis-layer concern, expressed as **materialized views**: a materialized view with an `order by` describes a clustered/ordered structure — an index. A unique *constraint* is a logical claim (it lives in the logical schema); the *index* that covers it is a basis-layer materialized view. The two legitimately sit at opposite ends of the stack, and the lens carries the constraint down to a level where it is enforceable while the index attaches at basis.
 
-Unique enforcement is a key existence lookup against that covering materialized view when present (row-time, conflict-resolution-capable), falling back to a commit-time `DeltaExecutor` scan when absent. See the materialized-views design for the keyed-derived-relation framing, covering-structure semantics, and the incremental-maintenance path.
+Unique enforcement is a key existence lookup against that covering materialized view when present (row-time, conflict-resolution-capable), falling back to a commit-time `DeltaExecutor` scan when absent. See [Materialized Views](materialized-views.md) for the keyed-derived-relation framing, covering-structure semantics, and the incremental-maintenance path.
 
 ## Syntax
 
@@ -231,7 +231,7 @@ declare lens for X over Y {
 - `src/schema/schema-differ.ts`, `src/schema/schema-hasher.ts` — basis generation/diff with the logical-removals-do-not-drop-basis asymmetry, and the deployed-basis hash.
 - Module mapping advertisement — modules optionally advertise a default logical→basis mapping strategy consumed by the aligner.
 
-The lens layer introduces no new runtime: at execution time a logical table is an inlined view, driven by the existing optimizer, [view updateability](view-updateability.md), and [materialized-view](incremental-maintenance.md) machinery. All lens-specific behavior is compile-time validate / generate / attach.
+The lens layer introduces no new runtime: at execution time a logical table is an inlined view, driven by the existing optimizer, [view updateability](view-updateability.md), and [materialized-view](materialized-views.md) machinery. All lens-specific behavior is compile-time validate / generate / attach.
 
 ## Background
 

@@ -993,9 +993,12 @@ export class MemoryTableManager {
 	 * Atomically replaces the entire committed contents with `rows` by building a
 	 * fresh {@link BaseLayer} and swapping it in under the SchemaChange latch.
 	 * Used to (re)materialize a materialized view: callers run the view body to
-	 * completion and hand the result rows here. Concurrent readers block on the
-	 * latch and observe either the fully-old or fully-new base — never a partial
-	 * state — consistent with `alter table`.
+	 * completion and hand the result rows here. Concurrent readers do NOT block:
+	 * each scan reads a base-layer snapshot captured at start-of-call, so an
+	 * in-flight scan keeps the pre-swap base while a fresh scan sees the new base
+	 * — never a partial state. The swap itself is a single synchronous assignment
+	 * performed under the SchemaChange latch (which serializes swaps with `alter
+	 * table` and other refreshes, not with readers).
 	 *
 	 * Throws on a duplicate primary key among `rows` (the caller rolls back).
 	 */

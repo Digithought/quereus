@@ -165,6 +165,7 @@ See [Store Documentation](../../docs/store.md) for the storage architecture and 
 * [Usage Guide](../../docs/usage.md) — complete API reference (type mappings, parameter binding, logging, tracing, transactions)
 * [SQL Reference Guide](../../docs/sql.md) — SQL syntax (includes Declarative Schema)
 * [Schema Management](../../docs/schema.md) — SchemaManager API, change events, key types, DDL generation
+* [Materialized Views](../../docs/materialized-views.md) — keyed derived relations, manual refresh, declarative-schema round-trip
 * [Type System](../../docs/types.md) — logical/physical types, temporal types, JSON, custom types
 * [Functions](../../docs/functions.md) — built-in scalar, aggregate, window, and JSON functions
 * [Memory Tables](../../docs/memory-table.md) — built-in MemoryTable module

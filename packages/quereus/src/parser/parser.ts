@@ -2972,6 +2972,10 @@ export class Parser {
 				this.advance();
 				this.consumeKeyword('INDEX', "Expected 'INDEX' after 'UNIQUE'.");
 				items.push(this.declareIndexItem(true));
+			} else if (this.peekKeyword('MATERIALIZED')) {
+				this.advance();
+				this.consumeKeyword('VIEW', "Expected 'VIEW' after 'MATERIALIZED'.");
+				items.push(this.declareMaterializedViewItem());
 			} else if (this.peekKeyword('VIEW')) {
 				this.advance();
 				items.push(this.declareViewItem());
@@ -3159,6 +3163,69 @@ export class Parser {
 		};
 
 		return { type: 'declaredView', viewStmt };
+	}
+
+	private declareMaterializedViewItem(): AST.DeclaredMaterializedView {
+		const viewName = this.consumeIdentifier('Expected materialized view name.');
+		let columns: string[] | undefined;
+		if (this.match(TokenType.LPAREN)) {
+			columns = this.identifierList();
+			this.consume(TokenType.RPAREN, "Expected ')' after materialized view columns.");
+		}
+
+		// Optional backing-module clause (`using mem(...)`) before the body — same
+		// shape as the top-level CREATE MATERIALIZED VIEW form.
+		let moduleName: string | undefined;
+		const moduleArgs: Record<string, SqlValue> = {};
+		if (this.matchKeyword('USING')) {
+			moduleName = this.consumeIdentifier("Expected module name after 'USING'.");
+			if (this.match(TokenType.LPAREN)) {
+				let positionalIndex = 0;
+				if (!this.check(TokenType.RPAREN)) {
+					do {
+						if (this.check(TokenType.STRING) || this.check(TokenType.INTEGER) || this.check(TokenType.FLOAT)) {
+							const token = this.advance();
+							moduleArgs[String(positionalIndex++)] = token.literal;
+						} else if (this.check(TokenType.IDENTIFIER)) {
+							const nameValue = this.nameValueItem('module argument');
+							moduleArgs[nameValue.name] = nameValue.value && nameValue.value.type === 'literal'
+								? getSyncLiteral(nameValue.value)
+								: (nameValue.value && nameValue.value.type === 'identifier' ? nameValue.value.name : nameValue.name);
+						} else {
+							throw this.error(this.peek(), "Expected module argument (string, number, or name=value pair).");
+						}
+					} while (this.match(TokenType.COMMA));
+				}
+				this.consume(TokenType.RPAREN, "Expected ')' after module arguments.");
+			}
+		}
+
+		this.consumeKeyword('AS', "Expected AS before view body in materialized view declaration.");
+		const select = this.parseQueryExpr(undefined, /*requireReturning*/ true);
+
+		// Parse optional WITH TAGS
+		let tags: Record<string, SqlValue> | undefined;
+		if (this.matchKeyword('WITH')) {
+			if (this.matchKeyword('TAGS')) {
+				tags = this.parseTags();
+			} else {
+				this.current--;
+			}
+		}
+
+		const viewStmt: AST.CreateMaterializedViewStmt = {
+			type: 'createMaterializedView',
+			view: { type: 'identifier', name: viewName },
+			ifNotExists: false,
+			columns,
+			select,
+			moduleName,
+			moduleArgs: moduleName && Object.keys(moduleArgs).length > 0 ? moduleArgs : undefined,
+			isTemporary: false,
+			tags
+		};
+
+		return { type: 'declaredMaterializedView', viewStmt };
 	}
 
 	private declareSeedItem(): AST.DeclaredSeed {

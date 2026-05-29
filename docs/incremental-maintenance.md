@@ -3,10 +3,13 @@
 Quereus exposes a single, reusable change-driven kernel that runs at every COMMIT.
 Two consumers are live today: **assertions** (pre-commit, can roll the commit
 back) and **`Database.watch` reactive signals** (post-commit, fire-and-forget).
-Still to come — keyed derived relations: materialized views and covering
-structures (indexes / unique-constraint enforcement), plus triggers — all of
-which plug into the same surface without reinventing change capture or
-binding-key analysis. The [lens layer](lens.md) routes set-level constraint
+Keyed derived relations have a first foothold — **manual-refresh materialized
+views** ([Materialized Views](materialized-views.md)) store a query body as a
+keyed backing relation today, though they re-materialize in full on `REFRESH`
+rather than consuming this kernel yet. Still to come — *incremental* MV
+maintenance and covering structures (indexes / unique-constraint enforcement),
+plus triggers — all of which plug into the same surface without reinventing
+change capture or binding-key analysis. The [lens layer](lens.md) routes set-level constraint
 enforcement to this kernel when no covering structure is present, and maintains
 covering structures through it when one is.
 
@@ -191,9 +194,9 @@ placement and error policy differ from assertions.
 ## Plug-in pattern for future consumers
 
 A new consumer follows the same shape — `Database.watch` (above) is the live
-template; the keyed-derived-relation ticket will surface a shared registration
-path on `Database` (see
-[`tickets/backlog/known/updatable-views.md`](../tickets/backlog/known/updatable-views.md)):
+template; incremental materialized-view maintenance will surface a shared
+registration path on `Database` (see the roadmap in
+[Materialized Views](materialized-views.md#out-of-scope--roadmap)):
 
 ```ts
 // 1. Analyze the consumer's plan.
@@ -247,6 +250,6 @@ const dispose = deltaExecutor.register({
 - Public reactive API: [Change-scope Documentation](change-scope.md)
 - Layered schemas / lenses: [Lenses and Layered Schemas](lens.md)
 - Source: `src/planner/analysis/binding-extractor.ts`, `src/runtime/delta-executor.ts`, `src/core/database-transaction.ts`, `src/core/database-assertions.ts`, `src/core/database-watchers.ts`
-- Keyed derived relations / covering structures (planned consumer): `tickets/backlog/known/updatable-views.md`
+- Keyed derived relations / covering structures: [Materialized Views](materialized-views.md) (manual-refresh today; incremental maintenance on the roadmap)
 - Cross-process reactive transport: out of scope here; see the sync packages
   under `packages/quereus-sync-*`.

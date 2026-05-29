@@ -1,7 +1,8 @@
 import type { SchemaCatalog, CatalogTable, CatalogView, CatalogIndex } from './catalog.js';
 import type * as AST from '../parser/ast.js';
 import type { SqlValue } from '../common/types.js';
-import { createTableToString, createViewToString, createIndexToString, createAssertionToString, columnDefToString, quoteIdentifier, expressionToString } from '../emit/ast-stringify.js';
+import { createTableToString, createViewToString, createMaterializedViewToString, createIndexToString, createAssertionToString, columnDefToString, quoteIdentifier, expressionToString, astToString } from '../emit/ast-stringify.js';
+import { computeBodyHash } from './view.js';
 import { QuereusError } from '../common/errors.js';
 import { StatusCode } from '../common/types.js';
 import { createLogger } from '../common/logger.js';
@@ -39,6 +40,10 @@ export interface SchemaDiff {
 	tablesToAlter: TableAlterDiff[];
 	viewsToCreate: string[];
 	viewsToDrop: string[];
+	/** Materialized views to (re)create — full `create materialized view …` DDL. */
+	materializedViewsToCreate: string[];
+	/** Materialized-view names to drop (a rebuild emits both a drop and a create). */
+	materializedViewsToDrop: string[];
 	indexesToCreate: string[];
 	indexesToDrop: string[];
 	assertionsToCreate: string[];
@@ -91,6 +96,8 @@ export function computeSchemaDiff(
 		tablesToAlter: [],
 		viewsToCreate: [],
 		viewsToDrop: [],
+		materializedViewsToCreate: [],
+		materializedViewsToDrop: [],
 		indexesToCreate: [],
 		indexesToDrop: [],
 		assertionsToCreate: [],
@@ -107,6 +114,7 @@ export function computeSchemaDiff(
 	// Build maps of declared items
 	const declaredTables = new Map<string, AST.DeclaredTable>();
 	const declaredViews = new Map<string, AST.DeclaredView>();
+	const declaredMaterializedViews = new Map<string, AST.DeclaredMaterializedView>();
 	const declaredIndexes = new Map<string, AST.DeclaredIndex>();
 	const declaredAssertions = new Map<string, AST.DeclaredAssertion>();
 
@@ -126,6 +134,10 @@ export function computeSchemaDiff(
 				declaredViews.set(item.viewStmt.view.name.toLowerCase(), item);
 				warnUnknownQuereusKeys(item.viewStmt.tags, 'view', item.viewStmt.view.name);
 				break;
+			case 'declaredMaterializedView':
+				declaredMaterializedViews.set(item.viewStmt.view.name.toLowerCase(), item);
+				warnUnknownQuereusKeys(item.viewStmt.tags, 'materialized view', item.viewStmt.view.name);
+				break;
 			case 'declaredIndex':
 				declaredIndexes.set(item.indexStmt.index.name.toLowerCase(), item);
 				warnUnknownQuereusKeys(item.indexStmt.tags, 'index', item.indexStmt.index.name);
@@ -139,6 +151,7 @@ export function computeSchemaDiff(
 	// Build maps of actual items
 	const actualTables = new Map(actualCatalog.tables.map(t => [t.name.toLowerCase(), t]));
 	const actualViews = new Map(actualCatalog.views.map(v => [v.name.toLowerCase(), v]));
+	const actualMaterializedViews = new Map(actualCatalog.materializedViews.map(mv => [mv.name.toLowerCase(), mv]));
 	const actualIndexes = new Map(actualCatalog.indexes.map(i => [i.name.toLowerCase(), i]));
 
 	// Resolve renames per-kind. Each call returns:
@@ -226,6 +239,28 @@ export function computeSchemaDiff(
 	for (const [name] of actualViews) {
 		if (viewRenames.consumedActuals.has(name)) continue;
 		if (!declaredViews.has(name)) diff.viewsToDrop.push(name);
+	}
+
+	// Materialized views: create / drop / rebuild. No rename support (names are
+	// part of the contract, like assertions). A body change is detected by
+	// recomputing the declared MV's canonical body hash and comparing it against
+	// the live MV's `bodyHash`; a mismatch schedules a drop + recreate (the
+	// recreate re-materializes the body in apply order — same drop+recreate path
+	// views use, since MVs have no in-place ALTER primitive).
+	for (const [name, declaredMv] of declaredMaterializedViews) {
+		const actual = actualMaterializedViews.get(name);
+		if (!actual) {
+			diff.materializedViewsToCreate.push(createMaterializedViewToString(declaredMv.viewStmt));
+		} else {
+			const declaredBodyHash = computeBodyHash(astToString(declaredMv.viewStmt.select));
+			if (declaredBodyHash !== actual.bodyHash) {
+				diff.materializedViewsToDrop.push(name);
+				diff.materializedViewsToCreate.push(createMaterializedViewToString(declaredMv.viewStmt));
+			}
+		}
+	}
+	for (const [name] of actualMaterializedViews) {
+		if (!declaredMaterializedViews.has(name)) diff.materializedViewsToDrop.push(name);
 	}
 
 	// Indexes: creates / drops
@@ -814,6 +849,13 @@ export function generateMigrationDDL(diff: SchemaDiff, schemaName?: string): str
 		statements.push(`DROP ASSERTION IF EXISTS ${schemaPrefix}${quoteIdentifier(name)}`);
 	}
 
+	// Drop materialized views before their source tables. MV storage is
+	// independent (its own backing table), but dropping early keeps a body-change
+	// rebuild's drop ahead of any source-table alter/drop in the same migration.
+	for (const mvName of diff.materializedViewsToDrop) {
+		statements.push(`DROP MATERIALIZED VIEW IF EXISTS ${schemaPrefix}${quoteIdentifier(mvName)}`);
+	}
+
 	// Drop items (reverse order)
 	for (const tableName of diff.tablesToDrop) {
 		statements.push(`DROP TABLE IF EXISTS ${schemaPrefix}${quoteIdentifier(tableName)}`);
@@ -827,9 +869,11 @@ export function generateMigrationDDL(diff: SchemaDiff, schemaName?: string): str
 		statements.push(`DROP INDEX IF EXISTS ${schemaPrefix}${quoteIdentifier(indexName)}`);
 	}
 
-	// Create new items
+	// Create new items. Materialized views come after tables and views (their
+	// body reads those) and re-materialize as part of the create.
 	statements.push(...diff.tablesToCreate);
 	statements.push(...diff.viewsToCreate);
+	statements.push(...diff.materializedViewsToCreate);
 	statements.push(...diff.indexesToCreate);
 	statements.push(...diff.assertionsToCreate);
 

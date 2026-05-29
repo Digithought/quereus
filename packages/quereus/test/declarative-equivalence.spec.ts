@@ -27,9 +27,13 @@
 import { expect } from 'chai';
 import { Database } from '../src/core/database.js';
 import { StatusCode } from '../src/common/types.js';
+import { computeSchemaHash } from '../src/schema/schema-hasher.js';
+import { computeSchemaDiff } from '../src/schema/schema-differ.js';
+import { collectSchemaCatalog } from '../src/schema/catalog.js';
 import {
 	assertTableSchemaEqual,
 	assertViewSchemaEqual,
+	assertMaterializedViewSchemaEqual,
 	assertAssertionSchemaEqual,
 	assertProbeEquivalent,
 	type Probe,
@@ -50,6 +54,7 @@ interface Case {
 	/** Names to compare across both DBs after schema apply. */
 	expectTables?: string[];
 	expectViews?: string[];
+	expectMaterializedViews?: string[];
 	expectAssertions?: string[];
 	/** Probes to run against both DBs after schema apply. */
 	probes: Probe[];
@@ -109,6 +114,13 @@ async function runCase(c: Case): Promise<void> {
 			expect(d, `direct missing view ${viewName}`).to.not.be.undefined;
 			expect(a, `applied missing view ${viewName}`).to.not.be.undefined;
 			assertViewSchemaEqual(d!, a!, viewName);
+		}
+		for (const mvName of c.expectMaterializedViews ?? []) {
+			const d = direct.schemaManager.getMaterializedView('main', mvName);
+			const a = applied.schemaManager.getMaterializedView('main', mvName);
+			expect(d, `direct missing materialized view ${mvName}`).to.not.be.undefined;
+			expect(a, `applied missing materialized view ${mvName}`).to.not.be.undefined;
+			assertMaterializedViewSchemaEqual(d!, a!, mvName);
 		}
 		for (const aName of c.expectAssertions ?? []) {
 			const dSchema = direct.schemaManager.getSchema('main');
@@ -741,5 +753,138 @@ describe('declarative-equivalence: decorations (tags)', () => {
 				{ sql: 'select count(*) as n from t', expect: { rows: [{ n: 0 }] } },
 			],
 		});
+	});
+});
+
+// ============================================================================
+// Materialized views — declarative round-trip, body-change rebuild, hash
+// ============================================================================
+
+describe('declarative-equivalence: materialized views', () => {
+	it('MV body round-trips through declarative apply (create + refresh)', async function () {
+		await runCase({
+			name: 'mv-roundtrip-basic',
+			directDDL: [
+				'create table t (id integer primary key, x integer not null)',
+				'create materialized view mv as select id, x from t',
+			],
+			declarativeBody: `table t { id INTEGER PRIMARY KEY, x INTEGER NOT NULL }
+
+			materialized view mv as select id, x from t`,
+			expectTables: ['t'],
+			expectMaterializedViews: ['mv'],
+			// MV is materialized empty at create time (t is empty); both paths
+			// then INSERT + REFRESH symmetrically so the backing tables agree.
+			postSetup: [
+				'insert into t values (1, 10), (2, 20)',
+				'refresh materialized view mv',
+			],
+			probes: [
+				{ sql: 'select count(*) as n from mv', expect: { rows: [{ n: 2 }] } },
+				{
+					sql: 'select id, x from mv order by id',
+					expect: { rows: [{ id: 1, x: 10 }, { id: 2, x: 20 }] },
+				},
+			],
+		});
+	});
+
+	it('MV over a compound select round-trips (self-contained, no source table)', async function () {
+		await runCase({
+			name: 'mv-roundtrip-compound',
+			directDDL: [
+				'create materialized view mv2 as select 1 as a, 10 as b union all select 2 as a, 20 as b',
+			],
+			declarativeBody: `materialized view mv2 as select 1 as a, 10 as b union all select 2 as a, 20 as b`,
+			expectMaterializedViews: ['mv2'],
+			probes: [
+				{
+					sql: 'select a, b from mv2 order by a',
+					expect: { rows: [{ a: 1, b: 10 }, { a: 2, b: 20 }] },
+				},
+			],
+		});
+	});
+
+	it('changing the MV body triggers a drop+recreate rebuild on re-apply', async function () {
+		const db = new Database();
+		try {
+			await db.exec(`declare schema main {
+				table t { id INTEGER PRIMARY KEY, x INTEGER NOT NULL, y INTEGER NOT NULL }
+				materialized view mv as select id, x from t
+			}`);
+			await db.exec('apply schema main');
+			await db.exec('insert into t values (1, 10, 100)');
+			await db.exec('refresh materialized view mv');
+
+			// Body A exposes column x.
+			const beforeRows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval('select id, x from mv')) beforeRows.push(r);
+			expect(beforeRows).to.deep.equal([{ id: 1, x: 10 }]);
+			const beforeHash = db.schemaManager.getMaterializedView('main', 'mv')!.bodyHash;
+
+			// Re-declare with a changed body (select y instead of x) and re-apply.
+			await db.exec(`declare schema main {
+				table t { id INTEGER PRIMARY KEY, x INTEGER NOT NULL, y INTEGER NOT NULL }
+				materialized view mv as select id, y from t
+			}`);
+			await db.exec('apply schema main');
+
+			// Rebuild happened: the new body re-materialized from current t.
+			const afterRows: Array<Record<string, unknown>> = [];
+			for await (const r of db.eval('select id, y from mv')) afterRows.push(r);
+			expect(afterRows).to.deep.equal([{ id: 1, y: 100 }]);
+
+			const afterHash = db.schemaManager.getMaterializedView('main', 'mv')!.bodyHash;
+			expect(afterHash, 'bodyHash should change when the body changes').to.not.equal(beforeHash);
+
+			// The old column is gone after the rebuild.
+			let threw = false;
+			try {
+				for await (const _ of db.eval('select x from mv')) { /* drain */ }
+			} catch {
+				threw = true;
+			}
+			expect(threw, 'expected `select x from mv` to fail after the rebuild').to.be.true;
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('re-applying an unchanged MV is a no-op and the schema hash is stable', async function () {
+		const db = new Database();
+		try {
+			const declSql = `declare schema main {
+				table t { id INTEGER PRIMARY KEY, x INTEGER NOT NULL }
+				materialized view mv as select id, x from t
+			}`;
+			await db.exec(declSql);
+			await db.exec('apply schema main');
+
+			const declared = db.declaredSchemaManager.getDeclaredSchema('main')!;
+			const hash1 = computeSchemaHash(declared);
+
+			// Diff the declared schema against the freshly-applied catalog: an
+			// unchanged MV body yields no create and no drop.
+			const catalog = collectSchemaCatalog(db, 'main');
+			const diff = computeSchemaDiff(declared, catalog);
+			expect(diff.materializedViewsToCreate, 'unchanged MV should not be recreated').to.deep.equal([]);
+			expect(diff.materializedViewsToDrop, 'unchanged MV should not be dropped').to.deep.equal([]);
+
+			// Re-declaring the identical schema yields an identical hash.
+			await db.exec(declSql);
+			const hash2 = computeSchemaHash(db.declaredSchemaManager.getDeclaredSchema('main')!);
+			expect(hash2, 'schema hash should be stable across re-emit of an unchanged MV').to.equal(hash1);
+
+			// A changed MV body changes the hash.
+			await db.exec(`declare schema main {
+				table t { id INTEGER PRIMARY KEY, x INTEGER NOT NULL }
+				materialized view mv as select id, x + 1 from t
+			}`);
+			const hash3 = computeSchemaHash(db.declaredSchemaManager.getDeclaredSchema('main')!);
+			expect(hash3, 'changing the MV body should change the schema hash').to.not.equal(hash1);
+		} finally {
+			await db.close();
+		}
 	});
 });

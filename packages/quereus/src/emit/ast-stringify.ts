@@ -774,16 +774,8 @@ export function createMaterializedViewToString(stmt: AST.CreateMaterializedViewS
 		parts.push(`(${stmt.columns.map(quoteIdentifier).join(', ')})`);
 	}
 
-	if (stmt.moduleName) {
-		let usingClause = `using ${stmt.moduleName}`;
-		if (stmt.moduleArgs && Object.keys(stmt.moduleArgs).length > 0) {
-			const args = Object.entries(stmt.moduleArgs).map(([k, v]) =>
-				`${quoteIdentifier(k)} = ${JSON.stringify(v)}`
-			);
-			usingClause += ` (${args.join(', ')})`;
-		}
-		parts.push(usingClause);
-	}
+	const usingClause = mvModuleClauseToString(stmt);
+	if (usingClause) parts.push(usingClause);
 
 	parts.push('as', astToString(stmt.select));
 
@@ -791,6 +783,19 @@ export function createMaterializedViewToString(stmt: AST.CreateMaterializedViewS
 	if (viewTagStr) parts.push(viewTagStr.trimStart());
 
 	return parts.join(' ');
+}
+
+/** `using <module>(args)` clause for a materialized view, or '' when absent. */
+function mvModuleClauseToString(stmt: AST.CreateMaterializedViewStmt): string {
+	if (!stmt.moduleName) return '';
+	let s = `using ${stmt.moduleName}`;
+	if (stmt.moduleArgs && Object.keys(stmt.moduleArgs).length > 0) {
+		const args = Object.entries(stmt.moduleArgs).map(([k, v]) =>
+			`${quoteIdentifier(k)} = ${JSON.stringify(v)}`
+		);
+		s += ` (${args.join(', ')})`;
+	}
+	return s;
 }
 
 export function refreshMaterializedViewToString(stmt: AST.RefreshMaterializedViewStmt): string {
@@ -914,6 +919,7 @@ function declareItemToString(it: AST.DeclareItem): string {
 		case 'declaredTable': return declaredTableToString(it);
 		case 'declaredIndex': return declaredIndexToString(it);
 		case 'declaredView': return declaredViewToString(it);
+		case 'declaredMaterializedView': return declaredMaterializedViewToString(it);
 		case 'declaredSeed': return declaredSeedToString(it);
 		case 'declaredAssertion': return declaredAssertionToString(it);
 		case 'declareIgnored': return it.text || '-- ignored';
@@ -959,6 +965,24 @@ function declaredViewToString(it: AST.DeclaredView): string {
 		parts.push(`(${stmt.columns.map(quoteIdentifier).join(', ')})`);
 	}
 	// View body is a QueryExpr — astToString dispatches on the discriminator.
+	parts.push('as', astToString(stmt.select));
+
+	const tagStr = tagsClauseToString(stmt.tags);
+	if (tagStr) parts.push(tagStr.trimStart());
+
+	return parts.join(' ');
+}
+
+function declaredMaterializedViewToString(it: AST.DeclaredMaterializedView): string {
+	const stmt = it.viewStmt;
+	const parts: string[] = ['materialized', 'view', quoteIdentifier(stmt.view.name)];
+	if (stmt.columns && stmt.columns.length > 0) {
+		parts.push(`(${stmt.columns.map(quoteIdentifier).join(', ')})`);
+	}
+
+	const usingClause = mvModuleClauseToString(stmt);
+	if (usingClause) parts.push(usingClause);
+
 	parts.push('as', astToString(stmt.select));
 
 	const tagStr = tagsClauseToString(stmt.tags);

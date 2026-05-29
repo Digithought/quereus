@@ -41,6 +41,10 @@ function stripTagsFromDeclaredSchema(schema: AST.DeclareSchemaStmt): AST.Declare
 				const { tags: _vt, ...viewStmt } = item.viewStmt;
 				return { ...item, viewStmt };
 			}
+			if (item.type === 'declaredMaterializedView') {
+				const { tags: _mvt, ...viewStmt } = item.viewStmt;
+				return { ...item, viewStmt };
+			}
 			return item;
 		}),
 	};

@@ -8,7 +8,11 @@ import type { ColumnSchema } from '../../schema/column.js';
 import { type TableSchema, type PrimaryKeyColumnDefinition, buildColumnIndexMap } from '../../schema/table.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
 import type { MemoryTableManager } from '../../vtab/memory/layer/manager.js';
-import { fnv1aHash, toBase64Url } from '../../util/hash.js';
+
+// Canonical body-hash lives next to the MV schema definition so the declarative
+// differ can share it without depending on the runtime layer. Re-exported here
+// for the create/refresh emitters that already import from this module.
+export { computeBodyHash } from '../../schema/view.js';
 
 /** Backing-table column/PK/ordering shape derived from the optimized body relation. */
 export interface BackingShape {
@@ -87,12 +91,6 @@ function collectSourceTables(plan: PlanNode): string[] {
 	};
 	walk(plan);
 	return [...out];
-}
-
-/** fnv1a/base64url hash of the optimized body's canonical SQL. Stable per body;
- *  changes when the body changes. Consumed by the declarative differ (sibling ticket). */
-export function computeBodyHash(bodySql: string): string {
-	return toBase64Url(fnv1aHash(bodySql));
 }
 
 /**

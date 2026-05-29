@@ -1,8 +1,8 @@
 import type { Database } from '../core/database.js';
 import type { TableSchema, IndexSchema } from './table.js';
-import type { ViewSchema } from './view.js';
+import type { ViewSchema, MaterializedViewSchema } from './view.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
-import { createTableToString, createViewToString, createIndexToString } from '../emit/ast-stringify.js';
+import { createTableToString, createViewToString, createMaterializedViewToString, createIndexToString } from '../emit/ast-stringify.js';
 import type * as AST from '../parser/ast.js';
 import type { SqlValue } from '../common/types.js';
 import { generateTableDDL, generateIndexDDL } from './ddl-generator.js';
@@ -14,6 +14,7 @@ export interface SchemaCatalog {
 	schemaName: string;
 	tables: CatalogTable[];
 	views: CatalogView[];
+	materializedViews: CatalogMaterializedView[];
 	indexes: CatalogIndex[];
 	assertions: CatalogAssertion[];
 }
@@ -43,6 +44,15 @@ export interface CatalogView {
 	tags?: Readonly<Record<string, SqlValue>>;
 }
 
+export interface CatalogMaterializedView {
+	name: string;
+	ddl: string;
+	/** Canonical body hash — the differ compares this against a declared MV's
+	 *  recomputed body hash to detect "body changed → rebuild". */
+	bodyHash: string;
+	tags?: Readonly<Record<string, SqlValue>>;
+}
+
 export interface CatalogIndex {
 	name: string;
 	tableName: string;
@@ -65,6 +75,7 @@ export function collectSchemaCatalog(db: Database, schemaName: string = 'main'):
 			schemaName,
 			tables: [],
 			views: [],
+			materializedViews: [],
 			indexes: [],
 			assertions: []
 		};
@@ -72,13 +83,14 @@ export function collectSchemaCatalog(db: Database, schemaName: string = 'main'):
 
 	const tables: CatalogTable[] = [];
 	const views: CatalogView[] = [];
+	const materializedViews: CatalogMaterializedView[] = [];
 	const indexes: CatalogIndex[] = [];
 	const assertions: CatalogAssertion[] = [];
 
 	// Materialized-view backing tables are an implementation detail and are
 	// excluded from user-facing catalog enumeration (the same way `isView`
-	// tables are filtered below). The MV record itself round-trips separately
-	// (sibling declarative-schema ticket).
+	// tables are filtered below). The MV record itself round-trips as a
+	// `CatalogMaterializedView` (collected below).
 	const backingTableNames = new Set<string>();
 	for (const mv of schema.getAllMaterializedViews()) {
 		backingTableNames.add(mv.backingTableName.toLowerCase());
@@ -104,6 +116,11 @@ export function collectSchemaCatalog(db: Database, schemaName: string = 'main'):
 		views.push(viewSchemaToCatalog(viewSchema));
 	}
 
+	// Collect materialized views
+	for (const mvSchema of schema.getAllMaterializedViews()) {
+		materializedViews.push(materializedViewSchemaToCatalog(mvSchema));
+	}
+
 	// Collect assertions
 	for (const assertionSchema of schema.getAllAssertions()) {
 		assertions.push(assertionSchemaToCatalog(assertionSchema));
@@ -113,6 +130,7 @@ export function collectSchemaCatalog(db: Database, schemaName: string = 'main'):
 		schemaName,
 		tables,
 		views,
+		materializedViews,
 		indexes,
 		assertions
 	};
@@ -180,6 +198,15 @@ function viewSchemaToCatalog(viewSchema: ViewSchema): CatalogView {
 		name: viewSchema.name,
 		ddl: viewSchema.sql,
 		tags: viewSchema.tags,
+	};
+}
+
+function materializedViewSchemaToCatalog(mvSchema: MaterializedViewSchema): CatalogMaterializedView {
+	return {
+		name: mvSchema.name,
+		ddl: mvSchema.sql,
+		bodyHash: mvSchema.bodyHash,
+		tags: mvSchema.tags,
 	};
 }
 
@@ -259,6 +286,23 @@ export function generateDeclaredDDL(declaredSchema: AST.DeclareSchemaStmt, targe
 					ddlStatements.push(createViewToString(qualifiedStmt));
 				} else {
 					ddlStatements.push(createViewToString(viewStmt));
+				}
+				break;
+			}
+			case 'declaredMaterializedView': {
+				// Qualify MV name with schema if specified
+				const mvStmt = item.viewStmt;
+				if (targetSchema && targetSchema !== 'main' && !mvStmt.view.schema) {
+					const qualifiedStmt: AST.CreateMaterializedViewStmt = {
+						...mvStmt,
+						view: {
+							...mvStmt.view,
+							schema: targetSchema
+						}
+					};
+					ddlStatements.push(createMaterializedViewToString(qualifiedStmt));
+				} else {
+					ddlStatements.push(createMaterializedViewToString(mvStmt));
 				}
 				break;
 			}

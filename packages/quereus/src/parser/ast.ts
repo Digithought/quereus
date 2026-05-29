@@ -15,7 +15,7 @@ export interface AstNode {
 		| 'windowDefinition' | 'windowFrame' | 'currentRow' | 'unboundedPreceding' | 'unboundedFollowing' | 'preceding' | 'following'
 		| 'subquerySource' | 'case' | 'in' | 'exists' | 'values' | 'between'
 		| 'declareSchema' | 'diffSchema' | 'applySchema' | 'explainSchema'
-		| 'declaredTable' | 'declaredIndex' | 'declaredView' | 'declaredSeed' | 'declaredAssertion' | 'declareIgnored' | 'upsert'
+		| 'declaredTable' | 'declaredIndex' | 'declaredView' | 'declaredMaterializedView' | 'declaredSeed' | 'declaredAssertion' | 'declareIgnored' | 'upsert'
 		| 'analyze';
 	loc?: {
 		start: { line: number, column: number, offset: number };
@@ -624,7 +624,7 @@ export interface DeclareSchemaStmt extends AstNode {
 	items: readonly DeclareItem[];
 }
 
-export type DeclareItem = DeclaredTable | DeclaredIndex | DeclaredView | DeclaredSeed | DeclaredAssertion | DeclareIgnoredItem;
+export type DeclareItem = DeclaredTable | DeclaredIndex | DeclaredView | DeclaredMaterializedView | DeclaredSeed | DeclaredAssertion | DeclareIgnoredItem;
 
 export interface DeclaredTable extends AstNode {
 	type: 'declaredTable';
@@ -639,6 +639,11 @@ export interface DeclaredIndex extends AstNode {
 export interface DeclaredView extends AstNode {
 	type: 'declaredView';
 	viewStmt: CreateViewStmt;
+}
+
+export interface DeclaredMaterializedView extends AstNode {
+	type: 'declaredMaterializedView';
+	viewStmt: CreateMaterializedViewStmt;
 }
 
 export interface DeclaredSeed extends AstNode {

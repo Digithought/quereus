@@ -32,6 +32,10 @@ A CHECK constraint with an AST expression, an operation bitmask (insert/update/d
 
 Describes a view: name, schema, SQL text, and parsed SELECT AST. Optional `tags` field holds arbitrary key-value metadata.
 
+### MaterializedViewSchema
+
+Describes a materialized view — a *keyed derived relation* stored in a hidden backing table. Carries the body AST, the inferred primary key, a `bodyHash` (used by the declarative-schema differ to detect "body changed → rebuild"), the backing-table name, and source-table dependencies. Registered in `Schema.materializedViews` (see `getMaterializedView` / `getAllMaterializedViews`), distinct from `views`. Full design: [Materialized Views](materialized-views.md).
+
 ## SchemaManager API
 
 ### Schema Navigation
