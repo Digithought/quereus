@@ -81,8 +81,11 @@ This keeps every materialized view addressable, but has two consequences:
   failure is inherent to the bag case under set semantics: enforcement stays at
   fill time (where the collision is detected with the backing table's real,
   collation/desc/composite-correct key comparison), so keyless bodies are *not*
-  statically rejected. Quereus does **not** silently de-duplicate, and does
-  **not** synthesize a row identity.
+  statically rejected. On this create/refresh full-rebuild path Quereus does
+  **not** silently de-duplicate, and does **not** synthesize a row identity.
+  (The `on-commit-incremental` per-binding path is a known exception that
+  *does* silently de-duplicate a late bag — see the incremental
+  [Limitations](#limitations).)
 
 > **Physical vs logical key.** The backing table's *physical*
 > `primaryKeyDefinition` may lead with the body's `order by` columns (so a btree
@@ -268,11 +271,21 @@ keeps reporting the backing table.
   leaf MV's backing-table write happens *during* the post-commit pass and is not
   itself in the current change log, so a dependent MV does not observe it this
   commit. Tracked: `materialized-view-incremental-cascading-convergence`.
-- **Keyless / bag bodies** (all-columns PK) raise the same "must be a set"
-  diagnostic on a duplicate-producing rebuild that manual refresh raises (a
-  `'global'` rebuild routes through `rebuildBacking` → `replaceBaseLayer`). In
-  practice a bag body is incremental-ineligible, so this path should not see one;
-  it inherits the better message for free.
+- **Keyless / bag bodies** (all-columns PK) inherit the "must be a set"
+  diagnostic *only on the full-rebuild branch* — a `'global'` binding or a
+  cost-fallback demotion routes through `rebuildBacking` → `replaceBaseLayer`,
+  which raises it. The **per-binding** incremental branch does **not**: it is
+  eligible for any row-preserving single-source body keyed on the source PK
+  (eligibility is decided by the *source's* key, not the MV's output key — see
+  `database-materialized-views.ts` `compile()`), so a projection that drops the
+  source key (e.g. `select status from orders` keyed all-columns on `{status}`)
+  is accepted. If such a body is duplicate-free at create (so the create-time
+  `replaceBaseLayer` passes) but a later source mutation makes it a bag, the
+  per-binding `upsert` collapses the colliding rows by MV key instead of raising
+  the diagnostic — i.e. it **silently de-duplicates to the set** rather than
+  enforcing "no silent de-dup" the way create/refresh do. This inconsistency
+  between the loud full-rebuild path and the silent per-binding path is tracked
+  in `materialized-view-incremental-bag-silent-dedup`.
 - **`getChangeScope()` projection is conservative.** `Database.watch` on an
   incremental MV now fires on *source* mutations (delivered — see
   [Change-scope projection](#change-scope-projection)), but v1 projects to a
@@ -475,4 +488,7 @@ tracked separately and build on this substrate:
   becomes duplicate-producing) instead of the raw `UNIQUE constraint failed` that
   named the hidden backing table. See [Primary key inference (and the all-columns
   fallback)](#primary-key-inference-and-the-all-columns-fallback). No silent
-  de-duplication and no synthetic row identity.
+  de-duplication and no synthetic row identity *on the create/refresh
+  full-rebuild path*. The `on-commit-incremental` per-binding path is not yet
+  consistent with this contract (it silently de-duplicates a late bag) —
+  tracked in `materialized-view-incremental-bag-silent-dedup`.
