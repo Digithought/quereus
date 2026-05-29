@@ -1,6 +1,6 @@
 description: A Tier-2-diverged materialized view today hard-errors on direct read and requires a manual `refresh` to recover, while its dependents silently serve drifted data on transitive reads. Replace the hard-error contract with self-healing degradation: a diverged (or upstream-tainted) MV resolves reads to its live body (always correct, never silently wrong), propagates a taint to its transitive dependents so the whole chain degrades-and-heals as a unit, and repairs itself from multiple triggers (commit / read / refresh) with backoff — no DBA, no manual refresh required. Targets edge deployments where the dominant failure (a temporarily-unreachable federated source) is transient and must recover unattended.
 prereq: materialized-view-state-flags-bypass-cached-plans
-files: packages/quereus/src/core/database-materialized-views.ts, packages/quereus/src/planner/building/select.ts, packages/quereus/src/schema/view.ts, packages/quereus/src/runtime/emit/materialized-view.ts, packages/quereus/src/runtime/emit/materialized-view-helpers.ts, docs/materialized-views.md
+files: packages/quereus/src/core/database-materialized-views.ts, packages/quereus/src/planner/building/select.ts, packages/quereus/src/schema/view.ts, packages/quereus/src/runtime/emit/materialized-view.ts, packages/quereus/src/runtime/emit/materialized-view-helpers.ts, packages/quereus/src/vtab/memory/layer/manager.ts, docs/materialized-views.md
 ----
 
 ## Background
@@ -108,11 +108,25 @@ become healable).
 
 ## Scope guards / interactions
 
-- **Live-body fallback is for read resolution only, not constraint enforcement.**
+- **Constraint enforcement is a *separate* self-healing path from read resolution —
+  and the lens world has no fallback.** For a **physical** schema,
   `findIndexForConstraint` already refuses a `diverged`/`stale` covering structure
-  and falls back to the synchronously-maintained auto-index (docs:704-710). Keep
-  that — a UNIQUE check must not run a live re-eval. Taint joins `diverged`/`stale`
-  in that gate.
+  and falls back to the synchronously-maintained auto-index (docs:705-734); taint
+  joins that gate and the read-fallback does not apply to a UNIQUE check. But in the
+  **logical-schema / lens world the row-time covering MV is the *sole* enforcement
+  structure — the auto-index is retired** (docs:741). There a diverged/tainted
+  covering MV leaves UNIQUE enforcement with nothing to fall through to, so "refuse
+  + use the index" is not a self-healing answer. Because row-time enforcement is
+  synchronous and in-transaction, the enforcement-path self-heal must be one of:
+  (a) **synchronous repair-then-enforce** (rebuild the backing inside the writing
+  statement, then resolve the conflict against it — row-time already writes the
+  backing in-transaction, so this fits the existing path), or (b) a **live-body
+  conflict check** (resolve the UNIQUE conflict by scanning the body instead of the
+  backing — the enforcement analogue of read-fallback, correct but O(body) per
+  check). This is **in scope** for this work and must be decided in implement; it is
+  *not* covered by `covering-mv-enforcement-prefix-scan-and-preference` (preference /
+  prefix scan) or `covering-mv-isolation-layer-enforcement-routing` (isolation
+  routing) — both assume a *healthy* covering MV.
 - **Bag / deterministic divergence** (`materialized-view-incremental-bag-silent-dedup`):
   a body that becomes a bag fails the rebuild *deterministically*, so it would sit
   in perpetual live-body fallback (correct rows, but a bag, never re-materializing)
@@ -132,6 +146,17 @@ become healable).
 - **Optimizer properties**: expanding to the body means the optimizer sees the
   *body's* `RelationType` (keys / isSet / ordering) rather than the backing
   table's — correct by construction; no rule special-casing needed.
+- **View-updateability composition (forward).** The read fallback is the view's
+  `get` direction — ordinary body evaluation — so it does not touch
+  [view updateability](../../docs/view-updateability.md) semantics. But it composes
+  cleanly with the future write-through-DML path (a roadmap item in
+  `docs/materialized-views.md` § Out of scope, slug `materialized-view-writes-through-body`;
+  **no ticket filed yet**), which would route MV writes through view updateability:
+  a diverged MV would then degrade to behaving exactly like its plain updateable
+  view — reads recompute from the body, writes propagate to sources — and those
+  source writes re-trigger the commit-time repair. No doc change to
+  `view-updateability.md` is needed now; this is the lens-layer end state the
+  enforcement-path decision above must stay consistent with.
 
 ## Plumbing sketch
 
@@ -183,6 +208,55 @@ still needs telemetry.
   reads stop being silently wrong); the cost is that a chronically-degraded MV is
   only visible via the health surface, not via a thrown error.
 
+## Sequencing & shared substrate (all MV tracks landing together)
+
+Self-healing divergence, write-through DML, and the lens layer are all shipping in
+this push, so the question is build *order*, not whether. They converge on one
+substrate — **an MV is a view plus a materialization cache** — and if the capability
+tracks fork before it exists, each re-derives the same two primitives.
+
+**Build the substrate first, once:**
+
+- **Reference resolution as a freshness/trust switch.** Trustworthy cache → backing
+  table; untrustworthy (`diverged`/`tainted`) *or a lens `get`* → body. A
+  first-class MV resolution mode in `select.ts`, **not** an `if (diverged)` patch.
+  Consumed by self-healing reads *and* the lens `get` direction.
+- **Cached-plan re-resolution on read-state toggle** (the
+  `materialized-view-state-flags-bypass-cached-plans` prereq), generalized to
+  "re-resolve onto the current mode" rather than hard-coded to "error."
+- **MV updateability classification at create**, computed by the *existing*
+  view-updateability lineage/FD analysis — one property per MV: `updateable`
+  (covering-index / single-source projection-filter shape, ≈ view-updateability
+  Phase 1) vs `read-only-derived` (aggregate / join / recursive / set-op). This one
+  classification drives three consumers: the user-write boundary (write-through
+  gating), the enforcement-path self-heal (only updateable covering MVs enforce),
+  and which divergence self-heal applies.
+
+**Then the capability tracks consume it:**
+
+- **Self-healing divergence** — taint + repair scheduler + read fallback (via the
+  switch) + enforcement self-heal (via the classification).
+- **Write-through DML** — `updateable` MVs only. The covering shape overlaps
+  view-updateability Phase 1, so write-through for it is **not** gated on Phase 2+
+  (correction: Phase 2+ bodies are precisely the `read-only-derived` ones that never
+  get write-through). Aggregate MVs are permanently read-only — write-through is
+  structurally impossible for them, which is exactly why read-side live-body
+  fallback (not write-through) is the divergence story for the motivating
+  `report`-over-`rollup` case.
+- **Lens layer** — `get` via the switch, `put` via write-through, enforcement via
+  the classification + self-heal.
+
+**Co-design coupling.** The enforcement-path self-heal (synchronous-repair vs
+live-body conflict check) and write-through `put` meet in the lens world: a write to
+a logical table is `put` + UNIQUE enforcement against a possibly-diverged covering MV
+in the *same statement*. Sequence and design those two together, after the
+substrate — not in separate passes.
+
+> **No write-through ticket exists yet.** Write-through DML is only a roadmap slug
+> (`materialized-view-writes-through-body`) in `docs/materialized-views.md`. If it is
+> part of this push it needs a real ticket, sequenced after the substrate above and
+> co-designed with the enforcement self-heal.
+
 ## Key tests (TDD targets for the implement phase)
 
 - **Transient self-heal, no human.** Force Tier-2 via the
@@ -218,7 +292,11 @@ still needs telemetry.
   + taint-clear) and the read-trigger call site.
 - Add the MV data-health introspection surface.
 - Update `findIndexForConstraint`'s gate to also refuse `tainted` covering
-  structures.
+  structures (physical schemas keep the auto-index fallback).
+- **Decide the enforcement-path self-heal for the lens world** (no auto-index
+  fallback): synchronous repair-then-enforce vs. live-body conflict check. Pick one,
+  implement it on the row-time enforcement path, and update
+  `docs/materialized-views.md` § Enforcement accordingly.
 - Rewrite `docs/materialized-views.md` § Apply-failure recovery and § Limitations
   (cascading caveat) to the self-healing reality; drop the "out of scope" / manual-
   refresh framing.

@@ -740,6 +740,17 @@ schemas this makes the MV path live and testable in v1 (the auto-index always ex
 so the MV path is otherwise unreachable); it becomes the *sole* enforcement structure
 in the **logical-schema** world (the lens layer), where the auto-index is retired.
 
+> **Divergence of the sole enforcement structure (planned).** The `diverged`/`stale`
+> gate above means a diverged covering MV is *refused* and enforcement falls through
+> to the auto-index — which works only because a **physical** schema always has one.
+> In the **lens / logical-schema** world there is no auto-index to fall through to,
+> so the self-healing divergence work
+> (`materialized-view-cascading-divergence-propagation`) must give the *enforcement*
+> path its own answer — synchronous repair-then-enforce, or a live-body conflict
+> check — distinct from the read-side live-body fallback. Tracked there, not in the
+> prefix-scan/preference or isolation-routing follow-ups, which both assume a healthy
+> covering MV.
+
 **The eviction-maintenance edge.** A REPLACE evicts the conflicting **source** row
 directly on the source storage (memory transaction layer / store delete), which
 *bypasses* the DML-executor row-time maintenance hook (it fires only for DML-executor
