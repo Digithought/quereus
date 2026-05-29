@@ -1,4 +1,4 @@
-import { Schema } from './schema.js';
+import { Schema, type SchemaKind } from './schema.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
 import type { Database } from '../core/database.js';
 import type { TableSchema, RowConstraintSchema, IndexSchema, IndexColumnSchema, MutationContextDefinition, ForeignKeyConstraintSchema, UniqueConstraintSchema } from './table.js';
@@ -8,7 +8,7 @@ import { StatusCode, type SqlValue } from '../common/types.js';
 import type { AnyVirtualTableModule, BaseModuleConfig } from '../vtab/module.js';
 import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
-import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, mutationContextVarToSchema, extractGeneratedColumnDependencies, topoSortGeneratedColumns } from './table.js';
+import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, mutationContextVarToSchema, extractGeneratedColumnDependencies, topoSortGeneratedColumns, requireVtabModule } from './table.js';
 import type { ViewSchema, MaterializedViewSchema } from './view.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
@@ -334,17 +334,19 @@ export class SchemaManager {
 	 * Adds a new schema (e.g., for ATTACH)
 	 *
 	 * @param name Name of the schema to add
+	 * @param kind Whether the schema is module-backed (`physical`, default) or
+	 *   design-only (`logical`). See `docs/lens.md` § Schema Kinds.
 	 * @returns The newly created schema
 	 * @throws QuereusError if the name conflicts with an existing schema
 	 */
-	addSchema(name: string): Schema {
+	addSchema(name: string, kind: SchemaKind = 'physical'): Schema {
 		const lowerName = name.toLowerCase();
 		if (this.schemas.has(lowerName)) {
 			throw new QuereusError(`Schema '${name}' already exists`, StatusCode.ERROR);
 		}
-		const schema = new Schema(lowerName);
+		const schema = new Schema(lowerName, kind);
 		this.schemas.set(lowerName, schema);
-		log(`Added schema '%s'`, lowerName);
+		log(`Added schema '%s' (kind=%s)`, lowerName, kind);
 		return schema;
 	}
 
@@ -367,6 +369,7 @@ export class SchemaManager {
 			schema.clearViews();
 			schema.clearMaterializedViews();
 			schema.clearAssertions();
+			schema.clearLensSlots();
 			this.schemas.delete(lowerName);
 			log(`Removed schema '%s'`, name);
 			return true;
@@ -732,6 +735,7 @@ export class SchemaManager {
 			schema.clearViews();
 			schema.clearMaterializedViews();
 			schema.clearAssertions();
+			schema.clearLensSlots();
 		});
 		log("Cleared all schemas.");
 	}
@@ -1064,6 +1068,50 @@ export class SchemaManager {
 	}
 
 	/**
+	 * Builds a **logical** TableSchema spec from a declared CREATE TABLE AST,
+	 * for use as the `logicalTable` of a lens slot (see `schema/lens.ts`).
+	 *
+	 * Reuses the same column / PK / constraint extraction as a physical table
+	 * (so the spec is a faithful design), but carries **no** `vtabModule`
+	 * (`vtabModuleName: ''`, `isLogical: true`) — a logical table is never
+	 * registered or executed; its compiled effective body is registered as a
+	 * `ViewSchema`. Module association / indexes / storage are rejected upstream
+	 * by the lens compiler before this is called.
+	 */
+	buildLogicalTableSchema(stmt: AST.CreateTableStmt, schemaName: string): TableSchema {
+		const tableName = stmt.table.name;
+		const defaultNullability = this.db.options.getStringOption('default_column_nullability');
+		const defaultNotNull = defaultNullability === 'not_null';
+
+		const astColumns = stmt.columns || [];
+		const { columns, pkDefinition, pkDefaultConflict } = this.buildColumnSchemas(astColumns, stmt.constraints, defaultNotNull);
+		const checkConstraints = this.extractCheckConstraints(astColumns, stmt.constraints);
+		const columnIndexMap = buildColumnIndexMap(columns);
+		const foreignKeys = this.extractForeignKeys(astColumns, stmt.constraints, columnIndexMap, tableName, schemaName);
+		const uniqueConstraints = this.extractUniqueConstraints(astColumns, stmt.constraints, columnIndexMap);
+
+		return {
+			name: tableName,
+			schemaName,
+			columns: Object.freeze(columns),
+			columnIndexMap,
+			primaryKeyDefinition: pkDefinition,
+			primaryKeyDefaultConflict: pkDefaultConflict,
+			checkConstraints: Object.freeze(checkConstraints),
+			foreignKeys: foreignKeys.length > 0 ? Object.freeze(foreignKeys) : undefined,
+			uniqueConstraints: uniqueConstraints.length > 0 ? Object.freeze(uniqueConstraints) : undefined,
+			isTemporary: false,
+			isView: false,
+			isLogical: true,
+			// Logical tables carry no module — they are a design, not storage.
+			vtabModule: undefined,
+			vtabModuleName: '',
+			estimatedRows: 0,
+			tags: stmt.tags && Object.keys(stmt.tags).length > 0 ? Object.freeze({ ...stmt.tags }) : undefined,
+		};
+	}
+
+	/**
 	 * Walks an expression AST and rejects bind-parameter and (optionally)
 	 * column-reference nodes. Used by DDL-time DEFAULT/CHECK validators where
 	 * such references are illegal even though they may otherwise build cleanly.
@@ -1290,7 +1338,8 @@ export class SchemaManager {
 			throw new QuereusError(`no such table: ${tableName}`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 		}
 
-		if (!tableSchema.vtabModule.createIndex) {
+		const vtabModule = requireVtabModule(tableSchema);
+		if (!vtabModule.createIndex) {
 			throw new QuereusError(`Virtual table module '${tableSchema.vtabModuleName}' for table '${tableName}' does not support CREATE INDEX.`, StatusCode.ERROR, undefined, stmt.table.loc?.start.line, stmt.table.loc?.start.column);
 		}
 
@@ -1306,7 +1355,7 @@ export class SchemaManager {
 		const indexSchema = this.buildIndexSchema(stmt, tableSchema, tableName, indexName);
 
 		try {
-			await tableSchema.vtabModule.createIndex(this.db, targetSchemaName, tableName, indexSchema);
+			await vtabModule.createIndex(this.db, targetSchemaName, tableName, indexSchema);
 		} catch (e: unknown) {
 			const message = e instanceof Error ? e.message : String(e);
 			const code = e instanceof QuereusError ? e.code : StatusCode.ERROR;

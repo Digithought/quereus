@@ -5,7 +5,7 @@ import { QuereusError } from '../../common/errors.js';
 import { SqlValue, StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import type { RowConstraintSchema, TableSchema } from '../../schema/table.js';
-import { opsToMask } from '../../schema/table.js';
+import { opsToMask, requireVtabModule } from '../../schema/table.js';
 
 const log = createLogger('runtime:emit:add-constraint');
 
@@ -83,7 +83,7 @@ async function runAddConstraintViaModule(
 	schema: import('../../schema/schema.js').Schema,
 	constraint: AddConstraintNode['constraint'],
 ): Promise<SqlValue> {
-	const module = tableSchema.vtabModule;
+	const module = requireVtabModule(tableSchema);
 	if (!module.alterTable) {
 		throw new QuereusError(
 			`Module for table '${tableSchema.name}' does not support ADD CONSTRAINT`,

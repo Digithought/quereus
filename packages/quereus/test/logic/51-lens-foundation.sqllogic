@@ -1,0 +1,79 @@
+-- Lens foundation + default name-based aligner (docs/lens.md).
+-- A logical schema deploys against a name-equivalent basis with no explicit
+-- lens; the query processor then sees an ordinary view.
+
+-- ===================================
+-- 1. Logical schema over a name-equivalent basis reads basis rows
+-- ===================================
+
+declare schema ybasis {
+	table t {
+		id integer primary key,
+		name text
+	}
+}
+
+-- run
+
+apply schema ybasis;
+
+-- run
+
+insert into ybasis.t values (1, 'alpha'), (2, 'beta');
+
+-- run
+
+declare logical schema appx {
+	table t {
+		id integer primary key,
+		name text
+	}
+}
+
+-- run
+
+apply schema appx;
+
+-- run
+
+-- The default mapper compiled `select id, name from ybasis.t`; reads ride the
+-- ordinary view-resolution path.
+select * from appx.t order by id;
+→ [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}]
+
+select name from appx.t where id = 2;
+→ [{"name": "beta"}]
+
+-- ===================================
+-- 2. Physical constructs are rejected under a logical schema
+-- ===================================
+
+declare logical schema badidx {
+	table t {
+		id integer primary key,
+		name text
+	}
+	index ix on t (name)
+}
+
+-- run
+
+apply schema badidx;
+-- error: index 'ix' is not allowed in logical schema
+
+-- ===================================
+-- 3. A logical column with no basis backing errors at apply (name alignment)
+-- ===================================
+
+declare logical schema badcol {
+	table t {
+		id integer primary key,
+		name text,
+		missing text
+	}
+}
+
+-- run
+
+apply schema badcol;
+-- error: has no basis backing

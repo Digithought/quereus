@@ -5,7 +5,7 @@ import type { PlanNode, RelationalPlanNode } from '../../planner/nodes/plan-node
 import { TableReferenceNode } from '../../planner/nodes/reference.js';
 import { keysOf } from '../../planner/util/fd-utils.js';
 import type { ColumnSchema } from '../../schema/column.js';
-import { type TableSchema, type PrimaryKeyColumnDefinition, buildColumnIndexMap } from '../../schema/table.js';
+import { type TableSchema, type PrimaryKeyColumnDefinition, buildColumnIndexMap, requireVtabModule } from '../../schema/table.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
 import type { MemoryTableManager } from '../../vtab/memory/layer/manager.js';
 
@@ -180,7 +180,7 @@ export async function collectBodyRows(db: Database, bodySql: string): Promise<Ro
 
 /** Resolves the {@link MemoryTableManager} backing a materialized view's table. */
 export function getBackingManager(backingSchema: TableSchema): MemoryTableManager {
-	const module = backingSchema.vtabModule;
+	const module = requireVtabModule(backingSchema);
 	if (!(module instanceof MemoryTableModule)) {
 		throw new QuereusError(
 			`materialized view backing table '${backingSchema.name}' is not a memory table`,

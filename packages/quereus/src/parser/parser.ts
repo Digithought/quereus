@@ -2917,6 +2917,8 @@ export class Parser {
 	// === Declarative schema parsing ===
 
 	private declareSchemaStatement(startToken: Token): AST.DeclareSchemaStmt {
+		// Optional contextual keyword: `declare logical schema X { ... }`.
+		const isLogical = this.matchKeyword('LOGICAL');
 		this.consumeKeyword('SCHEMA', "Expected 'SCHEMA' after DECLARE.");
 		const schemaName = this.consumeIdentifier(['temp', 'temporary'], "Expected schema name after DECLARE.");
 		let version: string | undefined;
@@ -3001,7 +3003,7 @@ export class Parser {
 		this.consume(TokenType.RBRACE, "Expected '}' to close schema declaration block.");
 
 		const endTok = this.previous();
-		return { type: 'declareSchema', schemaName, version, using, items, loc: _createLoc(startToken, endTok) };
+		return { type: 'declareSchema', schemaName, version, using, items, ...(isLogical ? { isLogical: true } : {}), loc: _createLoc(startToken, endTok) };
 	}
 
 	private declareTableItem(): AST.DeclaredTable {

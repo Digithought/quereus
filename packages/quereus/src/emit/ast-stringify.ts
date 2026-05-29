@@ -898,7 +898,7 @@ function pragmaToString(stmt: AST.PragmaStmt): string {
 }
 
 function declareSchemaToString(stmt: AST.DeclareSchemaStmt): string {
-	let s = `declare schema ${quoteIdentifier(stmt.schemaName || 'main')}`;
+	let s = `declare ${stmt.isLogical ? 'logical ' : ''}schema ${quoteIdentifier(stmt.schemaName || 'main')}`;
 	if (stmt.version) s += ` version '${stmt.version}'`;
 	if (stmt.using && (stmt.using.defaultVtabModule || stmt.using.defaultVtabArgs)) {
 		const opts: string[] = [];

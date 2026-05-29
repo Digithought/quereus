@@ -5,7 +5,7 @@ import { QuereusError } from '../../common/errors.js';
 import { type SqlValue, StatusCode } from '../../common/types.js';
 import { createLogger } from '../../common/logger.js';
 import type { TableSchema, PrimaryKeyColumnDefinition, RowConstraintSchema, ForeignKeyConstraintSchema } from '../../schema/table.js';
-import { buildColumnIndexMap, opsToMask, withGeneratedColumnGraph } from '../../schema/table.js';
+import { buildColumnIndexMap, opsToMask, withGeneratedColumnGraph, requireVtabModule } from '../../schema/table.js';
 import type { ColumnDef } from '../../parser/ast.js';
 import { MemoryTableModule } from '../../vtab/memory/module.js';
 import { quoteIdentifier, expressionToString, astToString } from '../../emit/ast-stringify.js';
@@ -90,7 +90,7 @@ async function runRenameTable(
 	// BEFORE we mutate the in-memory catalog, so a module failure leaves the
 	// catalog untouched. Modules that don't persist by table name can simply
 	// omit the hook.
-	const module = tableSchema.vtabModule;
+	const module = requireVtabModule(tableSchema);
 	if (module.renameTable) {
 		await module.renameTable(rctx.db, tableSchema.schemaName, oldName, newName);
 	}
@@ -144,7 +144,7 @@ async function runRenameColumn(
 	};
 
 	// Call module.alterTable if available (handles data-level changes)
-	const module = tableSchema.vtabModule;
+	const module = requireVtabModule(tableSchema);
 	let updatedTableSchema: TableSchema;
 
 	if (module.alterTable) {
@@ -215,7 +215,7 @@ async function runAddColumn(
 	}
 
 	// Call module.alterTable for data + schema update
-	const module = tableSchema.vtabModule;
+	const module = requireVtabModule(tableSchema);
 	if (!module.alterTable) {
 		throw new QuereusError(
 			`Module for table '${tableSchema.name}' does not support ALTER TABLE ADD COLUMN`,
@@ -453,7 +453,7 @@ async function runDropColumn(
 	}
 
 	// Call module.alterTable for data + schema update
-	const module = tableSchema.vtabModule;
+	const module = requireVtabModule(tableSchema);
 	if (!module.alterTable) {
 		throw new QuereusError(
 			`Module for table '${tableSchema.name}' does not support ALTER TABLE DROP COLUMN`,
@@ -516,7 +516,7 @@ async function runAlterColumn(
 		}
 	}
 
-	const module = tableSchema.vtabModule;
+	const module = requireVtabModule(tableSchema);
 	if (!module.alterTable) {
 		throw new QuereusError(
 			`Module for table '${tableSchema.name}' does not support ALTER COLUMN`,
@@ -583,7 +583,7 @@ async function runAlterPrimaryKey(
 	}
 
 	// Try native module re-key first
-	const module = tableSchema.vtabModule;
+	const module = requireVtabModule(tableSchema);
 	if (module.alterTable) {
 		try {
 			const schemaChangePk = newPkDef.map(pk => ({ index: pk.index, desc: pk.desc ?? false }));
@@ -632,7 +632,7 @@ async function rebuildTableWithNewShape(
 ): Promise<void> {
 	const tableName = tableSchema.name;
 	const schemaName = tableSchema.schemaName;
-	const module = tableSchema.vtabModule;
+	const module = requireVtabModule(tableSchema);
 
 	if (module instanceof MemoryTableModule) {
 		await rebuildMemoryTable(rctx, tableSchema, schema, module, survivingColumns, newPkDef);

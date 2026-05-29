@@ -10,11 +10,14 @@ Central coordinator for all schema operations. Owns the schema collection, modul
 
 ### Schema
 
-A named logical grouping of tables, views, functions, and assertions. Every database has at least `main` and `temp` schemas; additional schemas can be attached.
+A named logical grouping of tables, views, functions, and assertions. Every database has at least `main` and `temp` schemas; additional schemas can be attached. Each schema carries a `kind`:
+
+- **`physical`** (default) — module-backed. Tables declare `using module(...)`, may carry indexes and storage tags.
+- **`logical`** — design-only (`declare logical schema X { ... }`). Tables declare columns, types, and *logical* constraints (PK, UNIQUE, CHECK, FK, NOT NULL) plus `with tags`, and **nothing physical**: module association, `create index` / `unique index`, and materialized views are all rejected at apply (tags are allowed — they are engine-facing and survive into the compiled view). At `apply schema X` each logical table is aligned against a basis schema and compiled to an inlined view (the **lens layer**); the resulting body is registered as an ordinary `ViewSchema` and the logical spec is held in a per-`Schema` **lens slot**. See [Lenses and Layered Schemas](lens.md).
 
 ### TableSchema
 
-Describes a table's structure: columns, primary key definition, CHECK constraints, associated virtual table module, indexes, and mutation context definitions. All tables are virtual tables — `vtabModule` and `vtabModuleName` are always present. Optional `tags` field holds arbitrary key-value metadata (see `WITH TAGS`).
+Describes a table's structure: columns, primary key definition, CHECK constraints, associated virtual table module, indexes, and mutation context definitions. A module-backed (physical) table always has `vtabModule` / `vtabModuleName`; a **logical** table (`isLogical: true`, held only in a lens slot — never registered or executed) carries no module, so `vtabModule` is optional (use `requireVtabModule(table)` at module-backed sites). Optional `tags` field holds arbitrary key-value metadata (see `WITH TAGS`).
 
 ### ColumnSchema
 
@@ -48,7 +51,7 @@ Describes a materialized view — a *keyed derived relation* stored in a hidden 
 | `getTempSchema()` | Shorthand for the `temp` schema |
 | `getCurrentSchemaName()` | Name of the current default schema |
 | `setCurrentSchema(name)` | Sets the default schema for unqualified names |
-| `addSchema(name)` | Creates a new schema (e.g. for ATTACH). Throws if name conflicts |
+| `addSchema(name, kind?)` | Creates a new schema (e.g. for ATTACH), `kind` defaulting to `'physical'` (`'logical'` for a logical schema). Throws if name conflicts |
 | `removeSchema(name)` | Removes a schema (e.g. for DETACH). Cannot remove `main` or `temp` |
 
 ### Table Lookup

@@ -57,7 +57,13 @@ export function computeSchemaHash(declaredSchema: AST.DeclareSchemaStmt): string
 	// Strip tags before generating DDL — tags are non-behavioral metadata
 	const strippedSchema = stripTagsFromDeclaredSchema(declaredSchema);
 	const ddlStatements = generateDeclaredDDL(strippedSchema);
-	const canonicalText = ddlStatements.join('\n');
+	// Prefix the schema kind so a physical↔logical flip changes the hash and the
+	// logical declarations (their tables / columns / constraints, emitted by
+	// generateDeclaredDDL) are covered. The basis hash lives on the basis
+	// schema's own declaration, so a logical-table removal changes this logical
+	// hash without perturbing the basis hash (asymmetric removal).
+	const kindPrefix = declaredSchema.isLogical ? 'logical\n' : '';
+	const canonicalText = kindPrefix + ddlStatements.join('\n');
 
 	// Compute hash using FNV-1a algorithm and encode as base64url
 	const hashBytes = fnv1aHash(canonicalText);

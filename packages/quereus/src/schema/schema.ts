@@ -5,6 +5,11 @@ import type { ViewSchema, MaterializedViewSchema } from './view.js';
 import { quereusError, QuereusError } from '../common/errors.js';
 import { createLogger } from '../common/logger.js';
 import type { IntegrityAssertionSchema } from './assertion.js';
+import type { LensSlot } from './lens.js';
+
+/** Discriminates a module-backed (`physical`) schema from a design-only
+ *  (`logical`) schema. See `docs/lens.md` § Schema Kinds. */
+export type SchemaKind = 'physical' | 'logical';
 
 const log = createLogger('schema:schema');
 
@@ -19,13 +24,18 @@ export class Schema {
 	private views: Map<string, ViewSchema> = new Map();
 	private materializedViews: Map<string, MaterializedViewSchema> = new Map();
 	private assertions: Map<string, IntegrityAssertionSchema> = new Map();
+	/** Per-logical-table lens slots (only populated when `kind === 'logical'`),
+	 *  keyed by lowercased logical table name. See {@link LensSlot}. */
+	private lensSlots: Map<string, LensSlot> = new Map();
 
 	/**
 	 * Creates a new schema instance
 	 *
 	 * @param name The schema name (e.g. "main", "temp")
+	 * @param kind Whether this schema is module-backed (`physical`, the default)
+	 *   or design-only (`logical`). See `docs/lens.md` § Schema Kinds.
 	 */
-	constructor(name: string) {
+	constructor(name: string, public readonly kind: SchemaKind = 'physical') {
 		this.name = name;
 	}
 
@@ -290,5 +300,37 @@ export class Schema {
 	 */
 	clearAssertions(): void {
 		this.assertions.clear();
+	}
+
+	/* === Lens slots (logical schemas) === */
+
+	/**
+	 * Registers (or replaces) a lens slot for a logical table. Keyed by the
+	 * logical table name (case-insensitive). The compiled body is registered
+	 * separately as a {@link ViewSchema} via {@link addView}.
+	 */
+	addLensSlot(slot: LensSlot): void {
+		this.lensSlots.set(slot.logicalTable.name.toLowerCase(), slot);
+		log(`Added/Updated lens slot '%s' in schema '%s'`, slot.logicalTable.name, this.name);
+	}
+
+	/** Gets a lens slot by logical table name (case-insensitive). */
+	getLensSlot(tableName: string): LensSlot | undefined {
+		return this.lensSlots.get(tableName.toLowerCase());
+	}
+
+	/** Iterates all lens slots in this schema. */
+	getAllLensSlots(): IterableIterator<LensSlot> {
+		return this.lensSlots.values();
+	}
+
+	/** Removes a lens slot by logical table name. Returns true if it existed. */
+	removeLensSlot(tableName: string): boolean {
+		return this.lensSlots.delete(tableName.toLowerCase());
+	}
+
+	/** Clears all lens slots (does not remove the compiled-body views). */
+	clearLensSlots(): void {
+		this.lensSlots.clear();
 	}
 }

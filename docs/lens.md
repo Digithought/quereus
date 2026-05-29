@@ -222,16 +222,22 @@ declare lens for X over Y {
 
 ## Implementation Surface
 
-- `src/schema/schema.ts` — `Schema.kind: 'physical' | 'logical'`.
-- `src/schema/table.ts` — `vtabModule` optional for logical tables; a logical table is represented like a view (full constraints, deferred body) so downstream code follows the existing `isView` path.
-- `src/schema/lens.ts` — the per-logical-table lens slot: override AST, default-basis binding, compiled effective body, attached constraints.
-- `src/planner/building/declare-schema.ts` — extended to parse `declare logical schema` and `declare lens for … over …`; rejects physical constructs under `kind: 'logical'`.
-- `src/schema/lens-compiler.ts` — compile step: aligner + per-attribute merge of override ⊕ generated gaps, addressed by stable attribute ID; emits the inline effective view body.
-- `src/schema/lens-prover.ts` — proves the compiled body's FD / key / domain surface conforms to the logical spec (the PutGet / GetPut completeness checks); reports unproven obligations.
-- `src/schema/schema-differ.ts`, `src/schema/schema-hasher.ts` — basis generation/diff with the logical-removals-do-not-drop-basis asymmetry, and the deployed-basis hash.
-- Module mapping advertisement — modules optionally advertise a default logical→basis mapping strategy consumed by the aligner.
+Status legend: **shipped** (landed by `lens-foundation-and-default-mapper`) / **pending** (a named follow-up ticket).
+
+- **shipped** — `src/schema/schema.ts` — `Schema.kind: 'physical' | 'logical'` (default `'physical'`), plus the per-`Schema` lens-slot registry.
+- **shipped** — `src/schema/table.ts` — `vtabModule` is optional and `isLogical?: boolean` added; the logical-table spec is built (columns + constraints, no module) and held in the lens slot, while its compiled effective body is registered as an ordinary `ViewSchema` so reads ride the existing view path and writes ride [view updateability](view-updateability.md). (The compiled body is a registered view, not a `viewDefinition`-carrying `TableSchema` — see the audit note below.)
+- **shipped** — `src/schema/lens.ts` — the per-logical-table lens slot (`LensSlot`): logical-table spec, default-basis binding (`SchemaRef`), compiled effective body, attached constraints (`LogicalConstraint`). `override` is present in the type but always `undefined` until the override ticket.
+- **shipped** — `src/parser/parser.ts` + `src/parser/ast.ts` + `src/emit/ast-stringify.ts` — parse `declare logical schema X { ... }` (the `LOGICAL` contextual keyword sets `DeclareSchemaStmt.isLogical`), and round-trip it back to DDL. **pending** — `declare lens for … over …` (override surface).
+- **shipped** — `src/schema/lens-compiler.ts` — the default **name-based aligner** (single-source, v1): aligns each logical table/column to a basis table/column by name, emits the inline effective view body, infers the default basis, and rejects physical constructs under a logical schema. Wired into `apply schema X` (`runtime/emit/schema-declarative.ts`). **pending** — per-attribute merge of override ⊕ generated gaps (override ticket); n-way decomposition (decomposition ticket).
+- **pending** — `src/schema/lens-prover.ts` — proves the compiled body's FD / key / domain surface conforms to the logical spec (the PutGet / GetPut completeness checks); reports unproven obligations. Until it lands, **type/nullability conformance is not gated** and the attached constraints are stored verbatim, not yet routed to enforcement.
+- **shipped (partial)** — `src/schema/schema-differ.ts`, `src/schema/schema-hasher.ts` — kind-aware diffing (logical per-table diff is attach/detach-lens, never a basis-table drop; the logical-removals-do-not-drop-basis asymmetry), and the schema hash covers the schema kind + logical declarations. **pending** — the deployed-basis hash record / engine-emitted re-decomposition backfill DDL (`lens-re-decomposition-backfill-ddl`).
+- **pending** — Module mapping advertisement — modules optionally advertise a default logical→basis mapping strategy consumed by the aligner (`lens-module-mapping-advertisement`).
 
 The lens layer introduces no new runtime: at execution time a logical table is an inlined view, driven by the existing optimizer, [view updateability](view-updateability.md), and [materialized-view](materialized-views.md) machinery. All lens-specific behavior is compile-time validate / generate / attach.
+
+### Audit note: logical-table representation (v1)
+
+The compiled effective body of each logical table is registered as a **`ViewSchema`** (`Schema.addView`), so `select` from `Logical.T` resolves through the standard view path and mutation rides view updateability with zero new runtime. The logical spec itself (columns / types / constraints — the surface a `ViewSchema` cannot carry) lives in the **lens slot** (`schema/lens.ts`), keyed by logical table name on the owning `Schema`. The override and prover tickets read the spec from the slot, not from `Schema.getTable()`. This reconciles the design intent ("the query processor sees an ordinary view") with the audited reality that read/write resolution goes through `ViewSchema` / `getView()`, not `TableSchema.viewDefinition`.
 
 ## Background
 

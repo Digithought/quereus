@@ -38,8 +38,13 @@ export interface TableSchema {
 	primaryKeyDefaultConflict?: ConflictResolution;
 	/** CHECK constraints defined on the table or its columns */
 	checkConstraints: ReadonlyArray<RowConstraintSchema>;
-	/** Reference to the registered module */
-	vtabModule: AnyVirtualTableModule;
+	/**
+	 * Reference to the registered module. Optional: a **logical** table
+	 * (`isLogical: true`, held only in a lens slot — never registered or
+	 * executed) carries no module. Every module-backed table has one. Use
+	 * {@link requireVtabModule} at sites that need the module on a physical table.
+	 */
+	vtabModule?: AnyVirtualTableModule;
 	/** If virtual, aux data passed during module registration */
 	vtabAuxData?: unknown;
 	/** If virtual, the arguments passed in CREATE VIRTUAL TABLE */
@@ -50,6 +55,14 @@ export interface TableSchema {
 	isTemporary?: boolean;
 	/** Whether the table is a view */
 	isView: boolean;
+	/**
+	 * Whether this is a **logical** table — a design-only spec held in a lens
+	 * slot (see `schema/lens.ts`), with `vtabModule` undefined. Logical tables
+	 * are never registered via `Schema.addTable` nor executed directly; their
+	 * compiled effective body is registered as a {@link ViewSchema}. See
+	 * `docs/lens.md` § Schema Kinds.
+	 */
+	isLogical?: boolean;
 	/** Whether the table is a subquery source */
 	subqueryAST?: AST.SelectStmt;
 	/** If virtual, the view definition */
@@ -83,6 +96,23 @@ export interface TableSchema {
 	generatedColumnTopoOrder?: ReadonlyArray<number>;
 	/** Arbitrary metadata tags (informational only, does not affect behavior or hashing) */
 	tags?: Readonly<Record<string, SqlValue>>;
+}
+
+/**
+ * Returns the table's virtual-table module, throwing if absent. Logical tables
+ * (held only in lens slots, never registered or executed) carry no module, so
+ * `vtabModule` is optional on {@link TableSchema}; every physical/registered
+ * table has one. Use this at module-backed sites to narrow the optional with a
+ * clear internal-error diagnostic rather than a silent `undefined` deref.
+ */
+export function requireVtabModule(table: TableSchema): AnyVirtualTableModule {
+	if (!table.vtabModule) {
+		quereusError(
+			`Table '${table.schemaName}.${table.name}' has no virtual-table module (logical tables are not directly executable)`,
+			StatusCode.INTERNAL,
+		);
+	}
+	return table.vtabModule;
 }
 
 /**

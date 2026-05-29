@@ -622,6 +622,14 @@ export interface DeclareSchemaStmt extends AstNode {
 	version?: string;
 	using?: { defaultVtabModule?: string; defaultVtabArgs?: string };
 	items: readonly DeclareItem[];
+	/**
+	 * `declare logical schema X { ... }` — a design-only schema (`Schema.kind`
+	 * becomes `'logical'` at apply). Logical tables declare columns + logical
+	 * constraints only; module association / indexes / materialized views are
+	 * rejected at apply. See `docs/lens.md` § Schema Kinds. Omitted/false for an
+	 * ordinary physical schema.
+	 */
+	isLogical?: boolean;
 }
 
 export type DeclareItem = DeclaredTable | DeclaredIndex | DeclaredView | DeclaredMaterializedView | DeclaredSeed | DeclaredAssertion | DeclareIgnoredItem;

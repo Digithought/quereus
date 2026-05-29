@@ -6,6 +6,7 @@ import { QuereusError } from '../../common/errors.js';
 import { collectSchemaCatalog } from '../../schema/catalog.js';
 import { computeSchemaDiff, generateMigrationDDL } from '../../schema/schema-differ.js';
 import { computeShortSchemaHash } from '../../schema/schema-hasher.js';
+import { deployLogicalSchema } from '../../schema/lens-compiler.js';
 import type * as AST from '../../parser/ast.js';
 import type { PlanNode } from '../../planner/nodes/plan-node.js';
 import type { Database } from '../../core/database.js';
@@ -105,8 +106,34 @@ export function emitApplySchema(plan: PlanNode, _ctx: EmissionContext): Instruct
 			throw new QuereusError(`No declared schema found for '${schemaName}'`, StatusCode.ERROR);
 		}
 
-		// Ensure the target schema exists (create if it doesn't, except for main/temp)
 		const lowerSchemaName = schemaName.toLowerCase();
+
+		// Logical schema: deploy the lens layer instead of diffing + migrating
+		// basis storage. The compiler builds slots, compiles the effective body
+		// per logical table, and registers each as a ViewSchema. No basis DDL is
+		// generated. See docs/lens.md § Deployment Is a Compile Step.
+		if (declaredSchema.isLogical) {
+			if (lowerSchemaName === 'main' || lowerSchemaName === 'temp') {
+				throw new QuereusError(
+					`lens: a logical schema cannot target the reserved schema '${schemaName}'`,
+					StatusCode.ERROR,
+				);
+			}
+			const existing = rctx.db.schemaManager.getSchema(schemaName);
+			if (!existing) {
+				rctx.db.schemaManager.addSchema(schemaName, 'logical');
+				log('Created logical schema: %s', schemaName);
+			} else if (existing.kind !== 'logical') {
+				throw new QuereusError(
+					`lens: schema '${schemaName}' already exists as a physical schema; cannot re-deploy it as logical`,
+					StatusCode.ERROR,
+				);
+			}
+			deployLogicalSchema(rctx.db, declaredSchema, schemaName);
+			return [];
+		}
+
+		// Ensure the target schema exists (create if it doesn't, except for main/temp)
 		if (lowerSchemaName !== 'main' && lowerSchemaName !== 'temp') {
 			if (!rctx.db.schemaManager.getSchema(schemaName)) {
 				rctx.db.schemaManager.addSchema(schemaName);

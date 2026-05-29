@@ -8,6 +8,7 @@ import type { AnalyzePlanNode } from '../../planner/nodes/analyze-node.js';
 import type { Instruction, RuntimeContext, InstructionRun } from '../types.js';
 import type { Row } from '../../common/types.js';
 import type { TableSchema } from '../../schema/table.js';
+import { requireVtabModule } from '../../schema/table.js';
 import type { BaseModuleConfig } from '../../vtab/module.js';
 import type { TableStatistics } from '../../planner/stats/catalog-stats.js';
 import { createLogger } from '../../common/logger.js';
@@ -41,7 +42,7 @@ export function emitAnalyze(plan: AnalyzePlanNode, _ctx: EmissionContext): Instr
 
 			try {
 				// Connect to the table to get a VTable instance
-				const module = tableSchema.vtabModule;
+				const module = requireVtabModule(tableSchema);
 				if (typeof module.connect !== 'function') continue;
 
 				const options: BaseModuleConfig = tableSchema.vtabArgs ?? {};
