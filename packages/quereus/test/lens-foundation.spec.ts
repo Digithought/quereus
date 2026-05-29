@@ -322,4 +322,78 @@ describe('lens foundation: differ asymmetric removal', () => {
 			await db.close();
 		}
 	});
+
+	it('re-applying an emptied logical schema detaches all lenses even when the basis is now ambiguous', async () => {
+		const db = new Database();
+		try {
+			// Single basis at first deploy.
+			await db.exec('declare schema y { table t { id integer primary key } }');
+			await db.exec('apply schema y');
+			await db.exec('declare logical schema x { table t { id integer primary key } }');
+			await db.exec('apply schema x');
+			expect(db.schemaManager.getView('x', 't'), 'lens t attached').to.not.be.undefined;
+
+			// Add a second populated physical schema → the default basis is now
+			// ambiguous. Removal must NOT depend on basis inference, so re-applying
+			// an emptied X is a pure detach, never a "cannot infer basis" error.
+			await db.exec('create table z (id integer primary key)');
+			await db.exec('insert into z values (1)');
+			await db.exec('declare logical schema x { }');
+			await db.exec('apply schema x');
+			expect(db.schemaManager.getView('x', 't'), 'lens t detached on empty re-apply').to.be.undefined;
+		} finally {
+			await db.close();
+		}
+	});
+});
+
+describe('lens foundation: write-through (rides view updateability)', () => {
+	it('insert / update / delete through a logical lens table propagate to basis', async () => {
+		const db = new Database();
+		try {
+			await db.exec('declare schema y { table t { id integer primary key, name text } }');
+			await db.exec('apply schema y');
+			await db.exec("insert into y.t values (1, 'alpha')");
+			await db.exec('declare logical schema x { table t { id integer primary key, name text } }');
+			await db.exec('apply schema x');
+
+			// Insert through the lens lands in the basis.
+			await db.exec("insert into x.t values (2, 'beta')");
+			expect(await rows(db, 'select * from y.t order by id')).to.deep.equal([
+				{ id: 1, name: 'alpha' },
+				{ id: 2, name: 'beta' },
+			]);
+
+			// Update + delete through the lens mutate the basis.
+			await db.exec("update x.t set name = 'BETA' where id = 2");
+			await db.exec('delete from x.t where id = 1');
+			expect(await rows(db, 'select * from y.t order by id')).to.deep.equal([{ id: 2, name: 'BETA' }]);
+		} finally {
+			await db.close();
+		}
+	});
+});
+
+describe('lens foundation: column-name contract', () => {
+	it('output column names follow the LOGICAL declaration, not basis casing', async () => {
+		const db = new Database();
+		try {
+			// Basis spells the columns ID / Name; the logical contract is id / name.
+			await db.exec('declare schema y { table T { ID integer primary key, Name text } }');
+			await db.exec('apply schema y');
+			await db.exec("insert into y.t values (1, 'alpha')");
+			await db.exec('declare logical schema x { table t { id integer primary key, name text } }');
+			await db.exec('apply schema x');
+
+			// `select *` surfaces the logical names (the consumer-facing contract),
+			// pinned via the registered view's explicit column list — the basis
+			// casing must not leak through.
+			expect(await rows(db, 'select * from x.t')).to.deep.equal([{ id: 1, name: 'alpha' }]);
+
+			const view = db.schemaManager.getView('x', 't')!;
+			expect(view.columns, 'lens view carries the logical column names').to.deep.equal(['id', 'name']);
+		} finally {
+			await db.close();
+		}
+	});
 });

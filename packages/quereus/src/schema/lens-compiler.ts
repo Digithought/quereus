@@ -46,7 +46,12 @@ export function deployLogicalSchema(
 
 	const schemaManager = db.schemaManager;
 	const logicalSchema = schemaManager.getSchemaOrFail(logicalSchemaName);
-	const basis = inferDefaultBasis(schemaManager, logicalSchemaName);
+
+	// Infer the basis lazily, only when there is ≥1 logical table to align. An
+	// empty logical declaration (e.g. re-applying X after all its tables are
+	// removed) is a pure detach-everything operation and must NOT fail on basis
+	// ambiguity — removal never depends on the basis (asymmetric removal).
+	let basis: { schema: Schema; schemaName: string } | undefined;
 
 	// Compile everything FIRST (basis alignment can throw — name mismatch, etc.).
 	// Only after every table aligns successfully do we mutate the catalog, so a
@@ -55,6 +60,7 @@ export function deployLogicalSchema(
 	for (const item of declaredSchema.items) {
 		if (item.type !== 'declaredTable') continue;
 
+		basis ??= inferDefaultBasis(schemaManager, logicalSchemaName);
 		const logicalTable = schemaManager.buildLogicalTableSchema(item.tableStmt, logicalSchema.name);
 		const compiledBody = compileDefaultBody(logicalTable, logicalSchemaName, basis.schema, basis.schemaName);
 
@@ -70,7 +76,12 @@ export function deployLogicalSchema(
 			schemaName: logicalSchema.name,
 			sql: astToString(compiledBody),
 			selectAst: compiledBody,
-			columns: undefined,
+			// Pin the consumer-facing column names to the *logical* declaration
+			// (the contract), independent of the basis column casing. Equivalent
+			// to `create view T(<logical cols>) as <body>`: `select * from X.T`
+			// then surfaces the logical names, not whatever the basis happens to
+			// spell them. Write-through is unaffected (positional passthrough).
+			columns: logicalTable.columns.map(c => c.name),
 			tags: logicalTable.tags,
 		};
 		compiled.push({ slot, view });
@@ -88,7 +99,7 @@ export function deployLogicalSchema(
 	for (const { slot, view } of compiled) {
 		logicalSchema.addLensSlot(slot);
 		logicalSchema.addView(view);
-		log('Deployed lens for %s.%s over %s', logicalSchemaName, slot.logicalTable.name, basis.schemaName);
+		log('Deployed lens for %s.%s over %s', logicalSchemaName, slot.logicalTable.name, slot.defaultBasis.schemaName);
 	}
 }
 
@@ -206,11 +217,15 @@ export function compileDefaultBody(
 				StatusCode.ERROR,
 			);
 		}
-		// Single source → an unqualified column reference is unambiguous. Names
-		// match the logical names in v1, so no alias is needed.
+		// Single source → an unqualified column reference is unambiguous. Reference
+		// the basis column by its actual name; the consumer-facing column *names*
+		// (and casing) are pinned to the logical declaration via the registered
+		// view's explicit column list (see `deployLogicalSchema`), so the basis
+		// spelling never leaks through `select * from Logical.T`.
+		const basisColName = basisTable.columns[basisColIdx].name;
 		columns.push({
 			type: 'column',
-			expr: { type: 'column', name: col.name } as AST.ColumnExpr,
+			expr: { type: 'column', name: basisColName } as AST.ColumnExpr,
 		});
 	}
 
