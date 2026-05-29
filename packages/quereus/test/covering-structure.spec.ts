@@ -10,8 +10,10 @@
 import { expect } from 'chai';
 import { Database } from '../src/core/database.js';
 import { collectSchemaCatalog } from '../src/schema/catalog.js';
-import { proveCoverage, type CoverageResult } from '../src/planner/analysis/coverage-prover.js';
-import type { RelationalPlanNode } from '../src/planner/nodes/plan-node.js';
+import { proveCoverage, proveEffectiveKeyUnique, type CoverageResult } from '../src/planner/analysis/coverage-prover.js';
+import type { FunctionalDependency, PhysicalProperties, RelationalPlanNode } from '../src/planner/nodes/plan-node.js';
+import type { ColRef, RelationType } from '../src/common/datatype.js';
+import { INTEGER_TYPE } from '../src/types/builtin-types.js';
 
 async function freshDb(ddl: string[]): Promise<Database> {
 	const db = new Database();
@@ -262,5 +264,143 @@ describe('introspection hiding', () => {
 		} finally {
 			await db.close();
 		}
+	});
+});
+
+/**
+ * Effective-key ("body proves it") prover — proves the body's own *output*
+ * relation is unique on the declared key columns via its effective key (FD
+ * closure), the obligation primitive the lens prover's `obligation: proved`
+ * class consumes. Distinct from base-table `proveCoverage` above (see the
+ * module doc in coverage-prover.ts for why this is NOT folded into it).
+ */
+describe('coverage prover — effective-key (body proves it)', () => {
+	it('group-by proves the composite key {x, y}', async () => {
+		const db = await freshDb([
+			'create table t (id integer primary key, x integer not null, y integer not null, z integer)',
+		]);
+		try {
+			const root = bodyRoot(db, 'select x, y, sum(z) from t group by x, y');
+			expect(proveEffectiveKeyUnique(root, [0, 1])).to.deep.equal({ proved: true });
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('group-by does NOT prove a strict subset of the group key', async () => {
+		const db = await freshDb([
+			'create table t (id integer primary key, x integer not null, y integer not null, z integer)',
+		]);
+		try {
+			// Two distinct groups can share x ⇒ {x} is not a key on the output.
+			const root = bodyRoot(db, 'select x, y, sum(z) from t group by x, y');
+			expect(proveEffectiveKeyUnique(root, [0])).to.deep.equal({ proved: false, reason: 'not-a-key' });
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('group-by proves a superset of the group key (superkey semantics)', async () => {
+		const db = await freshDb([
+			'create table t (id integer primary key, x integer not null, y integer not null, z integer)',
+		]);
+		try {
+			// [0,1,2] is a superset of the real key {0,1} ⇒ still unique.
+			const root = bodyRoot(db, 'select x, y, sum(z) from t group by x, y');
+			expect(proveEffectiveKeyUnique(root, [0, 1, 2])).to.deep.equal({ proved: true });
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('nullable group key still proves it (strict-unique ⟹ NULL-permissive unique)', async () => {
+		const db = await freshDb([
+			'create table t (id integer primary key, x integer null)',
+		]);
+		try {
+			const root = bodyRoot(db, 'select x, count(*) from t group by x');
+			expect(proveEffectiveKeyUnique(root, [0])).to.deep.equal({ proved: true });
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('non-aggregating body: PK FD flows through projection', async () => {
+		const db = await freshDb([
+			'create table t (id integer primary key, x integer)',
+		]);
+		try {
+			const root = bodyRoot(db, 'select id, x from t');
+			expect(proveEffectiveKeyUnique(root, [0]), 'id is a key').to.deep.equal({ proved: true });
+			expect(proveEffectiveKeyUnique(root, [1]), 'x alone is not a key').to.deep.equal({ proved: false, reason: 'not-a-key' });
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('out-of-frame: a key index beyond the output columns', async () => {
+		const db = await freshDb([
+			'create table t (id integer primary key, x integer null)',
+		]);
+		try {
+			const root = bodyRoot(db, 'select x, count(*) from t group by x');
+			expect(proveEffectiveKeyUnique(root, [99])).to.deep.equal({ proved: false, reason: 'out-of-frame' });
+		} finally {
+			await db.close();
+		}
+	});
+});
+
+/**
+ * Stub-based unit coverage for `proveEffectiveKeyUnique` — mirrors
+ * test/optimizer/keysof-isunique.spec.ts: a lightweight `RelationType` +
+ * `physical.fds` stub (no full plan tree) exercises the out-of-frame guard and
+ * the delegation to `isUnique`.
+ */
+describe('coverage prover — effective-key (stub unit)', () => {
+	function makeRoot(opts: {
+		columnCount: number;
+		isSet?: boolean;
+		keys?: ColRef[][];
+		fds?: FunctionalDependency[];
+	}): RelationalPlanNode {
+		const columns = Array.from({ length: opts.columnCount }, (_, i) => ({
+			name: `c${i}`,
+			type: { typeClass: 'scalar' as const, logicalType: INTEGER_TYPE, nullable: true, isReadOnly: true },
+		}));
+		const type: RelationType = {
+			typeClass: 'relation',
+			isReadOnly: true,
+			isSet: opts.isSet ?? false,
+			columns,
+			keys: opts.keys ?? [],
+			rowConstraints: [],
+		} as RelationType;
+		const physical = { fds: opts.fds } as PhysicalProperties;
+		// Only getType()/physical are touched by proveEffectiveKeyUnique → isUnique.
+		return { getType: () => type, physical } as unknown as RelationalPlanNode;
+	}
+
+	it('out-of-frame guard fires for indices below 0 or ≥ columnCount', () => {
+		const root = makeRoot({ columnCount: 2, fds: [{ determinants: [0], dependents: [1] }] });
+		expect(proveEffectiveKeyUnique(root, [2])).to.deep.equal({ proved: false, reason: 'out-of-frame' });
+		expect(proveEffectiveKeyUnique(root, [-1])).to.deep.equal({ proved: false, reason: 'out-of-frame' });
+		// A mix where one index is out of frame still reports out-of-frame.
+		expect(proveEffectiveKeyUnique(root, [0, 5])).to.deep.equal({ proved: false, reason: 'out-of-frame' });
+	});
+
+	it('delegates to isUnique: FD-derived key proves, non-key does not', () => {
+		const root = makeRoot({ columnCount: 2, fds: [{ determinants: [0], dependents: [1] }] });
+		expect(proveEffectiveKeyUnique(root, [0])).to.deep.equal({ proved: true });
+		expect(proveEffectiveKeyUnique(root, [1])).to.deep.equal({ proved: false, reason: 'not-a-key' });
+	});
+
+	it('empty key columns: proved only when the relation is ≤1 row', () => {
+		// ∅ → all_cols ⇒ the empty key holds ⇒ [] is unique.
+		const oneRow = makeRoot({ columnCount: 2, fds: [{ determinants: [], dependents: [0, 1] }] });
+		expect(proveEffectiveKeyUnique(oneRow, [])).to.deep.equal({ proved: true });
+		// A bag with no ≤1-row guarantee: [] is not a key.
+		const bag = makeRoot({ columnCount: 2 });
+		expect(proveEffectiveKeyUnique(bag, [])).to.deep.equal({ proved: false, reason: 'not-a-key' });
 	});
 });

@@ -382,11 +382,25 @@ that surface is stable to compile against, but `findIndexForConstraint` never
 returns it today — the unsound path fails loudly (`StatusCode.UNSUPPORTED`) if
 ever reached.
 
+**FD-derived "body proves it" is a different proof.** Separate from base-table
+covering, `coverage-prover.ts` exposes `proveEffectiveKeyUnique`, which proves the
+body's *own output relation* is unique on a set of output columns via its
+effective key (FD closure) — e.g. a `group by x, y` body intrinsically one row per
+`(x, y)`. This is the obligation primitive the lens layer's `obligation: proved`
+class consumes; it is a proof about the **derived (output) relation**, **not** a
+base-table covering structure, and is deliberately kept out of `proveCoverage`
+because an FD-derived output key masks base-row duplicates (grouping collapses
+two `x = 5` base rows into one output row) and so cannot witness a base-table
+`unique`. See [Optimizer § Effective-key proving](optimizer.md#effective-key-proving-body-proves-it)
+and [Lenses § the constraint-role split](lens.md).
+
 Deferred follow-ups: `covering-structure-mv-rowtime-enforcement` (route
 enforcement through a covering MV, blocked on
-`materialized-view-rowtime-write-through`), `coverage-prover-fd-driven-coverage`
-(FD-closure coverage beyond literal projection), and
+`materialized-view-rowtime-write-through`) and
 `coverage-prover-multi-source-bodies` (join MVs covering a single-table UC).
+Whether a covering *enforcement* structure (detection-only, ABORT) can ever be
+FD-derived is a separate question for the row-time-enforcement / lens tickets —
+`proveEffectiveKeyUnique` does not address it.
 
 ## Out of scope / roadmap
 

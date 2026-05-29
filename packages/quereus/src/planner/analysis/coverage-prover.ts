@@ -18,9 +18,44 @@
  *
  * Soundness is paramount: a false `Covers` would (once the lens layer routes
  * enforcement through the structure) silently miss conflicts. Every check is
- * conservative — a false `NotCovers` only forgoes an optimization. FD-driven
- * coverage and multi-source bodies are deferred (see the backlog tickets named
- * in the implement ticket's out-of-scope list).
+ * conservative — a false `NotCovers` only forgoes an optimization. Multi-source
+ * bodies are deferred (see the backlog tickets named in the implement ticket's
+ * out-of-scope list).
+ *
+ * ---
+ *
+ * Two different "coverage" questions live in this module; keep them apart:
+ *
+ *  1. **Base-table covering** (`proveCoverage`, above) — does an explicit MV's
+ *     materialized row set cover a `unique` constraint on a *base table* `T`,
+ *     keyed so a point lookup answers the uniqueness question and the base PK is
+ *     reconstructible so a conflicting row can be identified? Requires literal
+ *     projection of every UC column + the source PK, an `order by` permutation of
+ *     the UC columns, and predicate/NULL-skip alignment.
+ *
+ *  2. **Output-relation effective key** (`proveEffectiveKeyUnique`, below) — is
+ *     the body's *own output relation* provably unique on the declared key
+ *     columns, via its effective key (declared keys, FD-closure-derived keys, or
+ *     the all-columns/set fallback, all read through the unified `isUnique`
+ *     surface)? This is the obligation primitive the lens prover consumes for its
+ *     `obligation: proved` class — e.g. a `group by x, y` body whose output is
+ *     intrinsically one row per `(x, y)` vacuously satisfies a logical
+ *     `unique(x, y)`, so no runtime enforcement structure is needed.
+ *
+ * **Why (2) is NOT folded into (1).** An FD-derived output key cannot prove a
+ * *base-table* constraint, and folding it in would be unsound. A `group by x`
+ * body's output is *always* unique on `x` — whether or not `T` satisfies
+ * `unique(x)` — because grouping collapses base-row duplicates: two base rows
+ * with `x = 5` (a base-constraint violation) still yield exactly one output row
+ * for `x = 5`. Output-key uniqueness is therefore silent about base duplicates;
+ * that masking is the whole problem. Aggregating bodies also drop the base PK, so
+ * the "identify the conflicting base row" half of the v1 covering contract (for
+ * REPLACE / IGNORE conflict resolution) is unrecoverable. (2) is thus a proof
+ * about the *derived (output) relation's own* constraint, deliberately kept out
+ * of `proveCoverage` to preserve the v1 soundness boundary and leave the
+ * eager-link path (`linkCoveredUniqueConstraints`) untouched. Whether a covering
+ * *enforcement* structure can ever be FD-derived (detection-only, ABORT) is a
+ * separate concern of the row-time-enforcement / lens tickets, not this one.
  */
 
 import type { RelationalPlanNode, GuardClause } from '../nodes/plan-node.js';
@@ -32,6 +67,7 @@ import type { TableSchema, UniqueConstraintSchema } from '../../schema/table.js'
 import type * as AST from '../../parser/ast.js';
 import { recognizeConjunctiveClauses, guardClausesEntail } from './partial-unique-extraction.js';
 import { columnIndexFromExpr } from './predicate-shape.js';
+import { isUnique } from '../util/fd-utils.js';
 
 export type CoverageFailureReason =
 	| 'shape'
@@ -49,6 +85,15 @@ const COVERS: CoverageResult = { covers: true };
 function notCovers(reason: CoverageFailureReason): CoverageResult {
 	return { covers: false, reason };
 }
+
+/**
+ * Outcome of `proveEffectiveKeyUnique`. `not-a-key` means the body's effective
+ * key does not subsume `keyColumns`; `out-of-frame` means an index fell outside
+ * the body's output columns.
+ */
+export type EffectiveKeyResult =
+	| { proved: true }
+	| { proved: false; reason: 'not-a-key' | 'out-of-frame' };
 
 /**
  * Row-preserving / single-source pass-through node types that may appear between
@@ -151,6 +196,49 @@ export function proveCoverage(
 	//      NULL-excluded). The WHERE is read from the AST (see shape note). ----
 	const bodyWhere = mv.selectAst.type === 'select' ? mv.selectAst.where : undefined;
 	return provePredicateAlignment(bodyWhere, uc, baseTable);
+}
+
+/**
+ * "Body proves it": true iff the body's output relation is provably unique on
+ * `keyColumns` (output-column indices) via its effective key — declared keys,
+ * FD-closure-derived keys, or the set/all-columns fallback, all read through the
+ * unified `isUnique` surface. This is the obligation primitive the lens prover
+ * consumes for its `obligation: proved` class (e.g. a `group by x, y` body
+ * proving a logical `unique(x, y)`).
+ *
+ * `root` MUST be the optimized body relation (the same node `proveCoverage`
+ * receives: `db.getPlan(body).getRelations()[0]`), so `physical.fds` is
+ * populated — the group-key FD (`propagateAggregateFds`) and projected
+ * source-key FDs live there.
+ *
+ * Soundness notes (why the v1 base-table covering checks do NOT apply here):
+ *  - Ordering: irrelevant — a proof of intrinsic uniqueness needs no ordered
+ *    point-lookup path, so the canonical `group by` body (no ORDER BY) qualifies.
+ *  - PK reconstructibility / observation-equivalence: irrelevant — there is no
+ *    enforcement and no base row to identify; the constraint is on the output.
+ *  - NULL-skip: composes trivially by subsumption. `isUnique` proves *strict*
+ *    key-uniqueness (NULL treated as a value); SQL `unique` is NULL-permissive
+ *    (weaker), so strict-unique ⟹ `unique` holds. No extra NULL handling.
+ *  - Superkey semantics are correct: if the body's real key is a subset of
+ *    `keyColumns`, the (stronger) constraint on the smaller set still implies the
+ *    declared one — `isUnique` already returns true for any superset of a key.
+ *
+ * `keyColumns` are **body-output** column indices; the lens prover owns the
+ * logical-column → output-column mapping (this primitive does no base-table
+ * attribute-id translation — that was a v1 mechanism for the base frame and does
+ * not apply to the output frame). Delegates uniqueness entirely to `isUnique`
+ * (DRY); the value this adds is the named obligation seam, the diagnostic result
+ * shape, and the load-bearing soundness documentation above.
+ */
+export function proveEffectiveKeyUnique(
+	root: RelationalPlanNode,
+	keyColumns: readonly number[],
+): EffectiveKeyResult {
+	const columnCount = root.getType().columns.length;
+	for (const c of keyColumns) {
+		if (c < 0 || c >= columnCount) return { proved: false, reason: 'out-of-frame' };
+	}
+	return isUnique(keyColumns, root) ? { proved: true } : { proved: false, reason: 'not-a-key' };
 }
 
 /**

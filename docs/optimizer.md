@@ -1472,6 +1472,12 @@ Extraction is cached per `TableSchema` via `getPartialUniqueGuardedFds`. The dow
 
 The prover reads the body's `WHERE` and `ORDER BY` from the **body AST**, not the optimized plan, because the optimizer absorbs a sargable `WHERE` into an index range seek and drops the `Sort` once an index supplies the order — so the plan understates the predicate and ordering. It uses the optimized plan only for the structural shape check and the output→base-column projection mapping (via stable attribute IDs). The link the prover records is informational in the current release.
 
+##### Effective-key proving ("body proves it")
+
+`coverage-prover.ts` answers a **second, distinct** question via `proveEffectiveKeyUnique(root, keyColumns)`: is the body's *own output relation* provably unique on `keyColumns` (output-column indices) via its effective key? It delegates entirely to the unified `isUnique` surface (declared keys, FD-closure-derived keys, the all-columns/`isSet` fallback) and adds only an out-of-frame guard and a diagnostic result shape (`proved` | `not-a-key` | `out-of-frame`). This is the obligation primitive the [lens prover's `obligation: proved` class](lens.md#constraint-attachment) consumes — e.g. a `select x, y, sum(z) from t group by x, y` body whose group-key FD `{0,1} → {2}` (from `propagateAggregateFds`) makes the output intrinsically one row per `(x, y)`, vacuously satisfying a logical `unique(x, y)` at zero enforcement cost.
+
+This is **not** a generalization of base-table `proveCoverage`, and is deliberately kept separate: an FD-derived output key cannot prove a *base-table* constraint. A `group by x` body's output is always unique on `x` whether or not the base table satisfies `unique(x)` — grouping collapses base-row duplicates, so two base rows with `x = 5` (a base violation) still yield one output row, masking the conflict. Aggregating bodies also drop the base PK, so the conflicting-base-row half of the covering contract is unrecoverable. `proveEffectiveKeyUnique` is therefore a proof about the **derived (output) relation's own** constraint; its soundness notes (ordering / PK-reconstruction irrelevant, NULL-skip by subsumption, superkey semantics) live in the module doc.
+
 #### Assertion-derived premises
 
 `CREATE ASSERTION` whose CHECK matches the canonical *trivially universal* shape
