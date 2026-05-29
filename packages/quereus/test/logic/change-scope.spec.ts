@@ -63,10 +63,11 @@ describe('Statement.getChangeScope (integration)', () => {
 		expect(r.values).to.deep.equal([[99]]);
 	});
 
-	it('a materialized-view reference reports the BACKING table in its change scope', async () => {
-		// Because an MV reference resolves to a TableReference on the backing
-		// table, change-scope reports the backing table for free. Phase 2 will
-		// sharpen this to the underlying sources.
+	it('a MANUAL materialized-view reference reports the BACKING table in its change scope', async () => {
+		// A manual MV's backing table IS user-observable state (refresh writes it),
+		// and its cadence is `refresh`, not source mutations — so change-scope keeps
+		// reporting the backing table. (An incremental MV projects to its sources;
+		// see the next test.)
 		await db.exec('CREATE TABLE src (id INTEGER PRIMARY KEY, v TEXT) USING memory');
 		await db.exec("INSERT INTO src VALUES (1, 'a')");
 		await db.exec('CREATE MATERIALIZED VIEW mv AS SELECT id, v FROM src');
@@ -74,8 +75,35 @@ describe('Statement.getChangeScope (integration)', () => {
 		const scope = db.prepare('select * from mv').getChangeScope();
 		const tables = scope.watches.map(w => `${w.table.schema}.${w.table.table}`);
 		expect(tables).to.deep.equal(['main.sqlite_mv_mv']);
-		// Phase 1: the source table is NOT (yet) part of the watch set.
+		// A manual MV does NOT surface the source table.
 		expect(tables).to.not.include('main.src');
+	});
+
+	it('an INCREMENTAL materialized-view reference reports the SOURCE table, not the backing table', async () => {
+		// An `on-commit-incremental` MV's backing table is maintained at COMMIT from
+		// its sources and never written through the user change log — so a watch on
+		// it would never fire. change-scope projects the reference onto the source.
+		await db.exec('CREATE TABLE src (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+		await db.exec("INSERT INTO src VALUES (1, 'a')");
+		await db.exec("CREATE MATERIALIZED VIEW mvi AS SELECT id, v FROM src WITH refresh = 'on-commit-incremental'");
+
+		const scope = db.prepare('select * from mvi').getChangeScope();
+		const tables = scope.watches.map(w => `${w.table.schema}.${w.table.table}`);
+		expect(tables).to.deep.equal(['main.src']);
+		// The backing table is NOT reported — nothing user-writes it.
+		expect(tables).to.not.include('main.sqlite_mv_mvi');
+	});
+
+	it('a query reading both an incremental MV and its source reports the source once', async () => {
+		// The projected source-union scope unions/dedups against a direct read of
+		// the same source table — the source appears exactly once.
+		await db.exec('CREATE TABLE src (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+		await db.exec("INSERT INTO src VALUES (1, 'a')");
+		await db.exec("CREATE MATERIALIZED VIEW mvi AS SELECT id, v FROM src WITH refresh = 'on-commit-incremental'");
+
+		const scope = db.prepare('select mvi.v from mvi join src on src.id = mvi.id').getChangeScope();
+		const tables = scope.watches.map(w => `${w.table.schema}.${w.table.table}`);
+		expect(tables).to.deep.equal(['main.src']);
 	});
 
 	it('a read through a view reports the BASE table in its change scope (not the view)', async () => {
@@ -248,6 +276,25 @@ describe('Database.watch (integration)', () => {
 		await db.exec('UPDATE t SET v = \'new\' WHERE id = 42');
 		expect(events).to.have.length(1);
 		expect(events[0].matched[0].hits).to.deep.equal([[42]]);
+		sub.unsubscribe();
+		await stmt.finalize();
+	});
+
+	it('end-to-end: a watch on an INCREMENTAL MV fires on a SOURCE mutation', async () => {
+		// The MV reference projects to its source, so the watch is registered on
+		// `src` — a source mutation fires it (the backing table is never directly
+		// user-written; watching it would never fire).
+		await db.exec('CREATE TABLE src (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+		await db.exec("INSERT INTO src VALUES (1, 'a')");
+		await db.exec("CREATE MATERIALIZED VIEW mvi AS SELECT id, v FROM src WITH refresh = 'on-commit-incremental'");
+		const stmt = db.prepare('select * from mvi');
+		const scope = stmt.getChangeScope();
+		expect(scope.watches.map(w => w.table.table)).to.deep.equal(['src']);
+		const events: WatchEvent[] = [];
+		const sub = db.watch(scope, e => { events.push(e); });
+		await db.exec("INSERT INTO src VALUES (2, 'b')");
+		expect(events).to.have.length(1);
+		expect(events[0].matched.map(m => m.watch.table.table)).to.deep.equal(['src']);
 		sub.unsubscribe();
 		await stmt.finalize();
 	});

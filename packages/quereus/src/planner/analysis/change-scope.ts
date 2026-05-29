@@ -196,13 +196,30 @@ const DML_NODE_TYPES = new Set<PlanNodeType>([
 /* --- Analyzer ------------------------------------------------------------ */
 
 /**
+ * Resolves a table reference's qualified name to the source-union `ChangeScope`
+ * that should replace its watch. The sole use is projecting an
+ * `on-commit-incremental` materialized view's backing-table reference onto the
+ * sources whose mutations actually drive its maintenance: the backing table is
+ * never user-written, so a watch on it would never fire. Returns `undefined`
+ * for anything that is not an incremental-MV backing table (ordinary tables,
+ * and `manual` MVs — whose cadence is `refresh`, not source mutations).
+ */
+export type MaterializedViewSourceResolver = (table: QualifiedName) => ChangeScope | undefined;
+
+/**
  * Walk a (post-analysis) plan and produce its `ChangeScope`. If `params`
  * is supplied, parameter placeholders are substituted in-place and the
- * corresponding indices are dropped from `unboundParameters`.
+ * corresponding indices are dropped from `unboundParameters`. If
+ * `resolveMaterializedViewSource` is supplied, an incremental-MV backing-table
+ * reference is projected onto its cached source-union scope (see
+ * {@link MaterializedViewSourceResolver}).
  */
 export function analyzeChangeScope(
 	plan: PlanNode,
-	options?: { params?: SqlParameters | SqlValue[] },
+	options?: {
+		params?: SqlParameters | SqlValue[];
+		resolveMaterializedViewSource?: MaterializedViewSourceResolver;
+	},
 ): ChangeScope {
 	const dmlWithoutReturning = isDmlWithoutReturning(plan);
 	const { perRelation } = extractBindings(plan as RelationalPlanNode);
@@ -215,6 +232,10 @@ export function analyzeChangeScope(
 	collectNonDeterminism(plan, nonDetSources, unboundParams, perRelation);
 
 	const watches: TableWatch[] = [];
+	// Source-union scopes for any incremental-MV backing references encountered;
+	// folded into the result below so they union/dedup against direct reads of
+	// the same source table.
+	const mvSourceScopes: ChangeScope[] = [];
 	if (!dmlWithoutReturning) {
 		for (const ref of tableRefs) {
 			const relKey = relKeyFor(ref);
@@ -224,6 +245,16 @@ export function analyzeChangeScope(
 			const schemaName = ref.tableSchema.schemaName.toLowerCase();
 			const tableName = ref.tableSchema.name.toLowerCase();
 			const table: QualifiedName = { schema: schemaName, table: tableName };
+
+			// An `on-commit-incremental` MV's backing table is maintained at COMMIT
+			// from its sources and never appears in the user change log. Replace the
+			// (never-firing) backing-table watch with the MV's source-union scope so
+			// a watcher fires on a SOURCE mutation instead.
+			const mvScope = options?.resolveMaterializedViewSource?.(table);
+			if (mvScope) {
+				mvSourceScopes.push(mvScope);
+				continue;
+			}
 
 			const colIndices = columnsByRelKey.get(relKey);
 			const columns: ReadonlySet<string> | 'all' = buildColumnSet(ref, colIndices);
@@ -237,6 +268,10 @@ export function analyzeChangeScope(
 		nonDeterministicSources: normalizeNonDet(nonDetSources),
 		unboundParameters: sortedDedupParamIndices(unboundParams),
 	};
+
+	for (const mvScope of mvSourceScopes) {
+		scope = unionScopes(scope, mvScope);
+	}
 
 	if (options?.params !== undefined) {
 		scope = bindParameters(scope, options.params);
@@ -677,6 +712,32 @@ function sortedDedupParamIndices(set: Set<number | string>): ReadonlyArray<numbe
 }
 
 /* --- Composition helpers ------------------------------------------------- */
+
+/**
+ * Build the conservative source-union `ChangeScope` for a materialized view:
+ * one `{kind:'full'}` watch (columns `'all'`) per source table. This is the
+ * scope an `on-commit-incremental` MV reference projects to, so a watcher fires
+ * on any source mutation. A precise per-source row/group scope — mirroring the
+ * maintenance bindings the `MaterializedViewManager` already derives — is a
+ * future refinement.
+ *
+ * @param sourceTables Qualified lowercased `schema.table` names, as recorded on
+ *   `MaterializedViewSchema.sourceTables`.
+ */
+export function buildSourceUnionScope(sourceTables: ReadonlyArray<string>): ChangeScope {
+	const watches: TableWatch[] = [];
+	for (const qualified of sourceTables) {
+		const dot = qualified.indexOf('.');
+		const schema = dot >= 0 ? qualified.slice(0, dot) : 'main';
+		const table = dot >= 0 ? qualified.slice(dot + 1) : qualified;
+		watches.push({ table: { schema, table }, columns: 'all', scope: { kind: 'full' } });
+	}
+	return {
+		watches: normalizeWatches(watches),
+		nonDeterministicSources: [],
+		unboundParameters: [],
+	};
+}
 
 export function unionScopes(a: ChangeScope, b: ChangeScope): ChangeScope {
 	const byTable = new Map<string, TableWatch>();

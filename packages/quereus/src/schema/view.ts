@@ -1,5 +1,6 @@
 import type * as AST from '../parser/ast.js';
 import type { SqlValue } from '../common/types.js';
+import type { ChangeScope } from '../planner/analysis/change-scope.js';
 import { fnv1aHash, toBase64Url } from '../util/hash.js';
 
 /**
@@ -106,6 +107,19 @@ export interface MaterializedViewSchema {
 	 *  Absent on already-serialized MVs ⇒ treat as {@link DEFAULT_REFRESH_POLICY}
 	 *  (`manual`). Set to `on-commit-incremental` to enable delta maintenance. */
 	refreshPolicy?: RefreshPolicy;
+
+	/**
+	 * Cached source-union change-scope for an `on-commit-incremental` MV,
+	 * computed once at registration (see `MaterializedViewManager.registerMaterializedView`).
+	 * A `select` from this MV resolves to a reference on the (never-user-written)
+	 * backing table; change-scope analysis substitutes this scope so a
+	 * `Database.watch` fires on a *source* mutation rather than reporting the
+	 * backing table. Absent for `manual` MVs (their cadence is `refresh`, so they
+	 * keep reporting just the backing table) and for not-yet-registered MVs. v1 is
+	 * the conservative union of a `full` watch per source — see
+	 * `buildSourceUnionScope`. Not serialized; repopulated on re-registration.
+	 */
+	sourceScope?: ChangeScope;
 
 	/**
 	 * How this covering structure came to be. An ordinary user-declared MV is

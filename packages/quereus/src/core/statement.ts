@@ -612,7 +612,20 @@ export class Statement {
 		this.validateStatement("get change scope for");
 		const plan = this.getAnalysisPlan();
 		const effectiveParams = params ?? (Object.keys(this.boundArgs).length > 0 ? this.boundArgs : undefined);
-		return analyzeChangeScope(plan, effectiveParams !== undefined ? { params: effectiveParams } : undefined);
+		const sm = this.db.schemaManager;
+		return analyzeChangeScope(plan, {
+			...(effectiveParams !== undefined ? { params: effectiveParams } : {}),
+			// Project an `on-commit-incremental` MV backing-table reference onto its
+			// cached source-union scope: such a backing table is maintained at COMMIT
+			// from its sources and never user-written, so watching it directly would
+			// never fire. Manual MVs (and ordinary tables) return undefined and keep
+			// reporting the backing table.
+			resolveMaterializedViewSource: (table) => {
+				const mv = sm.getMaterializedViewByBackingTable(table.schema, table.table);
+				if (mv?.refreshPolicy?.kind !== 'on-commit-incremental') return undefined;
+				return mv.sourceScope;
+			},
+		});
 	}
 
 	/**

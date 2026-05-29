@@ -41,6 +41,7 @@ import { ColumnReferenceNode, TableReferenceNode } from '../planner/nodes/refere
 import { AggregateNode } from '../planner/nodes/aggregate-node.js';
 import { PlanNodeType } from '../planner/nodes/plan-node-type.js';
 import type { BindingMode, PlanBindings } from '../planner/analysis/binding-extractor.js';
+import { buildSourceUnionScope } from '../planner/analysis/change-scope.js';
 import { injectKeyFilter } from '../planner/analysis/key-filter.js';
 import {
 	DeltaExecutor,
@@ -159,6 +160,11 @@ export class MaterializedViewManager {
 	 */
 	registerMaterializedView(mv: MaterializedViewSchema): void {
 		if (mv.refreshPolicy?.kind !== 'on-commit-incremental') return;
+		// Cache the source-union change-scope so a `select` from this MV projects to
+		// its sources in `analyzeChangeScope` (the backing table is never written
+		// through the user change log — it is maintained at COMMIT). v1 is the
+		// conservative union of a `full` watch per source table.
+		mv.sourceScope = buildSourceUnionScope(mv.sourceTables);
 		const key = mvKey(mv.schemaName, mv.name);
 		this.releaseEntry(key);
 		const compiled = this.compile(mv);

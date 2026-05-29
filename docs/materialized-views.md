@@ -233,6 +233,21 @@ full rebuild via the same `replaceBaseLayer` path manual refresh uses
 thousands of per-row patches. The manual `refresh materialized view` statement
 also works on an incremental MV and is the resync escape valve.
 
+### Change-scope projection
+
+A `select` from an MV resolves to a reference on its backing table, so
+`Statement.getChangeScope()` would naively report `sqlite_mv_<name>`. But an
+`on-commit-incremental` MV's backing table is never written through the user
+change log — it is maintained at COMMIT from its sources — so a `Database.watch`
+on it would never fire. To fix this, the manager caches a **source-union
+change-scope** on the MV at registration (`MaterializedViewSchema.sourceScope`,
+v1 = a `full` watch per source via `buildSourceUnionScope`), and change-scope
+analysis substitutes it for the backing-table watch (see
+[change-scope.md](change-scope.md#materialized-view-reference-projection)). A
+`Database.watch` on such an MV therefore fires on a **source** mutation. A
+`manual` MV's backing table *is* user-observable state (refresh writes it), so it
+keeps reporting the backing table.
+
 ### Limitations
 
 - **Cascading MVs (MV-over-MV) may need more than one commit to converge.** A
@@ -242,9 +257,12 @@ also works on an incremental MV and is the resync escape valve.
 - **Keyless / bag bodies** (all-columns PK) hit the same `UNIQUE constraint
   failed` on a duplicate-producing upsert that manual refresh hits — the contract
   fix lives in `materialized-view-bag-body-duplicates`.
-- **`getChangeScope()` projection** (so `Database.watch` on an incremental MV
-  fires on *source* mutations rather than reporting the backing table) is tracked
-  as a follow-up: `materialized-view-incremental-changescope`.
+- **`getChangeScope()` projection is conservative.** `Database.watch` on an
+  incremental MV now fires on *source* mutations (delivered — see
+  [Change-scope projection](#change-scope-projection)), but v1 projects to a
+  whole-table (`full`) watch per source. A precise per-source row/group scope,
+  mirroring the maintenance bindings the manager already derives, is a future
+  refinement.
 
 ## Declarative-schema integration
 

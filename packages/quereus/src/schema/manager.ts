@@ -10,6 +10,7 @@ import type { VirtualTable } from '../vtab/table.js';
 import type { ColumnSchema } from './column.js';
 import { buildColumnIndexMap, columnDefToSchema, findPKDefinition, opsToMask, mutationContextVarToSchema, extractGeneratedColumnDependencies, topoSortGeneratedColumns, requireVtabModule } from './table.js';
 import type { ViewSchema, MaterializedViewSchema } from './view.js';
+import { backingTableNameFor } from './view.js';
 import { createLogger } from '../common/logger.js';
 import type * as AST from '../parser/ast.js';
 import { Parser } from '../parser/parser.js';
@@ -478,6 +479,28 @@ export class SchemaManager {
 		const targetSchemaName = (schemaName ?? this.currentSchemaName).toLowerCase();
 		const schema = this.schemas.get(targetSchemaName);
 		return schema?.getMaterializedView(name);
+	}
+
+	/**
+	 * Reverse lookup: find the materialized view in `schemaName` whose backing
+	 * table is `backingName`. Backing tables follow the reserved `sqlite_mv_<name>`
+	 * convention (see {@link backingTableNameFor}), so the MV name is derived from
+	 * the prefix and confirmed against the MV's own `backingTableName`.
+	 *
+	 * Used by change-scope analysis to project an `on-commit-incremental` MV's
+	 * backing-table reference onto its sources. Returns undefined when `backingName`
+	 * is not a backing-table name, or no MV in that schema is backed by it.
+	 */
+	getMaterializedViewByBackingTable(schemaName: string | null, backingName: string): MaterializedViewSchema | undefined {
+		const lower = backingName.toLowerCase();
+		const prefix = backingTableNameFor('');
+		if (!lower.startsWith(prefix)) return undefined;
+		const targetSchemaName = (schemaName ?? this.currentSchemaName).toLowerCase();
+		const schema = this.schemas.get(targetSchemaName);
+		if (!schema) return undefined;
+		const mv = schema.getMaterializedView(lower.slice(prefix.length));
+		if (mv && mv.backingTableName.toLowerCase() === lower) return mv;
+		return undefined;
 	}
 
 	/**
