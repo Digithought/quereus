@@ -125,6 +125,106 @@ select * from mv_src;
 -- error: stale
 drop materialized view mv_src;
 
+-- ===================================
+-- 9. Row body with a WHERE filter — a row leaving / entering the predicate
+--    via UPDATE must delete / insert its MV row (delete-then-recompute).
+-- ===================================
+
+create table tf (id integer primary key, x integer);
+insert into tf values (1, 5), (2, -3), (3, 8);
+create materialized view mv_filt as select id, x from tf where x > 0 with refresh = 'on-commit-incremental';
+select * from mv_filt order by id;
+→ [{"id":1,"x":5},{"id":3,"x":8}]
+
+-- Row id=1 leaves the predicate (x>0 → x=-1): its MV row must disappear
+update tf set x = -1 where id = 1;
+select * from mv_filt order by id;
+→ [{"id":3,"x":8}]
+
+-- Row id=2 enters the predicate (x=-3 → x=10): its MV row must appear
+update tf set x = 10 where id = 2;
+select * from mv_filt order by id;
+→ [{"id":2,"x":10},{"id":3,"x":8}]
+
+-- ===================================
+-- 10. Nullable group key with NULL rows — NULL-safe residual filter +
+--     NULL-valued delete key must maintain the NULL group correctly.
+-- ===================================
+
+create table gn (id integer primary key, k integer null, v integer);
+insert into gn values (1, null, 5), (2, null, 7), (3, 10, 2);
+create materialized view mv_gn as select k, sum(v) as sv from gn group by k with refresh = 'on-commit-incremental';
+select * from mv_gn order by k;
+→ [{"k":null,"sv":12},{"k":10,"sv":2}]
+
+-- New row in the NULL group recomputes only that group (no duplicate NULL row)
+insert into gn values (4, null, 3);
+select * from mv_gn order by k;
+→ [{"k":null,"sv":15},{"k":10,"sv":2}]
+
+-- Deleting a NULL-group row recomputes the NULL group again
+delete from gn where id = 1;
+select * from mv_gn order by k;
+→ [{"k":null,"sv":10},{"k":10,"sv":2}]
+
+-- ===================================
+-- 11. Two incremental MVs over the same source — independent subscriptions
+--     both maintained from a single source mutation.
+-- ===================================
+
+create table s2 (id integer primary key, x integer);
+insert into s2 values (1, 1), (2, 2);
+create materialized view mv_a as select id, x from s2 with refresh = 'on-commit-incremental';
+create materialized view mv_b as select id, x * 10 as x10 from s2 with refresh = 'on-commit-incremental';
+insert into s2 values (3, 3);
+select * from mv_a order by id;
+→ [{"id":1,"x":1},{"id":2,"x":2},{"id":3,"x":3}]
+select * from mv_b order by id;
+→ [{"id":1,"x10":10},{"id":2,"x10":20},{"id":3,"x10":30}]
+
+-- ===================================
+-- 12. Compound-PK source (multi-column delete key) + multi-column GROUP BY.
+-- ===================================
+
+create table cp (a integer, b integer, v integer, primary key (a, b));
+insert into cp values (1, 1, 100), (1, 2, 200), (2, 1, 300);
+create materialized view mv_cp as select a, b, v from cp with refresh = 'on-commit-incremental';
+select * from mv_cp order by a, b;
+→ [{"a":1,"b":1,"v":100},{"a":1,"b":2,"v":200},{"a":2,"b":1,"v":300}]
+
+-- Update keyed on the full compound PK
+update cp set v = 999 where a = 1 and b = 2;
+select * from mv_cp order by a, b;
+→ [{"a":1,"b":1,"v":100},{"a":1,"b":2,"v":999},{"a":2,"b":1,"v":300}]
+
+-- Delete keyed on the full compound PK
+delete from cp where a = 2 and b = 1;
+select * from mv_cp order by a, b;
+→ [{"a":1,"b":1,"v":100},{"a":1,"b":2,"v":999}]
+
+create table mc (id integer primary key, g1 integer, g2 integer, v integer);
+insert into mc values (1, 1, 1, 10), (2, 1, 2, 20), (3, 1, 1, 5);
+create materialized view mv_mc as select g1, g2, sum(v) as sv from mc group by g1, g2 with refresh = 'on-commit-incremental';
+select * from mv_mc order by g1, g2;
+→ [{"g1":1,"g2":1,"sv":15},{"g1":1,"g2":2,"sv":20}]
+
+-- New row in an existing multi-column group recomputes only that group
+insert into mc values (4, 1, 2, 100);
+select * from mv_mc order by g1, g2;
+→ [{"g1":1,"g2":1,"sv":15},{"g1":1,"g2":2,"sv":120}]
+
+drop materialized view mv_filt;
+drop materialized view mv_gn;
+drop materialized view mv_a;
+drop materialized view mv_b;
+drop materialized view mv_cp;
+drop materialized view mv_mc;
+drop table tf;
+drop table gn;
+drop table s2;
+drop table cp;
+drop table mc;
+
 -- Cleanup
 drop materialized view mv_row;
 drop materialized view mv_grp;
