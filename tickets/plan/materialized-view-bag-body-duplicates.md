@@ -50,6 +50,8 @@ Pick and specify one of:
 3. **Explicit de-dup.** Define materialized views as set-valued and silently
    de-duplicate. Likely surprising; least preferred.
 
+Decision: 1 - must be a set (have a key)
+
 ## Notes
 - Current v1 behavior is flagged but not specified; this ticket exists to choose
   the semantics rather than leave the raw constraint error as the contract.

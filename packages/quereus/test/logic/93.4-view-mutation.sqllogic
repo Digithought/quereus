@@ -1,0 +1,100 @@
+-- View updateability — Phase 1 + 1b working cases.
+-- Single-source projection-and-filter views are writeable; writes route to the
+-- base table. See docs/view-updateability.md.
+
+-- ===================================
+-- GreenMen: constant-FD default from the selection predicate (select *)
+-- ===================================
+
+create table Men (Name text primary key, Color text);
+create view GreenMen as select * from Men where Color = 'green';
+
+insert into GreenMen (Name) values ('Bob');
+
+select * from Men order by Name;
+→ [{"Name":"Bob","Color":"green"}]
+
+select * from GreenMen order by Name;
+→ [{"Name":"Bob","Color":"green"}]
+
+-- ===================================
+-- AdultsBare: constant-FD default for a projected-away column
+-- ===================================
+
+create table Adults (Name text primary key, Age integer, Country text);
+create view AdultsBare as select Name, Age from Adults where Country = 'US';
+
+insert into AdultsBare values ('Bob', 30);
+
+select * from Adults order by Name;
+→ [{"Name":"Bob","Age":30,"Country":"US"}]
+
+select * from AdultsBare order by Name;
+→ [{"Name":"Bob","Age":30}]
+
+-- ===================================
+-- Base-column default survives projection
+-- ===================================
+
+create table u (id integer primary key, name text default 'unknown');
+create view uv as select id from u;
+
+insert into uv values (5);
+
+select * from u order by id;
+→ [{"id":5,"name":"unknown"}]
+
+-- ===================================
+-- Rename projection
+-- ===================================
+
+create table users (id integer primary key, name text);
+create view RV as select id as user_id, name as full_name from users;
+
+insert into RV (user_id, full_name) values (1, 'Bob');
+
+select * from users order by id;
+→ [{"id":1,"name":"Bob"}]
+
+select * from RV order by user_id;
+→ [{"user_id":1,"full_name":"Bob"}]
+
+-- ===================================
+-- Filter pass-through delete
+-- ===================================
+
+create table acct (id integer primary key, active integer, label text);
+insert into acct values (5, 1, 'a'), (6, 0, 'b'), (7, 1, 'c');
+create view ActiveUsers as select * from acct where active = 1;
+
+delete from ActiveUsers where id = 5;
+
+select id, active, label from acct order by id;
+→ [{"id":6,"active":0,"label":"b"},{"id":7,"active":1,"label":"c"}]
+
+-- ===================================
+-- Filter pass-through update (the selection predicate is conjoined into WHERE)
+-- ===================================
+
+-- id=7 is visible (active=1): the update applies.
+update ActiveUsers set label = 'C' where id = 7;
+select id, label from acct order by id;
+→ [{"id":6,"label":"b"},{"id":7,"label":"C"}]
+
+-- id=6 is NOT visible (active=0): the conjoined predicate matches no base row.
+update ActiveUsers set label = 'X' where id = 6;
+select id, label from acct order by id;
+→ [{"id":6,"label":"b"},{"id":7,"label":"C"}]
+
+-- ===================================
+-- Phase 1b: per-statement mutation context threaded through the view
+-- (one captured value stamped onto every row of the statement).
+-- ===================================
+
+create table evt (id integer primary key, created integer default now_ms) using memory with context (now_ms integer);
+create view evt_v as select id from evt;
+
+insert into evt_v with context now_ms = 12345 values (1), (2);
+
+select * from evt order by id;
+→ [{"id":1,"created":12345},{"id":2,"created":12345}]

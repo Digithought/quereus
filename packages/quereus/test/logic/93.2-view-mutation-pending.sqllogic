@@ -1,0 +1,51 @@
+-- View updateability — Phase 1 rejections.
+-- Honest contract of body shapes NOT handled yet; each must raise a diagnostic.
+
+create table t (id integer primary key, name text);
+create table t2 (id integer primary key, name text);
+
+-- Computed-lineage projection: a computed view column is read-only (no-inverse),
+-- named in the diagnostic.
+create view vc as select id, length(name) as name_len from t;
+
+insert into vc (id, name_len) values (1, 5);
+-- error: name_len
+
+update vc set name_len = 9 where id = 1;
+-- error: name_len
+
+-- Aggregate body: not row-decomposable.
+create view va as select count(*) as c from t;
+
+insert into va (c) values (1);
+-- error: cannot write through view
+
+-- Set-operation (UNION) body.
+create view vu as select id from t union all select id from t2;
+
+insert into vu (id) values (1);
+-- error: cannot write through view
+
+-- Join body (multi-source) — Phase 2.
+create view vj as select t.id as tid from t join t2 on t.id = t2.id;
+
+update vj set tid = 9 where tid = 1;
+-- error: cannot write through view
+
+-- VALUES body: no base-table lineage.
+create view vv as values (1), (2);
+
+insert into vv values (3);
+-- error: no recoverable base operation
+
+-- Predicate contradiction: insert violates the view's selection at plan time.
+create view vp as select id, name from t where id = 1;
+
+insert into vp (id, name) values (2, 'x');
+-- error: contradicts its selection predicate
+
+-- RETURNING through a view is Phase 6.
+create view vr as select id, name from t;
+
+insert into vr (id, name) values (3, 'y') returning id;
+-- error: RETURNING through view

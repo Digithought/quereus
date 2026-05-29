@@ -77,6 +77,34 @@ describe('Statement.getChangeScope (integration)', () => {
 		// Phase 1: the source table is NOT (yet) part of the watch set.
 		expect(tables).to.not.include('main.src');
 	});
+
+	it('a read through a view reports the BASE table in its change scope (not the view)', async () => {
+		// View bodies inline to base table references, so change-scope reports the
+		// base (not the view) for free — the same property that makes an MV
+		// reference report its backing table.
+		await db.exec('CREATE TABLE base (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+		await db.exec('CREATE VIEW vw AS SELECT id, v FROM base WHERE v IS NOT NULL');
+
+		const scope = db.prepare('select * from vw where id = ?').getChangeScope();
+		const tables = scope.watches.map(w => `${w.table.schema}.${w.table.table}`);
+		expect(tables).to.deep.equal(['main.base']);
+		expect(tables).to.not.include('main.vw');
+	});
+
+	it('a view-mediated mutation has the same change scope as the equivalent base mutation', async () => {
+		// View updateability rewrites the DML to target the base table, so a
+		// view-mediated UPDATE is indistinguishable from the base UPDATE at the
+		// change-scope level (no view-specific divergence). Both are no-RETURNING
+		// DML, which by existing design surfaces via Database.watch rather than
+		// getChangeScope watches.
+		await db.exec('CREATE TABLE base (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+		await db.exec('CREATE VIEW vw AS SELECT id, v FROM base WHERE v IS NOT NULL');
+
+		const viewScope = db.prepare('update vw set v = ? where id = ?').getChangeScope();
+		const baseScope = db.prepare('update base set v = ? where id = ? and v is not null').getChangeScope();
+		expect(viewScope.watches).to.deep.equal(baseScope.watches);
+		expect(viewScope.unboundParameters).to.deep.equal(baseScope.unboundParameters);
+	});
 });
 
 describe('Database.watch (integration)', () => {
@@ -169,6 +197,23 @@ describe('Database.watch (integration)', () => {
 		sub.unsubscribe(); // idempotent
 		await db.exec('INSERT INTO t VALUES (2)');
 		expect(events).to.have.length(1);
+	});
+
+	it('a watcher on a base table sees a view-mediated insert', async () => {
+		// GreenMen / Bob: a watcher registered on the base table `Men` fires when
+		// an insert routed through the view `GreenMen` lands the constant-FD row.
+		await db.exec('CREATE TABLE Men (Name TEXT PRIMARY KEY, Color TEXT) USING memory');
+		await db.exec("CREATE VIEW GreenMen AS SELECT * FROM Men WHERE Color = 'green'");
+		const events: WatchEvent[] = [];
+		const scope: ChangeScope = {
+			watches: [{ table: { schema: 'main', table: 'Men' }, columns: 'all', scope: { kind: 'full' } }],
+			nonDeterministicSources: [],
+			unboundParameters: [],
+		};
+		const sub = db.watch(scope, e => { events.push(e); });
+		await db.exec("INSERT INTO GreenMen (Name) VALUES ('Bob')");
+		expect(events).to.have.length(1);
+		sub.unsubscribe();
 	});
 
 	it('multi-table scope fires once per transaction with all matching watches', async () => {

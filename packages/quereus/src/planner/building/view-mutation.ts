@@ -1,0 +1,375 @@
+import type * as AST from '../../parser/ast.js';
+import type { PlanningContext } from '../planning-context.js';
+import type { ViewSchema } from '../../schema/view.js';
+import type { TableSchema } from '../../schema/table.js';
+import { isRelationalNode, type RelationalPlanNode } from '../nodes/plan-node.js';
+import { QuereusError } from '../../common/errors.js';
+import { StatusCode, type SqlValue } from '../../common/types.js';
+import { sqlValuesEqual } from '../../util/comparison.js';
+import { buildSelectStmt } from './select.js';
+import { classifyViewBody } from '../mutation/propagate.js';
+import { raiseMutationDiagnostic } from '../mutation/mutation-diagnostic.js';
+import { deriveViewColumns, type ViewColumn } from '../analysis/update-lineage.js';
+
+/**
+ * View-mediated DML rewriting (Phase 1 — single-source projection-and-filter).
+ *
+ * When an INSERT / UPDATE / DELETE targets a view whose body is a single-source
+ * projection-and-filter, these helpers analyse the body and produce an
+ * equivalent statement targeting the underlying base table. The base statement
+ * is then planned by the ordinary base-table builder, so all constraint /
+ * conflict / RETURNING / FK / mutation-context machinery is reused verbatim and
+ * `getChangeScope()` / `Database.watch` see the base write with no extra wiring.
+ *
+ * See `docs/view-updateability.md`. Multi-source fan-out, the `ViewMutationNode`
+ * orchestrator, and RETURNING-through-views are later phases — rejected here
+ * with a structured diagnostic.
+ */
+
+/** A base column pinned to a constant by the view's selection predicate. */
+interface FilterConstant {
+	readonly baseColumnName: string;
+	readonly valueExpr: AST.Expression;
+	readonly value: SqlValue | undefined;
+}
+
+interface ViewAnalysis {
+	readonly baseTable: TableSchema;
+	readonly viewColumns: readonly ViewColumn[];
+	/** The view body's WHERE predicate (in base-column terms), if any. */
+	readonly filterPredicate?: AST.Expression;
+	readonly filterConstants: readonly FilterConstant[];
+	/** view-column-name (lowercase) → replacement expression in base terms. */
+	readonly columnMap: ReadonlyMap<string, AST.Expression>;
+}
+
+function columnExpr(name: string): AST.ColumnExpr {
+	return { type: 'column', name };
+}
+
+function tableIdentifier(table: TableSchema): AST.IdentifierExpr {
+	return { type: 'identifier', name: table.name, schema: table.schemaName };
+}
+
+/** Flatten a conjunction (`a AND b AND c`) into its conjuncts. */
+function flattenAnd(expr: AST.Expression): AST.Expression[] {
+	if (expr.type === 'binary' && expr.operator === 'AND') {
+		return [...flattenAnd(expr.left), ...flattenAnd(expr.right)];
+	}
+	return [expr];
+}
+
+/** Conjoin two optional predicates with AND. */
+function combineAnd(a: AST.Expression | undefined, b: AST.Expression | undefined): AST.Expression | undefined {
+	if (a && b) return { type: 'binary', operator: 'AND', left: a, right: b };
+	return a ?? b;
+}
+
+/**
+ * Structurally clone an expression, substituting column references via
+ * `substitute`. A substituted replacement is cloned but NOT re-substituted
+ * (the replacement is already in base terms). Subqueries are passed through
+ * un-rewritten — a Phase-1 limitation noted in the docs.
+ */
+function transformExpr(
+	expr: AST.Expression,
+	substitute: (col: AST.ColumnExpr) => AST.Expression | undefined,
+): AST.Expression {
+	switch (expr.type) {
+		case 'column': {
+			const replacement = substitute(expr);
+			if (replacement) return cloneExpr(replacement);
+			return { ...expr };
+		}
+		case 'binary':
+			return { ...expr, left: transformExpr(expr.left, substitute), right: transformExpr(expr.right, substitute) };
+		case 'unary':
+			return { ...expr, expr: transformExpr(expr.expr, substitute) };
+		case 'function':
+			return { ...expr, args: expr.args.map(a => transformExpr(a, substitute)) };
+		case 'cast':
+			return { ...expr, expr: transformExpr(expr.expr, substitute) };
+		case 'collate':
+			return { ...expr, expr: transformExpr(expr.expr, substitute) };
+		case 'between':
+			return {
+				...expr,
+				expr: transformExpr(expr.expr, substitute),
+				lower: transformExpr(expr.lower, substitute),
+				upper: transformExpr(expr.upper, substitute),
+			};
+		case 'case':
+			return {
+				...expr,
+				baseExpr: expr.baseExpr ? transformExpr(expr.baseExpr, substitute) : undefined,
+				whenThenClauses: expr.whenThenClauses.map(w => ({
+					when: transformExpr(w.when, substitute),
+					then: transformExpr(w.then, substitute),
+				})),
+				elseExpr: expr.elseExpr ? transformExpr(expr.elseExpr, substitute) : undefined,
+			};
+		case 'in':
+			return {
+				...expr,
+				expr: transformExpr(expr.expr, substitute),
+				values: expr.values ? expr.values.map(v => transformExpr(v, substitute)) : undefined,
+			};
+		default:
+			// literal / identifier / parameter / subquery / exists / windowFunction /
+			// functionSource — passed through structurally (subqueries un-rewritten).
+			return { ...expr };
+	}
+}
+
+/** Deep structural clone of an expression. */
+function cloneExpr(expr: AST.Expression): AST.Expression {
+	return transformExpr(expr, () => undefined);
+}
+
+/**
+ * Plan the view body, gate it for phase-1 mutability, and derive the
+ * view→base column model. Throws a structured diagnostic on any unsupported
+ * shape.
+ */
+function analyzeView(ctx: PlanningContext, view: ViewSchema): ViewAnalysis {
+	if (view.selectAst.type !== 'select') {
+		raiseMutationDiagnostic({
+			reason: 'no-base-lineage',
+			table: view.name,
+			message: `view '${view.name}' has a ${view.selectAst.type.toUpperCase()} body, which has no recoverable base operation`,
+		});
+	}
+	const sel = view.selectAst;
+
+	// Build the body plan and gate it (joins / aggregates / set-ops / recursive
+	// CTEs / VALUES bodies are rejected here).
+	const bodyPlan = buildSelectStmt(ctx, sel);
+	if (!isRelationalNode(bodyPlan)) {
+		raiseMutationDiagnostic({
+			reason: 'no-base-lineage',
+			table: view.name,
+			message: `view '${view.name}' body did not produce a relation`,
+		});
+	}
+	const classification = classifyViewBody(bodyPlan as RelationalPlanNode);
+	if (classification.kind === 'rejected') {
+		raiseMutationDiagnostic({
+			reason: classification.reason,
+			table: view.name,
+			message: `cannot write through view '${view.name}': ${classification.detail}`,
+		});
+	}
+	const baseTable = classification.baseTable.tableSchema;
+
+	// Single-level base-table source only: a body that sources another view/CTE
+	// inlines to one table ref but its inner filters/projections live in the
+	// plan, not in this view's selectAst — driving the rewrite from selectAst
+	// would silently drop them. Reject (the inline-and-propagate generality is
+	// a later phase).
+	if (!sel.from || sel.from.length !== 1 || sel.from[0].type !== 'table') {
+		raiseMutationDiagnostic({
+			reason: 'nested-view',
+			table: view.name,
+			message: `cannot write through view '${view.name}': only a single base-table source is supported in phase 1`,
+		});
+	}
+	const fromTable = sel.from[0];
+	if (ctx.schemaManager.getView(fromTable.table.schema ?? null, fromTable.table.name)) {
+		raiseMutationDiagnostic({
+			reason: 'nested-view',
+			table: view.name,
+			message: `cannot write through view '${view.name}': its body references another view; nested-view mutation is not yet supported`,
+		});
+	}
+
+	// Build the view-column lineage model from the projection list (shared with
+	// the update-lineage analysis surface).
+	const viewColumns = deriveViewColumns(sel, baseTable, view.columns);
+
+	// Build the remap table: each view column → its base-term replacement.
+	const columnMap = new Map<string, AST.Expression>();
+	for (const vc of viewColumns) {
+		columnMap.set(
+			vc.name.toLowerCase(),
+			vc.lineage.kind === 'base' ? columnExpr(vc.lineage.baseColumnName) : vc.lineage.expr,
+		);
+	}
+
+	const filterConstants = extractFilterConstants(sel.where, baseTable);
+
+	return { baseTable, viewColumns, filterPredicate: sel.where, filterConstants, columnMap };
+}
+
+/** Extract `baseColumn = literal` bindings from the view's selection predicate. */
+function extractFilterConstants(where: AST.Expression | undefined, baseTable: TableSchema): FilterConstant[] {
+	const out: FilterConstant[] = [];
+	if (!where) return out;
+	for (const conj of flattenAnd(where)) {
+		if (conj.type !== 'binary' || conj.operator !== '=') continue;
+		const colSide = conj.left.type === 'column' ? conj.left : conj.right.type === 'column' ? conj.right : undefined;
+		const litSide = conj.left.type === 'literal' ? conj.left : conj.right.type === 'literal' ? conj.right : undefined;
+		if (!colSide || !litSide) continue;
+		const baseCol = baseTable.columns.find(c => c.name.toLowerCase() === colSide.name.toLowerCase());
+		if (!baseCol) continue;
+		const value = litSide.value instanceof Promise ? undefined : litSide.value;
+		out.push({ baseColumnName: baseCol.name, valueExpr: litSide, value });
+	}
+	return out;
+}
+
+function findViewColumn(analysis: ViewAnalysis, name: string, view: ViewSchema): ViewColumn {
+	const vc = analysis.viewColumns.find(c => c.name.toLowerCase() === name.toLowerCase());
+	if (!vc) {
+		throw new QuereusError(`Column '${name}' not found in view '${view.name}'`, StatusCode.ERROR);
+	}
+	return vc;
+}
+
+/** Resolve a view column to a writable base column, rejecting computed columns. */
+function requireBaseColumn(vc: ViewColumn): string {
+	if (vc.lineage.kind === 'computed') {
+		raiseMutationDiagnostic({
+			reason: 'no-inverse',
+			column: vc.name,
+			message: `cannot write through view: column '${vc.name}' is a computed (non-invertible) expression and is read-only`,
+		});
+	}
+	return vc.lineage.baseColumnName;
+}
+
+/** Build a substitution fn that remaps view column references to base terms. */
+function remapper(analysis: ViewAnalysis): (col: AST.ColumnExpr) => AST.Expression | undefined {
+	return (col) => analysis.columnMap.get(col.name.toLowerCase());
+}
+
+// --- INSERT ---------------------------------------------------------------
+
+export function rewriteViewInsert(ctx: PlanningContext, stmt: AST.InsertStmt, view: ViewSchema): AST.InsertStmt {
+	rejectReturning(stmt.returning, view);
+	const analysis = analyzeView(ctx, view);
+
+	// Target view columns: explicit list, or all non-generated view columns.
+	const targetNames = stmt.columns && stmt.columns.length > 0
+		? stmt.columns
+		: analysis.viewColumns.filter(vc => !vc.generated).map(vc => vc.name);
+
+	const baseColumns = targetNames.map(name => requireBaseColumn(findViewColumn(analysis, name, view)));
+
+	// Merge the view's constant-FD defaults: a base column pinned by the
+	// selection predicate is supplied automatically when omitted, and a
+	// user-supplied literal that contradicts the pin is rejected at plan time.
+	const appendColumns: string[] = [];
+	const appendExprs: AST.Expression[] = [];
+	for (const fc of analysis.filterConstants) {
+		const idx = baseColumns.findIndex(b => b.toLowerCase() === fc.baseColumnName.toLowerCase());
+		if (idx >= 0) {
+			checkContradiction(stmt.source, idx, fc, view);
+		} else {
+			appendColumns.push(fc.baseColumnName);
+			appendExprs.push(fc.valueExpr);
+		}
+	}
+
+	const finalColumns = [...baseColumns, ...appendColumns];
+
+	let source: AST.QueryExpr = stmt.source;
+	if (appendExprs.length > 0) {
+		if (stmt.source.type !== 'values') {
+			raiseMutationDiagnostic({
+				reason: 'unsupported-source',
+				table: view.name,
+				message: `cannot write through view '${view.name}': supplying selection-predicate defaults requires a VALUES source in phase 1`,
+			});
+		}
+		source = {
+			type: 'values',
+			values: stmt.source.values.map(row => [...row, ...appendExprs.map(cloneExpr)]),
+		};
+	}
+
+	return {
+		type: 'insert',
+		table: tableIdentifier(analysis.baseTable),
+		columns: finalColumns,
+		source,
+		onConflict: stmt.onConflict,
+		upsertClauses: stmt.upsertClauses,
+		contextValues: stmt.contextValues,
+		schemaPath: stmt.schemaPath,
+		loc: stmt.loc,
+	};
+}
+
+/** Reject an insert literal that contradicts a selection-predicate constant. */
+function checkContradiction(source: AST.QueryExpr, columnIndex: number, fc: FilterConstant, view: ViewSchema): void {
+	if (source.type !== 'values' || fc.value === undefined) return;
+	for (const row of source.values) {
+		const cell = row[columnIndex];
+		if (!cell || cell.type !== 'literal' || cell.value instanceof Promise) continue;
+		if (!sqlValuesEqual(cell.value, fc.value)) {
+			raiseMutationDiagnostic({
+				reason: 'predicate-contradiction',
+				column: fc.baseColumnName,
+				table: view.name,
+				message: `insert into view '${view.name}' contradicts its selection predicate on column '${fc.baseColumnName}'`,
+			});
+		}
+	}
+}
+
+// --- UPDATE ---------------------------------------------------------------
+
+export function rewriteViewUpdate(ctx: PlanningContext, stmt: AST.UpdateStmt, view: ViewSchema): AST.UpdateStmt {
+	rejectReturning(stmt.returning, view);
+	const analysis = analyzeView(ctx, view);
+	const substitute = remapper(analysis);
+
+	const assignments = stmt.assignments.map(asg => ({
+		column: requireBaseColumn(findViewColumn(analysis, asg.column, view)),
+		value: transformExpr(asg.value, substitute),
+	}));
+
+	const userWhere = stmt.where ? transformExpr(stmt.where, substitute) : undefined;
+	const where = combineAnd(userWhere, analysis.filterPredicate ? cloneExpr(analysis.filterPredicate) : undefined);
+
+	return {
+		type: 'update',
+		table: tableIdentifier(analysis.baseTable),
+		assignments,
+		where,
+		contextValues: stmt.contextValues,
+		schemaPath: stmt.schemaPath,
+		loc: stmt.loc,
+	};
+}
+
+// --- DELETE ---------------------------------------------------------------
+
+export function rewriteViewDelete(ctx: PlanningContext, stmt: AST.DeleteStmt, view: ViewSchema): AST.DeleteStmt {
+	rejectReturning(stmt.returning, view);
+	const analysis = analyzeView(ctx, view);
+	const substitute = remapper(analysis);
+
+	const userWhere = stmt.where ? transformExpr(stmt.where, substitute) : undefined;
+	const where = combineAnd(userWhere, analysis.filterPredicate ? cloneExpr(analysis.filterPredicate) : undefined);
+
+	return {
+		type: 'delete',
+		table: tableIdentifier(analysis.baseTable),
+		where,
+		contextValues: stmt.contextValues,
+		schemaPath: stmt.schemaPath,
+		loc: stmt.loc,
+	};
+}
+
+/** RETURNING through a view is Phase 6 — reject it explicitly for now. */
+function rejectReturning(returning: AST.ResultColumn[] | undefined, view: ViewSchema): void {
+	if (returning && returning.length > 0) {
+		raiseMutationDiagnostic({
+			reason: 'returning-through-view',
+			table: view.name,
+			message: `RETURNING through view '${view.name}' is not yet supported (phase 6)`,
+		});
+	}
+}

@@ -1,5 +1,35 @@
 # View Updateability
 
+## Status
+
+This document is the decided design (the source of truth for *intent*). What has
+actually shipped:
+
+| Phase | Scope | State |
+|---|---|---|
+| **Phase 1** | Single-source projection-and-filter views: `insert` / `update` / `delete` route to the base table. Constant-FD defaults from equality selection predicates, base-column defaults, identity/rename projection lineage, `OR`-clause conflict resolution, and the `no-inverse` / `predicate-contradiction` / `recursive-cte` / body-shape diagnostics. | **Shipped** |
+| **Phase 1b** | Per-statement mutation-context threading through the view boundary (one captured value stamped across every base row of the statement). Single-base per-row generator cadence rides the base table's column defaults. | **Shipped (single-base)** |
+| Phases 2–7 | Multi-source / outer joins, set-ops, aggregates, RETURNING-through-views, nested/recursive CTE bodies, the `quereus.update.*` tag override surface, shared-surrogate fan-out threading. | Not shipped — rejected at plan time with a structured diagnostic. |
+
+**Implementation note (Phase 1).** Phase 1 ships as an AST-level rewrite in
+`planner/building/view-mutation.ts`: a view-targeted DML whose body classifies as
+a single-source projection-and-filter (gate in `planner/mutation/propagate.ts`) is
+rewritten to target the base table and re-planned through the ordinary base-table
+builder. All constraint / conflict / FK / mutation-context machinery — and
+`getChangeScope()` / `Database.watch` — are therefore reused verbatim with no
+view-specific runtime. The shipped lineage model lives in
+`planner/analysis/update-lineage.ts` and `planner/analysis/scalar-invertibility.ts`.
+
+The plan-node-threaded `updateLineage` / `AttributeDefault` surface on
+`PhysicalProperties` (§ Implementation Surface) and a `ViewMutationNode`
+orchestrator over reused `DmlExecutorNode`s are the **multi-source Phase-2
+foundation** and are intentionally not wired yet — for the single-source case the
+AST rewrite is complete and an orchestrator over one base op adds no behavior.
+
+**Write-through materialized views** remain read-only at the user-write boundary
+(`materialized-view-core`, shipped). Write-through-MV is a future ticket gated on
+this one.
+
 ## Overview
 
 Quereus treats views, CTEs, and subqueries-in-`from` uniformly: any relation expression that can be written as a `select` can also be the target of an `insert`, `update`, or `delete`. The engine derives the required base-table operations from the relation's predicate, its functional-dependency surface, and the per-operator semantics described below.

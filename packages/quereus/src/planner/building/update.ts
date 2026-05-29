@@ -20,6 +20,7 @@ import { buildConstraintChecks, buildNotNullDefaults } from './constraint-builde
 import { buildChildSideFKChecks, buildParentSideFKChecks } from './foreign-key-builder.js';
 import { isCommittedSchemaRef, assertNotMaterializedView } from './schema-resolution.js';
 import { validateDeterministicGenerated } from '../validation/determinism-validator.js';
+import { rewriteViewUpdate } from './view-mutation.js';
 
 export function buildUpdateStmt(
   ctx: PlanningContext,
@@ -37,6 +38,12 @@ export function buildUpdateStmt(
   const contextWithSchemaPath = stmt.schemaPath
     ? { ...ctx, schemaPath: stmt.schemaPath }
     : ctx;
+
+  // View-mediated update: rewrite to target the view's base table and re-plan.
+  const updateView = ctx.schemaManager.getView(stmt.table.schema ?? null, stmt.table.name);
+  if (updateView) {
+    return buildUpdateStmt(contextWithSchemaPath, rewriteViewUpdate(contextWithSchemaPath, stmt, updateView));
+  }
 
   const tableRetrieve = buildTableReference({ type: 'table', table: stmt.table }, contextWithSchemaPath);
 	const tableReference = tableRetrieve.tableRef; // Extract the actual TableReferenceNode
