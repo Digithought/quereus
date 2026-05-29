@@ -106,6 +106,30 @@ describe('Statement.getChangeScope (integration)', () => {
 		expect(tables).to.deep.equal(['main.src']);
 	});
 
+	it('the projected source watch is whole-table / all-columns (v1 conservative contract)', async () => {
+		// v1 projects to a `{kind:'full'}`, columns:'all' watch per source even when
+		// the MV body keys on a source PK — sound but coarse (see docs known-imprecisions).
+		await db.exec('CREATE TABLE src (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+		await db.exec("CREATE MATERIALIZED VIEW mvi AS SELECT id, v FROM src WITH refresh = 'on-commit-incremental'");
+
+		const scope = db.prepare('select v from mvi where id = 1').getChangeScope();
+		expect(scope.watches).to.have.length(1);
+		expect(scope.watches[0].table).to.deep.equal({ schema: 'main', table: 'src' });
+		expect(scope.watches[0].columns).to.equal('all');
+		expect(scope.watches[0].scope).to.deep.equal({ kind: 'full' });
+	});
+
+	it('getChangeScope on an incremental MV whose source was dropped throws cleanly (no dropped-table watch)', async () => {
+		// Dropping a source marks the MV stale; re-planning `select * from mvi` for
+		// analysis raises the same "stale; drop and recreate" error executing it does
+		// — so the resolver never yields a watch on the now-missing source table.
+		await db.exec('CREATE TABLE src (id INTEGER PRIMARY KEY, v TEXT) USING memory');
+		await db.exec("CREATE MATERIALIZED VIEW mvi AS SELECT id, v FROM src WITH refresh = 'on-commit-incremental'");
+		await db.exec('DROP TABLE src');
+
+		expect(() => db.prepare('select * from mvi').getChangeScope()).to.throw(/stale/i);
+	});
+
 	it('a read through a view reports the BASE table in its change scope (not the view)', async () => {
 		// View bodies inline to base table references, so change-scope reports the
 		// base (not the view) for free — the same property that makes an MV

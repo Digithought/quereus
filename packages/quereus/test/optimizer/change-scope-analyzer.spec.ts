@@ -7,6 +7,7 @@ import { BuildTimeDependencyTracker, type PlanningContext } from '../../src/plan
 import { buildBlock } from '../../src/planner/building/block.js';
 import {
 	analyzeChangeScope,
+	buildSourceUnionScope,
 	unionScopes,
 	intersectScopes,
 	bindParameters,
@@ -358,5 +359,34 @@ describe('Predicates', () => {
 		} finally {
 			await db.close();
 		}
+	});
+});
+
+describe('buildSourceUnionScope', () => {
+	const tableNames = (s: ChangeScope) => s.watches.map(w => `${w.table.schema}.${w.table.table}`);
+
+	it('builds one full/all watch per qualified source', () => {
+		const scope = buildSourceUnionScope(['main.a', 'main.b']);
+		expect(tableNames(scope)).to.deep.equal(['main.a', 'main.b']);
+		for (const w of scope.watches) {
+			expect(w.columns).to.equal('all');
+			expect(w.scope).to.deep.equal({ kind: 'full' });
+		}
+		expect(scope.nonDeterministicSources).to.deep.equal([]);
+		expect(scope.unboundParameters).to.deep.equal([]);
+	});
+
+	it('honors a non-main source schema across multiple sources', () => {
+		// N-source path is currently unreachable via SQL (join bodies are
+		// incremental-ineligible) but the helper must stay correct for when it widens.
+		// Input is always a deduped `Set`-derived list (collectSourceTables), so the
+		// helper does not itself dedup — same-table folding happens in unionScopes.
+		const scope = buildSourceUnionScope(['other.a', 'main.b']);
+		expect(tableNames(scope)).to.deep.equal(['main.b', 'other.a']);
+	});
+
+	it('falls back to the main schema for an unqualified source name', () => {
+		const scope = buildSourceUnionScope(['lonely']);
+		expect(scope.watches[0].table).to.deep.equal({ schema: 'main', table: 'lonely' });
 	});
 });
