@@ -929,3 +929,33 @@ select * from mv_nested order by v;
 drop materialized view mv_nested;
 drop table n_a;
 drop table n_b;
+
+-- ===================================
+-- 31. Set-op body whose BRANCHES aggregate. This pins the documented branch
+--     ordering: the set-op check in compile() runs BEFORE the aggregate branch,
+--     so an aggregate-bearing set-op over two sources classifies whole-MV
+--     'global' rather than misrouting into the `aggregate-over-join` rejection
+--     (which `select ... group by ... union select ... group by ...` would
+--     otherwise hit, since it reads two sources and findAggregate matches). The
+--     create must succeed and maintenance is a global rebuild on any source edit.
+-- ===================================
+create table ag_a (id integer primary key, k integer);
+create table ag_b (id integer primary key, k integer);
+insert into ag_a values (1, 10), (2, 10), (3, 20);
+insert into ag_b values (4, 30), (5, 30);
+
+create materialized view mv_agg_setop as
+  select k, count(*) as c from ag_a group by k
+  union select k, count(*) as c from ag_b group by k
+  with refresh = 'on-commit-incremental';
+select * from mv_agg_setop order by k;
+→ [{"k":10,"c":2},{"k":20,"c":1},{"k":30,"c":2}]
+
+-- A source insert re-derives the whole body at COMMIT (k=20's count goes 1→2).
+insert into ag_a values (6, 20);
+select * from mv_agg_setop order by k;
+→ [{"k":10,"c":2},{"k":20,"c":2},{"k":30,"c":2}]
+
+drop materialized view mv_agg_setop;
+drop table ag_a;
+drop table ag_b;
