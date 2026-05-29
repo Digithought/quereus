@@ -403,6 +403,79 @@ describe('coverage prover — multi-source (join) bodies', () => {
 			await db.close();
 		}
 	});
+
+	// --- Nested joins: the topmost-join capture + per-join structural gate +
+	//     composed join-frame FDs must hold for a chain of joins, not just one. ---
+
+	it('positive: nested LEFT joins, both 1:1, cover', async () => {
+		const body = 'select o.customer_id, o.sku, o.id from orders o left join customers c on o.customer_id = c.id left join addresses a on o.id = a.id order by o.customer_id, o.sku';
+		const db = await freshDb([
+			...ORDERS_CUSTOMERS,
+			'create table addresses (id integer primary key, city text)',
+			`create materialized view ix as ${body}`,
+		]);
+		try {
+			expect((await prove(db, 'ix', body, 'orders')).covers, 'a 1:1 chain of LEFT joins is still 1:1').to.be.true;
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('negative fanout: nested LEFT joins where the OUTER join fans out (deeper-than-top fan-out is caught at the join frame)', async () => {
+		// orders LJ customers is 1:1, but the outer LJ tags (tags.val non-unique)
+		// fans out. The fan-out gate checks isUnique(orders.pk) at the *topmost*
+		// join frame, whose FDs do not let orders.pk reach the tags columns ⇒ fanout.
+		const body = 'select o.customer_id, o.sku, o.id from orders o left join customers c on o.customer_id = c.id left join tags t on o.customer_id = t.val order by o.customer_id, o.sku';
+		const db = await freshDb([
+			...ORDERS_CUSTOMERS,
+			'create table tags (id integer primary key, val integer not null, label text)',
+			`create materialized view ix as ${body}`,
+		]);
+		try {
+			const result = await prove(db, 'ix', body, 'orders');
+			expect(result.covers, 'a fan-out below the top join must still be caught').to.be.false;
+			if (!result.covers) expect(result.reason).to.equal('fanout');
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('positive: a composite-PK table maps every PK attribute into the join frame', async () => {
+		// line_items has a 2-column PK (oid, lineno); the covered UC is (oid, sku).
+		// The fan-out gate must map BOTH pk attributes into the join frame for the
+		// isUnique check, not just the first. The lookup is on region_id (a non-UC,
+		// non-PK column) to a unique key, with no lookup-side name colliding with a
+		// UC column — so the name-collision guard does not (correctly) intervene.
+		const body = 'select l.oid, l.sku, l.lineno from line_items l left join regions r on l.region_id = r.rid order by l.oid, l.sku';
+		const db = await freshDb([
+			'create table line_items (oid integer not null, lineno integer not null, sku text not null, region_id integer not null, primary key (oid, lineno), unique (oid, sku))',
+			'create table regions (rid integer primary key, rname text)',
+			`create materialized view ix as ${body}`,
+		]);
+		try {
+			expect((await prove(db, 'ix', body, 'line_items')).covers, 'composite-PK 1:1 lookup join covers').to.be.true;
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('negative shape: a join on a UC column whose lookup side reuses that column name is rejected (name-collision guard)', async () => {
+		// products.sku collides with the UC column `sku`; bare-name resolution in
+		// the ORDER BY / WHERE checks could mis-resolve it, so the guard rejects.
+		const body = 'select l.oid, l.sku, l.lineno from line_items l left join products p on l.sku = p.sku order by l.oid, l.sku';
+		const db = await freshDb([
+			'create table line_items (oid integer not null, lineno integer not null, sku text not null, primary key (oid, lineno), unique (oid, sku))',
+			'create table products (sku text primary key, name text)',
+			`create materialized view ix as ${body}`,
+		]);
+		try {
+			const result = await prove(db, 'ix', body, 'line_items');
+			expect(result.covers, 'a lookup column reusing a UC column name must be rejected').to.be.false;
+			if (!result.covers) expect(result.reason).to.equal('shape');
+		} finally {
+			await db.close();
+		}
+	});
 });
 
 describe('introspection hiding', () => {
